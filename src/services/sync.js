@@ -90,6 +90,9 @@ export function applyItems(db, account, items, { settings, now = Date.now(), syn
   const continueSession = db.prepare('UPDATE sessions SET minutes = ?, started_at = ?, ended_at = ?, window_start = MIN(window_start, ?), window_end = MAX(window_end, ?), confidence = ? WHERE id = ?');
   const toInfer = new Set();
   const seen = [];
+  // only tracked play is certain enough to subtract (estimates are approximate -> never over-flag)
+  const recentCounted = db.prepare(`SELECT COALESCE(SUM(minutes), 0) m FROM sessions WHERE entry_id = ? AND kind = 'play'
+    AND COALESCE(started_at, window_start) >= ? AND sort_time <= ?`);
   // How long this player's sessions usually are (learned from exactly-observed sessions)
   const observed = db.prepare(`SELECT s.minutes FROM sessions s JOIN entries e ON e.id = s.entry_id
     WHERE e.account_id = ? AND s.kind = 'play' AND s.confidence = 'exact' ORDER BY s.id DESC LIMIT 300`).all(account.id).map((r) => r.minutes).sort((a, b) => a - b);
@@ -338,7 +341,11 @@ export function applyItems(db, account, items, { settings, now = Date.now(), syn
     // a rolling recent counter narrows long (weekly/monthly) windows ...
     if (model.recent && recent != null && recent >= delta && we - ws > recentDays * DAY) ws = now - recentDays * DAY;
     // ... and bounds how much of the delta can be recent at all (the rest was uploaded late)
-    const { inWindow, late } = model.recentBound(delta, ws, now, recent);
+    // minutes of this title we already recorded entirely inside the counter's period
+    const counted = model.recent?.strict && recent != null
+      ? recentCounted.get(entry.id, now - recentDays * DAY + 2 * HOUR, ws + 2 * MIN).m
+      : 0;
+    const { inWindow, late } = model.recentBound(delta, ws, now, recent, counted);
     const capacity = model.capacityMin(ws, we);
     // within tolerance -> all of it; beyond -> only what fits in the window
     const p = inWindow <= capacity + overage ? inWindow : Math.max(0, Math.floor(capacity));

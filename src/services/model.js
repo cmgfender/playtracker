@@ -125,10 +125,12 @@ export function modelFor(provider, account = null) {
      * Rolling "recent minutes" counters bound how much of a delta can be recent. Anything
      * beyond it was played earlier and uploaded late (offline play) - not this window.
      */
-    recentBound(delta, ws, now, recentMin) {
+    recentBound(delta, ws, now, recentMin, alreadyCounted = 0) {
       if (!h.recent?.strict || recentMin == null) return { inWindow: delta, late: 0 };
       if (now - ws > h.recent.days * DAY) return { inWindow: delta, late: 0 };
-      const inWindow = Math.min(delta, Math.max(0, recentMin));
+      // the rolling counter also contains play we already recorded inside the last N days
+      const room = Math.max(0, recentMin - alreadyCounted);
+      const inWindow = Math.min(delta, room);
       return { inWindow, late: delta - inWindow };
     },
 

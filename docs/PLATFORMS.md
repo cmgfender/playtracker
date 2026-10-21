@@ -171,6 +171,42 @@ Across all runs:
 - Calibration learns "start" for Steam and "end" for PlayStation.
 - A deliberately mis-declared model is corrected by calibration.
 
+### Long-run verification (6 months, all imports, one database)
+
+`test/longrun.test.js` covers half a year of play in one database. It runs in New York by default, crossing both DST changes, and is repeated in UTC, London, Tokyo and Auckland. The scenario includes:
+
+- **Steam:** an initial import with 400 days of prior history, including legacy titles that report no timestamps.
+- **CSV:** a Switch spreadsheet with first/last played dates and launch counts, plus a row duplicating a Steam game.
+- **JSON:** an import with explicit sessions, imported twice.
+- **PlayStation:** connected two months in, so part of its history overlaps months already tracked.
+- **Xbox:** connected three months in. Titles deferred by the hourly budget arrive an hour later as back-fill.
+- **Steam during the run:**
+  - a game bought and played the same evening
+  - offline play uploaded 25 days later
+  - a refund
+- **Manual sessions** logged through the API.
+- **An export, then an import into a fresh instance.**
+
+The checks are exact:
+- **Per title:** every title's sessions (tracked + dated history + undated) add up to the platform's total.
+- **Rollups:** they equal the sessions, with nothing pending.
+- **History vs tracked:** each account's history equals what it reported when connected. Its tracked play equals everything after that.
+- **Late uploads:** offline play uploaded late is identified exactly as late.
+- **Agreement:** the stats API, year in review, heatmap and lifetime totals all agree with the database.
+- **Duplicates:** the duplicated spreadsheet row is flagged, and excluding it makes the lifetime total equal the true total.
+- **Round trip:** export → import preserves lifetime totals, tracked minutes and exclusions.
+
+Accuracy over those 6 months:
+
+| | Steam | PlayStation | Xbox (no presence) |
+|---|---|---|---|
+| Tracked minutes on the wrong day | 0.04% | 0.04% | 0.02% |
+| Pre-tracking history in the wrong **month** | 23% (9.7% once achievement times are fetched) | 18% | 26% |
+| Switch spreadsheet history in the wrong month (first/last dates) | | | 29% |
+| Busiest day of estimated history (all games) | ≤ 9.3 h (cap 12 h) | | |
+
+The shape parameters for dating history (`SHAPE` in `inference.js`) were tuned against three different simulated player behaviours: burst then taper, steady sporadic play, and short binges. They were not tuned against the long-run scenario. Dating history from last played alone remains the weakest case (about 50% in the wrong month), which is why Steam and Xbox achievement times are fetched in the background.
+
 What remains is information the platforms simply don't provide. The clearest case is two Steam sessions of the same game between two daily syncs: only the later launch time is reported. **Enable live presence (the default) for exact sessions.** Without it, sync more often for better day placement.
 
 Simulator assumptions, which the self-calibration and the logged sync details let you check against reality:

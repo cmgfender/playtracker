@@ -60,6 +60,7 @@ export function importRows(db, rows, { settings, now = Date.now() } = {}) {
     insPlay: db.prepare("INSERT INTO sessions(entry_id, source, kind, minutes, window_start, window_end, started_at, ended_at, note, created_at) VALUES (?, 'import', 'play', ?, ?, ?, ?, ?, ?, ?)"),
     addHistory: db.prepare('UPDATE entries SET baseline_min = baseline_min + ? WHERE id = ?'),
     updEntry: db.prepare('UPDATE entries SET playtime_min = ?, last_played_at = COALESCE(?, last_played_at) WHERE id = ?'),
+    exclude: db.prepare('UPDATE entries SET excluded = 1 WHERE id = ?'),
   };
   const toInfer = new Set();
   return tx(db, () => {
@@ -73,7 +74,10 @@ export function importRows(db, rows, { settings, now = Date.now() } = {}) {
       st.game.run(STATUSES.has(status) ? status : '', STATUSES.has(status) ? status : '', row.rating ? Math.min(10, Math.max(0, Number(row.rating) || 0)) : null,
           row.notes || '', row.favorite === true || row.favorite === 'true' || row.favorite === '1' ? 1 : 0, now, gameId);
 
-      const extId = `import:${normalizeTitle(title)}`;
+      // one entry per source: our own exports carry the account name, so two copies of a game
+      // (e.g. a Steam account entry and a spreadsheet entry) stay separate on re-import
+      const acc = row.account ? String(row.account).trim().toLowerCase() : '';
+      const extId = acc ? `import:${acc}:${normalizeTitle(title)}` : `import:${normalizeTitle(title)}`;
       let entry = st.findEntry.get(platform, extId);
       const lastPlayed = toTime(row.last_played || row.last_played_at);
       if (!entry) {
@@ -122,6 +126,7 @@ export function importRows(db, rows, { settings, now = Date.now() } = {}) {
         res.baseline_minutes += baseline;
       }
       st.updEntry.run(newTotal, lastPlayed, entry.id);
+      if (row.excluded === true || row.excluded === 'true' || row.excluded === '1') { st.exclude.run(entry.id); res.excluded = (res.excluded || 0) + 1; }
     }
     res.estimated_minutes = 0;
     res.undated_minutes = 0;
