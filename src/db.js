@@ -261,6 +261,14 @@ const MIGRATIONS = [
   ALTER TABLE syncs ADD COLUMN duration_ms INTEGER;
   ALTER TABLE syncs ADD COLUMN details TEXT;
   `,
+  // 4: platform history models - product grouping, library removals, session continuity
+  `
+  ALTER TABLE entries ADD COLUMN group_key TEXT;
+  ALTER TABLE entries ADD COLUMN missing_since INTEGER;
+  CREATE INDEX entries_group ON entries(group_key) WHERE group_key IS NOT NULL;
+  ALTER TABLE presence ADD COLUMN session_id INTEGER;
+  ALTER TABLE presence ADD COLUMN device TEXT;
+  `,
 ];
 
 export function openDb(file) {

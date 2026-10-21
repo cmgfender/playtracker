@@ -40,10 +40,19 @@ export const xbox = {
     { key: 'api_key', label: 'OpenXBL API key', type: 'password', required: true, help: 'Sign in with your Microsoft account at https://xbl.io and create an API key.' },
     { key: 'hourly_limit', label: 'OpenXBL requests per hour', type: 'number', required: false, placeholder: '150', help: 'Your plan\'s hourly limit (free = 150). PlayTracker budgets syncs, presence and enrichment to stay under it.' },
     { key: 'presence', label: 'Live presence tracking', type: 'select', options: ['on', 'off'], required: false, help: 'Polls presence every 5 minutes (12 requests/hour).' },
+    { key: 'include_apps', label: 'Track apps', type: 'select', options: ['off', 'on'], required: false, help: 'Title history also lists apps (Netflix, YouTube, …). Off = games only.' },
   ],
   notes: 'Per-title MinutesPlayed and last played time (console + PC/Game Pass), live presence and achievement unlock times for dating your history. Budgeted to the OpenXBL hourly limit.',
-  presenceIntervalSec: 300,
-  syncAfterSessionSec: 600, // MinutesPlayed stat lags behind the end of a session
+  profile: {
+    history: {
+      update: 'periodic',         // MinutesPlayed is flushed during play: a long session spans reports
+      lag_min: 10,
+      last_played: 'end',         // lastTimePlayed = latest activity
+      single_title: true,         // one game runs at a time per account
+      complete_library: true,     // except titles deferred by the hourly budget (reported per sync)
+    },
+    presence: { interval_sec: 300, sync_after_sec: 600 },
+  },
   capabilities: {
     lifetime: 'Per-title "MinutesPlayed" user stat (one request per title)',
     recent: null,
@@ -88,6 +97,7 @@ export const xbox = {
     for (const t of titles) {
       const extId = String(t.titleId);
       if (HOME_TITLE_IDS.has(extId)) continue;
+      if (account.config.include_apps !== 'on' && String(t.type || '').toLowerCase() === 'app') continue;
       const lastPlayedAt = t.titleHistory?.lastTimePlayed ? Date.parse(t.titleHistory.lastTimePlayed) : null;
       const existing = ctx.getEntry(extId);
       const base = {
@@ -120,7 +130,7 @@ export const xbox = {
     const got = new Set(items.map((i) => i.extId));
     state.deferred_titles = titles.map((t) => String(t.titleId)).filter((id) => !got.has(id) && !HOME_TITLE_IDS.has(id)).slice(0, 5000);
     const warning = deferred ? `${deferred} titles deferred to the next sync to stay within the OpenXBL hourly limit` : null;
-    return { items, state, warning, info: { titles: titles.length, missing_minutes: missing, deferred } };
+    return { items, state, warning, complete: deferred === 0, info: { titles: titles.length, missing_minutes: missing, deferred } };
   },
 
   async presence(account, ctx) {

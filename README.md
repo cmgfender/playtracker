@@ -102,6 +102,13 @@ The result:
 - **Time that can't be dated** stays as undated history (lifetime totals only).
 - **Corrections:** on a game's page, set the dates you actually played it, or choose "Don't chart".
 
+Each platform also *reports* history differently:
+- Steam writes totals when a game closes and stamps last-played at **launch**.
+- PlayStation reports about 15 minutes late, with launch counts.
+- Xbox flushes minutes **during** play.
+
+These differences are declared as per-platform **history models** that drive the sync engine. Presence observations **self-calibrate** them. They are verified by a ground-truth simulator: totals are exact in every scenario, and with presence fewer than 0.3% of minutes land on the wrong day.
+
 Every platform's advantages and limits, and exactly how each is used, are documented in **[docs/PLATFORMS.md](docs/PLATFORMS.md)**. The same information is shown in the app under Accounts → "What each platform reports".
 
 ## How sessions are computed

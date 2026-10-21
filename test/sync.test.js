@@ -20,7 +20,7 @@ function setup() {
   return { db, settings };
 }
 
-function addAccount(db, platform = 'steam') {
+function addAccount(db, platform = 'custom') {
   const id = Number(db.prepare("INSERT INTO accounts(platform, name, created_at) VALUES (?, 'test', 0)").run(platform).lastInsertRowid);
   return id;
 }
@@ -171,7 +171,7 @@ test('stats aggregate by day and platform', () => {
   assert.equal(st.total_minutes, 180);
   assert.equal(st.sessions, 2);
   assert.equal(st.top_games[0].title, 'A');
-  assert.equal(st.platforms[0].platform, 'steam');
+  assert.equal(st.platforms[0].platform, 'custom');
   assert.equal(st.series.length, 7);
 });
 

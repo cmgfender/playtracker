@@ -109,3 +109,13 @@ test('openapi spec lists routes', async () => {
   const spec = await fetch(base.replace('/v1', '') + '/openapi.json').then((r) => r.json());
   assert.ok(spec.paths['/api/v1/accounts/{id}/report'].post);
 });
+
+test('pushed reports without recent minutes are not treated as "nothing recent" (Steam strict counter)', async () => {
+  const acc = await call('/accounts', { method: 'POST', body: { platform: 'steam', name: 'pushed', config: { api_key: 'k', steam_id: '76561197960287930' }, sync: false } });
+  await call(`/accounts/${acc.data.id}/report`, { method: 'POST', body: { games: [{ id: '10', title: 'CS', playtime_minutes: 100 }] } });
+  app.app.db.prepare('UPDATE accounts SET last_sync_at = ? WHERE id = ?').run(Date.now() - 86_400_000, acc.data.id);
+  app.app.db.prepare('UPDATE entries SET last_synced_at = ? WHERE account_id = ?').run(Date.now() - 86_400_000, acc.data.id);
+  const r = await call(`/accounts/${acc.data.id}/report`, { method: 'POST', body: { games: [{ id: '10', title: 'CS', playtime_minutes: 160 }] } });
+  assert.equal(r.data.minutes_added, 60);
+  assert.equal(r.data.late_minutes, 0);
+});

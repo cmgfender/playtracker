@@ -13,6 +13,7 @@ import { manualEntry, mergeGames, pruneEmptyGames, splitEntry, findOrCreateGame,
 import { normalizeTitle } from '../services/titles.js';
 import { reinferMany, reinferPending, INFER_VERSION } from '../services/inference.js';
 import { flushRollups } from '../services/rollup.js';
+import { modelFor } from '../services/model.js';
 import fsp from 'node:fs';
 import { httpJson } from '../providers/http.js';
 import { HttpError, toInt, toTime } from '../util.js';
@@ -39,9 +40,10 @@ function publicAccount(a, sync) {
     last_sync_at: a.last_sync_at, next_sync_at: a.next_sync_at, last_status: a.last_status, last_error: a.last_error,
     syncing: sync.isRunning(a.id), push: !!p?.push, created_at: a.created_at,
     games: a.games ?? undefined, minutes: a.minutes ?? undefined,
-    presence: p?.presence || p?.push ? { enabled: sync.presenceEnabled(a), interval_sec: p.presenceIntervalSec || null, ...(sync.presenceInfo(a.id) || {}) } : null,
+    presence: p?.presence || p?.push ? { enabled: sync.presenceEnabled(a), interval_sec: p.profile?.presence?.interval_sec || null, ...(sync.presenceInfo(a.id) || {}) } : null,
     api_usage_hour: sync.usage(a.id),
     hourly_limit: p?.hourlyLimit ? p.hourlyLimit(a) : null,
+    history_model: p ? modelFor(p, a).describe() : null,
     profile: a.state?.persona ? { name: a.state.persona, avatar: a.state.avatar, account_created_at: a.state.account_created_at || null } : null,
   };
 }
@@ -212,6 +214,7 @@ export function registerRoutes(r, app) {
           id: e.id, account_id: e.account_id, account_name: e.account_name, platform: e.platform, ext_id: e.ext_id, title: e.title, icon_url: e.icon_url, cover_url: e.cover_url,
           playtime_min: e.playtime_min, last_played_at: e.last_played_at, first_played_at: e.first_played_at, play_count: e.play_count,
           first_seen_at: e.first_seen_at, last_synced_at: e.last_synced_at, excluded: !!e.excluded, meta: JSON.parse(e.meta || '{}'),
+          missing_since: e.missing_since || null, group_key: e.group_key || null,
           history: e.baseline_min > 0 ? {
             minutes: e.baseline_min,
             tracking_start: h.tracking_start || e.first_seen_at,
@@ -581,7 +584,7 @@ export function registerRoutes(r, app) {
       firstPlayedAt: toTime(g.first_played_at),
       dateAdded: toTime(g.date_added),
       playCount: g.play_count != null ? toInt(g.play_count) : null,
-      recentMin: g.recent_minutes != null ? toInt(g.recent_minutes) : 0,
+      recentMin: g.recent_minutes != null ? toInt(g.recent_minutes) : null, // absent = unknown, not zero
       recentWindowDays: g.recent_days != null ? toInt(g.recent_days) : 14,
       devices: g.device ? { [String(g.device)]: g.playtime_minutes ?? 0 } : undefined,
       coverUrl: g.cover_url || null,

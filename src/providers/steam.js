@@ -18,8 +18,19 @@ export const steam = {
     { key: 'presence', label: 'Live presence tracking', type: 'select', options: ['on', 'off'], required: false, help: 'Polls "currently playing" every 2 minutes for exact session start/end times (720 calls/day of your 100k).' },
   ],
   notes: 'Lifetime + last-2-weeks minutes per game, last played time, per-device minutes (Windows/Mac/Linux/Steam Deck), live "currently playing" and achievement unlock times for dating your history.',
-  presenceIntervalSec: 120,
-  syncAfterSessionSec: 90, // Steam writes playtime when the game exits
+  profile: {
+    history: {
+      update: 'on-exit',          // playtime_forever is written when the game exits
+      lag_min: 1,
+      last_played: 'start',       // rtime_last_played is stamped at launch (auto-calibrated via presence)
+      recent: { days: 14, strict: true }, // playtime_2weeks bounds how much of a delta is recent
+      devices: ['windows', 'mac', 'linux', 'deck', 'offline'],
+      offline_counter: 'offline', // playtime_disconnected grows when offline play is uploaded
+      single_title: true,         // one game runs at a time per account
+      complete_library: true,
+    },
+    presence: { interval_sec: 120, sync_after_sec: 90 },
+  },
   capabilities: {
     lifetime: 'GetOwnedGames.playtime_forever (minutes)',
     recent: 'playtime_2weeks - minutes in the last 14 days',

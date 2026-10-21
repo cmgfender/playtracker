@@ -107,18 +107,76 @@ Use these for Switch spreadsheets, Playnite, emulators, Epic, GOG and so on. Pus
 
 Reports are compared with the previous one exactly like platform syncs. To get exact session times, send presence to `POST /api/v1/accounts/:id/presence` (for example from a Home Assistant automation).
 
-## How a sync delta becomes sessions
+## History models: each platform's reporting semantics, built into the design
 
-Steps 1–4 are tried in order; step 5 is applied to whatever delta was accepted.
+The platforms don't just expose different fields. They **report history in functionally different ways**, and those differences decide what a change in the totals means. Each provider declares a `profile.history` (see `src/providers/*.js`). The sync engine interprets every report through that profile (`src/services/model.js`), so there are no platform `if`s in the engine.
 
-1. **Presence spans** observed in the sync window become **exact** sessions. A delta is split across several spans by their length.
-2. **Launch count increased by *n*** (PSN): the delta becomes *n* sessions, and the last one is pinned to the last-played time.
-3. **Delta of 6 hours or less, with a last-played time:** one continuous session ending at last played (**pinned**).
-4. **Large delta over a multi-day window:** spread over the days of the window, weighted toward the last-played day and capped per day (**window**). It is never one giant block.
-5. **Sanity checks:**
-   - Deltas larger than the real time elapsed are clamped, and the rest goes to undated history.
-   - Deltas under the minimum session length build up until they're big enough.
-   - Playtime that goes down (refunds, resets) is followed without creating a session.
+| Property | Steam | PlayStation | Xbox | Custom | Why it matters |
+|---|---|---|---|---|---|
+| `update`: when totals change | `on-exit` | `delayed` (15 min) | `periodic` (10 min lag) | `on-report` | Determines which real-time window a delta covers. Also whether a running session is already in the total. |
+| `last_played`: what the timestamp marks | **start** (launch) | end | end (latest activity) | configurable | Sessions are pinned from the start on Steam and from the end elsewhere. Pinning Steam by the end would shift every session by its own length. |
+| `recent`: rolling counter | 14 days (strict) | – | – | optional | Minutes beyond the counter can't be recent, so they were offline play uploaded late. The counter also narrows weekly and monthly windows. |
+| `play_count`: launches | – | ✅ | – | optional | A delta with *n* new launches becomes *n* sessions. |
+| `first_played` | – | ✅ | – | optional | Gives history a hard start date. |
+| `devices`, `offline_counter` | Win/Mac/Linux/Deck, offline | – | – | optional | Tags each session's device and flags late-uploaded offline play. |
+| `single_title`: one game at a time | ✅ | ✅ | ✅ | – | A later launch of any game caps the previous session. |
+| `grouping` | – | concept id | – | – | PS4 and PS5 versions are one game. |
+| `complete_library` | ✅ | ✅ | unless titles were deferred | – | A title missing from a complete report is marked "no longer in library". |
+
+### Rules derived from the models
+
+Steps 1–7 are tried in order; steps 8–10 are checks that apply throughout.
+
+1. **Window:** a report at time *t* describes play up to *t − lag*. A delta between reports at *t₁* and *t₂* therefore covers *(t₁ − lag, t₂ − lag]*.
+2. **Capacity:** on-exit and delayed platforms deliver a whole session at once, even if it started before the window. A delta may therefore exceed the time since the last sync by up to one maximum-length session without being called "late".
+3. **Presence spans:**
+   - Spans become **exact** sessions. Presence is ground truth for when a session ran.
+   - On on-exit and delayed platforms, only spans that ended at least *lag* ago are used. Periodic platforms (Xbox) can use running spans, and a later report extends the *same* session.
+   - Every recorded session **claims** the spans it covers, so a span is never used twice.
+   - A pinned session confirmed by a span is upgraded to exact.
+4. **Launch counter** (PSN): a delta with *n* new launches becomes *n* sessions, and the last one is pinned.
+5. **Continuation** (periodic platforms): a delta that touches a session cut off by the previous report extends that session.
+6. **Pinning by last played** (start or end, per the model):
+   - **Steam's launch time only proves when the *last* session started.** If the delta doesn't fit after it, or is longer than the player's long sessions, a typical-length session is placed at the launch and the rest just before it.
+   - Xbox and PSN get the mirror rule around the end time.
+   - **Typical lengths are learned** from the player's own exactly observed sessions. Defaults: 120 min median, 240 min long.
+7. **Large deltas over multi-day windows:** spread across the days, weighted toward the last activity, capped per day. Integer minutes are allocated exactly, so no minute is ever lost to rounding.
+8. **Self-repair:** if a new delta pins to a launch time that was already used, the earlier pin was a session still running at that report. It is moved to before the launch.
+9. **Strict recent counter** (Steam): minutes beyond `playtime_2weeks` are offline play uploaded late. They become undated history instead of being crammed into the window.
+10. **Calibration:** whenever presence shows exactly when a session ran, the account checks whether the platform's last-played timestamp sat at that session's start or end. After 3+ observations agreeing ≥75%, the learned meaning overrides the declared one for that account. If a platform changes its behaviour, PlayTracker follows it.
+
+### Measured accuracy (ground-truth simulation)
+
+`test/simulation.test.js` generates random play histories:
+- evenings, with sessions crossing midnight
+- repeat sessions of the same game
+- long sessions
+- sessions still running at sync time
+
+A simulated platform then reports each history exactly the way the real one does, and the real engine processes the reports. Results over 24 random 3-week histories per scenario:
+
+| Scenario | Tracked minutes | Sessions | Minutes on the wrong day (avg / worst) |
+|---|---|---|---|
+| Steam, daily sync + presence | exact | 1:1 with real sessions, exact times | 0.06% / 0.11% |
+| PlayStation, daily + presence | exact | 1:1, exact | 0.10% / 0.20% |
+| Xbox, hourly + presence (long sessions split across reports) | exact | 1:1, exact | 0.16% / 0.28% |
+| PlayStation, daily, no presence | exact | 1:1 (launch counter) | 0.5% / 3% |
+| Xbox, daily, no presence | exact | close | 1.7% / 6.5% |
+| Steam, daily, no presence | exact | close; launch times exact | 3.7% / ~10% |
+| Steam, weekly, no presence | exact | – | ~33% (a weekly total carries no day-level information) |
+
+Across all runs:
+- Totals are exact.
+- No session overlaps another or lies in the future.
+- Calibration learns "start" for Steam and "end" for PlayStation.
+- A deliberately mis-declared model is corrected by calibration.
+
+What remains is information the platforms simply don't provide. The clearest case is two Steam sessions of the same game between two daily syncs: only the later launch time is reported. **Enable live presence (the default) for exact sessions.** Without it, sync more often for better day placement.
+
+Simulator assumptions, which the self-calibration and the logged sync details let you check against reality:
+- PSN updates `playCount` together with `playDuration`.
+- Xbox flushes `MinutesPlayed` in about 5-minute steps, with about a 10-minute lag.
+- Steam stamps `rtime_last_played` at launch.
 
 ## How pre-tracking history is dated (no import-day spikes)
 

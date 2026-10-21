@@ -65,8 +65,19 @@ export const psn = {
     { key: 'presence', label: 'Live presence tracking', type: 'select', options: ['on', 'off'], required: false, help: 'Polls your online status every 3 minutes for exact session times.' },
   ],
   notes: 'The richest data of any platform: total play duration, first AND last played time and launch count per PS4/PS5 title - pre-tracking history is dated with high confidence. Live presence pins sessions to exact times.',
-  presenceIntervalSec: 180,
-  syncAfterSessionSec: 900, // playDuration is updated by Sony's backend with a delay
+  profile: {
+    history: {
+      update: 'delayed',          // playDuration lands on Sony's backend after the session
+      lag_min: 15,
+      last_played: 'end',
+      first_played: true,         // firstPlayedDateTime
+      play_count: true,           // playCount = launches; deltas = sessions in a window
+      complete_library: true,
+      single_title: true,         // one game runs at a time per account
+      grouping: 'concept',        // PS4 and PS5 versions of one game share a concept id
+    },
+    presence: { interval_sec: 180, sync_after_sec: 900 },
+  },
   capabilities: {
     lifetime: 'gamelist v2 playDuration (ISO-8601 duration)',
     recent: null,
@@ -104,6 +115,7 @@ export const psn = {
           playCount: Number.isFinite(t.playCount) ? t.playCount : null,
           iconUrl: t.imageUrl || null,
           coverUrl: t.concept?.media?.images?.find((i) => i.type === 'MASTER')?.url || t.imageUrl || null,
+          groupKey: t.concept?.id ? `psn-concept:${t.concept.id}` : null,
           meta: { category: t.category, conceptId: t.concept?.id },
         });
       }
