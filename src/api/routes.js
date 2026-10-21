@@ -11,6 +11,10 @@ import { findDuplicates } from '../services/duplicates.js';
 import { importRows, exportChunks, parseCsv } from '../services/importer.js';
 import { manualEntry, mergeGames, pruneEmptyGames, splitEntry, findOrCreateGame, cleanTitle } from '../services/library.js';
 import { normalizeTitle } from '../services/titles.js';
+import { reinferMany, reinferPending, INFER_VERSION } from '../services/inference.js';
+import { flushRollups } from '../services/rollup.js';
+import fsp from 'node:fs';
+import { httpJson } from '../providers/http.js';
 import { HttpError, toInt, toTime } from '../util.js';
 
 const MIN = 60_000;
@@ -35,8 +39,15 @@ function publicAccount(a, sync) {
     last_sync_at: a.last_sync_at, next_sync_at: a.next_sync_at, last_status: a.last_status, last_error: a.last_error,
     syncing: sync.isRunning(a.id), push: !!p?.push, created_at: a.created_at,
     games: a.games ?? undefined, minutes: a.minutes ?? undefined,
+    presence: p?.presence || p?.push ? { enabled: sync.presenceEnabled(a), interval_sec: p.presenceIntervalSec || null, ...(sync.presenceInfo(a.id) || {}) } : null,
+    api_usage_hour: sync.usage(a.id),
+    hourly_limit: p?.hourlyLimit ? p.hourlyLimit(a) : null,
+    profile: a.state?.persona ? { name: a.state.persona, avatar: a.state.avatar, account_created_at: a.state.account_created_at || null } : null,
   };
 }
+
+const ESTIMATES = new Set(['include', 'exclude', 'only']);
+const estimatesParam = (q, settings) => (ESTIMATES.has(q.estimates) ? q.estimates : settings.get('stats_estimates') || 'include');
 
 function requireFields(platform, config) {
   const p = providers[platform];
@@ -88,7 +99,8 @@ function sessionRow(s) {
     id: s.id, game_id: s.game_id, entry_id: s.entry_id, title: s.title, cover_url: s.cover_url, platform: s.platform,
     account_id: s.account_id, account_name: s.account_name, source: s.source, kind: s.kind, minutes: s.minutes,
     window_start: s.window_start, window_end: s.window_end, started_at: s.started_at, ended_at: s.ended_at,
-    precise: !!(s.started_at && s.ended_at), note: s.note, sync_id: s.sync_id, created_at: s.created_at,
+    precise: !!(s.started_at && s.ended_at), confidence: s.confidence || (s.started_at && s.ended_at ? 'pinned' : s.kind === 'play' ? 'window' : null),
+    device: s.device || null, note: s.note, sync_id: s.sync_id, created_at: s.created_at,
   };
 }
 
@@ -129,14 +141,17 @@ export function registerRoutes(r, app) {
   // ---------- dashboard ----------
   r.get('/api/v1/summary', () => {
     const weekStartsOn = settings.get('week_starts_on');
-    const week = computeStats(db, { range: 'week', group: 'day', weekStartsOn });
-    const month = computeStats(db, { range: '30d', group: 'day', weekStartsOn });
-    const today = computeStats(db, { range: '1d', group: 'day', weekStartsOn });
+    // KPIs use tracked play only (never inflated by an import); the 30-day chart also
+    // shows inferred history, flagged as estimated.
+    const week = computeStats(db, { range: 'week', group: 'day', weekStartsOn, estimates: 'exclude' });
+    const month = computeStats(db, { range: '30d', group: 'day', weekStartsOn, estimates: estimatesParam({}, settings) });
+    const today = computeStats(db, { range: '1d', group: 'day', weekStartsOn, estimates: 'exclude' });
     const recent = db.prepare(`${SESSION_SELECT} WHERE s.kind = 'play' AND e.excluded = 0 ORDER BY s.sort_time DESC LIMIT 12`).all().map(sessionRow);
     const nowPlaying = db.prepare(`${GAME_LIST} WHERE rec.recent_minutes > 0 AND g.hidden = 0 ORDER BY agg.last_session DESC LIMIT 12`).all(recentFromDay()).map(gameRow);
     const accounts = db.prepare('SELECT * FROM accounts ORDER BY id').all().map(parseAccount).map((a) => publicAccount(a, sync));
     const pending = db.prepare("SELECT COUNT(*) n FROM sessions WHERE kind = 'play' AND sort_time > ? AND created_at > ?").get(Date.now() - 30 * 86_400_000, Date.now() - 86_400_000).n;
-    return { lifetime: lifetime(db), today, week, month, recent_sessions: recent, now_playing: nowPlaying, accounts, new_sessions_24h: pending };
+    const errors24h = db.prepare("SELECT COUNT(*) n FROM logs WHERE level = 'error' AND time > ?").get(Date.now() - 86_400_000).n;
+    return { lifetime: lifetime(db), today, week, month, recent_sessions: recent, now_playing: nowPlaying, playing_now: sync.nowPlaying(), accounts, new_sessions_24h: pending, errors_24h: errors24h };
   }, { summary: 'Everything the dashboard needs in one call' });
 
   // ---------- games ----------
@@ -191,7 +206,21 @@ export function registerRoutes(r, app) {
       return { ...gameRow(bare), entries: [] };
     }
     const entries = db.prepare(`SELECT e.*, a.name account_name FROM entries e LEFT JOIN accounts a ON a.id = e.account_id WHERE e.game_id = ? ORDER BY e.playtime_min DESC`).all(id)
-      .map((e) => ({ id: e.id, account_id: e.account_id, account_name: e.account_name, platform: e.platform, ext_id: e.ext_id, title: e.title, icon_url: e.icon_url, cover_url: e.cover_url, playtime_min: e.playtime_min, last_played_at: e.last_played_at, first_seen_at: e.first_seen_at, last_synced_at: e.last_synced_at, excluded: !!e.excluded, meta: JSON.parse(e.meta || '{}') }));
+      .map((e) => {
+        const h = JSON.parse(e.hist || '{}');
+        return {
+          id: e.id, account_id: e.account_id, account_name: e.account_name, platform: e.platform, ext_id: e.ext_id, title: e.title, icon_url: e.icon_url, cover_url: e.cover_url,
+          playtime_min: e.playtime_min, last_played_at: e.last_played_at, first_played_at: e.first_played_at, play_count: e.play_count,
+          first_seen_at: e.first_seen_at, last_synced_at: e.last_synced_at, excluded: !!e.excluded, meta: JSON.parse(e.meta || '{}'),
+          history: e.baseline_min > 0 ? {
+            minutes: e.baseline_min,
+            tracking_start: h.tracking_start || e.first_seen_at,
+            evidence: { first_played_at: h.first_played_at || null, last_played_at: h.last_played_at || null, play_count: h.play_count || null, recent_min: h.recent_min || null, date_added: h.date_added || null, release_at: h.release_at || null, anchors: (h.anchors || []).length },
+            manual: h.manual || null, mode: h.mode || 'auto', enriched: !!e.enriched_at,
+            ...(h.inference || {}),
+          } : null,
+        };
+      });
     const agg = db.prepare(`SELECT s.kind, COUNT(*) n, COALESCE(SUM(s.minutes),0) m, MIN(COALESCE(s.started_at, s.window_start, s.window_end)) first, MAX(s.minutes) longest
       FROM sessions s JOIN entries e ON e.id = s.entry_id WHERE e.game_id = ? AND e.excluded = 0 GROUP BY s.kind`).all(id);
     const k = Object.fromEntries(agg.map((x) => [x.kind, x]));
@@ -202,6 +231,7 @@ export function registerRoutes(r, app) {
       summary: {
         total_minutes: g.minutes,
         tracked_minutes: k.play?.m || 0,
+        estimated_minutes: k.estimate?.m || 0,
         baseline_minutes: k.baseline?.m || 0,
         sessions: k.play?.n || 0,
         avg_session_minutes: k.play?.n ? Math.round(k.play.m / k.play.n) : 0,
@@ -214,7 +244,7 @@ export function registerRoutes(r, app) {
 
   r.get('/api/v1/games/:id', (c) => {
     const game = getGame(toInt(c.params.id));
-    const sessions = db.prepare(`${SESSION_SELECT} WHERE s.entry_id IN (SELECT id FROM entries WHERE game_id = ?) ORDER BY s.sort_time DESC, s.id DESC LIMIT 300`).all(game.id).map(sessionRow);
+    const sessions = db.prepare(`${SESSION_SELECT} WHERE s.entry_id IN (SELECT id FROM entries WHERE game_id = ?) AND s.kind IN ('play', 'baseline') ORDER BY s.sort_time DESC, s.id DESC LIMIT 300`).all(game.id).map(sessionRow);
     const stats = computeStats(db, { range: 'all', gameId: game.id, group: 'month', weekStartsOn: settings.get('week_starts_on'), topLimit: 1 });
     return { ...game, sessions, sessions_truncated: game.summary && game.summary.sessions > 300, series: stats.series, weekday: stats.weekday };
   }, { summary: 'Game detail with entries, latest 300 sessions, monthly history' });
@@ -357,7 +387,7 @@ export function registerRoutes(r, app) {
     if (!started) { ended = now; started = now - minutes * MIN; }
     const id = tx(db, () => {
       const e = manualEntry(db, gameId, now);
-      const r2 = db.prepare("INSERT INTO sessions(entry_id, source, kind, minutes, window_start, window_end, started_at, ended_at, note, created_at) VALUES (?, 'manual', 'play', ?, ?, ?, ?, ?, ?, ?)")
+      const r2 = db.prepare("INSERT INTO sessions(entry_id, source, kind, minutes, window_start, window_end, started_at, ended_at, note, created_at, confidence) VALUES (?, 'manual', 'play', ?, ?, ?, ?, ?, ?, ?, 'exact')")
         .run(e.id, minutes, started, ended, started, ended, b.note || null, now);
       db.prepare('UPDATE entries SET playtime_min = playtime_min + ?, last_played_at = MAX(COALESCE(last_played_at, 0), ?), last_synced_at = ? WHERE id = ?').run(minutes, ended, now, e.id);
       if (b.status && STATUSES.includes(b.status)) db.prepare('UPDATE games SET status = ?, updated_at = ? WHERE id = ?').run(b.status, now, gameId);
@@ -426,11 +456,11 @@ export function registerRoutes(r, app) {
 
   // ---------- stats ----------
   r.get('/api/v1/stats', (c) => computeStats(db, {
-    range: c.query.range, group: c.query.group, gameId: toInt(c.query.game_id), platform: c.query.platform, weekStartsOn: settings.get('week_starts_on'),
-  }), { summary: 'Aggregated stats for a range', query: { range: '7d|30d|90d|365d|week|month|year|all|year:2026|month:2026-05', group: 'day|week|month|year', game_id: '', platform: '' } });
+    range: c.query.range, group: c.query.group, gameId: toInt(c.query.game_id), platform: c.query.platform, weekStartsOn: settings.get('week_starts_on'), estimates: estimatesParam(c.query, settings),
+  }), { summary: 'Aggregated stats for a range. Inferred pre-tracking history is included (and reported separately) unless estimates=exclude', query: { range: '7d|30d|90d|365d|week|month|year|all|year:2026|month:2026-05', group: 'day|week|month|year', game_id: '', platform: '', estimates: 'include|exclude|only' } });
   r.get('/api/v1/stats/lifetime', () => lifetime(db), { summary: 'Lifetime totals (including imported history)' });
-  r.get('/api/v1/stats/heatmap', (c) => heatmap(db, { year: c.query.year, gameId: toInt(c.query.game_id) }), { summary: 'Minutes per day for a year', query: { year: '', game_id: '' } });
-  r.get('/api/v1/stats/year/:year', (c) => yearInReview(db, toInt(c.params.year), { weekStartsOn: settings.get('week_starts_on') }), { summary: 'Year in review' });
+  r.get('/api/v1/stats/heatmap', (c) => heatmap(db, { year: c.query.year, gameId: toInt(c.query.game_id), estimates: estimatesParam(c.query, settings) }), { summary: 'Minutes per day for a year', query: { year: '', game_id: '', estimates: 'include|exclude|only' } });
+  r.get('/api/v1/stats/year/:year', (c) => yearInReview(db, toInt(c.params.year), { weekStartsOn: settings.get('week_starts_on'), estimates: estimatesParam(c.query, settings) }), { summary: 'Year in review', query: { estimates: 'include|exclude' } });
   r.get('/api/v1/stats/years', () => {
     const first = db.prepare('SELECT MIN(day) d FROM play_days').get().d;
     const ys = [];
@@ -463,8 +493,24 @@ export function registerRoutes(r, app) {
     requireFields(platform, config);
     const p = providers[platform];
     if (p.push) return { ok: true, games: 0 };
-    const res = await p.fetchLibrary({ id: 0, platform, config, state: {} }, { getEntry: () => null });
-    return { ok: true, games: res.items.length, played: res.items.filter((i) => i.playtimeMin > 0).length, minutes: res.items.reduce((a, i) => a + (i.playtimeMin || 0), 0), warning: res.warning || null, sample: res.items.slice(0, 5).map((i) => i.title) };
+    const warnings = [];
+    let calls = 0;
+    const ctx = {
+      http: (url, opts, cfg = {}) => httpJson(url, opts, { ...cfg, onResult: () => { calls++; } }),
+      getEntry: () => null, warn: (m) => warnings.push(m), remainingBudget: (limit) => limit, stopped: () => false,
+    };
+    const fake = { id: 0, platform, config, state: {} };
+    const res = await p.fetchLibrary(fake, ctx);
+    let presence = null;
+    if (p.presence) {
+      try { const pr = await p.presence({ ...fake, state: res.state || {} }, ctx); presence = pr ? (pr.unavailable || `ok (${pr.playing.length ? `playing ${pr.playing.map((x) => x.title || x.extId).join(', ')}` : 'not playing'})`) : 'skipped'; } catch (err) { presence = `unavailable: ${err.message}`; }
+    }
+    const withDates = res.items.filter((i) => i.lastPlayedAt || i.firstPlayedAt).length;
+    return {
+      ok: true, games: res.items.length, played: res.items.filter((i) => i.playtimeMin > 0).length, minutes: res.items.reduce((a, i) => a + (i.playtimeMin || 0), 0),
+      with_dates: withDates, presence, api_calls: calls, warning: [res.warning, ...warnings].filter(Boolean).join('; ') || null,
+      account_created_at: res.state?.account_created_at || null, sample: res.items.slice(0, 5).map((i) => i.title),
+    };
   }, { summary: 'Test credentials without saving', body: '{ platform, config }' });
 
   r.post('/api/v1/accounts', (c) => {
@@ -532,12 +578,37 @@ export function registerRoutes(r, app) {
       title: g.title || g.name || String(g.id),
       playtimeMin: g.playtime_minutes ?? (g.playtime_hours != null ? Math.round(g.playtime_hours * 60) : 0),
       lastPlayedAt: toTime(g.last_played_at),
+      firstPlayedAt: toTime(g.first_played_at),
+      dateAdded: toTime(g.date_added),
+      playCount: g.play_count != null ? toInt(g.play_count) : null,
+      recentMin: g.recent_minutes != null ? toInt(g.recent_minutes) : 0,
+      recentWindowDays: g.recent_days != null ? toInt(g.recent_days) : 14,
+      devices: g.device ? { [String(g.device)]: g.playtime_minutes ?? 0 } : undefined,
       coverUrl: g.cover_url || null,
       iconUrl: g.icon_url || null,
       backfill: !!g.backfill,
     }));
     return sync.report(id, items);
-  }, { summary: 'Push lifetime totals for an account; deltas become sessions', body: '{ games: [{ id, title, playtime_minutes, last_played_at?, cover_url?, backfill? }] }' });
+  }, { summary: 'Push lifetime totals for an account; deltas become sessions. Optional dates/play counts are used to date history on the first report.', body: '{ games: [{ id, title, playtime_minutes, last_played_at?, first_played_at?, date_added?, play_count?, recent_minutes?, recent_days?, device?, cover_url?, backfill? }] }' });
+
+  r.post('/api/v1/accounts/:id/presence', (c) => {
+    const a = sync.account(toInt(c.params.id));
+    if (!a) throw new HttpError(404, 'Account not found');
+    const playing = (c.body.playing || []).map((p) => ({ extId: String(p.id ?? p.ext_id ?? p.title), title: p.title || null, device: p.device || null }));
+    return sync.applyPresence(a, playing, { intervalSec: toInt(c.body.interval_sec, 120) });
+  }, { summary: 'Push "currently playing" for an account (e.g. from Home Assistant); used to pin sessions to exact times', body: '{ playing: [{ id, title? }], interval_sec? }' });
+
+  r.post('/api/v1/accounts/:id/enrich', async (c) => {
+    const a = sync.account(toInt(c.params.id));
+    if (!a) throw new HttpError(404, 'Account not found');
+    if (c.body.reset) db.prepare('UPDATE entries SET enriched_at = NULL WHERE account_id = ?').run(a.id);
+    const p = sync.enrich(a.id);
+    if (c.query.wait === 'true') return (await p) || { updated: 0 };
+    p.catch(() => {});
+    return { ok: true, started: true };
+  }, { summary: 'Fetch achievement times / release dates now to date pre-tracking history', body: '{ reset?: boolean }', query: { wait: 'true' } });
+
+  r.get('/api/v1/now-playing', () => sync.nowPlaying(), { summary: 'Games currently being played (from presence)' });
 
   r.post('/api/v1/sync', () => {
     const ids = db.prepare('SELECT id, platform FROM accounts WHERE enabled = 1').all().filter((a) => !providers[a.platform]?.push).map((a) => a.id);
@@ -549,7 +620,7 @@ export function registerRoutes(r, app) {
     const where = []; const args = [];
     if (c.query.account_id) { where.push('s.account_id = ?'); args.push(toInt(c.query.account_id)); }
     return db.prepare(`SELECT s.*, a.name account_name, a.platform FROM syncs s LEFT JOIN accounts a ON a.id = s.account_id ${where.length ? `WHERE ${where.join(' AND ')}` : ''} ORDER BY s.id DESC LIMIT ?`)
-      .all(...args, Math.min(500, toInt(c.query.limit, 50)));
+      .all(...args, Math.min(500, toInt(c.query.limit, 50))).map((r) => ({ ...r, details: r.details ? JSON.parse(r.details) : null }));
   }, { summary: 'Sync history', query: { account_id: '', limit: '' } });
 
   // ---------- settings & tokens ----------
@@ -560,8 +631,16 @@ export function registerRoutes(r, app) {
   r.put('/api/v1/settings', (c) => {
     const v = validateSettings(c.body || {});
     if (v.errors.length) throw new HttpError(400, v.errors.join('; '));
+    const prev = settings.all();
     settings.set(v.values);
     for (const a of db.prepare('SELECT id FROM accounts').all()) sync.refreshNext(a.id);
+    // history caps changed -> re-date history with the new limits
+    if (['history_max_day_minutes', 'history_max_game_day_minutes', 'use_recent_on_import'].some((k) => k in v.values && v.values[k] !== prev[k])) {
+      db.prepare('UPDATE entries SET inferred_v = 0 WHERE baseline_min > 0').run();
+      flushRollups(db);
+      reinferPending(db, { settings: settings.all() });
+      flushRollups(db);
+    }
     const s = settings.public();
     return { ...s, schedule_label: describeSchedule(s) };
   }, { summary: 'Update settings (partial)', body: 'Any subset of the settings object' });
@@ -602,6 +681,102 @@ export function registerRoutes(r, app) {
   }, { summary: 'Download a consistent SQLite backup' });
 
   // ---------- integrations ----------
+  // ---------- history inference ----------
+  r.patch('/api/v1/entries/:id/history', (c) => {
+    const id = toInt(c.params.id);
+    const e = db.prepare('SELECT * FROM entries WHERE id = ?').get(id);
+    if (!e) throw new HttpError(404, 'Entry not found');
+    if (!e.baseline_min) throw new HttpError(400, 'This entry has no pre-tracking history');
+    const b = c.body;
+    const h = JSON.parse(e.hist || '{}');
+    if ('mode' in b) { if (!['auto', 'undated'].includes(b.mode)) throw new HttpError(400, 'mode must be auto or undated'); h.mode = b.mode; }
+    if ('first_played_at' in b || 'last_played_at' in b) {
+      const start = toTime(b.first_played_at);
+      const end = toTime(b.last_played_at);
+      if (start && end && end < start) throw new HttpError(400, 'last_played_at must be after first_played_at');
+      h.manual = start || end ? { start: start || undefined, end: end || undefined } : null;
+    }
+    if (b.reset) { delete h.manual; h.mode = 'auto'; }
+    tx(db, () => {
+      db.prepare('UPDATE entries SET hist = ? WHERE id = ?').run(JSON.stringify(h), id);
+      flushRollups(db);
+      reinferMany(db, [id], { settings: settings.all() });
+      flushRollups(db);
+    });
+    return getGame(e.game_id);
+  }, { summary: 'Adjust how pre-tracking history is dated: manual first/last played window, or mode=undated to keep it out of charts', body: '{ first_played_at?, last_played_at?, mode?: "auto"|"undated", reset?: boolean }' });
+
+  r.post('/api/v1/history/reinfer', () => {
+    db.prepare('UPDATE entries SET inferred_v = 0 WHERE baseline_min > 0').run();
+    flushRollups(db);
+    const n = reinferPending(db, { log: app.log?.scoped?.('inference'), settings: settings.all() });
+    flushRollups(db);
+    return { ok: true, entries: n };
+  }, { summary: 'Re-date all pre-tracking history with the current algorithm' });
+
+  r.get('/api/v1/history/summary', () => memo(db, 'hist-summary', () => {
+    const rows = db.prepare(`SELECT s.kind, s.confidence, COUNT(DISTINCT s.entry_id) entries, SUM(s.minutes) minutes FROM sessions s JOIN entries e ON e.id = s.entry_id
+      WHERE s.source = 'inferred' AND e.excluded = 0 GROUP BY s.kind, s.confidence`).all();
+    return { rows, pending_enrichment: db.prepare('SELECT COUNT(*) n FROM entries WHERE baseline_min > 0 AND enriched_at IS NULL AND account_id IS NOT NULL').get().n, version: INFER_VERSION };
+  }), { summary: 'How much pre-tracking history is dated, by confidence' });
+
+  // ---------- logs & diagnostics ----------
+  r.get('/api/v1/logs', (c) => {
+    const q = c.query;
+    const where = []; const args = [];
+    if (q.level) { const lv = q.level.split(','); where.push(`level IN (${lv.map(() => '?').join(',')})`); args.push(...lv); }
+    if (q.source) { where.push('source LIKE ?'); args.push(`${q.source}%`); }
+    if (q.q) { where.push('(message LIKE ? OR context LIKE ?)'); args.push(`%${q.q}%`, `%${q.q}%`); }
+    if (q.since) { where.push('time >= ?'); args.push(toTime(q.since)); }
+    if (q.before) { where.push('id < ?'); args.push(toInt(q.before)); }
+    const w = where.length ? `WHERE ${where.join(' AND ')}` : '';
+    const items = db.prepare(`SELECT * FROM logs ${w} ORDER BY id DESC LIMIT ?`).all(...args, Math.min(1000, toInt(q.limit, 200)))
+      .map((l) => ({ ...l, context: l.context ? JSON.parse(l.context) : null }));
+    const counts = db.prepare('SELECT level, COUNT(*) n FROM logs WHERE time > ? GROUP BY level').all(Date.now() - 86_400_000);
+    return { items, counts_24h: Object.fromEntries(counts.map((x) => [x.level, x.n])), next: items.length ? items.at(-1).id : null };
+  }, { summary: 'Persisted warnings and errors (30 days)', query: { level: 'warn,error', source: 'sync, presence, api, …', q: 'search', since: '', before: 'cursor (id)', limit: '' } });
+
+  r.delete('/api/v1/logs', () => { db.prepare('DELETE FROM logs').run(); return { ok: true }; }, { summary: 'Clear the error log' });
+
+  r.get('/api/v1/system', () => {
+    const size = (f) => { try { return fsp.statSync(f).size; } catch { return 0; } };
+    const dbFile = app.dbFile;
+    const count = (sql, ...a) => db.prepare(sql).get(...a).n;
+    const hour = Math.floor(Date.now() / 3_600_000);
+    const accounts = db.prepare('SELECT * FROM accounts ORDER BY id').all().map(parseAccount).map((a) => {
+      const day = db.prepare('SELECT COALESCE(SUM(calls),0) calls, COALESCE(SUM(errors),0) errors, COALESCE(SUM(rate_limited),0) rate_limited FROM api_usage WHERE account_id = ? AND hour > ?').get(a.id, hour - 24);
+      const last = db.prepare('SELECT status, error, duration_ms, started_at, trigger FROM syncs WHERE account_id = ? ORDER BY id DESC LIMIT 1').get(a.id);
+      const fails = count("SELECT COUNT(*) n FROM syncs WHERE account_id = ? AND status = 'error' AND started_at > ?", a.id, Date.now() - 7 * 86_400_000);
+      return {
+        ...publicAccount(a, sync), api_usage_24h: day, last_sync: last || null, failed_syncs_7d: fails,
+        can_enrich: !!providers[a.platform]?.enrich,
+        enrichment_pending: providers[a.platform]?.enrich ? count('SELECT COUNT(*) n FROM entries WHERE account_id = ? AND baseline_min > 0 AND enriched_at IS NULL', a.id) : 0,
+        capabilities: providers[a.platform]?.capabilities || null,
+      };
+    });
+    const mem = process.memoryUsage();
+    return {
+      version, node: process.version, platform: `${process.platform}/${process.arch}`, pid: process.pid, uid: process.getuid?.() ?? null,
+      uptime_s: Math.round(process.uptime()), started_at: app.http?.started_at,
+      tz: Intl.DateTimeFormat().resolvedOptions().timeZone, tz_env: process.env.TZ || null,
+      data_dir: dbFile === ':memory:' ? null : dbFile, db_bytes: size(dbFile) + size(`${dbFile}-wal`), memory_mb: Math.round(mem.rss / 1048576), heap_mb: Math.round(mem.heapUsed / 1048576),
+      http: app.http || null,
+      auth_enabled: auth.enabled(),
+      counts: {
+        games: count('SELECT COUNT(*) n FROM games'), entries: count('SELECT COUNT(*) n FROM entries'),
+        sessions_tracked: count("SELECT COUNT(*) n FROM sessions WHERE kind = 'play'"),
+        sessions_estimated: count("SELECT COUNT(*) n FROM sessions WHERE kind = 'estimate'"),
+        rollup_rows: count('SELECT COUNT(*) n FROM play_days'), rollup_queue: count('SELECT COUNT(*) n FROM rollup_queue'),
+        snapshots: count('SELECT COUNT(*) n FROM snapshots'), presence_spans: count('SELECT COUNT(*) n FROM presence'),
+        logs: count('SELECT COUNT(*) n FROM logs'),
+      },
+      errors_24h: count("SELECT COUNT(*) n FROM logs WHERE level = 'error' AND time > ?", Date.now() - 86_400_000),
+      warnings_24h: count("SELECT COUNT(*) n FROM logs WHERE level = 'warn' AND time > ?", Date.now() - 86_400_000),
+      accounts,
+      console: app.log?.recent?.().slice(-80) || [],
+    };
+  }, { summary: 'Diagnostics: versions, storage, per-account health, API usage & rate limits, recent console output' });
+
   r.get('/api/v1/widget', () => {
     const l = lifetime(db);
     const w = computeStats(db, { range: 'week', weekStartsOn: settings.get('week_starts_on') });

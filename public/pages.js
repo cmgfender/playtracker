@@ -23,15 +23,30 @@ function seriesTip(key, group, minutes) {
   return `${label}: ${fmtMin(minutes)}`;
 }
 
+// Tracked play stacks by platform; inferred pre-tracking history sits on top, hatched.
 function stackedSeries(stats) {
   const plats = Object.keys(stats.series_by_platform || {});
+  const est = stats.series_estimated || [];
   return stats.series.map((s, i) => ({
     label: seriesLabel(s.key, stats.range.group),
     value: s.minutes,
-    tip: seriesTip(s.key, stats.range.group, s.minutes),
-    stack: plats.map((p) => ({ key: p, value: stats.series_by_platform[p][i] || 0, color: plat(p).color })),
+    tip: seriesTip(s.key, stats.range.group, s.minutes) + (est[i] ? ` (${fmtMin(est[i])} estimated from history)` : ''),
+    stack: [...plats.map((p) => ({ key: p, value: stats.series_by_platform[p][i] || 0, color: plat(p).color })), ...(est[i] ? [{ key: 'estimated', value: est[i], color: 'url(#pt-hatch)' }] : [])],
   }));
 }
+
+function estimatedLegend(stats) {
+  return stats.estimated_minutes ? `<span title="Playtime from before tracking began, dated from first/last played, achievements and release dates"><i class="dot hatch-dot"></i>Estimated history · ${fmtMin(stats.estimated_minutes, { short: true })}</span>` : '';
+}
+
+const CONF = {
+  exact: ['live', 'good', 'Exact times from live presence or a manual log'],
+  pinned: ['', '', 'End pinned to the platform\'s last-played time'],
+  window: ['≈', '', 'Exact time unknown - spread across the sync window'],
+  high: ['high', 'good', 'Dated from first and last played'],
+  medium: ['medium', 'warn', 'Dated from achievements / recent play'],
+  low: ['low', 'bad', 'Rough estimate - only one date known'],
+};
 
 function kpi(label, value, sub = '', extra = '', cls = '') {
   return `<div class="kpi ${cls}"><div class="label">${label}</div><div class="value">${value}</div>${sub ? `<div class="sub">${sub}</div>` : ''}${extra}</div>`;
@@ -51,7 +66,10 @@ function sessionWhen(s) {
 
 function sourceBadge(s) {
   if (s.kind === 'baseline') return '<span class="badge">history</span>';
+  if (s.kind === 'estimate') return `<span class="badge" title="${esc(CONF[s.confidence]?.[2] || '')}">estimated · ${esc(s.confidence || '')}</span>`;
   if (s.source === 'manual') return '<span class="badge accent">manual</span>';
+  if (s.confidence === 'exact') return `<span class="badge good" title="${CONF.exact[2]}">● live</span>${s.device ? `<span class="badge">${esc(s.device)}</span>` : ''}`;
+  if (s.device) return `<span class="badge">${esc(s.device)}</span>${s.precise ? '' : '<span class="badge" title="Exact time unknown — spread across the sync window">≈</span>'}`;
   if (s.source === 'import') return '<span class="badge">imported</span>';
   if (s.source === 'api') return '<span class="badge">api</span>';
   return s.precise ? '' : '<span class="badge" title="Exact time unknown — spread across the sync window">≈</span>';
@@ -240,15 +258,17 @@ async function dashboard(view, stale) {
     <div class="kpis fade-in">
       ${kpi('This week', hoursVal(wk.total_minutes), `${wk.sessions} sessions · ${wk.games_played} games`, sparkline(wk.series.map((s) => s.minutes)), 'feature')}
       ${kpi('Today', fmtMin(d.today.total_minutes), d.today.top_games[0] ? esc(d.today.top_games[0].title) : 'Nothing yet')}
-      ${kpi('Last 30 days', hoursVal(mo.total_minutes), `${fmtMin(mo.avg_per_day_minutes)}/day avg`)}
+      ${kpi('Last 30 days', hoursVal(mo.tracked_minutes), `${fmtMin(mo.avg_per_day_minutes)}/day avg${mo.estimated_minutes ? ` · +${fmtHours(mo.estimated_minutes)}h est.` : ''}`)}
       ${kpi('Streak', `${streak}<small> day${streak === 1 ? '' : 's'}</small>`, `Best: ${mo.streaks.longest} days`)}
       ${kpi('Lifetime', `${fmtHours(d.lifetime.total_minutes)}<small>h</small>`, `${d.lifetime.games_played} of ${d.lifetime.games} games played`)}
     </div>
+    ${d.playing_now?.length ? `<div class="card live-card" style="margin-top:16px"><div class="row wrap">${d.playing_now.map((p) => `<a class="row" href="${p.game_id ? `/game/${p.game_id}` : '/accounts'}" data-link style="min-width:0;flex:1">${cover({ title: p.title, cover_url: p.cover_url }, '', 'width:44px;')}<div style="min-width:0"><div class="small" style="color:var(--good);font-weight:700"><span class="live-dot"></span>Playing now · ${esc(plat(p.platform).label)}</div><div class="ttl ellipsis" style="font-weight:700">${esc(p.title)}</div><div class="tiny muted">for ${fmtMin(Math.max(1, p.minutes))}</div></div></a>`).join('')}</div></div>` : ''}
+    ${d.errors_24h ? `<a class="card row" href="/system" data-link style="margin-top:16px;border-color:color-mix(in srgb,var(--bad) 45%,var(--line));padding:12px 16px">${icon('info')}<span class="grow"><b>${d.errors_24h} error${d.errors_24h > 1 ? 's' : ''}</b> in the last 24 hours</span><span class="small muted">View log →</span></a>` : ''}
     ${d.now_playing.length ? `<div class="card" style="margin-top:16px"><div class="card-h"><h2>Jump back in</h2><a href="/library?sort=trending" data-link>See all</a></div>
       <div class="carousel">${d.now_playing.map((g) => `<a class="tile" href="/game/${g.id}" data-link>${cover(g)}<div class="t">${esc(g.title)}</div><div class="m">${g.platforms.map(platDot).join('')} ${fmtMin(g.recent_minutes)} · 2 wks</div></a>`).join('')}</div></div>` : ''}
     <div class="grid grid-main" style="margin-top:16px">
       <div class="card"><div class="card-h"><h2>Last 30 days</h2><a href="/stats" data-link>Stats →</a></div>
-        ${barChart(stackedSeries(mo), { height: 210 })}${platformLegend(mo.platforms)}
+        ${barChart(stackedSeries(mo), { height: 210 })}${platformLegend(mo.platforms, estimatedLegend(mo))}
       </div>
       <div class="card"><div class="card-h"><h2>Top this month</h2></div>
         ${mo.top_games.length ? topList(mo.top_games, { coverFn: (g) => cover(g), limit: 6 }) : '<p class="muted">No play in the last 30 days.</p>'}
@@ -421,7 +441,7 @@ async function game(view, id, stale) {
   const g = await api(`/games/${id}`);
   if (stale()) return;
   const s = g.summary;
-  const trackedPct = s.total_minutes ? (s.tracked_minutes / s.total_minutes) * 100 : 0;
+  const pct = (m) => (s.total_minutes ? Math.max(0, Math.min(100, (m / s.total_minutes) * 100)) : 0);
   const rating = g.rating || 0;
   const hasSeries = g.series.some((x) => x.minutes > 0);
   view.innerHTML = `
@@ -458,15 +478,15 @@ async function game(view, id, stale) {
             ${kpi('First tracked', s.first_tracked_at ? fmtDate(s.first_tracked_at) : '—', s.tracking_since ? `owned since ${fmtDate(s.tracking_since)}` : '')}
           </div>
           <div style="margin-top:14px">
-            <div class="split-bar"><i style="width:${trackedPct}%;background:var(--accent)"></i><i style="width:${100 - trackedPct}%;background:var(--line)"></i></div>
-            <div class="legend"><span><i class="dot" style="background:var(--accent)"></i>Tracked sessions ${fmtMin(s.tracked_minutes)}</span><span><i class="dot" style="background:var(--line)"></i>Before tracking ${fmtMin(s.baseline_minutes)}</span></div>
+            <div class="split-bar"><i style="width:${pct(s.tracked_minutes)}%;background:var(--accent)"></i><i class="hatch-bg" style="width:${pct(s.estimated_minutes || 0)}%"></i><i style="width:${pct(s.baseline_minutes)}%;background:var(--line)"></i></div>
+            <div class="legend"><span><i class="dot" style="background:var(--accent)"></i>Tracked ${fmtMin(s.tracked_minutes)}</span>${s.estimated_minutes ? `<span><i class="dot hatch-dot"></i>Estimated history ${fmtMin(s.estimated_minutes)}</span>` : ''}${s.baseline_minutes ? `<span><i class="dot" style="background:var(--line)"></i>Undated ${fmtMin(s.baseline_minutes)}</span>` : ''}</div>
           </div>
         </div>
-        ${hasSeries ? `<div class="card"><div class="card-h"><h2>Playtime by month</h2></div>${barChart(g.series.slice(-24).map((x) => ({ label: seriesLabel(x.key, 'month'), value: x.minutes, tip: seriesTip(x.key, 'month', x.minutes) })), { height: 180 })}</div>` : ''}
+        ${hasSeries ? `<div class="card"><div class="card-h"><h2>Playtime by month</h2></div>${barChart(g.series.slice(-24).map((x) => ({ label: seriesLabel(x.key, 'month'), value: x.minutes, tip: seriesTip(x.key, 'month', x.minutes) + (x.estimated ? ` (${fmtMin(x.estimated)} estimated)` : ''), stack: [{ value: x.minutes - (x.estimated || 0), color: 'var(--accent)' }, { value: x.estimated || 0, color: 'url(#pt-hatch)' }] })), { height: 180 })}</div>` : ''}
         <div class="card"><div class="card-h"><h2>Sessions</h2><button class="btn sm" id="g-log">${icon('plus')}Log session</button></div>
           <div class="list" id="g-sessions">${g.sessions.length ? groupByDay(g.sessions.filter((x) => x.kind === 'play')).map((grp, i) => (i === 25 ? '<button class="btn sm" id="g-more" style="margin:12px auto">Show all sessions</button><div id="g-rest" class="hide">' : '') + `<div class="day-h"><span>${dayLabel(grp.day)}</span><span>${fmtMin(grp.minutes)}</span></div>${grp.items.map((x) => sessionItem(x, { showGame: false })).join('')}`).join('') + (groupByDay(g.sessions.filter((x) => x.kind === 'play')).length > 25 ? '</div>' : '') : '<p class="muted">No sessions yet.</p>'}
           ${g.sessions_truncated ? `<a class="btn sm" href="/sessions?game_id=${g.id}" data-link style="margin:12px 0">All ${s.sessions.toLocaleString()} sessions →</a>` : ''}
-          ${g.sessions.filter((x) => x.kind === 'baseline').map((x) => `<div class="item"><span class="dot" style="background:var(--line);width:10px;height:10px"></span><div class="grow"><div class="sub"><b style="color:var(--text)">${esc(plat(x.platform).label)}</b> ${esc(x.note || 'History')} · ${fmtDate(x.window_end)}</div></div><div class="amt muted">${fmtMin(x.minutes)}</div><button class="btn ghost sm icon" data-edit-session="${x.id}">${icon('edit')}</button></div>`).join('')}
+          ${g.sessions.filter((x) => x.kind === 'baseline' && x.source !== 'inferred').map((x) => `<div class="item"><span class="dot" style="background:var(--line);width:10px;height:10px"></span><div class="grow"><div class="sub"><b style="color:var(--text)">${esc(plat(x.platform).label)}</b> ${esc(x.note || 'History')} · ${fmtDate(x.window_end)}</div></div><div class="amt muted">${fmtMin(x.minutes)}</div><button class="btn ghost sm icon" data-edit-session="${x.id}">${icon('edit')}</button></div>`).join('')}
           </div>
         </div>
       </div>
@@ -482,6 +502,9 @@ async function game(view, id, stale) {
             </div>`).join('')}</div>
           ${g.entries.length > 1 ? '<p class="small muted" style="margin:8px 0 0">Owned on several platforms — totals are summed. Exclude an entry if two platforms report the same playtime.</p>' : ''}
         </div>
+        ${g.entries.some((e) => e.history) ? `<div class="card"><div class="card-h"><h2>History before tracking</h2></div>
+          <p class="small muted" style="margin-top:-6px">Playtime that existed before PlayTracker started watching. Instead of landing on import day it is dated from everything the platform reports, and shown hatched in charts.</p>
+          ${g.entries.filter((e) => e.history).map((e) => historyBlock(e)).join('')}</div>` : ''}
         <div class="card"><div class="card-h"><h2>Notes</h2><span class="tiny muted" id="g-notes-st"></span></div>
           <textarea class="input" id="g-notes" placeholder="Thoughts, progress, where you left off…">${esc(g.notes || '')}</textarea></div>
         <div class="card"><div class="card-h"><h2>Details</h2></div>
@@ -526,6 +549,16 @@ async function game(view, id, stale) {
     try { await api(`/games/${id}${synced ? '?force=true' : ''}`, { method: 'DELETE' }); toast('Deleted'); navigate('/library', { replace: true }); } catch (e) { fail(e); }
   });
   $('#g-merge').addEventListener('click', () => mergeModal(g));
+  view.addEventListener('click', async (ev) => {
+    const ed = ev.target.closest('[data-hist-edit]');
+    if (ed) return historyModal(g.entries.find((x) => x.id === Number(ed.dataset.histEdit)), rerender);
+    const md = ev.target.closest('[data-hist-mode]');
+    const rs = ev.target.closest('[data-hist-reset]');
+    try {
+      if (md) { await api(`/entries/${md.dataset.entry}/history`, { method: 'PATCH', body: { mode: md.dataset.histMode } }); toast(md.dataset.histMode === 'undated' ? 'Removed from charts' : 'Charted'); rerender(); }
+      if (rs) { await api(`/entries/${rs.dataset.histReset}/history`, { method: 'PATCH', body: { reset: true } }); toast('Back to automatic dating'); rerender(); }
+    } catch (err) { fail(err); }
+  });
   view.addEventListener('click', (e) => {
     const b = e.target.closest('[data-entry-menu]');
     if (!b) return;
@@ -541,6 +574,53 @@ async function game(view, id, stale) {
         el.querySelector('#en-split')?.addEventListener('click', async () => { const ng = await api(`/entries/${en.id}/split`, { method: 'POST' }); close(); toast('Split into a separate game'); navigate(`/game/${ng.id}`); });
       },
     });
+  });
+}
+
+function historyBlock(e) {
+  const h = e.history;
+  const ev = h.evidence || {};
+  const conf = h.confidence;
+  const chips = [
+    ev.first_played_at && ['First played', fmtDate(ev.first_played_at, { year: 'numeric', month: 'short', day: 'numeric' })],
+    ev.last_played_at && ['Last played', fmtDate(ev.last_played_at, { year: 'numeric', month: 'short', day: 'numeric' })],
+    ev.play_count && ['Launches', ev.play_count],
+    ev.recent_min && ['Last 2 weeks', fmtMin(ev.recent_min)],
+    ev.anchors && ['Achievement times', ev.anchors],
+    ev.date_added && ['Added', fmtDate(ev.date_added, { year: 'numeric', month: 'short', day: 'numeric' })],
+    ev.release_at && ['Released', fmtDate(ev.release_at, { year: 'numeric', month: 'short', day: 'numeric' })],
+  ].filter(Boolean);
+  return `<div class="stack" style="padding:12px 0;border-top:1px solid var(--line)" data-hist="${e.id}">
+    <div class="row between"><div class="row">${platDot(e.platform)}<b>${esc(e.account_name || plat(e.platform).label)}</b></div><b>${fmtMin(h.minutes, { short: h.minutes >= 600 })}</b></div>
+    ${h.mode === 'undated' ? '<div class="small muted">Not charted — counts toward lifetime only.</div>'
+      : h.window ? `<div class="small">Estimated <b>${fmtDate(h.window[0], { year: 'numeric', month: 'short', day: 'numeric' })} – ${fmtDate(h.window[1], { year: 'numeric', month: 'short', day: 'numeric' })}</b> · <span class="conf-${conf}">${conf} confidence</span>${h.undated ? ` · ${fmtMin(h.undated)} undated` : ''}</div>`
+      : `<div class="small muted">No dates known — counts toward lifetime only.${e.platform === 'steam' && !h.enriched ? ' Looking up achievement times…' : ''}</div>`}
+    ${(h.reasons || []).length ? `<div class="tiny muted">${h.reasons.map(esc).join(' · ')}</div>` : ''}
+    ${chips.length ? `<div class="evidence">${chips.map(([k, v]) => `<span class="badge">${k}: ${esc(v)}</span>`).join('')}</div>` : ''}
+    <div class="row wrap"><button class="btn sm" data-hist-edit="${e.id}">${icon('edit')}Set dates</button>
+      ${h.mode === 'undated' ? `<button class="btn sm ghost" data-hist-mode="auto" data-entry="${e.id}">Chart it</button>` : `<button class="btn sm ghost" data-hist-mode="undated" data-entry="${e.id}">Don’t chart</button>`}
+      ${h.manual || h.mode === 'undated' ? `<button class="btn sm ghost" data-hist-reset="${e.id}">Reset to automatic</button>` : ''}</div>
+  </div>`;
+}
+
+function historyModal(e, onDone) {
+  const h = e.history;
+  const d = (t) => (t ? new Date(t - new Date(t).getTimezoneOffset() * 60000).toISOString().slice(0, 10) : '');
+  modal({
+    title: 'When did you play this?',
+    body: `<p class="small muted" style="margin-top:0">${fmtMin(h.minutes)} on ${esc(plat(e.platform).label)} happened before tracking began. Set the period you played it and the hours are re-spread across it.</p>
+      <div class="grid grid-2"><div class="field"><label>Started playing</label><input class="input" type="date" name="s" value="${d(h.manual?.start || h.window?.[0])}"></div>
+      <div class="field"><label>Last played</label><input class="input" type="date" name="e" value="${d(h.manual?.end || h.window?.[1])}"></div></div>`,
+    foot: '<button class="btn" data-close>Cancel</button><button class="btn primary" id="h-save">Save</button>',
+    onMount(el, close) {
+      el.querySelector('#h-save').addEventListener('click', async () => {
+        const s = el.querySelector('[name=s]').value; const en = el.querySelector('[name=e]').value;
+        try {
+          await api(`/entries/${e.id}/history`, { method: 'PATCH', body: { first_played_at: s ? `${s}T12:00:00` : null, last_played_at: en ? `${en}T20:00:00` : null, mode: 'auto' } });
+          close(); toast('History re-dated'); onDone();
+        } catch (err) { fail(err); }
+      });
+    },
   });
 }
 
@@ -642,21 +722,23 @@ async function stats(view, stale) {
   const q = new URLSearchParams(location.search);
   let range = q.get('range') || '30d';
   let platform = q.get('platform') || '';
+  let estimates = q.get('estimates') || state.settings?.stats_estimates || 'include';
   const [years, lt] = await Promise.all([api('/stats/years'), api('/stats/lifetime')]);
   if (stale()) return;
   let heatYear = years[0];
   view.innerHTML = `
-    <div class="page-h"><div><h1>Stats</h1><p>Lifetime ${fmtHours(lt.total_minutes)}h · ${fmtHours(lt.tracked_minutes)}h tracked as sessions · ${fmtHours(lt.baseline_minutes)}h imported history</p></div>
+    <div class="page-h"><div><h1>Stats</h1><p title="Tracked = observed between syncs. Estimated = playtime from before tracking, dated from first/last played, achievements and release dates. Undated = no dates available (lifetime only).">Lifetime ${fmtHours(lt.total_minutes)}h · ${fmtHours(lt.tracked_minutes)}h tracked · ${fmtHours(lt.estimated_minutes || 0)}h estimated history · ${fmtHours(lt.baseline_minutes)}h undated</p></div>
       <a class="btn" href="/wrapped/${years[0]}" data-link>${icon('gift')}${years[0]} in review</a></div>
     <div class="toolbar"><div class="row wrap">
       <div class="seg" id="st-range">${[['7d', '7 days'], ['30d', '30 days'], ['90d', '90 days'], ['365d', '12 months'], ...years.map((y) => [`year:${y}`, String(y)]), ['all', 'All time']].map(([v, l]) => `<button data-r="${v}" class="${range === v ? 'on' : ''}">${l}</button>`).join('')}</div>
+      <label class="row small" style="gap:8px;cursor:pointer" title="Include playtime from before tracking began, dated by inference (hatched in charts)"><label class="switch"><input type="checkbox" id="st-est" ${estimates !== 'exclude' ? 'checked' : ''}><span></span></label>Estimated history</label>
       <select class="input" id="st-plat" style="width:auto"><option value="">All platforms</option>${lt.platforms.map((p) => `<option value="${esc(p.platform)}" ${platform === p.platform ? 'selected' : ''}>${esc(plat(p.platform).label)}</option>`).join('')}</select>
     </div></div>
     <div id="st-body"></div>
     <div class="card" style="margin-top:16px"><div class="card-h"><h2>Activity</h2><div class="seg" id="hm-year">${years.map((y) => `<button data-y="${y}" class="${y === heatYear ? 'on' : ''}">${y}</button>`).join('')}</div></div><div id="hm"></div></div>`;
   const body = $('#st-body');
   const load = async () => {
-    const p = new URLSearchParams({ range });
+    const p = new URLSearchParams({ range, estimates });
     if (platform) p.set('platform', platform);
     history.replaceState({}, '', `/stats?${p}`);
     const s = await api(`/stats?${p}`);
@@ -665,13 +747,13 @@ async function stats(view, stale) {
     const hasHours = s.hours.some((h) => h > 0);
     body.innerHTML = `
       <div class="kpis fade-in">
-        ${kpi('Played', hoursVal(s.total_minutes), s.range.label, sparkline(s.series.map((x) => x.minutes)), 'feature')}
+        ${kpi('Played', hoursVal(s.total_minutes), s.estimated_minutes ? `${fmtHours(s.tracked_minutes)}h tracked + ${fmtHours(s.estimated_minutes)}h estimated` : s.range.label, sparkline(s.series.map((x) => x.minutes)), 'feature')}
         ${kpi('Sessions', s.sessions, `avg ${fmtMin(s.avg_session_minutes)}`)}
         ${kpi('Games', s.games_played, `${s.days_played} days played`)}
         ${kpi('Daily avg', fmtMin(s.avg_per_day_minutes), s.busiest_day ? `best ${fmtDate(new Date(`${s.busiest_day.day}T12:00`).getTime())} · ${fmtMin(s.busiest_day.minutes)}` : '')}
         ${kpi('Streak', `${s.streaks.current}<small>d</small>`, `longest ${s.streaks.longest} days`)}
       </div>
-      <div class="card" style="margin-top:16px"><div class="card-h"><h2>Playtime per ${s.range.group}</h2></div>${barChart(stackedSeries(s), { height: 230 })}${platformLegend(s.platforms)}</div>
+      <div class="card" style="margin-top:16px"><div class="card-h"><h2>Playtime per ${s.range.group}</h2></div>${barChart(stackedSeries(s), { height: 230 })}${platformLegend(s.platforms, estimatedLegend(s))}</div>
       <div class="grid grid-3" style="margin-top:16px">
         <div class="card"><div class="card-h"><h2>Top games</h2></div>${s.top_games.length ? topList(s.top_games, { coverFn: (g) => cover(g), limit: 10 }) : '<p class="muted">No play in this range.</p>'}</div>
         <div class="card"><div class="card-h"><h2>Platforms</h2></div>
@@ -687,12 +769,13 @@ async function stats(view, stale) {
     bindTips(body);
   };
   const loadHeat = async () => {
-    const h = await api(`/stats/heatmap?year=${heatYear}`);
-    $('#hm').innerHTML = heatmap(heatYear, h.days, { weekStartsOn: state.settings?.week_starts_on ?? 1 });
+    const h = await api(`/stats/heatmap?year=${heatYear}&estimates=${estimates}`);
+    $('#hm').innerHTML = heatmap(heatYear, h.days, { weekStartsOn: state.settings?.week_starts_on ?? 1, estimated: h.estimated_days || {} });
     bindTips($('#hm'));
   };
   $('#st-range').addEventListener('click', (e) => { const b = e.target.closest('[data-r]'); if (!b) return; range = b.dataset.r; $$('#st-range button').forEach((x) => x.classList.toggle('on', x === b)); load(); });
   $('#st-plat').addEventListener('change', (e) => { platform = e.target.value; load(); });
+  $('#st-est').addEventListener('change', (e) => { estimates = e.target.checked ? 'include' : 'exclude'; load(); loadHeat(); });
   $('#hm-year').addEventListener('click', (e) => { const b = e.target.closest('[data-y]'); if (!b) return; heatYear = Number(b.dataset.y); $$('#hm-year button').forEach((x) => x.classList.toggle('on', x === b)); loadHeat(); });
   await Promise.all([load(), loadHeat()]);
 }
@@ -704,9 +787,9 @@ async function wrapped(view, year, stale) {
   const maxM = Math.max(1, ...w.months.map((m) => m.minutes));
   view.innerHTML = `
     <div class="page-h"><div><h1>${w.year} in review</h1><p>Your year in games, from tracked sessions.</p></div><a class="btn ghost" href="/stats" data-link>${icon('back')}Stats</a></div>
-    ${!w.total_minutes ? emptyState('gift', 'Nothing tracked yet', `No sessions were tracked in ${w.year}. Imported history doesn’t count toward a year in review.`) : `
+    ${!w.total_minutes ? emptyState('gift', 'Nothing tracked yet', `No play is recorded for ${w.year} - neither tracked sessions nor dated history.`) : `
     <div class="wrapped fade-in">
-      <div class="wcard g1"><div class="muted">You played</div><div class="big">${fmtHours(w.total_minutes)} hours</div><div class="muted">across ${w.sessions} sessions on ${w.days_played} days</div></div>
+      <div class="wcard g1"><div class="muted">You played</div><div class="big">${fmtHours(w.total_minutes)} hours</div><div class="muted">${w.sessions ? `across ${w.sessions} tracked sessions on ${w.days_played} days` : 'before tracking began'}${w.estimated_minutes ? ` · ${fmtHours(w.estimated_minutes)}h estimated from your history` : ''}</div></div>
       ${top ? `<a class="wcard g2" href="/game/${top.game_id}" data-link style="display:flex;gap:16px;align-items:center">${cover(top, '', 'width:90px;')}<div><div class="muted">Game of the year</div><div style="font-size:24px;font-weight:800;line-height:1.1;margin:6px 0">${esc(top.title)}</div><div class="muted">${fmtMin(top.minutes)} · ${top.sessions} sessions</div></div></a>` : ''}
       <div class="wcard g3"><div class="muted">Longest streak</div><div class="big">${w.longest_streak} days</div><div class="muted">${w.busiest_day ? `Biggest day: ${fmtDate(new Date(`${w.busiest_day.day}T12:00`).getTime(), { month: 'long', day: 'numeric' })} (${fmtMin(w.busiest_day.minutes)})` : ''}</div></div>
       <div class="wcard"><div class="muted">Games played</div><div class="big">${w.games_played}</div><div class="muted">${w.new_games} started fresh this year · ${w.completed} completed</div></div>
@@ -810,6 +893,16 @@ function readSchedule(root, prefix = '') {
   return { schedule_mode: v('schedule_mode'), schedule_every: Number(v('schedule_every')), schedule_weekday: Number(v('schedule_weekday')), schedule_monthday: Number(v('schedule_monthday')), schedule_time: v('schedule_time') };
 }
 
+function capabilityTable(info) {
+  const c = info.capabilities || {};
+  const rows = [
+    ['Lifetime playtime', c.lifetime], ['Recent playtime', c.recent], ['Last played', c.last_played], ['First played', c.first_played],
+    ['Launch count', c.play_count], ['Devices', c.per_device], ['Live presence', c.presence], ['History dating', c.history_anchors], ['Rate limits', c.rate_limit],
+  ];
+  return `<table class="tbl cap-table" style="margin-top:8px">${rows.map(([k, v]) => `<tr><td>${k}</td><td>${v ? esc(v) : '<span class="dim">not available</span>'}</td></tr>`).join('')}</table>
+    ${(c.limitations || []).length ? `<div class="small" style="margin-top:8px"><b>Limitations</b><ul style="margin:6px 0 0;padding-left:18px" class="muted">${c.limitations.map((l) => `<li>${esc(l)}</li>`).join('')}</ul></div>` : ''}`;
+}
+
 async function accountModal(platforms, existing = null) {
   const pick = (p) => {
     const info = platforms.find((x) => x.id === p);
@@ -820,12 +913,14 @@ async function accountModal(platforms, existing = null) {
         <p class="small muted" style="margin:0">${esc(info.notes)}</p>
         <div class="field"><label>Display name</label><input class="input" name="name" value="${esc(a.name)}"></div>
         ${info.fields.map((f) => `<div class="field"><label>${esc(f.label)}${f.required ? '' : ' <span class="dim">(optional)</span>'}</label>
-          <input class="input" name="cfg_${f.key}" type="${f.type === 'password' ? 'password' : f.type === 'number' ? 'number' : 'text'}" value="${esc(a.config[f.key] ?? '')}" placeholder="${esc(f.placeholder || '')}" autocomplete="off" spellcheck="false">
+          ${f.type === 'select' ? `<select class="input" name="cfg_${f.key}">${f.options.map((o) => `<option value="${esc(o)}" ${(a.config[f.key] ?? f.options[0]) === o ? 'selected' : ''}>${esc(o)}</option>`).join('')}</select>`
+            : `<input class="input" name="cfg_${f.key}" type="${f.type === 'password' ? 'password' : f.type === 'number' ? 'number' : 'text'}" value="${esc(a.config[f.key] ?? '')}" placeholder="${esc(f.placeholder || '')}" autocomplete="off" spellcheck="false">`}
           ${f.help ? `<div class="help">${esc(f.help).replace(/(https?:\/\/[^\s)]+)/g, '<a href="$1" target="_blank" rel="noopener">$1</a>')}</div>` : ''}</div>`).join('')}
         ${info.push ? `<div class="card small" style="padding:12px">Push totals with <code>POST /api/v1/accounts/${existing ? existing.id : ':id'}/report</code> — see the <a href="/api" data-link style="color:var(--accent)">API page</a>.</div>` : `
         <div class="setting" style="padding:0;border:0"><div><div class="t">Custom schedule</div><div class="d">Override the global sync schedule for this account</div></div><label class="switch"><input type="checkbox" id="acc-own" ${a.schedule ? 'checked' : ''}><span></span></label></div>
         <div id="acc-sched" class="stack ${a.schedule ? '' : 'hide'}">${scheduleFields(a.schedule || state.settings || {}, 'a_')}</div>`}
         <div id="acc-test-r" class="small"></div>
+        <details><summary class="small muted" style="cursor:pointer">What ${esc(info.label)} provides &amp; its limits</summary>${capabilityTable(info)}</details>
       </form>`,
       foot: `${existing ? `<button class="btn danger" id="acc-del">${icon('trash')}</button>` : ''}<span class="grow"></span>${info.push ? '' : '<button class="btn" id="acc-test">Test</button>'}<button class="btn primary" id="acc-save">${existing ? 'Save' : 'Connect & import'}</button>`,
       onMount(el, close) {
@@ -845,7 +940,9 @@ async function accountModal(platforms, existing = null) {
             const body = collect();
             if (existing && Object.values(body.config).some((v) => String(v).startsWith('••'))) { out.innerHTML = '<span class="muted">Re-enter secrets to test, or just Save and Sync.</span>'; return; }
             const r = await api('/accounts/test', { method: 'POST', body });
-            out.innerHTML = `<div class="card" style="padding:12px;border-color:var(--good)"><b style="color:var(--good)">✓ Connected</b> — ${r.games} games, ${r.played} played, ${fmtHours(r.minutes)}h total.${r.sample?.length ? `<div class="muted">e.g. ${r.sample.map(esc).join(', ')}</div>` : ''}${r.warning ? `<div class="muted">${esc(r.warning)}</div>` : ''}</div>`;
+            out.innerHTML = `<div class="card" style="padding:12px;border-color:var(--good)"><b style="color:var(--good)">✓ Connected</b> — ${r.games} games, ${r.played} played, ${fmtHours(r.minutes)}h total.
+              <div class="muted">${r.with_dates} of ${r.games} titles have play dates for dating your history${r.account_created_at ? ` · account created ${fmtDate(r.account_created_at, { year: 'numeric', month: 'short' })}` : ''}${r.presence ? ` · presence: ${esc(r.presence)}` : ''} · ${r.api_calls} API calls</div>
+              ${r.sample?.length ? `<div class="muted">e.g. ${r.sample.map(esc).join(', ')}</div>` : ''}${r.warning ? `<div style="color:var(--warn)">${esc(r.warning)}</div>` : ''}</div>`;
           } catch (e) { out.innerHTML = `<div class="card" style="padding:12px;border-color:var(--bad);color:var(--bad)">${esc(e.message)}</div>`; } finally { b.disabled = false; b.textContent = 'Test'; }
         });
         el.querySelector('#acc-save').addEventListener('click', async () => {
@@ -890,6 +987,8 @@ async function accounts(view, stale) {
         <div class="grow"><h2 class="ellipsis">${esc(a.name)}</h2><div class="small muted">${esc(plat(a.platform).label)} · ${a.push ? 'API push' : esc(a.schedule_label)}${a.schedule ? ' <span class="badge">custom</span>' : ''}</div></div>
         ${a.syncing ? '<span class="badge accent pulse">Syncing</span>' : a.last_status === 'error' ? '<span class="badge bad">Error</span>' : a.last_status === 'warning' ? '<span class="badge warn">Warning</span>' : !a.enabled ? '<span class="badge">Paused</span>' : a.last_sync_at ? '<span class="badge good">OK</span>' : '<span class="badge">New</span>'}</div>
       ${a.last_error ? `<div class="small" style="color:${a.last_status === 'error' ? 'var(--bad)' : 'var(--warn)'}">${esc(a.last_error)}</div>` : ''}
+      ${a.presence ? `<div class="small muted row" style="gap:6px">${a.presence.enabled ? (a.presence.error ? `<span style="color:var(--warn)">Presence: ${esc(a.presence.error)}</span>` : `<span class="live-dot" style="animation:none;background:${a.presence.last_poll ? 'var(--good)' : 'var(--dim)'}"></span>Live presence every ${Math.round(a.presence.interval_sec / 60) || 1} min${a.presence.last_poll ? ` · checked ${ago(a.presence.last_poll)}` : ''}`) : 'Live presence off'}</div>` : ''}
+      ${a.hourly_limit ? `<div class="small muted">API this hour: ${a.api_usage_hour.calls}/${a.hourly_limit}<div class="meter" style="margin-top:4px"><i class="${a.api_usage_hour.calls > a.hourly_limit * 0.8 ? 'hot' : ''}" style="width:${Math.min(100, (a.api_usage_hour.calls / a.hourly_limit) * 100)}%"></i></div></div>` : ''}
       <div class="meta"><div><b>${a.games ?? 0}</b><span>games</span></div><div><b>${fmtHours(a.minutes ?? 0)}h</b><span>lifetime</span></div><div><b>${a.last_sync_at ? ago(a.last_sync_at) : 'never'}</b><span>${a.push ? 'last report' : a.next_sync_at && a.enabled ? `next ${ago(a.next_sync_at)}` : 'last sync'}</span></div></div>
       <div class="row wrap">
         ${a.push ? '' : `<button class="btn sm" data-sync="${a.id}" ${a.syncing ? 'disabled' : ''}>${icon('sync')}Sync now</button>`}
@@ -898,12 +997,15 @@ async function accounts(view, stale) {
         <a class="btn sm ghost" href="/library?platform=${a.platform}" data-link>Games</a>
       </div></div>`).join('')}</div>`
     : `<div class="card">${emptyState('accounts', 'No accounts yet', 'Connect Steam, Xbox or PlayStation. The first sync imports your library and existing playtime as history; later syncs turn new playtime into sessions.', `<button class="btn primary" id="acc-add2">${icon('plus')}Connect an account</button>`)}</div>`}
+    <details class="card" style="margin-top:16px"><summary style="cursor:pointer"><h2 style="display:inline">What each platform reports</h2> <span class="small muted">— and how PlayTracker uses it</span></summary>
+      <div class="grid grid-2" style="margin-top:14px">${platforms.map((p) => `<div><div class="row" style="margin-bottom:6px"><span class="dot" style="background:${plat(p.id).color};width:10px;height:10px"></span><h3>${esc(p.label)}</h3></div><p class="small muted" style="margin:0 0 6px">${esc(p.notes)}</p>${capabilityTable(p)}</div>`).join('')}</div>
+    </details>
     <div class="card" style="margin-top:16px"><div class="card-h"><h2>Sync history</h2></div>
       <div class="scroll-x"><table class="tbl"><thead><tr><th>When</th><th>Account</th><th>Result</th><th>Games</th><th>Sessions</th><th>Played</th><th>History</th></tr></thead><tbody>
       ${syncs.map((s) => `<tr><td class="nowrap">${fmtDate(s.started_at)} ${fmtTime(s.started_at)}<div class="tiny dim">${esc(s.trigger)}${s.initial ? ' · initial import' : ''}</div></td>
         <td class="nowrap">${platDot(s.platform || 'custom')} ${esc(s.account_name || '—')}</td>
         <td>${s.status === 'ok' ? '<span class="badge good">ok</span>' : s.status === 'running' ? '<span class="badge accent pulse">running</span>' : `<span class="badge ${s.status === 'warning' ? 'warn' : 'bad'}">${esc(s.status)}</span>`}${s.error ? `<div class="tiny muted" style="max-width:260px">${esc(s.error)}</div>` : ''}</td>
-        <td>${s.games_seen}${s.games_new ? ` <span class="tiny muted">(+${s.games_new})</span>` : ''}</td><td>${s.sessions_created ? `<a href="/sessions" data-link style="color:var(--accent)">${s.sessions_created}</a>` : 0}</td><td>${fmtMin(s.minutes_added)}</td><td class="muted">${s.baseline_minutes ? fmtMin(s.baseline_minutes, { short: true }) : '—'}</td></tr>`).join('') || '<tr><td colspan="7" class="muted">No syncs yet.</td></tr>'}
+        <td>${s.games_seen}${s.games_new ? ` <span class="tiny muted">(+${s.games_new})</span>` : ''}${s.details?.api ? `<div class="tiny dim">${s.details.api.calls} calls${s.details.api.rate_limited ? ` · ${s.details.api.rate_limited} rate-limited` : ''} · ${((s.duration_ms || 0) / 1000).toFixed(1)}s</div>` : ''}</td><td>${s.sessions_created ? `<a href="/sessions" data-link style="color:var(--accent)">${s.sessions_created}</a>` : 0}</td><td>${fmtMin(s.minutes_added)}</td><td class="muted">${s.baseline_minutes ? fmtMin(s.baseline_minutes, { short: true }) : '—'}</td></tr>`).join('') || '<tr><td colspan="7" class="muted">No syncs yet.</td></tr>'}
       </tbody></table></div></div>`;
   $('#acc-add')?.addEventListener('click', () => accountModal(platforms));
   $('#acc-add2')?.addEventListener('click', () => accountModal(platforms));
@@ -1062,12 +1164,81 @@ async function apidocs(view, stale) {
 }
 
 // =====================================================================
+// System: health, error log, API usage, diagnostics
+// =====================================================================
+async function system(view, stale) {
+  const [sys, logs] = await Promise.all([api('/system'), api('/logs?level=error,warn&limit=200')]);
+  if (stale()) return;
+  const mb = (b) => `${(b / 1048576).toFixed(b > 1e8 ? 0 : 1)} MB`;
+  const up = (sec) => (sec > 86400 ? `${Math.floor(sec / 86400)}d ${Math.floor((sec % 86400) / 3600)}h` : sec > 3600 ? `${Math.floor(sec / 3600)}h ${Math.floor((sec % 3600) / 60)}m` : `${Math.floor(sec / 60)}m`);
+  const health = sys.errors_24h ? ['bad', `${sys.errors_24h} error${sys.errors_24h > 1 ? 's' : ''} in 24h`] : sys.warnings_24h ? ['warn', `${sys.warnings_24h} warning${sys.warnings_24h > 1 ? 's' : ''} in 24h`] : ['good', 'Healthy'];
+  view.innerHTML = `
+    <div class="page-h"><div><h1>System</h1><p>PlayTracker ${esc(sys.version)} · Node ${esc(sys.node)} · up ${up(sys.uptime_s)} · TZ ${esc(sys.tz)}${sys.tz_env ? '' : ' <span style="color:var(--warn)">(TZ not set)</span>'}</p></div>
+      <div class="row"><span class="badge ${health[0]}" style="height:30px;padding:0 12px">${health[1]}</span><button class="btn" id="sys-dl">${icon('download')}Diagnostics</button></div></div>
+    <div class="kpis">
+      ${kpi('Errors (24h)', sys.errors_24h, `${sys.warnings_24h} warnings`)}
+      ${kpi('Requests', sys.http?.requests?.toLocaleString() || 0, `${sys.http?.errors || 0} failed · ${sys.http?.slow || 0} slow`)}
+      ${kpi('Database', mb(sys.db_bytes), `${sys.counts.sessions_tracked.toLocaleString()} sessions`)}
+      ${kpi('Memory', `${sys.memory_mb}<small>MB</small>`, `heap ${sys.heap_mb} MB`)}
+      ${kpi('Library', sys.counts.games.toLocaleString(), `${sys.counts.entries.toLocaleString()} entries`)}
+    </div>
+    <div class="card" style="margin-top:16px"><div class="card-h"><h2>Accounts &amp; API usage</h2><a href="/accounts" data-link>Manage →</a></div>
+      <div class="scroll-x"><table class="tbl"><thead><tr><th>Account</th><th>Last sync</th><th>Next</th><th>API calls (1h / 24h)</th><th>Rate limited</th><th>Presence</th><th>History dating</th></tr></thead><tbody>
+      ${sys.accounts.map((a) => `<tr>
+        <td class="nowrap">${platDot(a.platform)} <b>${esc(a.name)}</b>${a.last_status === 'error' ? `<div class="tiny" style="color:var(--bad);max-width:260px;white-space:normal">${esc(a.last_error || '')}</div>` : ''}${a.failed_syncs_7d ? `<div class="tiny muted">${a.failed_syncs_7d} failed syncs in 7 days</div>` : ''}</td>
+        <td class="nowrap">${a.last_sync ? `<span class="badge ${a.last_sync.status === 'ok' ? 'good' : a.last_sync.status === 'warning' ? 'warn' : 'bad'}">${esc(a.last_sync.status)}</span> ${ago(a.last_sync.started_at)}<div class="tiny dim">${esc(a.last_sync.trigger)} · ${((a.last_sync.duration_ms || 0) / 1000).toFixed(1)}s</div>` : 'never'}</td>
+        <td class="nowrap">${a.push ? 'push' : a.next_sync_at ? ago(a.next_sync_at) : '—'}</td>
+        <td class="nowrap">${a.api_usage_hour.calls}${a.hourly_limit ? ` / ${a.hourly_limit}` : ''} · ${a.api_usage_24h.calls}${a.api_usage_24h.errors ? `<div class="tiny" style="color:var(--warn)">${a.api_usage_24h.errors} failed</div>` : ''}</td>
+        <td>${a.api_usage_24h.rate_limited ? `<span class="badge warn">${a.api_usage_24h.rate_limited}</span>` : '—'}</td>
+        <td class="nowrap small">${a.presence ? (a.presence.enabled ? (a.presence.error ? `<span style="color:var(--warn)">${esc(a.presence.error)}</span>` : a.presence.last_poll ? `ok · ${ago(a.presence.last_poll)}` : 'waiting') : 'off') : '—'}</td>
+        <td class="small">${!a.can_enrich ? '<span class="muted">from platform dates</span>' : a.enrichment_pending ? `${a.enrichment_pending} titles queued` : 'up to date'}</td></tr>`).join('') || '<tr><td colspan="7" class="muted">No accounts.</td></tr>'}
+      </tbody></table></div>
+      <div class="row wrap" style="margin-top:12px"><button class="btn sm" id="sys-reinfer">Re-date all history</button>${sys.accounts.filter((a) => a.enrichment_pending && a.can_enrich).map((a) => `<button class="btn sm ghost" data-enrich="${a.id}">Fetch history dates for ${esc(a.name)}</button>`).join('')}</div>
+    </div>
+    <div class="card" style="margin-top:16px"><div class="card-h"><h2>Error log</h2><div class="row">
+        <div class="seg" id="log-lvl"><button data-l="error,warn" class="on">Errors &amp; warnings</button><button data-l="error">Errors</button><button data-l="warn">Warnings</button></div>
+        <button class="btn sm ghost" id="log-clear">${icon('trash')}Clear</button></div></div>
+      <div class="search" style="margin-bottom:10px">${icon('search')}<input class="input" id="log-q" placeholder="Filter messages (account, game, error…)"></div>
+      <div id="log-list"></div>
+    </div>
+    <div class="grid grid-2" style="margin-top:16px">
+      <div class="card"><div class="card-h"><h2>Recent console output</h2><span class="tiny muted">same as docker logs</span></div><div class="console">${sys.console.map(esc).join('\n') || 'Nothing yet.'}</div></div>
+      <div class="card"><div class="card-h"><h2>Storage</h2></div>
+        <table class="tbl cap-table">${[['Database file', sys.data_dir || 'in-memory'], ['Size (incl. WAL)', mb(sys.db_bytes)], ['Tracked sessions', sys.counts.sessions_tracked.toLocaleString()], ['Estimated history chunks', sys.counts.sessions_estimated.toLocaleString()], ['Rollup rows', sys.counts.rollup_rows.toLocaleString()], ['Pending rollups', sys.counts.rollup_queue], ['Snapshots', sys.counts.snapshots.toLocaleString()], ['Presence spans', sys.counts.presence_spans.toLocaleString()], ['Stored log entries', sys.counts.logs.toLocaleString()], ['Running as uid', sys.uid ?? '—'], ['UI password', sys.auth_enabled ? 'on' : 'off']].map(([k, v]) => `<tr><td>${k}</td><td>${esc(v)}</td></tr>`).join('')}</table>
+        <p class="tiny muted">Logs are also written to stdout (Unraid: container → Logs). Set <code>LOG_LEVEL=debug</code>, <code>LOG_FORMAT=json</code> or <code>PLAYTRACKER_LOG_FILE=/data/playtracker.log</code> for more.</p></div>
+    </div>`;
+  let level = 'error,warn'; let q = '';
+  const drawLogs = (items) => {
+    $('#log-list').innerHTML = items.length ? items.map((l) => `<details class="log-row"><summary><span class="lvl lvl-${l.level}">${l.level}</span><span class="tiny muted nowrap">${fmtDate(l.time)} ${fmtTime(l.time)}</span><span class="tiny dim nowrap">${esc(l.source)}</span><span class="grow small" style="word-break:break-word">${esc(l.message)}</span></summary>
+      ${l.context ? `<pre class="code">${esc(JSON.stringify(l.context, null, 2))}</pre>` : ''}${l.stack ? `<pre class="code">${esc(l.stack)}</pre>` : ''}</details>`).join('')
+      : `<div class="empty" style="padding:24px"><div class="em-ic">${icon('check')}</div><h2>All clear</h2><p>No ${level === 'warn' ? 'warnings' : 'errors'} logged.</p></div>`;
+  };
+  drawLogs(logs.items);
+  const reload = async () => drawLogs((await api(`/logs?level=${level}&limit=200${q ? `&q=${encodeURIComponent(q)}` : ''}`)).items);
+  $('#log-lvl').addEventListener('click', (e) => { const b = e.target.closest('[data-l]'); if (!b) return; level = b.dataset.l; $$('#log-lvl button').forEach((x) => x.classList.toggle('on', x === b)); reload(); });
+  let t;
+  $('#log-q').addEventListener('input', (e) => { clearTimeout(t); t = setTimeout(() => { q = e.target.value.trim(); reload(); }, 250); });
+  $('#log-clear').addEventListener('click', async () => { if (await confirmBox('Clear all stored log entries?', { ok: 'Clear', danger: true })) { await api('/logs', { method: 'DELETE' }); rerender(); } });
+  $('#sys-reinfer').addEventListener('click', async () => { try { const r = await api('/history/reinfer', { method: 'POST' }); toast(`Re-dated history for ${r.entries} titles`); } catch (e) { fail(e); } });
+  view.addEventListener('click', async (e) => {
+    const b = e.target.closest('[data-enrich]');
+    if (!b) return;
+    try { await api(`/accounts/${b.dataset.enrich}/enrich`, { method: 'POST' }); toast('Fetching achievement times / release dates in the background'); } catch (err) { fail(err); }
+  });
+  $('#sys-dl').addEventListener('click', async () => {
+    const [d, l, syncs] = await Promise.all([api('/system'), api('/logs?limit=1000'), api('/syncs?limit=200')]);
+    const blob = new Blob([JSON.stringify({ generated_at: new Date().toISOString(), system: d, logs: l.items, syncs }, null, 2)], { type: 'application/json' });
+    const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `playtracker-diagnostics-${new Date().toISOString().slice(0, 10)}.json`; a.click();
+  });
+}
+
+// =====================================================================
 // More (mobile)
 // =====================================================================
 async function more(view) {
-  const links = [['/duplicates', 'dupes', 'Duplicates', 'Merge editions, fix double counting'], ['/accounts', 'accounts', 'Accounts', 'Steam, Xbox, PlayStation, custom'], ['/settings', 'settings', 'Settings', 'Schedule, import/export, security'], ['/api', 'code', 'API', 'Tokens, push endpoint, docs'], [`/wrapped/${new Date().getFullYear()}`, 'gift', 'Year in review', 'Your year in games']];
+  const links = [['/duplicates', 'dupes', 'Duplicates', 'Merge editions, fix double counting'], ['/accounts', 'accounts', 'Accounts', 'Steam, Xbox, PlayStation, custom'], ['/system', 'info', 'System', 'Error log, API usage, diagnostics'], ['/settings', 'settings', 'Settings', 'Schedule, import/export, security'], ['/api', 'code', 'API', 'Tokens, push endpoint, docs'], [`/wrapped/${new Date().getFullYear()}`, 'gift', 'Year in review', 'Your year in games']];
   view.innerHTML = `<div class="page-h"><h1>More</h1></div><div class="card pad-0">${links.map(([href, ic, t, d]) => `<a class="item" href="${href}" data-link style="padding:14px 16px"><span style="width:36px;height:36px;border-radius:10px;background:var(--panel2);display:grid;place-items:center">${icon(ic).replace('<svg', '<svg width="19" height="19"')}</span><div class="grow"><div class="ttl">${t}</div><div class="sub">${d}</div></div></a>`).join('')}</div>
     ${state.authEnabled ? `<button class="btn" style="margin-top:16px;width:100%" data-action="logout">${icon('logout')}Log out</button>` : ''}`;
 }
 
-export const pages = { dashboard, library, game, sessions, stats, wrapped, duplicates, accounts, settings, apidocs, more };
+export const pages = { dashboard, library, game, sessions, stats, wrapped, duplicates, accounts, settings, apidocs, more, system };

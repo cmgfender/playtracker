@@ -8,20 +8,27 @@
   <Privileged>false</Privileged>
   <Support>https://github.com/cmgfender/playtracker/issues</Support>
   <Project>https://github.com/cmgfender/playtracker</Project>
-  <Overview>Self-hosted game playtime and session tracker. Steam, Xbox and PlayStation only report lifetime playtime, so PlayTracker snapshots it on a schedule (hourly, daily, weekly, monthly or every X days) and turns the difference into play sessions. Includes stats, heatmaps, year in review, cross-platform duplicate handling, history import that keeps your charts accurate, a REST API, webhooks and a mobile-friendly PWA.</Overview>
-  <Category>MediaApp:Other Tools:</Category>
-  <WebUI>http://[IP]:[PORT:8080]/</WebUI>
+  <Overview>Self-hosted game playtime and session tracker for Steam, Xbox and PlayStation (plus anything you push via the API).&#xD;
+&#xD;
+Platforms only report lifetime playtime, so PlayTracker snapshots it on a schedule (hourly, daily, weekly, monthly or every X days/hours) and turns the difference into play sessions. Live presence (what you're playing right now) pins sessions to exact start/end times and triggers a sync as soon as you stop playing.&#xD;
+&#xD;
+Your existing hours are never dumped onto import day: they are dated from first/last played dates, launch counts, achievement unlock times, release dates and account age, and shown as estimated history.&#xD;
+&#xD;
+Works out of the box: add the container, open the WebUI, connect an account. Stats, heatmaps, year in review, duplicate handling across platforms, CSV/JSON import, REST API, webhooks, error log and diagnostics included.</Overview>
+  <Category>MediaApp:Other Tools: Status:Stable</Category>
+  <WebUI>http://[IP]:[PORT:7720]/</WebUI>
   <TemplateURL>https://raw.githubusercontent.com/cmgfender/playtracker/main/unraid/playtracker.xml</TemplateURL>
   <Icon>https://raw.githubusercontent.com/cmgfender/playtracker/main/public/icon-512.png</Icon>
-  <ExtraParams/>
+  <ExtraParams>--restart=unless-stopped</ExtraParams>
   <PostArgs/>
   <Requires/>
-  <Config Name="WebUI Port" Target="8080" Default="8080" Mode="tcp" Description="Web interface and API" Type="Port" Display="always" Required="true" Mask="false">8080</Config>
-  <Config Name="Data" Target="/data" Default="/mnt/user/appdata/playtracker" Mode="rw" Description="Database (playtracker.db)" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/playtracker</Config>
-  <Config Name="Timezone" Target="TZ" Default="America/New_York" Mode="" Description="Used for daily stats and scheduled sync times" Type="Variable" Display="always" Required="false" Mask="false">America/New_York</Config>
-  <Config Name="Password" Target="PLAYTRACKER_PASSWORD" Default="" Mode="" Description="Optional password for the UI and API (can also be set in Settings)" Type="Variable" Display="always" Required="false" Mask="true"/>
-  <Config Name="PUID" Target="PUID" Default="99" Mode="" Description="User ID" Type="Variable" Display="advanced" Required="false" Mask="false">99</Config>
-  <Config Name="PGID" Target="PGID" Default="100" Mode="" Description="Group ID" Type="Variable" Display="advanced" Required="false" Mask="false">100</Config>
+  <Config Name="WebUI Port" Target="7720" Default="7720" Mode="tcp" Description="Web interface and API. Change the host side if 7720 is taken." Type="Port" Display="always" Required="true" Mask="false">7720</Config>
+  <Config Name="Data" Target="/data" Default="/mnt/user/appdata/playtracker" Mode="rw" Description="Database (playtracker.db) and optional log file" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/playtracker</Config>
+  <Config Name="Password" Target="PLAYTRACKER_PASSWORD" Default="" Mode="" Description="Optional password for the UI and API (can also be set in Settings). Leave empty for open LAN access." Type="Variable" Display="always" Required="false" Mask="true"/>
+  <Config Name="Log level" Target="LOG_LEVEL" Default="info" Mode="" Description="debug | info | warn | error. Warnings and errors are always kept in the in-app error log (System page)." Type="Variable" Display="advanced" Required="false" Mask="false">info</Config>
+  <Config Name="Log file" Target="PLAYTRACKER_LOG_FILE" Default="" Mode="" Description="Optional rotating log file, e.g. /data/playtracker.log" Type="Variable" Display="advanced" Required="false" Mask="false"/>
+  <Config Name="PUID" Target="PUID" Default="99" Mode="" Description="User ID the app runs as (Unraid: 99 = nobody)" Type="Variable" Display="advanced" Required="false" Mask="false">99</Config>
+  <Config Name="PGID" Target="PGID" Default="100" Mode="" Description="Group ID (Unraid: 100 = users)" Type="Variable" Display="advanced" Required="false" Mask="false">100</Config>
   <Config Name="Secure cookie" Target="PLAYTRACKER_SECURE_COOKIE" Default="false" Mode="" Description="Set to true when served over HTTPS (reverse proxy)" Type="Variable" Display="advanced" Required="false" Mask="false">false</Config>
   <Config Name="CORS origin" Target="PLAYTRACKER_CORS_ORIGIN" Default="" Mode="" Description="Allow browser API calls from another origin (e.g. a dashboard)" Type="Variable" Display="advanced" Required="false" Mask="false"/>
 </Container>

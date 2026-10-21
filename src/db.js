@@ -191,6 +191,76 @@ const MIGRATIONS = [
   END;
   INSERT INTO rollup_queue(session_id) SELECT id FROM sessions;
   `,
+  // 3: error log, history inference, presence tracking, API usage accounting
+  `
+  CREATE TABLE logs (
+    id INTEGER PRIMARY KEY,
+    time INTEGER NOT NULL,
+    level TEXT NOT NULL,
+    source TEXT NOT NULL,
+    message TEXT NOT NULL,
+    context TEXT,
+    stack TEXT
+  );
+  CREATE INDEX logs_time ON logs(time);
+  CREATE INDEX logs_level_time ON logs(level, time);
+
+  -- kind: 'play' (tracked), 'estimate' (inferred pre-tracking history, charted but flagged),
+  --       'baseline' (undatable history: lifetime totals only)
+  -- confidence: play -> exact | pinned | window ; estimate -> high | medium | low
+  ALTER TABLE sessions ADD COLUMN confidence TEXT;
+  ALTER TABLE sessions ADD COLUMN device TEXT;
+
+  -- Pre-tracking playtime and everything known about when it happened
+  -- (first/last played, achievement unlock times, release date, ...).
+  ALTER TABLE entries ADD COLUMN baseline_min INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE entries ADD COLUMN hist TEXT NOT NULL DEFAULT '{}';
+  ALTER TABLE entries ADD COLUMN inferred_v INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE entries ADD COLUMN first_played_at INTEGER;
+  ALTER TABLE entries ADD COLUMN play_count INTEGER;
+  ALTER TABLE entries ADD COLUMN enriched_at INTEGER;
+  CREATE INDEX entries_infer ON entries(inferred_v) WHERE baseline_min > 0;
+
+  -- existing installs: fold old "Imported history" baselines into baseline_min so they get inferred
+  UPDATE entries SET baseline_min = (SELECT COALESCE(SUM(minutes), 0) FROM sessions s
+    WHERE s.entry_id = entries.id AND s.kind = 'baseline' AND s.note IN ('Imported history', 'Playtime before tracking started'));
+  DELETE FROM sessions WHERE kind = 'baseline' AND note IN ('Imported history', 'Playtime before tracking started');
+
+  ALTER TABLE play_days ADD COLUMN estimated INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE play_hours ADD COLUMN estimated INTEGER NOT NULL DEFAULT 0;
+  DROP INDEX play_days_range;
+  DROP INDEX play_days_game;
+  DROP INDEX play_hours_range;
+  CREATE INDEX play_days_range ON play_days(excluded, estimated, day, platform, game_id, minutes, ends);
+  CREATE INDEX play_days_game ON play_days(game_id, excluded, estimated, day, platform, minutes, ends);
+  CREATE INDEX play_hours_range ON play_hours(excluded, estimated, day, platform, game_id, hour, minutes);
+
+  -- "currently playing" observations from presence APIs; used to pin sessions to exact times
+  CREATE TABLE presence (
+    id INTEGER PRIMARY KEY,
+    account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+    ext_id TEXT NOT NULL,
+    title TEXT,
+    started_at INTEGER NOT NULL,
+    last_seen_at INTEGER NOT NULL,
+    ended_at INTEGER
+  );
+  CREATE INDEX presence_open ON presence(account_id, ended_at);
+  CREATE INDEX presence_ext ON presence(account_id, ext_id, started_at);
+
+  -- per account, per hour API call accounting (rate-limit awareness + diagnostics)
+  CREATE TABLE api_usage (
+    account_id INTEGER NOT NULL,
+    hour INTEGER NOT NULL,
+    calls INTEGER NOT NULL DEFAULT 0,
+    errors INTEGER NOT NULL DEFAULT 0,
+    rate_limited INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (account_id, hour)
+  );
+
+  ALTER TABLE syncs ADD COLUMN duration_ms INTEGER;
+  ALTER TABLE syncs ADD COLUMN details TEXT;
+  `,
 ];
 
 export function openDb(file) {

@@ -1,6 +1,7 @@
-import { httpJson, ProviderError } from './http.js';
+import { ProviderError, spacer } from './http.js';
 
 const API = 'https://xbl.io/api/v2';
+const HOME_TITLE_IDS = new Set(['750323071', '1022622766', '714681658']); // Xbox Home / dashboard / app shells
 
 /** Walk an arbitrary stats payload and return the MinutesPlayed value, if any. */
 export function findMinutesPlayed(obj) {
@@ -17,27 +18,76 @@ export function findMinutesPlayed(obj) {
   return null;
 }
 
+/** Collect achievement unlock timestamps from either the modern or the Xbox 360 payload shape. */
+export function findUnlockTimes(obj, out = []) {
+  if (!obj || typeof obj !== 'object') return out;
+  if (Array.isArray(obj)) { for (const v of obj) findUnlockTimes(v, out); return out; }
+  const t = obj.timeUnlocked ?? obj.progression?.timeUnlocked;
+  if (t) {
+    const ms = Date.parse(t);
+    if (Number.isFinite(ms) && ms > Date.UTC(2005, 0, 1)) out.push(ms);
+  }
+  for (const [k, v] of Object.entries(obj)) if (k !== 'progression' && v && typeof v === 'object') findUnlockTimes(v, out);
+  return out;
+}
+
+const DEFAULT_HOURLY = 150; // OpenXBL free tier
+
 export const xbox = {
   id: 'xbox',
   label: 'Xbox',
   fields: [
     { key: 'api_key', label: 'OpenXBL API key', type: 'password', required: true, help: 'Sign in with your Microsoft account at https://xbl.io and create an API key.' },
-    { key: 'max_stat_calls', label: 'Max stat lookups per sync', type: 'number', required: false, placeholder: '120', help: 'OpenXBL rate-limits free keys. Titles not looked up yet are picked up on the next sync and imported as history.' },
+    { key: 'hourly_limit', label: 'OpenXBL requests per hour', type: 'number', required: false, placeholder: '150', help: 'Your plan\'s hourly limit (free = 150). PlayTracker budgets syncs, presence and enrichment to stay under it.' },
+    { key: 'presence', label: 'Live presence tracking', type: 'select', options: ['on', 'off'], required: false, help: 'Polls presence every 5 minutes (12 requests/hour).' },
   ],
-  notes: 'Xbox exposes a per-title "MinutesPlayed" stat. Only titles whose last-played time changed are re-queried, keeping you well within OpenXBL rate limits.',
+  notes: 'Per-title MinutesPlayed and last played time (console + PC/Game Pass), live presence and achievement unlock times for dating your history. Budgeted to the OpenXBL hourly limit.',
+  presenceIntervalSec: 300,
+  syncAfterSessionSec: 600, // MinutesPlayed stat lags behind the end of a session
+  capabilities: {
+    lifetime: 'Per-title "MinutesPlayed" user stat (one request per title)',
+    recent: null,
+    last_played: 'titleHistory.lastTimePlayed',
+    first_played: null,
+    play_count: null,
+    per_device: 'devices the title is available on (not per-device minutes)',
+    presence: 'presence: current title + placement (Full/Snapped)',
+    history_anchors: 'Achievement unlock times (modern + Xbox 360 titles)',
+    rate_limit: 'OpenXBL: 150 requests/hour on the free plan (configurable for paid plans)',
+    limitations: [
+      'Requires the third-party OpenXBL service (Microsoft offers no public consumer API).',
+      'Minutes need one request per title; only titles whose last-played time changed are re-queried, the rest reuse the stored value.',
+      'A large first import is spread over several hourly budgets; deferred titles are imported as history once fetched.',
+      'Some titles (apps, some backward-compatible 360 games) have no MinutesPlayed stat - tracked from last played only.',
+      'The MinutesPlayed stat can lag a session by several minutes.',
+      'Exact endpoint shapes are not officially documented; responses are parsed defensively.',
+    ],
+  },
 
-  async fetchLibrary(account, ctx) {
+  headers(account) {
     const key = account.config.api_key;
     if (!key) throw new ProviderError('OpenXBL API key is required', { auth: true });
-    const headers = { 'X-Authorization': key, Accept: 'application/json', 'Accept-Language': 'en-US' };
-    const hist = await httpJson(`${API}/player/titleHistory`, { headers });
+    return { 'X-Authorization': key, Accept: 'application/json', 'Accept-Language': 'en-US' };
+  },
+
+  hourlyLimit(account) {
+    return Number(account.config.hourly_limit) || DEFAULT_HOURLY;
+  },
+
+  async fetchLibrary(account, ctx) {
+    const headers = this.headers(account);
+    const hist = await ctx.http(`${API}/player/titleHistory`, { headers });
     const titles = hist?.titles || hist?.content?.titles || [];
-    const budget = Number(account.config.max_stat_calls) || 120;
-    let calls = 0;
+    // keep ~15% of the hour for presence & retries
+    let budget = Math.max(0, (ctx.remainingBudget?.(this.hourlyLimit(account)) ?? this.hourlyLimit(account)) - Math.ceil(this.hourlyLimit(account) * 0.15));
     const items = [];
-    let skipped = 0;
+    let deferred = 0;
+    let missing = 0;
+    // most recently played first so active games are always fresh
+    titles.sort((a, b) => Date.parse(b.titleHistory?.lastTimePlayed || 0) - Date.parse(a.titleHistory?.lastTimePlayed || 0));
     for (const t of titles) {
       const extId = String(t.titleId);
+      if (HOME_TITLE_IDS.has(extId)) continue;
       const lastPlayedAt = t.titleHistory?.lastTimePlayed ? Date.parse(t.titleHistory.lastTimePlayed) : null;
       const existing = ctx.getEntry(extId);
       const base = {
@@ -48,24 +98,67 @@ export const xbox = {
         coverUrl: t.displayImage || null,
         meta: { devices: t.devices, achievement: t.achievement, pfn: t.pfn },
       };
-      // Unchanged since last time -> reuse known playtime, no API call.
       if (existing && existing.last_played_at && lastPlayedAt && lastPlayedAt <= existing.last_played_at) {
         items.push({ ...base, playtimeMin: existing.playtime_min });
         continue;
       }
-      if (calls >= budget) { skipped++; continue; }
-      calls++;
+      if (budget <= 0) { deferred++; continue; }
+      budget--;
       let minutes = null;
       try {
-        const stats = await httpJson(`${API}/achievements/stats/${encodeURIComponent(extId)}`, { headers }, { retries: 1 });
+        const stats = await ctx.http(`${API}/achievements/stats/${encodeURIComponent(extId)}`, { headers }, { retries: 1 });
         minutes = findMinutesPlayed(stats);
       } catch (err) {
         if (err.auth) throw err;
-        if (err.status === 429) { skipped++; break; }
+        if (err.rateLimited) { deferred++; budget = 0; continue; }
       }
-      // Titles without a MinutesPlayed stat (some apps / legacy 360 titles) are tracked at their last known value.
-      items.push({ ...base, playtimeMin: minutes ?? existing?.playtime_min ?? 0, unknownPlaytime: minutes == null && !existing });
+      if (minutes == null) missing++;
+      // a title seen for the first time on a later sync while being deferred earlier is history, not new play
+      items.push({ ...base, playtimeMin: minutes ?? existing?.playtime_min ?? 0, backfill: !existing && account.state.deferred_titles?.includes(extId) });
     }
-    return { items, state: { ...account.state, xuid: hist?.xuid }, warning: skipped ? `${skipped} titles deferred to the next sync (rate limit budget)` : null };
+    const state = { ...account.state, xuid: hist?.xuid || account.state.xuid };
+    const got = new Set(items.map((i) => i.extId));
+    state.deferred_titles = titles.map((t) => String(t.titleId)).filter((id) => !got.has(id) && !HOME_TITLE_IDS.has(id)).slice(0, 5000);
+    const warning = deferred ? `${deferred} titles deferred to the next sync to stay within the OpenXBL hourly limit` : null;
+    return { items, state, warning, info: { titles: titles.length, missing_minutes: missing, deferred } };
+  },
+
+  async presence(account, ctx) {
+    if ((ctx.remainingBudget?.(this.hourlyLimit(account)) ?? 1) < 3) return null; // leave room for syncs
+    const data = await ctx.http(`${API}/presence`, { headers: this.headers(account) }, { retries: 0 });
+    const people = Array.isArray(data) ? data : data?.people || [data];
+    const me = people.find((p) => !account.state.xuid || String(p?.xuid) === String(account.state.xuid)) || people[0];
+    const playing = [];
+    for (const d of me?.devices || []) {
+      for (const t of d.titles || []) {
+        const id = String(t.id ?? t.titleId ?? '');
+        if (!id || HOME_TITLE_IDS.has(id)) continue;
+        if (t.placement && !['Full', 'Fill', 'Snapped'].includes(t.placement)) continue;
+        if (t.state && t.state !== 'Active') continue;
+        playing.push({ extId: id, title: t.name || null, device: d.type || null });
+      }
+    }
+    return { playing };
+  },
+
+  async enrich(account, entries, ctx) {
+    const xuid = account.state.xuid;
+    if (!xuid) return { updates: [] };
+    const headers = this.headers(account);
+    const gap = spacer(1000);
+    const updates = [];
+    for (const e of entries) {
+      if (ctx.stopped?.()) break;
+      if ((ctx.remainingBudget?.(this.hourlyLimit(account)) ?? 0) <= Math.ceil(this.hourlyLimit(account) * 0.3)) break;
+      await gap();
+      try {
+        const r = await ctx.http(`${API}/achievements/player/${encodeURIComponent(xuid)}/${encodeURIComponent(e.ext_id)}`, { headers }, { retries: 0 });
+        updates.push({ entryId: e.id, anchors: findUnlockTimes(r), done: true });
+      } catch (err) {
+        if (err.rateLimited) break;
+        updates.push({ entryId: e.id, anchors: [], done: err.status === 404 || err.status === 400 });
+      }
+    }
+    return { updates };
   },
 };

@@ -197,6 +197,7 @@ const NAV = [
   { path: '/stats', label: 'Stats', icon: 'stats', tab: true },
   { path: '/duplicates', label: 'Duplicates', icon: 'dupes' },
   { path: '/accounts', label: 'Accounts', icon: 'accounts' },
+  { path: '/system', label: 'System', icon: 'info' },
   { path: '/settings', label: 'Settings', icon: 'settings' },
   { path: '/api', label: 'API', icon: 'code' },
 ];
@@ -218,7 +219,7 @@ function shell() {
   return `<div class="shell">
     <aside class="side">
       <a class="brand" href="/" data-link><span class="brand-mark">${icon('pad')}</span>PlayTracker</a>
-      ${NAV.map((n) => `<a class="nav-link ${active(n) ? 'active' : ''}" href="${n.path}" data-link>${icon(n.icon)}${n.label}${n.path === '/duplicates' ? '<span class="badge accent hide" id="dupe-badge"></span>' : ''}</a>`).join('')}
+      ${NAV.map((n) => `<a class="nav-link ${active(n) ? 'active' : ''}" href="${n.path}" data-link>${icon(n.icon)}${n.label}${n.path === '/duplicates' ? '<span class="badge accent hide" id="dupe-badge"></span>' : n.path === '/system' ? '<span class="badge bad hide" id="err-badge"></span>' : ''}</a>`).join('')}
       <div class="side-foot col">
         <button class="btn" data-action="sync-all" id="sync-all-btn">${icon('sync')}Sync all</button>
         ${state.authEnabled ? `<button class="btn ghost sm" data-action="logout">${icon('logout')}Log out</button>` : ''}
@@ -247,6 +248,7 @@ const ROUTES = [
   [/^\/accounts$/, 'accounts'],
   [/^\/settings$/, 'settings'],
   [/^\/api$/, 'apidocs'],
+  [/^\/system$/, 'system'],
   [/^\/more$/, 'more'],
 ];
 
@@ -255,6 +257,7 @@ export async function route() {
   if (state.needLogin) return render();
   const p = current();
   $('#app').innerHTML = shell();
+  applyBadges();
   const view = $('#view');
   const seq = ++renderSeq;
   for (const [re, name] of ROUTES) {
@@ -313,6 +316,7 @@ export async function watchSync({ refresh = true } = {}) {
     const errs = accounts.filter((a) => a.last_status === 'error');
     if (errs.length) toast(`Sync failed: ${errs[0].name} — ${errs[0].last_error}`, { bad: true, ms: 7000 });
     else toast('Sync complete');
+    refreshDupeBadge();
     if (refresh) rerender();
   }
   return accounts;
@@ -328,13 +332,17 @@ async function syncAll() {
   } catch (e) { fail(e); }
 }
 
+function applyBadges() {
+  const set = (sel, n) => { const b = $(sel); if (b) { b.textContent = n > 999 ? '999+' : n; b.classList.toggle('hide', !n); } };
+  set('#dupe-badge', state.badges?.dupes || 0);
+  set('#err-badge', state.badges?.errors || 0);
+}
+
 async function refreshDupeBadge() {
-  try {
-    const d = await api('/duplicates?summary=true');
-    const n = d.counts.suggestions + d.counts.double_counted;
-    const b = $('#dupe-badge');
-    if (b) { b.textContent = n > 999 ? '999+' : n; b.classList.toggle('hide', !n); }
-  } catch { /* ignore */ }
+  state.badges ||= {};
+  try { state.badges.errors = (await api('/logs?level=error&limit=1')).counts_24h?.error || 0; } catch { /* ignore */ }
+  try { const d = await api('/duplicates?summary=true'); state.badges.dupes = d.counts.suggestions + d.counts.double_counted; } catch { /* ignore */ }
+  applyBadges();
 }
 
 // ---------- global events ----------

@@ -12,6 +12,9 @@ export const DEFAULT_SETTINGS = {
   use_recent_on_import: true, // Steam's playtime_2weeks becomes a real session on first import
   auto_merge_titles: true,    // group same-title games across platforms automatically
   week_starts_on: 1,          // 0=Sun, 1=Mon
+  stats_estimates: 'include', // charts include inferred pre-tracking history (flagged) - 'include' | 'exclude'
+  history_max_day_minutes: 720,      // inferred history: max minutes per day across all games
+  history_max_game_day_minutes: 600, // inferred history: max minutes per day for one game
 
   // Notifications
   webhook_url: '',
@@ -83,5 +86,6 @@ export function validateSettings(patch) {
   if ('schedule_weekday' in out && (out.schedule_weekday < 0 || out.schedule_weekday > 6)) errors.push('schedule_weekday must be 0..6');
   if ('schedule_monthday' in out && (out.schedule_monthday < 1 || out.schedule_monthday > 28)) errors.push('schedule_monthday must be 1..28');
   if (out.webhook_url && !/^https?:\/\//.test(out.webhook_url)) errors.push('webhook_url must be http(s)');
+  if (out.stats_estimates && !['include', 'exclude'].includes(out.stats_estimates)) errors.push('stats_estimates must be include or exclude');
   return { values: out, errors };
 }

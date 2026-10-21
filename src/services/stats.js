@@ -109,8 +109,10 @@ function emptySeries(from, to, group, weekStartsOn) {
 }
 
 /** WHERE fragment + args shared by every play_days / play_hours query (covering indexes, no joins). */
-function filter(alias, { fromDay, toDay, gameId, platform, accountId }) {
-  const where = [`${alias}.excluded = 0`];
+// estimates: 'include' (tracked + inferred history, default), 'exclude' (tracked only), 'only'
+function filter(alias, { fromDay, toDay, gameId, platform, accountId, estimates = 'include' }) {
+  const est = estimates === 'exclude' ? '= 0' : estimates === 'only' ? '= 1' : 'IN (0, 1)';
+  const where = [`${alias}.excluded = 0`, `${alias}.estimated ${est}`];
   const args = [];
   if (gameId) { where.push(`${alias}.game_id = ?`); args.push(gameId); }
   if (fromDay) { where.push(`${alias}.day >= ?`); args.push(fromDay); }
@@ -123,7 +125,8 @@ function filter(alias, { fromDay, toDay, gameId, platform, accountId }) {
 /** Minutes per local day (whole history) - used for streaks. */
 export function dailyTotals(db, { gameId, platform } = {}) {
   return memo(db, `daily:${gameId}:${platform}`, () => {
-    const f = filter('p', { gameId, platform });
+    // streaks only count real, tracked play - never inferred history
+    const f = filter('p', { gameId, platform, estimates: 'exclude' });
     return new Map(db.prepare(`SELECT p.day, SUM(p.minutes) m ${f.sql} GROUP BY p.day`).all(...f.args).map((r) => [r.day, r.m]));
   });
 }
@@ -144,43 +147,47 @@ export function computeStreaks(dayMinutes, now = Date.now()) {
   return { current, longest, longest_end: longestEnd };
 }
 
-export function firstPlayDay(db) {
-  return db.prepare('SELECT MIN(day) d FROM play_days').get().d;
+export function firstPlayDay(db, estimates = 'include') {
+  return db.prepare(`SELECT MIN(day) d FROM play_days WHERE excluded = 0 AND estimated ${estimates === 'exclude' ? '= 0' : 'IN (0, 1)'}`).get().d;
 }
 
 export function computeStats(db, opts = {}) {
-  const { range = '30d', group, gameId, platform, weekStartsOn = 1, now = Date.now(), topLimit = 25 } = opts;
-  return memo(db, `stats:${range}:${group}:${gameId}:${platform}:${weekStartsOn}:${topLimit}`, () => {
+  const { range = '30d', group, gameId, platform, weekStartsOn = 1, now = Date.now(), topLimit = 25, estimates = 'include' } = opts;
+  return memo(db, `stats:${range}:${group}:${gameId}:${platform}:${weekStartsOn}:${topLimit}:${estimates}`, () => {
     let { from, to, label } = resolveRange(range, now);
     if (from === 0) {
       const first = gameId
-        ? db.prepare('SELECT MIN(day) d FROM play_days WHERE game_id = ?').get(gameId).d
-        : firstPlayDay(db);
+        ? db.prepare(`SELECT MIN(day) d FROM play_days WHERE game_id = ? AND estimated ${estimates === 'exclude' ? '= 0' : 'IN (0, 1)'}`).get(gameId).d
+        : firstPlayDay(db, estimates);
       from = first ? parseDay(first) - 12 * 3600_000 : startOfDay(now);
     }
     const span = Math.max(1, (to - from) / DAY);
     const g = group || (span <= 45 ? 'day' : span <= 200 ? 'week' : span <= 1100 ? 'month' : 'year');
-    const range_ = { fromDay: dayKey(from), toDay: dayKey(to), gameId, platform };
+    const range_ = { fromDay: dayKey(from), toDay: dayKey(to), gameId, platform, estimates };
     const f = filter('p', range_);
 
     const series = new Map(emptySeries(from, to, g, weekStartsOn).map((k) => [k, 0]));
+    const seriesEst = new Map();
     const byPlat = new Map();
     const weekday = Array(7).fill(0);
     const dayTotals = new Map();
     let total = 0;
-    for (const r of db.prepare(`SELECT p.day, p.platform, SUM(p.minutes) m ${f.sql} GROUP BY p.day, p.platform`).all(...f.args)) {
+    let estTotal = 0;
+    for (const r of db.prepare(`SELECT p.day, p.platform, p.estimated, SUM(p.minutes) m ${f.sql} GROUP BY p.day, p.platform, p.estimated`).all(...f.args)) {
       const t = parseDay(r.day);
       const k = groupKey(t, g, weekStartsOn);
       series.set(k, (series.get(k) || 0) + r.m);
+      total += r.m;
+      if (r.estimated) { seriesEst.set(k, (seriesEst.get(k) || 0) + r.m); estTotal += r.m; continue; }
+      // platform stacks, weekday pattern, busiest day and days played use tracked play only
       if (!byPlat.has(r.platform)) byPlat.set(r.platform, new Map());
       byPlat.get(r.platform).set(k, (byPlat.get(r.platform).get(k) || 0) + r.m);
       weekday[new Date(t).getDay()] += r.m;
       dayTotals.set(r.day, (dayTotals.get(r.day) || 0) + r.m);
-      total += r.m;
     }
 
     // per-game totals; SUM(ends) counts sessions ending in range (a session spanning the range start counts once, where it ends)
-    const perGame = db.prepare(`SELECT p.game_id, SUM(p.minutes) minutes, SUM(p.ends) sessions, GROUP_CONCAT(DISTINCT p.platform) platforms, MAX(p.day) last_day
+    const perGame = db.prepare(`SELECT p.game_id, SUM(p.minutes) minutes, SUM(p.minutes * p.estimated) est, SUM(p.ends) sessions, GROUP_CONCAT(DISTINCT p.platform) platforms, MAX(p.day) last_day
       ${f.sql} GROUP BY p.game_id ORDER BY minutes DESC`).all(...f.args);
     const top = perGame.slice(0, topLimit);
     const sessionCount = perGame.reduce((a, x) => a + x.sessions, 0);
@@ -203,19 +210,24 @@ export function computeStats(db, opts = {}) {
     const r = (x) => Math.round(x);
     const busiest = [...dayTotals.entries()].sort((a, b) => b[1] - a[1])[0];
     const sessions = sessionCount;
+    const tracked = total - estTotal;
     return {
       range: { from, to, label, group: g },
       total_minutes: r(total),
       sessions,
       games_played: perGame.length,
-      avg_session_minutes: sessions ? r(total / sessions) : 0,
-      avg_per_day_minutes: r(total / Math.max(1, Math.ceil(span))),
+      tracked_minutes: r(tracked),
+      estimated_minutes: r(estTotal),
+      estimates,
+      avg_session_minutes: sessions ? r(tracked / sessions) : 0,
+      avg_per_day_minutes: r(tracked / Math.max(1, Math.ceil(span))),
       days_played: [...dayTotals.values()].filter((m) => m >= 1).length,
       longest_session: longest,
       busiest_day: busiest ? { day: busiest[0], minutes: r(busiest[1]) } : null,
-      series: [...series.entries()].map(([key, minutes]) => ({ key, minutes: r(minutes) })),
+      series: [...series.entries()].map(([key, minutes]) => ({ key, minutes: r(minutes), estimated: r(seriesEst.get(key) || 0) })),
       series_by_platform: Object.fromEntries([...byPlat.entries()].map(([p, m]) => [p, [...series.keys()].map((k) => r(m.get(k) || 0))])),
-      top_games: top.map((x) => ({ ...gameInfo.get(x.game_id), game_id: x.game_id, minutes: r(x.minutes), sessions: x.sessions, platforms: String(x.platforms || '').split(','), last: parseDay(x.last_day) })),
+      series_estimated: [...series.keys()].map((k) => r(seriesEst.get(k) || 0)),
+      top_games: top.map((x) => ({ ...gameInfo.get(x.game_id), game_id: x.game_id, minutes: r(x.minutes), estimated_minutes: r(x.est || 0), sessions: x.sessions, platforms: String(x.platforms || '').split(','), last: parseDay(x.last_day) })),
       platforms: platforms.map((p) => ({ platform: p.platform, minutes: r(p.minutes) })),
       weekday: weekday.map(r),
       hours: hours.map(r),
@@ -224,12 +236,16 @@ export function computeStats(db, opts = {}) {
   });
 }
 
-export function heatmap(db, { year, gameId } = {}) {
+export function heatmap(db, { year, gameId, estimates = 'include' } = {}) {
   const y = Number(year) || new Date().getFullYear();
-  return memo(db, `heat:${y}:${gameId}`, () => {
-    const f = filter('p', { fromDay: `${y}-01-01`, toDay: `${y}-12-31`, gameId });
-    const rows = db.prepare(`SELECT p.day, SUM(p.minutes) m ${f.sql} GROUP BY p.day`).all(...f.args);
-    return { year: y, days: Object.fromEntries(rows.map((x) => [x.day, Math.round(x.m)])) };
+  return memo(db, `heat:${y}:${gameId}:${estimates}`, () => {
+    const f = filter('p', { fromDay: `${y}-01-01`, toDay: `${y}-12-31`, gameId, estimates });
+    const rows = db.prepare(`SELECT p.day, SUM(p.minutes) m, SUM(p.minutes * p.estimated) e ${f.sql} GROUP BY p.day`).all(...f.args);
+    return {
+      year: y,
+      days: Object.fromEntries(rows.map((x) => [x.day, Math.round(x.m)])),
+      estimated_days: Object.fromEntries(rows.filter((x) => x.e > 0).map((x) => [x.day, Math.round(x.e)])),
+    };
   });
 }
 
@@ -247,6 +263,7 @@ export function lifetime(db) {
     return {
       total_minutes: tot.total,
       tracked_minutes: k.play?.m || 0,
+      estimated_minutes: k.estimate?.m || 0,
       baseline_minutes: k.baseline?.m || 0,
       sessions: k.play?.n || 0,
       games: tot.games,
@@ -257,22 +274,23 @@ export function lifetime(db) {
   });
 }
 
-export function yearInReview(db, year, { weekStartsOn = 1 } = {}) {
+export function yearInReview(db, year, { weekStartsOn = 1, estimates = 'include' } = {}) {
   const y = Number(year);
-  return memo(db, `year:${y}:${weekStartsOn}`, () => {
-    const s = computeStats(db, { range: `year:${y}`, group: 'month', weekStartsOn });
+  return memo(db, `year:${y}:${weekStartsOn}:${estimates}`, () => {
+    const s = computeStats(db, { range: `year:${y}`, group: 'month', weekStartsOn, estimates });
     const from = `${y}-01-01`;
     const to = `${y}-12-31`;
     // first-ever play day per game, restricted to games played this year
-    const firstPlays = db.prepare(`WITH played AS (SELECT DISTINCT game_id FROM play_days WHERE excluded = 0 AND day BETWEEN ? AND ?)
+    const est = estimates === 'exclude' ? '= 0' : 'IN (0, 1)';
+    const firstPlays = db.prepare(`WITH played AS (SELECT DISTINCT game_id FROM play_days WHERE excluded = 0 AND estimated ${est} AND day BETWEEN ? AND ?)
       SELECT pl.game_id, g.title, g.cover_url,
-        (SELECT MIN(p2.day) FROM play_days p2 WHERE p2.game_id = pl.game_id AND p2.excluded = 0) first
+        (SELECT MIN(p2.day) FROM play_days p2 WHERE p2.game_id = pl.game_id AND p2.excluded = 0 AND p2.estimated ${est}) first
       FROM played pl JOIN games g ON g.id = pl.game_id`).all(from, to).filter((r) => r.first >= from).sort((a, b) => a.first.localeCompare(b.first));
     const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
     const best = [...s.series].sort((a, b) => b.minutes - a.minutes)[0];
     const completed = db.prepare("SELECT COUNT(*) n FROM games WHERE status = 'completed' AND updated_at >= ? AND updated_at < ?").get(new Date(y, 0, 1).getTime(), new Date(y + 1, 0, 1).getTime()).n;
     let longestStreak = 0; let run = 0; let prev = null;
-    for (const k of Object.keys(heatmap(db, { year: y }).days).sort()) {
+    for (const k of Object.keys(heatmap(db, { year: y, estimates: 'exclude' }).days).sort()) {
       const t = parseDay(k);
       run = prev != null && Math.round((t - prev) / DAY) === 1 ? run + 1 : 1;
       longestStreak = Math.max(longestStreak, run); prev = t;
@@ -280,12 +298,14 @@ export function yearInReview(db, year, { weekStartsOn = 1 } = {}) {
     return {
       year: y,
       total_minutes: s.total_minutes,
+      tracked_minutes: s.tracked_minutes,
+      estimated_minutes: s.estimated_minutes,
       sessions: s.sessions,
       games_played: s.games_played,
       days_played: s.days_played,
       top_games: s.top_games.slice(0, 10),
       platforms: s.platforms,
-      months: s.series.map((x) => ({ month: months[Number(x.key.slice(5, 7)) - 1], minutes: x.minutes })),
+      months: s.series.map((x) => ({ month: months[Number(x.key.slice(5, 7)) - 1], minutes: x.minutes, estimated: x.estimated })),
       best_month: best && best.minutes ? { month: months[Number(best.key.slice(5, 7)) - 1], minutes: best.minutes } : null,
       busiest_day: s.busiest_day,
       longest_session: s.longest_session,

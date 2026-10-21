@@ -10,8 +10,20 @@ const custom = {
   fields: [
     { key: 'platform_label', label: 'Platform label', type: 'text', required: false, placeholder: 'Switch, Epic, GOG, Emulator…' },
   ],
-  notes: 'Push lifetime playtime totals to this account via the API. Deltas between reports become sessions exactly like Steam/Xbox/PlayStation syncs.',
+  notes: 'Push lifetime playtime totals to this account via the API. Deltas between reports become sessions exactly like Steam/Xbox/PlayStation syncs. Include first/last played dates and play counts if your source has them - they are used to date history.',
   push: true,
+  capabilities: {
+    lifetime: 'playtime_minutes / playtime_hours you push',
+    recent: 'recent_minutes + recent_days (optional)',
+    last_played: 'last_played_at (optional)',
+    first_played: 'first_played_at (optional)',
+    play_count: 'play_count (optional)',
+    per_device: 'device (optional)',
+    presence: 'POST /api/v1/accounts/:id/presence (optional, e.g. from Home Assistant)',
+    history_anchors: 'date_added, first/last played',
+    rate_limit: 'None (local)',
+    limitations: ['Only as accurate as what you push; report at least daily for daily sessions.'],
+  },
   async fetchLibrary() {
     return { items: null };
   },
@@ -20,5 +32,8 @@ const custom = {
 export const providers = { steam, xbox, psn, custom };
 
 export function providerInfo() {
-  return Object.values(providers).map((p) => ({ id: p.id, label: p.label, fields: p.fields, notes: p.notes, push: !!p.push }));
+  return Object.values(providers).map((p) => ({
+    id: p.id, label: p.label, fields: p.fields, notes: p.notes, push: !!p.push, capabilities: p.capabilities,
+    presence_interval_sec: p.presenceIntervalSec || null, sync_after_session_sec: p.syncAfterSessionSec || null,
+  }));
 }

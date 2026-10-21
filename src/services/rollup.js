@@ -29,8 +29,8 @@ export function flushRollups(db, { batch = 5000 } = {}) {
   const get = db.prepare('SELECT s.id, s.entry_id, s.kind, s.minutes, s.window_start, s.window_end, s.started_at, s.ended_at, s.created_at, e.game_id, e.platform, e.excluded FROM sessions s JOIN entries e ON e.id = s.entry_id WHERE s.id = ?');
   const delD = db.prepare('DELETE FROM play_days WHERE session_id = ?');
   const delH = db.prepare('DELETE FROM play_hours WHERE session_id = ?');
-  const insD = db.prepare('INSERT INTO play_days(session_id, entry_id, game_id, platform, excluded, day, minutes, ends) VALUES (?, ?, ?, ?, ?, ?, ?, ?)');
-  const insH = db.prepare('INSERT INTO play_hours(session_id, entry_id, game_id, platform, excluded, day, hour, minutes) VALUES (?, ?, ?, ?, ?, ?, ?, ?)');
+  const insD = db.prepare('INSERT INTO play_days(session_id, entry_id, game_id, platform, excluded, estimated, day, minutes, ends) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)');
+  const insH = db.prepare('INSERT INTO play_hours(session_id, entry_id, game_id, platform, excluded, estimated, day, hour, minutes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)');
   const deq = db.prepare('DELETE FROM rollup_queue WHERE session_id = ?');
   const qEntry = db.prepare('INSERT OR IGNORE INTO rollup_entry_queue(entry_id) VALUES (?)');
   const nested = db.isTransaction ?? db._inTx;
@@ -45,10 +45,11 @@ export function flushRollups(db, { batch = 5000 } = {}) {
         const s = get.get(id);
         if (s) {
           qEntry.run(s.entry_id);
-          if (s.kind === 'play' && s.minutes > 0) {
+          if ((s.kind === 'play' || s.kind === 'estimate') && s.minutes > 0) {
+            const est = s.kind === 'estimate' ? 1 : 0;
             const days = spreadByDay(s);
-            days.forEach(([day, m], i) => insD.run(id, s.entry_id, s.game_id, s.platform, s.excluded, day, m, i === days.length - 1 ? 1 : 0));
-            for (const [day, h, m] of spreadByHour(s)) insH.run(id, s.entry_id, s.game_id, s.platform, s.excluded, day, h, m);
+            days.forEach(([day, m], i) => insD.run(id, s.entry_id, s.game_id, s.platform, s.excluded, est, day, m, (!est && i === days.length - 1) ? 1 : 0));
+            for (const [day, h, m] of spreadByHour(s)) insH.run(id, s.entry_id, s.game_id, s.platform, s.excluded, est, day, h, m);
           }
         }
         deq.run(id);
@@ -74,19 +75,20 @@ export function flushRollups(db, { batch = 5000 } = {}) {
  */
 export function rebuildRollups(db) {
   const idx = db.prepare("SELECT name, sql FROM sqlite_master WHERE type = 'index' AND tbl_name IN ('play_days', 'play_hours') AND sql IS NOT NULL").all();
-  const insD = db.prepare('INSERT INTO play_days(session_id, entry_id, game_id, platform, excluded, day, minutes, ends) VALUES (?, ?, ?, ?, ?, ?, ?, ?)');
-  const insH = db.prepare('INSERT INTO play_hours(session_id, entry_id, game_id, platform, excluded, day, hour, minutes) VALUES (?, ?, ?, ?, ?, ?, ?, ?)');
-  const all = db.prepare(`SELECT s.id, s.entry_id, s.minutes, s.window_start, s.window_end, s.started_at, s.ended_at, s.created_at, e.game_id, e.platform, e.excluded
-    FROM sessions s JOIN entries e ON e.id = s.entry_id WHERE s.kind = 'play' AND s.minutes > 0`);
+  const insD = db.prepare('INSERT INTO play_days(session_id, entry_id, game_id, platform, excluded, estimated, day, minutes, ends) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)');
+  const insH = db.prepare('INSERT INTO play_hours(session_id, entry_id, game_id, platform, excluded, estimated, day, hour, minutes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)');
+  const all = db.prepare(`SELECT s.id, s.kind, s.entry_id, s.minutes, s.window_start, s.window_end, s.started_at, s.ended_at, s.created_at, e.game_id, e.platform, e.excluded
+    FROM sessions s JOIN entries e ON e.id = s.entry_id WHERE s.kind IN ('play', 'estimate') AND s.minutes > 0`);
   let n = 0;
   db.exec('BEGIN IMMEDIATE');
   try {
     for (const i of idx) db.exec(`DROP INDEX ${i.name}`);
     db.exec('DELETE FROM play_days; DELETE FROM play_hours; DELETE FROM rollup_queue; DELETE FROM rollup_entry_queue;');
     for (const s of all.iterate()) {
+      const est = s.kind === 'estimate' ? 1 : 0;
       const days = spreadByDay(s);
-      days.forEach(([day, m], k) => insD.run(s.id, s.entry_id, s.game_id, s.platform, s.excluded, day, m, k === days.length - 1 ? 1 : 0));
-      for (const [day, h, m] of spreadByHour(s)) insH.run(s.id, s.entry_id, s.game_id, s.platform, s.excluded, day, h, m);
+      days.forEach(([day, m], k) => insD.run(s.id, s.entry_id, s.game_id, s.platform, s.excluded, est, day, m, (!est && k === days.length - 1) ? 1 : 0));
+      for (const [day, h, m] of spreadByHour(s)) insH.run(s.id, s.entry_id, s.game_id, s.platform, s.excluded, est, day, h, m);
       n++;
     }
     for (const i of idx) db.exec(i.sql);

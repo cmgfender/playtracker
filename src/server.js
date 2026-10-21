@@ -12,6 +12,8 @@ import { Router } from './router.js';
 import { registerRoutes } from './api/routes.js';
 import { HttpError } from './util.js';
 import { ensureRollupTimezone, flushRollups, rebuildRollups } from './services/rollup.js';
+import { createLogger, asLogger } from './logger.js';
+import os from 'node:os';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
@@ -86,16 +88,26 @@ function sendJson(req, res, status, data) {
   res.end(body);
 }
 
-export function createApp({ dbFile = process.env.PLAYTRACKER_DB || path.join(process.env.PLAYTRACKER_DATA || './data', 'playtracker.db'), password = process.env.PLAYTRACKER_PASSWORD, log = console, scheduler = true, dev = process.env.NODE_ENV === 'development' } = {}) {
+export const DEFAULT_PORT = 7720;
+
+export function dataDir() {
+  return process.env.PLAYTRACKER_DATA || './data';
+}
+
+export function createApp({ dbFile = process.env.PLAYTRACKER_DB || path.join(dataDir(), 'playtracker.db'), password = process.env.PLAYTRACKER_PASSWORD, log: rawLog, scheduler = true, dev = process.env.NODE_ENV === 'development' } = {}) {
+  const log = rawLog ? asLogger(rawLog) : createLogger();
   const db = openDb(dbFile);
+  log.attachDb(db);
   const settings = new Settings(db);
   const sync = new SyncService({ db, settings, log });
   const auth = new Auth({ db, settings, envPassword: password });
   const router = new Router();
-  const app = { db, settings, sync, auth, version: pkg.version, router, rebuildRollups: () => rebuildRollups(db) };
+  const http_ = { requests: 0, errors: 0, client_errors: 0, started_at: Date.now(), slow: 0 };
+  const app = { db, dbFile, settings, sync, auth, log, version: pkg.version, router, http: http_, rebuildRollups: () => rebuildRollups(db) };
+  const apiLog = log.scoped('api');
   const t0 = Date.now();
-  const rolled = ensureRollupTimezone(db, settings, log);
-  if (rolled > 1000) log.info?.(`[rollup] indexed ${rolled} sessions in ${Date.now() - t0}ms`);
+  const rolled = ensureRollupTimezone(db, settings, log.scoped('rollup'));
+  if (rolled > 1000) log.scoped('rollup').info(`Indexed ${rolled} sessions in ${Date.now() - t0}ms`);
   registerRoutes(router, app);
   router.get('/api/openapi.json', () => router.openapi({ title: 'PlayTracker API', version: pkg.version, description: 'Self-hosted game playtime & session tracker' }), { summary: 'OpenAPI document', public: true, hidden: true });
   const serveStatic = staticServer(PUBLIC_DIR, { dev });
@@ -160,13 +172,23 @@ export function createApp({ dbFile = process.env.PLAYTRACKER_DB || path.join(pro
         }
         if (ctx.body === null || typeof ctx.body !== 'object') ctx.body = ctx.rawType ? ctx.body : {};
       }
+      const t = Date.now();
+      http_.requests++;
       const out = await m.route.handler(ctx);
       if (req.method !== 'GET') flushRollups(db);
       if (!sent) sendJson(req, res, 200, out ?? { ok: true });
+      const ms = Date.now() - t;
+      if (ms > 3000) { http_.slow++; apiLog.warn(`Slow request ${req.method} ${pathname} took ${ms}ms`, { query: url.search || undefined }); }
+      else if (process.env.LOG_REQUESTS === 'true') apiLog.info(`${req.method} ${pathname} ${ms}ms`);
     } catch (err) {
       const status = err.status && err.status >= 400 && err.status < 600 ? err.status : 500;
-      if (status >= 500) log.error?.(`[api] ${req.method} ${pathname}:`, err);
+      if (status >= 500) {
+        http_.errors++;
+        // 502 = upstream platform failure (already logged by the sync service)
+        if (status !== 502) apiLog.error(`${req.method} ${pathname} failed: ${err.message}`, err);
+      } else http_.client_errors++;
       if (!sent && !res.headersSent) sendJson(req, res, status, { error: err.message || 'Internal error', details: err.details });
+      else if (!res.writableEnded) res.end();
     }
   };
 
@@ -196,19 +218,113 @@ export function createApp({ dbFile = process.env.PLAYTRACKER_DB || path.join(pro
 
   const server = http.createServer((req, res) => {
     handler(req, res).catch((err) => {
-      log.error?.(err);
+      apiLog.error('Unhandled request error', err);
       if (!res.headersSent) { res.writeHead(500); res.end(); }
     });
   });
+  server.on('clientError', (err, socket) => { socket.destroy(); });
   if (scheduler) sync.start();
-  return { server, app, close: () => { sync.stop(); server.close(); db.close(); } };
+  let closed = false;
+  return {
+    server, app,
+    close: () => {
+      if (closed) return;
+      closed = true;
+      sync.stop();
+      server.close();
+      log.detachDb();
+      try { db.close(); } catch { /* already closed */ }
+    },
+  };
+}
+
+/**
+ * Running as root in a container (Unraid default): make the data dir owned by PUID:PGID,
+ * then drop privileges - no external tools (gosu/su-exec) needed.
+ */
+export function prepareDataDir(dir, log) {
+  try { fs.mkdirSync(dir, { recursive: true }); } catch (err) {
+    log.error(`Cannot create data directory ${dir}: ${err.message}`);
+    process.exit(1);
+  }
+  const isRoot = typeof process.getuid === 'function' && process.getuid() === 0;
+  const uid = Number(process.env.PUID);
+  const gid = Number(process.env.PGID);
+  if (isRoot && Number.isInteger(uid) && Number.isInteger(gid) && process.env.PUID !== '0') {
+    const chownTree = (p) => {
+      try { fs.chownSync(p, uid, gid); } catch { /* best effort (e.g. NFS) */ }
+      let st;
+      try { st = fs.statSync(p); } catch { return; }
+      if (st.isDirectory()) for (const f of fs.readdirSync(p)) chownTree(path.join(p, f));
+    };
+    chownTree(dir);
+    try {
+      process.setgid(gid);
+      process.setuid(uid);
+      log.info(`Running as uid ${uid} / gid ${gid}`);
+    } catch (err) {
+      log.warn(`Could not switch to PUID ${uid} / PGID ${gid} (${err.message}); continuing as root`);
+    }
+  }
+  try { fs.accessSync(dir, fs.constants.W_OK); } catch {
+    log.error(`Data directory ${dir} is not writable by uid ${process.getuid?.()}. Fix the host folder permissions or set PUID/PGID (Unraid: 99/100).`);
+    process.exit(1);
+  }
+}
+
+/** Listen on the preferred port; when it's taken (host networking) try the next ones. */
+export function listen(server, port, log, { attempts = 20, host = '0.0.0.0' } = {}) {
+  return new Promise((resolve, reject) => {
+    let p = port;
+    const tryListen = () => {
+      server.once('error', onError);
+      server.listen(p, host, () => { server.off('error', onError); resolve(p); });
+    };
+    const onError = (err) => {
+      if (err.code === 'EADDRINUSE' && process.env.PLAYTRACKER_PORT_FALLBACK !== 'false' && p < port + attempts) {
+        log.warn(`Port ${p} is already in use, trying ${p + 1}`);
+        p++;
+        tryListen();
+      } else reject(err);
+    };
+    tryListen();
+  });
+}
+
+function lanAddresses() {
+  const out = [];
+  for (const list of Object.values(os.networkInterfaces())) for (const a of list || []) if (a.family === 'IPv4' && !a.internal) out.push(a.address);
+  return out;
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const port = Number(process.env.PORT || process.env.PLAYTRACKER_PORT || 8080);
-  const { server, close } = createApp();
-  server.listen(port, '0.0.0.0', () => console.log(`PlayTracker ${pkg.version} listening on :${port} (TZ=${Intl.DateTimeFormat().resolvedOptions().timeZone})`));
-  const shutdown = () => { console.log('Shutting down'); close(); process.exit(0); };
-  process.on('SIGTERM', shutdown);
-  process.on('SIGINT', shutdown);
+  const log = createLogger();
+  process.on('uncaughtException', (err) => {
+    log.error('Uncaught exception - exiting so the container restarts cleanly', err);
+    setTimeout(() => process.exit(1), 200);
+  });
+  process.on('unhandledRejection', (err) => log.error('Unhandled promise rejection', err instanceof Error ? err : new Error(String(err))));
+  process.on('warning', (w) => { if (w.name !== 'ExperimentalWarning') log.warn(`Node warning: ${w.message}`); });
+
+  const port = Number(process.env.PORT || process.env.PLAYTRACKER_PORT || DEFAULT_PORT);
+  prepareDataDir(dataDir(), log);
+  let instance;
+  try {
+    instance = createApp({ log });
+  } catch (err) {
+    log.error('Failed to start (database could not be opened or migrated)', err);
+    process.exit(1);
+  }
+  listen(instance.server, port, log).then((actual) => {
+    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    log.info(`PlayTracker ${pkg.version} ready on port ${actual} (TZ=${tz}, db=${instance.app.dbFile})`);
+    for (const ip of lanAddresses()) log.info(`  → http://${ip}:${actual}`);
+    if (tz === 'UTC' && !process.env.TZ) log.warn('TZ is not set - daily stats use UTC. Set the TZ variable (e.g. America/New_York).');
+  }).catch((err) => {
+    log.error(`Could not listen on port ${port}: ${err.message}`);
+    process.exit(1);
+  });
+  const shutdown = (sig) => { log.info(`${sig} received, shutting down`); instance.close(); setTimeout(() => process.exit(0), 300); };
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('SIGINT', () => shutdown('SIGINT'));
 }

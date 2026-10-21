@@ -51,8 +51,12 @@ export function barChart(data, { height = 200, width = 640, color = 'var(--accen
     const y = padT + ih - (t / max) * ih;
     return `<line class="gridline" x1="${padL}" x2="${W}" y1="${y}" y2="${y}"/><text x="${padL - 6}" y="${y + 3}" text-anchor="end">${formatTick ? formatTick(t) : `${Math.round(t / 60)}h`}</text>`;
   }).join('');
-  return `<div class="chart" style="aspect-ratio:${W}/${H}"><svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none"><g class="axis">${grid}${labels}</g>${bars}</svg><div class="tip"></div></div>`;
+  return `<div class="chart" style="aspect-ratio:${W}/${H}"><svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">${HATCH}<g class="axis">${grid}${labels}</g>${bars}</svg><div class="tip"></div></div>`;
 }
+
+// Hatched fill used for estimated (inferred) history.
+const HATCH = '<defs><pattern id="pt-hatch" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="6" height="6" fill="color-mix(in srgb, var(--accent) 22%, transparent)"/><line x1="0" y1="0" x2="0" y2="6" stroke="color-mix(in srgb, var(--accent) 70%, transparent)" stroke-width="2.2"/></pattern>'
+  + '<pattern id="pt-hatch-ov" width="4" height="4" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><line x1="0" y1="0" x2="0" y2="4" stroke="var(--panel)" stroke-opacity=".55" stroke-width="1.6"/></pattern></defs>';
 
 export function sparkline(values, { color = 'var(--accent)' } = {}) {
   const n = values.length;
@@ -78,7 +82,7 @@ export function donut(segments, { label = '', sub = '' } = {}) {
     <text x="70" y="86" text-anchor="middle" fill="var(--muted)" font-size="10.5">${esc(sub)}</text></svg>`;
 }
 
-export function heatmap(year, days, { weekStartsOn = 1 } = {}) {
+export function heatmap(year, days, { weekStartsOn = 1, estimated = {} } = {}) {
   const start = new Date(year, 0, 1);
   const offset = (start.getDay() - weekStartsOn + 7) % 7;
   const cell = 12; const gap = 3; const top = 18; const left = 26;
@@ -104,7 +108,13 @@ export function heatmap(year, days, { weekStartsOn = 1 } = {}) {
     const key = `${year}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
     const m = days[key] || 0;
     const future = d > today;
-    rects += `<rect class="hit" x="${left + col * (cell + gap)}" y="${top + row * (cell + gap)}" width="${cell}" height="${cell}" fill="${future ? 'transparent' : color(m)}" ${future ? 'stroke="var(--line)" stroke-dasharray="2 2"' : ''} data-tip="${esc(d.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' }))}: ${m ? fmtMin(m) : 'no play'}"/>`;
+    const est = estimated[key] || 0;
+    const mostlyEst = m && est >= m / 2;
+    const tip = `${d.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })}: ${m ? fmtMin(m) : 'no play'}${est ? ` (${fmtMin(est)} estimated)` : ''}`;
+    const x = left + col * (cell + gap); const y = top + row * (cell + gap);
+    rects += `<rect class="hit" x="${x}" y="${y}" width="${cell}" height="${cell}" fill="${future ? 'transparent' : color(m)}" ${future ? 'stroke="var(--line)" stroke-dasharray="2 2"' : ''} data-tip="${esc(tip)}"/>`;
+    // estimated days keep their intensity colour, with a hatch overlay
+    if (mostlyEst && !future) rects += `<rect x="${x}" y="${y}" width="${cell}" height="${cell}" fill="url(#pt-hatch-ov)" pointer-events="none"/>`;
     if (d.getMonth() !== lastMonth) {
       lastMonth = d.getMonth();
       months += `<text x="${left + col * (cell + gap)}" y="11">${d.toLocaleDateString(undefined, { month: 'short' })}</text>`;
@@ -115,8 +125,8 @@ export function heatmap(year, days, { weekStartsOn = 1 } = {}) {
   const dayLabels = [1, 3, 5].map((r) => `<text x="0" y="${top + r * (cell + gap) + 10}">${wd[(r + weekStartsOn) % 7]}</text>`).join('');
   const width = left + 54 * (cell + gap);
   const height = top + 7 * (cell + gap);
-  return `<div class="chart heat"><svg viewBox="0 0 ${width} ${height}"><g class="axis">${months}${dayLabels}</g>${rects}</svg><div class="tip"></div></div>
-    <div class="row small muted" style="justify-content:flex-end;gap:4px;margin-top:6px">Less ${[0, 0.1, 0.3, 0.55, 1].map((f) => `<span style="width:11px;height:11px;border-radius:3px;background:${color(f * max)}"></span>`).join('')} More</div>`;
+  return `<div class="chart heat"><svg viewBox="0 0 ${width} ${height}">${HATCH}<g class="axis">${months}${dayLabels}</g>${rects}</svg><div class="tip"></div></div>
+    <div class="row small muted" style="justify-content:flex-end;gap:4px;margin-top:6px">${Object.keys(estimated).length ? '<span class="hatch-dot dot" style="width:11px;height:11px;border-radius:3px"></span> estimated &nbsp;&nbsp;' : ''}Less ${[0, 0.1, 0.3, 0.55, 1].map((f) => `<span style="width:11px;height:11px;border-radius:3px;background:${color(f * max)}"></span>`).join('')} More</div>`;
 }
 
 /** Horizontal bars of top games. */
@@ -126,13 +136,13 @@ export function topList(games, { coverFn, limit = 10 } = {}) {
     <a class="hbar" href="/game/${g.game_id}" data-link>
       ${coverFn(g)}
       <div style="min-width:0"><div class="ellipsis" style="font-weight:620">${esc(g.title)}</div>
-        <div class="track"><i style="width:${(g.minutes / max) * 100}%;background:${i === 0 ? 'linear-gradient(90deg,var(--accent),var(--accent2))' : 'var(--accent)'};opacity:${1 - i * 0.05}"></i></div></div>
+        <div class="track" style="display:flex"><i style="width:${((g.minutes - (g.estimated_minutes || 0)) / max) * 100}%;background:${i === 0 ? 'linear-gradient(90deg,var(--accent),var(--accent2))' : 'var(--accent)'};opacity:${1 - i * 0.05}"></i>${g.estimated_minutes ? `<i class="hatch-bg" style="width:${(g.estimated_minutes / max) * 100}%" title="${fmtMin(g.estimated_minutes)} estimated from history"></i>` : ''}</div></div>
       <div class="nowrap" style="font-weight:700;font-variant-numeric:tabular-nums">${fmtMin(g.minutes, { short: g.minutes > 600 })}<div class="tiny muted" style="text-align:right">${g.sessions} sess.</div></div>
     </a>`).join('');
 }
 
-export function platformLegend(list) {
-  return `<div class="legend">${list.map((p) => `<span><i class="dot" style="background:${plat(p.platform).color}"></i>${esc(plat(p.platform).label)} · ${fmtMin(p.minutes, { short: true })}</span>`).join('')}</div>`;
+export function platformLegend(list, extra = '') {
+  return `<div class="legend">${list.map((p) => `<span><i class="dot" style="background:${plat(p.platform).color}"></i>${esc(plat(p.platform).label)} · ${fmtMin(p.minutes, { short: true })}</span>`).join('')}${extra}</div>`;
 }
 
 export function bindTips(root) {

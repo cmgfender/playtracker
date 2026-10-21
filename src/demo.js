@@ -38,6 +38,7 @@ export function seedDemo(db, { days = 120, now = Date.now() } = {}) {
   }
   const totals = Object.fromEntries(Object.entries(LIB).map(([p, list]) => [p, list.map((g) => g[2])]));
   const start = new Date(now - days * DAY); start.setHours(4, 0, 0, 0);
+  const firstPlayed = {};
   for (let d = 0; d <= days; d++) {
     const t = start.getTime() + d * DAY;
     if (t > now) break;
@@ -46,9 +47,13 @@ export function seedDemo(db, { days = 120, now = Date.now() } = {}) {
       const accId = accounts[p];
       const items = list.map(([extId, title, , weight], i) => {
         if (d > 0 && rand() < weight * (weekend ? 0.55 : 0.28)) totals[p][i] += Math.round(20 + rand() * (weekend ? 240 : 110));
-        const lastPlayed = t - Math.round(rand() * 6 * 3600_000);
+        // first sync: realistic "last played" spread over the past year (drives history inference)
+        const lastPlayed = d === 0 ? t - Math.round((1 + rand() * 360) * DAY) : t - Math.round(rand() * 6 * 3600_000);
+        if (d === 0 && totals[p][i]) firstPlayed[`${p}:${i}`] = lastPlayed - Math.round((30 + rand() * 500) * DAY);
         return {
           extId, title, playtimeMin: totals[p][i], lastPlayedAt: totals[p][i] ? lastPlayed : null,
+          ...(p === 'psn' && totals[p][i] ? { firstPlayedAt: firstPlayed[`${p}:${i}`], playCount: Math.round(totals[p][i] / 95) + d } : {}),
+          ...(p === 'steam' && d === 0 ? { recentMin: weight > 0.3 ? Math.round(rand() * 600) : 0 } : {}),
           coverUrl: p === 'steam' ? `https://cdn.cloudflare.steamstatic.com/steam/apps/${extId}/library_600x900.jpg` : null,
           iconUrl: null,
         };

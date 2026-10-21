@@ -3,6 +3,7 @@ import { findOrCreateGame } from './library.js';
 import { normalizeTitle } from './titles.js';
 import { toTime } from '../util.js';
 import { flushRollups } from './rollup.js';
+import { mergeEvidence, reinferMany } from './inference.js';
 
 const MIN = 60_000;
 const STATUSES = new Set(['unset', 'backlog', 'playing', 'paused', 'completed', 'beaten', 'dropped', 'wishlist']);
@@ -57,9 +58,10 @@ export function importRows(db, rows, { settings, now = Date.now() } = {}) {
     getEntry: db.prepare('SELECT * FROM entries WHERE id = ?'),
     existing: db.prepare("SELECT started_at, minutes FROM sessions WHERE entry_id = ? AND kind = 'play' AND started_at IS NOT NULL"),
     insPlay: db.prepare("INSERT INTO sessions(entry_id, source, kind, minutes, window_start, window_end, started_at, ended_at, note, created_at) VALUES (?, 'import', 'play', ?, ?, ?, ?, ?, ?, ?)"),
-    insBase: db.prepare("INSERT INTO sessions(entry_id, source, kind, minutes, window_end, note, created_at) VALUES (?, 'import', 'baseline', ?, ?, 'Imported history', ?)"),
+    addHistory: db.prepare('UPDATE entries SET baseline_min = baseline_min + ? WHERE id = ?'),
     updEntry: db.prepare('UPDATE entries SET playtime_min = ?, last_played_at = COALESCE(?, last_played_at) WHERE id = ?'),
   };
+  const toInfer = new Set();
   return tx(db, () => {
     for (const row of rows) {
       const title = String(row.title || row.name || row.game || '').trim();
@@ -81,6 +83,7 @@ export function importRows(db, rows, { settings, now = Date.now() } = {}) {
       } else res.entries_updated++;
 
       let sessionMinutes = 0;
+      let earliestSession = Infinity;
       const sessions = Array.isArray(row.sessions) ? row.sessions : [];
       // re-imports are idempotent: skip sessions already present (same start + length)
       const have = sessions.length && res.entries_updated ? new Set(st.existing.all(entry.id).map((x) => `${x.started_at}:${x.minutes}`)) : new Set();
@@ -94,6 +97,7 @@ export function importRows(db, rows, { settings, now = Date.now() } = {}) {
         have.add(k);
         st.insPlay.run(entry.id, minutes, start, end, start, end, s.note || null, now);
         sessionMinutes += minutes;
+        earliestSession = Math.min(earliestSession, start);
         res.sessions++;
         res.tracked_minutes += minutes;
       }
@@ -101,10 +105,29 @@ export function importRows(db, rows, { settings, now = Date.now() } = {}) {
       const newTotal = Math.max(reported, entry.playtime_min + sessionMinutes);
       const baseline = newTotal - entry.playtime_min - sessionMinutes;
       if (baseline > 0) {
-        st.insBase.run(entry.id, baseline, now, now);
+        // Totals not covered by explicit sessions are history: date them from whatever the
+        // file tells us (first played / date added / last played / play count).
+        st.addHistory.run(baseline, entry.id);
+        const firstPlayed = toTime(row.first_played || row.first_played_at || row.started);
+        const dateAdded = toTime(row.date_added || row.added || row.purchased || row.acquired || row.date_acquired);
+        const playCount = Number(row.play_count || row.launches || row.sessions_count) || undefined;
+        mergeEvidence(db, entry.id, {
+          tracking_start: Number.isFinite(earliestSession) ? earliestSession : now,
+          last_played_at: lastPlayed ? Math.min(lastPlayed, Number.isFinite(earliestSession) ? earliestSession : lastPlayed) : undefined,
+          first_played_at: firstPlayed ?? undefined,
+          date_added: dateAdded ?? undefined,
+          play_count: playCount,
+        });
+        toInfer.add(entry.id);
         res.baseline_minutes += baseline;
       }
       st.updEntry.run(newTotal, lastPlayed, entry.id);
+    }
+    res.estimated_minutes = 0;
+    res.undated_minutes = 0;
+    flushRollups(db);
+    for (const r of reinferMany(db, toInfer, { settings })) {
+      if (r) { res.estimated_minutes += r.chunks.reduce((a, c) => a + c.minutes, 0); res.undated_minutes += r.undated; }
     }
     flushRollups(db);
     return res;

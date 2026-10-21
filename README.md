@@ -5,15 +5,19 @@ A self-hosted game playtime and session tracker for Docker and Unraid. It's fast
 Steam, Xbox and PlayStation tell you **how long you've played in total**, but not **when**. PlayTracker saves your lifetime playtime on a schedule (hourly, daily, weekly, monthly or every *X* days/hours). The difference between two snapshots becomes a **play session**.
 
 - **Platforms:** Steam (Web API), Xbox (OpenXBL), PlayStation (NPSSO), plus **custom accounts** you push totals to over the API (Switch, Epic, GOG, emulators, Playnite…). You can also add games by hand and log sessions manually.
+- **Live presence:** PlayTracker watches what you're playing right now on Steam, PlayStation and Xbox.
+  - Sessions get **exact start and end times**.
+  - A sync runs right after you stop playing.
+  - The dashboard shows a "Playing now" card.
+- **Smart history:** existing hours are dated from first/last played, launch counts, achievement times and release dates, instead of spiking on import day. See below.
 - **Session detection:**
   - Deltas between syncs become sessions.
   - When a platform reports a "last played" time (Steam, Xbox, PSN), the session is pinned to it.
   - When it doesn't, the minutes are spread across the sync window, so weekly or monthly syncs still give sensible daily charts.
   - Deltas below a threshold build up until they're big enough.
   - Impossible deltas (more playtime than wall-clock time since the last sync) are clamped.
-- **Mass initial imports:** your existing hours are stored as **history (baseline)**. They count toward lifetime totals but never show up as a fake 500-hour session on day one.
-  - Steam's "last 2 weeks" figure is turned into a real session on import.
-  - Games that first appear later but were last played *before* the previous sync are also imported as history.
+- **Mass initial imports:** your existing hours never show up as a fake 500-hour session on day one. They become **history**, which is dated by evidence and drawn hatched in charts (see *Smart handling of your existing playtime*).
+  - Games that first appear later but were last played *before* the previous sync are also treated as history.
 - **Duplicate tracking:**
   - The same game on several platforms is grouped automatically. Platform tags and edition suffixes are ignored, e.g. *ELDEN RING (PS5)*, *Witcher 3 – GOTY Edition*.
   - Fuzzy **merge suggestions** catch the rest. Sequels are deliberately *not* matched (*Hades* vs *Hades II*).
@@ -36,32 +40,36 @@ Steam, Xbox and PlayStation tell you **how long you've played in total**, but no
 
 ## Quick start
 
+### Unraid (zero configuration)
+
+1. **Add the template.** In the Unraid web UI, go to **Docker → Add Container** and paste the template URL `https://raw.githubusercontent.com/cmgfender/playtracker/main/unraid/playtracker.xml`. Or save [`unraid/playtracker.xml`](unraid/playtracker.xml) to `/boot/config/plugins/dockerMan/templates-user/my-playtracker.xml` and pick it.
+2. **Click Apply.** No fields need changing:
+   - **Port:** `7720`. It's uncommon, so it won't collide with the usual 8080 apps.
+   - **Data:** `/mnt/user/appdata/playtracker`.
+   - **User:** the container runs as `99:100` (nobody:users) and fixes the folder's ownership itself.
+   - **Timezone:** Unraid passes its timezone in automatically.
+3. **Open the WebUI** and go to **Accounts → Connect**.
+
+The container needs nothing else: no setup scripts, no extra packages, no database server. It has a built-in healthcheck and shuts down cleanly when stopped. If you run it with host networking and 7720 is taken, it moves to the next free port and logs the URL.
+
+> The image is published to GHCR by the CI workflow on every push to `main`. The first time, go to the package settings on GitHub (**Packages → playtracker → Package settings**) and set its visibility to **Public** so Unraid can pull it without logging in.
+
+### Docker
+
 ```bash
-docker run -d --name playtracker -p 8080:8080 \
+docker run -d --name playtracker -p 7720:7720 --restart unless-stopped \
   -v /path/to/appdata/playtracker:/data \
   -e TZ=America/New_York \
   ghcr.io/cmgfender/playtracker:latest
 ```
 
-Open `http://<host>:8080`, go to **Accounts → Connect** and pick a platform. The first sync imports your library.
+There's also a [`docker-compose.yml`](docker-compose.yml).
 
-To try it without credentials, seed a demo database:
+### Try it without accounts
+
 ```bash
-node src/demo.js ./data/playtracker.db && npm start
+npm run demo -- ./data/playtracker.db && npm start
 ```
-
-### Unraid
-
-The template is in [`unraid/playtracker.xml`](unraid/playtracker.xml). To use it:
-
-1. Copy it to `/boot/config/plugins/dockerMan/templates-user/my-playtracker.xml`.
-2. In the Unraid web UI, go to **Docker → Add Container** and select *playtracker*.
-
-Data is stored in `/mnt/user/appdata/playtracker`, and the container runs as `99:100` by default.
-
-### docker compose
-
-See [`docker-compose.yml`](docker-compose.yml).
 
 ## Connecting platforms
 
@@ -74,6 +82,28 @@ See [`docker-compose.yml`](docker-compose.yml).
 
 > **Sync frequency vs precision:** you can only see what happened between two snapshots. Daily syncs (the default) give per-day sessions. Hourly syncs give near-exact sessions plus time-of-day stats. Weekly or monthly syncs still work: the minutes are spread across the window, and Steam's 2-week counter or the platform's last-played time narrows it down when available. Each account can override the global schedule.
 
+## Smart handling of your existing playtime
+
+Importing a library with 3,000 hours would normally make "today" look like a 3,000-hour day. PlayTracker never records pre-tracking time as play. Instead it **dates** it from everything the platforms report:
+
+- **PlayStation:** first played, last played and launch count.
+- **Steam and Xbox:** last played, the 2-week counter, and achievement unlock times.
+- **Bounds:** release dates, account creation date, and dates added from CSV imports.
+
+It then spreads the time over that period:
+- The shape is a burst after starting a game, a taper, and a bump near the last session.
+- Each game is capped at 10 hours a day.
+- All games together are capped at 12 hours a day, shared across the whole library.
+
+The result:
+
+- **Charts and year-in-review** show this **estimated history** hatched, with a confidence of high, medium or low per game. Toggle it on the Stats page.
+- **Today, this week, streaks, session counts and averages** only ever use **tracked** play.
+- **Time that can't be dated** stays as undated history (lifetime totals only).
+- **Corrections:** on a game's page, set the dates you actually played it, or choose "Don't chart".
+
+Every platform's advantages and limits, and exactly how each is used, are documented in **[docs/PLATFORMS.md](docs/PLATFORMS.md)**. The same information is shown in the app under Accounts → "What each platform reports".
+
 ## How sessions are computed
 
 ```
@@ -81,13 +111,19 @@ sync N-1: Hades = 6 000 min      sync N: Hades = 6 090 min
 → session: 90 min, window [sync N-1, sync N], ended ≈ last_played_at
 ```
 
-1. **First time a game is seen during an account's first sync:** its lifetime total is stored as *baseline* (history). Steam's `playtime_2weeks` is turned into a session within the last 14 days.
+1. **First time a game is seen during an account's first sync:** its lifetime total becomes **history**, dated as described above. It is never recorded as play.
 2. **A new game shows up in a later sync:**
-   - If its playtime fits in the time since the last sync, all of it is a session.
-   - If the platform says it was last played *before* that sync, the playtime is filed as baseline.
-3. **Deltas smaller than "minimum session" (default 2 min)** are held back and build up until they're big enough.
-4. **Deltas larger than the elapsed time** (plus a tolerance) are capped at the elapsed time. The excess goes to baseline.
-5. **Playtime that goes down** (refunds, resets) updates the total but creates no session.
+   - If its playtime fits in the time since the last sync (and PSN doesn't say it was first played earlier), all of it is a session.
+   - Otherwise, Steam's 2-week counter decides how much is new, and the rest is history.
+3. **Turning a delta into sessions:**
+   - **Presence spans:** exact sessions.
+   - **PSN launch-count increase:** that many sessions.
+   - **Up to 6 hours with a last-played time:** one session pinned to it.
+   - **Larger deltas over multi-day windows:** spread over the days.
+   - **Steam:** the session is tagged with the device (Deck, Windows…).
+4. **Deltas smaller than "minimum session" (default 2 min)** are held back and build up until they're big enough.
+5. **Deltas larger than the elapsed time** (offline play or platform back-fill) are capped at the elapsed time. The excess goes to undated history.
+6. **Playtime that goes down** (refunds, resets) updates the total but creates no session.
 
 Synced sessions can be moved to history: delete them, or untick "count in stats". Lifetime totals always come from the platform, so they never change. Manual and imported sessions can be fully edited or deleted.
 
@@ -101,13 +137,15 @@ Hades,switch,42,2025-11-02,completed,10
 Celeste,import,12.5,,beaten,
 ```
 
+Optional columns `first_played`, `date_added` and `play_count` help date the hours (see *Smart handling of your existing playtime*).
+
 JSON can include individual sessions, which are tracked as real sessions:
 ```json
 { "games": [ { "title": "Zelda: TotK", "platform": "switch", "playtime_minutes": 9000,
   "sessions": [ { "date": "2026-03-01", "minutes": 120 } ] } ] }
 ```
 
-Totals not covered by sessions are filed as history. Re-importing the same file is safe: it is idempotent. If the same games are also on a synced account, the **Duplicates** page flags them so they aren't counted twice.
+Totals not covered by sessions are filed as history and dated from those columns. Re-importing the same file is safe: it is idempotent. If the same games are also on a synced account, the **Duplicates** page flags them so they aren't counted twice.
 
 ## API
 
@@ -115,19 +153,19 @@ Create a token under **Settings → API tokens**. Browse the docs in the app at 
 
 ```bash
 # dashboard numbers
-curl -H "Authorization: Bearer pt_…" http://host:8080/api/v1/widget
+curl -H "Authorization: Bearer pt_…" http://host:7720/api/v1/widget
 
 # push totals for a custom account
-curl -X POST http://host:8080/api/v1/accounts/4/report -H "Authorization: Bearer pt_…" \
+curl -X POST http://host:7720/api/v1/accounts/4/report -H "Authorization: Bearer pt_…" \
   -H "Content-Type: application/json" \
   -d '{"games":[{"id":"totk","title":"Zelda: TotK","playtime_minutes":5230}]}'
 
 # log a session
-curl -X POST http://host:8080/api/v1/sessions -H "Authorization: Bearer pt_…" \
+curl -X POST http://host:7720/api/v1/sessions -H "Authorization: Bearer pt_…" \
   -H "Content-Type: application/json" -d '{"game_id":12,"minutes":45,"note":"Chapter 3"}'
 
 # trigger a sync and wait for the result
-curl -X POST "http://host:8080/api/v1/accounts/1/sync?wait=true" -H "Authorization: Bearer pt_…"
+curl -X POST "http://host:7720/api/v1/accounts/1/sync?wait=true" -H "Authorization: Bearer pt_…"
 ```
 
 Main endpoints:
@@ -137,18 +175,41 @@ Main endpoints:
 - **Accounts and syncing:** `accounts`, `accounts/:id/sync`, `accounts/:id/report`, `syncs`
 - **Admin:** `settings`, `tokens`, `import`, `export`, `backup`
 
+## Logging, errors & diagnostics
+
+- **Console output:** stdout/stderr, which is what `docker logs` and Unraid's log viewer show. Timestamped, levelled and tagged by source (`sync`, `presence`, `api`, `rollup`).
+- **Error log:** warnings and errors are also stored in the database for 30 days. Browse, filter and expand stack traces on the **System** page, or call `GET /api/v1/logs`. The sidebar badge shows errors from the last 24 hours, and the dashboard warns about them.
+- **System page / `GET /api/v1/system`:** health at a glance.
+  - **Per account:** last sync and its duration, failures in the last 7 days, and API calls this hour and in the last 24 hours, against the rate limit.
+  - **Presence:** status of the live "currently playing" checks.
+  - **History dating:** how many titles are still queued for background lookups.
+  - **Server:** request and failure counts, slow requests, and database size.
+  - **Console:** recent console output.
+  - **Diagnostics download:** a JSON bundle to attach to bug reports.
+- **Sync history:** every sync records its API calls, rate-limit hits, warnings, duration and errors.
+- **Crashes:** uncaught exceptions are logged before exiting, so the container restarts cleanly. Unhandled promise rejections are logged, not fatal.
+- **Webhooks** can be set to fire on errors only. Prometheus metrics are at `/metrics`.
+
+| Variable | Default | |
+|---|---|---|
+| `LOG_LEVEL` | `info` | `debug`, `info`, `warn` or `error` |
+| `LOG_FORMAT` | text | Set to `json` for structured logs (Loki or ELK) |
+| `PLAYTRACKER_LOG_FILE` | | Also write to a rotating file (5 MB × 2), e.g. `/data/playtracker.log` |
+| `LOG_REQUESTS` | `false` | Log every API request. Requests over 3 s are always logged as slow. |
+
 ## Configuration
 
 | Variable | Default | |
 |---|---|---|
-| `PORT` | `8080` | HTTP port |
+| `PORT` | `7720` | HTTP port |
 | `TZ` | `UTC` | Timezone for daily buckets and scheduled sync times |
 | `PLAYTRACKER_DATA` | `/data` | Where `playtracker.db` lives |
 | `PLAYTRACKER_DB` | | Full path to the database file instead (overrides `PLAYTRACKER_DATA`) |
 | `PLAYTRACKER_PASSWORD` | | Password for the UI and API. You can also set one in Settings. With no password, access is open (fine on a trusted LAN). |
 | `PLAYTRACKER_SECURE_COOKIE` | `false` | Set to `true` when served over HTTPS |
 | `PLAYTRACKER_CORS_ORIGIN` | | Lets another origin call the API from a browser |
-| `PUID` / `PGID` | `99` / `100` | User and group the container runs as |
+| `PUID` / `PGID` | `99` / `100` | User and group the container runs as. It starts as root, fixes `/data` ownership, then drops to this user. |
+| `PLAYTRACKER_PORT_FALLBACK` | `true` | With host networking, move to the next free port if the chosen one is taken |
 
 Everything else (schedule, detection thresholds, webhook, theme) lives in **Settings**.
 
@@ -178,7 +239,7 @@ On upgrade, or if the container's `TZ` changes, the rollups are rebuilt once at 
 ## Development
 
 ```bash
-npm start          # http://localhost:8080 (data in ./data)
+npm start          # http://localhost:7720 (data in ./data)
 npm run dev        # restart on change
 npm test           # node:test suite (sync engine, stats, duplicates, import, API)
 ```

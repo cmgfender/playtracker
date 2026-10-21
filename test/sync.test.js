@@ -35,7 +35,7 @@ function runSync(db, settings, accountId, items, now) {
 
 const sessions = (db, kind) => db.prepare(`SELECT * FROM sessions ${kind ? 'WHERE kind = ?' : ''} ORDER BY id`).all(...(kind ? [kind] : []));
 
-test('initial import becomes baseline; Steam 2-week minutes become a real session', () => {
+test('initial import never lands on import day: history is dated by inference', () => {
   const { db, settings } = setup();
   const acc = addAccount(db);
   const t0 = new Date(2026, 5, 1, 4).getTime();
@@ -45,15 +45,26 @@ test('initial import becomes baseline; Steam 2-week minutes become a real sessio
     { extId: '3', title: 'Unplayed', playtimeMin: 0 },
   ], t0);
   assert.equal(s.games_new, 3);
-  assert.equal(s.sessions_created, 1);
-  assert.equal(s.minutes_added, 120);
-  assert.equal(s.baseline_minutes, 6000 - 120 + 900);
+  assert.equal(s.sessions_created, 0, 'no tracked play on an initial import');
+  assert.equal(s.history_minutes, 6900);
+  assert.equal(s.estimated_minutes, 6000, 'Hades is dated (last played + 2-week counter)');
+  assert.equal(s.baseline_minutes, 900, 'Celeste has no dates -> undated history');
   const l = lifetime(db);
   assert.equal(l.total_minutes, 6900);
-  assert.equal(l.tracked_minutes, 120);
-  // the recent session is pinned to the last played day
-  const play = sessions(db, 'play')[0];
-  assert.equal(play.ended_at, t0 - D);
+  assert.equal(l.tracked_minutes, 0);
+  assert.equal(l.estimated_minutes, 6000);
+  // nothing after last played, the 2-week minutes inside the last 14 days, per-day cap respected
+  const days = db.prepare('SELECT day, SUM(minutes) m FROM play_days GROUP BY day').all();
+  const lastDay = new Date(t0 - D); lastDay.setHours(23, 59, 59, 999);
+  const lastKey = `${lastDay.getFullYear()}-${String(lastDay.getMonth() + 1).padStart(2, '0')}-${String(lastDay.getDate()).padStart(2, '0')}`;
+  assert.ok(days.every((d) => d.day <= lastKey), 'no history after last played');
+  assert.ok(days.every((d) => d.m <= 600.5), 'no day over 10h');
+  const recentKey = new Date(t0 - 14 * D).toISOString().slice(0, 10);
+  const recent = days.filter((d) => d.day >= recentKey).reduce((a, d) => a + d.m, 0);
+  assert.ok(recent >= 119.5, 'two-week minutes placed inside the last 14 days');
+  // today's / this week's tracked stats stay empty
+  const st = computeStats(db, { range: '7d', now: t0, estimates: 'exclude' });
+  assert.equal(st.total_minutes, 0);
 });
 
 test('deltas between syncs become sessions, small deltas accumulate', () => {
@@ -99,7 +110,8 @@ test('new game after initial sync: counted if plausible, baseline if played befo
   ], t0 + D);
   assert.equal(s.sessions_created, 1);
   assert.equal(s.minutes_added, 90);
-  assert.equal(s.baseline_minutes, 600);
+  assert.equal(s.history_minutes, 600);
+  assert.equal(s.estimated_minutes, 600, 'old title is dated before its last played time');
 });
 
 test('weekly windows spread across days; pinned sessions land on one day', () => {
