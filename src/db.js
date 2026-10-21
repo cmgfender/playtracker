@@ -125,6 +125,72 @@ const MIGRATIONS = [
     created_at INTEGER NOT NULL
   );
   `,
+  // 2: scale - indexed sort key, per-day/per-hour rollups maintained via a trigger-fed queue
+  `
+  ALTER TABLE sessions ADD COLUMN sort_time INTEGER GENERATED ALWAYS AS (COALESCE(ended_at, window_end, created_at)) VIRTUAL;
+  DROP INDEX IF EXISTS sessions_window;
+  DROP INDEX IF EXISTS sessions_entry;
+  CREATE INDEX sessions_entry_kind_time ON sessions(entry_id, kind, sort_time);
+  CREATE INDEX sessions_kind_time ON sessions(kind, sort_time);
+  CREATE INDEX sessions_sync ON sessions(sync_id);
+  ALTER TABLE entries ADD COLUMN last_session_at INTEGER;
+  CREATE INDEX entries_platform_game ON entries(platform, game_id);
+  CREATE INDEX games_title ON games(title COLLATE NOCASE);
+  CREATE INDEX games_created ON games(created_at);
+
+  CREATE INDEX sessions_kind_minutes ON sessions(kind, minutes, entry_id);
+
+  -- Minutes of each play session split across local calendar days / hours. game_id,
+  -- platform and excluded are copied from entries (kept in sync by triggers) so stats
+  -- are served from covering indexes without joins. ends = 1 on the session's last day,
+  -- so SUM(ends) counts sessions.
+  CREATE TABLE play_days (
+    session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    entry_id INTEGER NOT NULL,
+    game_id INTEGER NOT NULL,
+    platform TEXT NOT NULL,
+    excluded INTEGER NOT NULL DEFAULT 0,
+    day TEXT NOT NULL,
+    minutes REAL NOT NULL,
+    ends INTEGER NOT NULL DEFAULT 0
+  );
+  CREATE INDEX play_days_range ON play_days(excluded, day, platform, game_id, minutes, ends);
+  CREATE INDEX play_days_game ON play_days(game_id, excluded, day, platform, minutes, ends);
+  CREATE INDEX play_days_entry ON play_days(entry_id);
+  CREATE INDEX play_days_session ON play_days(session_id);
+  CREATE TABLE play_hours (
+    session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    entry_id INTEGER NOT NULL,
+    game_id INTEGER NOT NULL,
+    platform TEXT NOT NULL,
+    excluded INTEGER NOT NULL DEFAULT 0,
+    day TEXT NOT NULL,
+    hour INTEGER NOT NULL,
+    minutes REAL NOT NULL
+  );
+  CREATE INDEX play_hours_range ON play_hours(excluded, day, platform, game_id, hour, minutes);
+  CREATE INDEX play_hours_entry ON play_hours(entry_id);
+  CREATE INDEX play_hours_session ON play_hours(session_id);
+  CREATE TRIGGER entries_rollup_sync AFTER UPDATE OF game_id, excluded ON entries
+  WHEN OLD.game_id IS NOT NEW.game_id OR OLD.excluded IS NOT NEW.excluded BEGIN
+    UPDATE play_days SET game_id = NEW.game_id, excluded = NEW.excluded WHERE entry_id = NEW.id;
+    UPDATE play_hours SET game_id = NEW.game_id, excluded = NEW.excluded WHERE entry_id = NEW.id;
+  END;
+
+  CREATE TABLE rollup_queue (session_id INTEGER PRIMARY KEY);
+  CREATE TABLE rollup_entry_queue (entry_id INTEGER PRIMARY KEY);
+  CREATE TRIGGER sessions_rollup_ins AFTER INSERT ON sessions BEGIN
+    INSERT OR IGNORE INTO rollup_queue(session_id) VALUES (NEW.id);
+  END;
+  CREATE TRIGGER sessions_rollup_upd AFTER UPDATE OF kind, minutes, window_start, window_end, started_at, ended_at, entry_id ON sessions BEGIN
+    INSERT OR IGNORE INTO rollup_queue(session_id) VALUES (NEW.id);
+    INSERT OR IGNORE INTO rollup_entry_queue(entry_id) VALUES (OLD.entry_id);
+  END;
+  CREATE TRIGGER sessions_rollup_del AFTER DELETE ON sessions BEGIN
+    INSERT OR IGNORE INTO rollup_entry_queue(entry_id) VALUES (OLD.entry_id);
+  END;
+  INSERT INTO rollup_queue(session_id) SELECT id FROM sessions;
+  `,
 ];
 
 export function openDb(file) {
@@ -152,6 +218,7 @@ function migrate(db) {
 
 export function tx(db, fn) {
   db.exec('BEGIN IMMEDIATE');
+  db._inTx = true;
   try {
     const out = fn();
     db.exec('COMMIT');
@@ -159,5 +226,7 @@ export function tx(db, fn) {
   } catch (err) {
     db.exec('ROLLBACK');
     throw err;
+  } finally {
+    db._inTx = false;
   }
 }

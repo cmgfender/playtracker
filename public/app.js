@@ -330,10 +330,10 @@ async function syncAll() {
 
 async function refreshDupeBadge() {
   try {
-    const d = await api('/duplicates');
-    const n = d.suggestions.length + d.double_counted.length;
+    const d = await api('/duplicates?summary=true');
+    const n = d.counts.suggestions + d.counts.double_counted;
     const b = $('#dupe-badge');
-    if (b) { b.textContent = n; b.classList.toggle('hide', !n); }
+    if (b) { b.textContent = n > 999 ? '999+' : n; b.classList.toggle('hide', !n); }
   } catch { /* ignore */ }
 }
 

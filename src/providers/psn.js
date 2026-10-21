@@ -69,7 +69,7 @@ export const psn = {
     const state = { ...account.state, ...tok };
     const items = [];
     let offset = 0;
-    for (let page = 0; page < 50; page++) {
+    for (let page = 0; page < 1000; page++) {
       const url = `https://m.np.playstation.com/api/gamelist/v2/users/me/titles?categories=ps4_game,ps5_native_game,pspc_game&limit=200&offset=${offset}`;
       const data = await httpJson(url, { headers: { Authorization: `Bearer ${tok.access_token}`, 'Accept-Language': 'en-US' } });
       for (const t of data?.titles || []) {

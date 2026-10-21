@@ -3,6 +3,7 @@ import { providers } from '../providers/index.js';
 import { findOrCreateGame } from './library.js';
 import { nextRun } from './schedule.js';
 import { sendWebhook } from './webhook.js';
+import { flushRollups } from './rollup.js';
 
 const MIN = 60_000;
 const DAY = 1440 * MIN;
@@ -151,6 +152,7 @@ export function applyItems(db, account, items, { settings, now = Date.now(), syn
       record(entry, it.title, 'play', delta, windowStart, now, lastPlayedAt);
     }
   }
+  flushRollups(db);
   return stats;
 }
 

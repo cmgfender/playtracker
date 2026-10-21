@@ -11,7 +11,8 @@
     "start": "node --disable-warning=ExperimentalWarning src/server.js",
     "dev": "node --disable-warning=ExperimentalWarning --watch src/server.js",
     "test": "node --disable-warning=ExperimentalWarning --test test/*.test.js",
-    "demo": "node --disable-warning=ExperimentalWarning src/demo.js"
+    "demo": "node --disable-warning=ExperimentalWarning src/demo.js",
+    "bench": "node --disable-warning=ExperimentalWarning scripts/bench.js"
   },
   "license": "MIT"
 }

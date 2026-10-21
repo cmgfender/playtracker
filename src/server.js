@@ -11,6 +11,7 @@ import { Auth, parseCookies } from './auth.js';
 import { Router } from './router.js';
 import { registerRoutes } from './api/routes.js';
 import { HttpError } from './util.js';
+import { ensureRollupTimezone, flushRollups, rebuildRollups } from './services/rollup.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
@@ -62,7 +63,7 @@ function staticServer(dir, { dev }) {
   };
 }
 
-async function readBody(req, limit = 25 * 1024 * 1024) {
+async function readBody(req, limit = 256 * 1024 * 1024) {
   const chunks = [];
   let size = 0;
   for await (const c of req) {
@@ -91,7 +92,10 @@ export function createApp({ dbFile = process.env.PLAYTRACKER_DB || path.join(pro
   const sync = new SyncService({ db, settings, log });
   const auth = new Auth({ db, settings, envPassword: password });
   const router = new Router();
-  const app = { db, settings, sync, auth, version: pkg.version, router };
+  const app = { db, settings, sync, auth, version: pkg.version, router, rebuildRollups: () => rebuildRollups(db) };
+  const t0 = Date.now();
+  const rolled = ensureRollupTimezone(db, settings, log);
+  if (rolled > 1000) log.info?.(`[rollup] indexed ${rolled} sessions in ${Date.now() - t0}ms`);
   registerRoutes(router, app);
   router.get('/api/openapi.json', () => router.openapi({ title: 'PlayTracker API', version: pkg.version, description: 'Self-hosted game playtime & session tracker' }), { summary: 'OpenAPI document', public: true, hidden: true });
   const serveStatic = staticServer(PUBLIC_DIR, { dev });
@@ -129,11 +133,16 @@ export function createApp({ dbFile = process.env.PLAYTRACKER_DB || path.join(pro
       if (new URL(req.headers.origin).host !== host) return sendJson(req, res, 403, { error: 'Cross-origin request blocked' });
     }
 
+    flushRollups(db); // no-op unless sessions changed outside a request (cheap queue check)
     let sent = false;
     const ctx = {
       req, res, params: m.params, query: Object.fromEntries(url.searchParams), cookies, auth: who, body: {}, rawBody: '', rawType: null,
       setCookie(name, value, maxAge) {
         res.setHeader('Set-Cookie', `${name}=${encodeURIComponent(value)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}${trustProxy ? '; Secure' : ''}`);
+      },
+      stream(status, type, headers = {}) {
+        sent = true;
+        res.writeHead(status, { 'Content-Type': type, 'Cache-Control': 'no-store', ...headers });
       },
       sendRaw(status, body, type, headers = {}) {
         sent = true;
@@ -152,6 +161,7 @@ export function createApp({ dbFile = process.env.PLAYTRACKER_DB || path.join(pro
         if (ctx.body === null || typeof ctx.body !== 'object') ctx.body = ctx.rawType ? ctx.body : {};
       }
       const out = await m.route.handler(ctx);
+      if (req.method !== 'GET') flushRollups(db);
       if (!sent) sendJson(req, res, 200, out ?? { ok: true });
     } catch (err) {
       const status = err.status && err.status >= 400 && err.status < 600 ? err.status : 500;

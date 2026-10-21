@@ -2,6 +2,7 @@ import { tx } from '../db.js';
 import { findOrCreateGame } from './library.js';
 import { normalizeTitle } from './titles.js';
 import { toTime } from '../util.js';
+import { flushRollups } from './rollup.js';
 
 const MIN = 60_000;
 const STATUSES = new Set(['unset', 'backlog', 'playing', 'paused', 'completed', 'beaten', 'dropped', 'wishlist']);
@@ -48,6 +49,17 @@ function minutesOf(row) {
  */
 export function importRows(db, rows, { settings, now = Date.now() } = {}) {
   const res = { games: 0, entries_created: 0, entries_updated: 0, sessions: 0, baseline_minutes: 0, tracked_minutes: 0, skipped: 0 };
+  const st = {
+    game: db.prepare(`UPDATE games SET status = CASE WHEN ? != '' THEN ? ELSE status END, rating = COALESCE(?, rating),
+        notes = COALESCE(NULLIF(?, ''), notes), favorite = MAX(favorite, ?), updated_at = ? WHERE id = ?`),
+    findEntry: db.prepare('SELECT * FROM entries WHERE account_id IS NULL AND platform = ? AND ext_id = ?'),
+    insEntry: db.prepare('INSERT INTO entries(account_id, game_id, platform, ext_id, title, playtime_min, last_played_at, first_seen_at, last_synced_at) VALUES (NULL, ?, ?, ?, ?, 0, ?, ?, ?)'),
+    getEntry: db.prepare('SELECT * FROM entries WHERE id = ?'),
+    existing: db.prepare("SELECT started_at, minutes FROM sessions WHERE entry_id = ? AND kind = 'play' AND started_at IS NOT NULL"),
+    insPlay: db.prepare("INSERT INTO sessions(entry_id, source, kind, minutes, window_start, window_end, started_at, ended_at, note, created_at) VALUES (?, 'import', 'play', ?, ?, ?, ?, ?, ?, ?)"),
+    insBase: db.prepare("INSERT INTO sessions(entry_id, source, kind, minutes, window_end, note, created_at) VALUES (?, 'import', 'baseline', ?, ?, 'Imported history', ?)"),
+    updEntry: db.prepare('UPDATE entries SET playtime_min = ?, last_played_at = COALESCE(?, last_played_at) WHERE id = ?'),
+  };
   return tx(db, () => {
     for (const row of rows) {
       const title = String(row.title || row.name || row.game || '').trim();
@@ -56,32 +68,31 @@ export function importRows(db, rows, { settings, now = Date.now() } = {}) {
       const gameId = findOrCreateGame(db, { title, coverUrl: row.cover_url || null }, { autoMerge: settings?.auto_merge_titles !== false, now });
       res.games++;
       const status = String(row.status || '').toLowerCase();
-      db.prepare(`UPDATE games SET status = CASE WHEN ? != '' THEN ? ELSE status END, rating = COALESCE(?, rating),
-        notes = COALESCE(NULLIF(?, ''), notes), favorite = MAX(favorite, ?), updated_at = ? WHERE id = ?`)
-        .run(STATUSES.has(status) ? status : '', STATUSES.has(status) ? status : '', row.rating ? Math.min(10, Math.max(0, Number(row.rating) || 0)) : null,
+      st.game.run(STATUSES.has(status) ? status : '', STATUSES.has(status) ? status : '', row.rating ? Math.min(10, Math.max(0, Number(row.rating) || 0)) : null,
           row.notes || '', row.favorite === true || row.favorite === 'true' || row.favorite === '1' ? 1 : 0, now, gameId);
 
       const extId = `import:${normalizeTitle(title)}`;
-      let entry = db.prepare('SELECT * FROM entries WHERE account_id IS NULL AND platform = ? AND ext_id = ?').get(platform, extId);
+      let entry = st.findEntry.get(platform, extId);
       const lastPlayed = toTime(row.last_played || row.last_played_at);
       if (!entry) {
-        const r = db.prepare('INSERT INTO entries(account_id, game_id, platform, ext_id, title, playtime_min, last_played_at, first_seen_at, last_synced_at) VALUES (NULL, ?, ?, ?, ?, 0, ?, ?, ?)')
-          .run(gameId, platform, extId, title, lastPlayed, now, now);
-        entry = db.prepare('SELECT * FROM entries WHERE id = ?').get(r.lastInsertRowid);
+        const r = st.insEntry.run(gameId, platform, extId, title, lastPlayed, now, now);
+        entry = st.getEntry.get(r.lastInsertRowid);
         res.entries_created++;
       } else res.entries_updated++;
 
       let sessionMinutes = 0;
       const sessions = Array.isArray(row.sessions) ? row.sessions : [];
+      // re-imports are idempotent: skip sessions already present (same start + length)
+      const have = sessions.length && res.entries_updated ? new Set(st.existing.all(entry.id).map((x) => `${x.started_at}:${x.minutes}`)) : new Set();
       for (const s of sessions) {
         const minutes = Math.round(Number(s.minutes) || 0);
         const start = toTime(s.started_at || s.date || s.start);
         if (minutes <= 0 || !start) continue;
         const end = toTime(s.ended_at) || start + minutes * MIN;
-        const dup = db.prepare("SELECT id FROM sessions WHERE entry_id = ? AND kind = 'play' AND started_at = ? AND minutes = ?").get(entry.id, start, minutes);
-        if (dup) continue;
-        db.prepare("INSERT INTO sessions(entry_id, source, kind, minutes, window_start, window_end, started_at, ended_at, note, created_at) VALUES (?, 'import', 'play', ?, ?, ?, ?, ?, ?, ?)")
-          .run(entry.id, minutes, start, end, start, end, s.note || null, now);
+        const k = `${start}:${minutes}`;
+        if (have.has(k)) continue;
+        have.add(k);
+        st.insPlay.run(entry.id, minutes, start, end, start, end, s.note || null, now);
         sessionMinutes += minutes;
         res.sessions++;
         res.tracked_minutes += minutes;
@@ -90,61 +101,61 @@ export function importRows(db, rows, { settings, now = Date.now() } = {}) {
       const newTotal = Math.max(reported, entry.playtime_min + sessionMinutes);
       const baseline = newTotal - entry.playtime_min - sessionMinutes;
       if (baseline > 0) {
-        db.prepare("INSERT INTO sessions(entry_id, source, kind, minutes, window_end, note, created_at) VALUES (?, 'import', 'baseline', ?, ?, 'Imported history', ?)")
-          .run(entry.id, baseline, now, now);
+        st.insBase.run(entry.id, baseline, now, now);
         res.baseline_minutes += baseline;
       }
-      db.prepare('UPDATE entries SET playtime_min = ?, last_played_at = COALESCE(?, last_played_at) WHERE id = ?').run(newTotal, lastPlayed, entry.id);
+      st.updEntry.run(newTotal, lastPlayed, entry.id);
     }
+    flushRollups(db);
     return res;
   });
 }
 
-export function exportAll(db) {
-  const games = db.prepare('SELECT * FROM games ORDER BY title').all();
-  const entries = db.prepare('SELECT e.*, a.name account_name FROM entries e LEFT JOIN accounts a ON a.id = e.account_id').all();
-  const sessions = db.prepare("SELECT * FROM sessions WHERE kind = 'play' ORDER BY COALESCE(started_at, window_start)").all();
-  const sByEntry = new Map();
-  for (const s of sessions) {
-    if (!sByEntry.has(s.entry_id)) sByEntry.set(s.entry_id, []);
-    sByEntry.get(s.entry_id).push(s);
-  }
-  const eByGame = new Map();
-  for (const e of entries) {
-    if (!eByGame.has(e.game_id)) eByGame.set(e.game_id, []);
-    eByGame.get(e.game_id).push(e);
-  }
-  const rows = [];
-  for (const g of games) {
-    for (const e of eByGame.get(g.id) || []) {
-      rows.push({
-        title: g.title,
-        platform: e.platform,
-        account: e.account_name || null,
-        playtime_minutes: e.playtime_min,
-        last_played: e.last_played_at ? new Date(e.last_played_at).toISOString() : null,
-        status: g.status, rating: g.rating, notes: g.notes, favorite: !!g.favorite, excluded: !!e.excluded,
-        sessions: (sByEntry.get(e.id) || []).map((s) => ({
-          started_at: new Date(s.started_at || s.window_start || s.window_end).toISOString(),
-          ended_at: s.ended_at ? new Date(s.ended_at).toISOString() : null,
-          window_end: s.window_end ? new Date(s.window_end).toISOString() : null,
-          minutes: s.minutes, source: s.source, note: s.note,
-        })),
-      });
-    }
-  }
-  return { format: 'playtracker-export', version: 1, exported_at: new Date().toISOString(), games: rows };
-}
+const CSV_COLS = ['title', 'platform', 'account', 'playtime_minutes', 'playtime_hours', 'last_played', 'status', 'rating', 'favorite', 'excluded', 'sessions', 'notes'];
+const csvEsc = (v) => {
+  const s = v == null ? '' : String(v);
+  return /[",\n;]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+};
+const iso = (t) => (t ? new Date(t).toISOString() : null);
 
-export function toCsv(rows) {
-  const cols = ['title', 'platform', 'account', 'playtime_minutes', 'playtime_hours', 'last_played', 'status', 'rating', 'favorite', 'excluded', 'sessions', 'notes'];
-  const esc = (v) => {
-    const s = v == null ? '' : String(v);
-    return /[",\n;]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
-  };
-  const lines = [cols.join(',')];
-  for (const r of rows) {
-    lines.push(cols.map((c) => esc(c === 'playtime_hours' ? (r.playtime_minutes / 60).toFixed(1) : c === 'sessions' ? r.sessions.length : r[c])).join(','));
+/**
+ * Stream the whole library as JSON or CSV, one entry at a time, so exports of huge
+ * histories never have to be built in memory. Yields string chunks.
+ */
+export function* exportChunks(db, format = 'json') {
+  const rows = db.prepare(`SELECT e.id, e.platform, e.playtime_min, e.last_played_at, e.excluded, a.name account_name,
+      g.title, g.status, g.rating, g.notes, g.favorite
+    FROM entries e JOIN games g ON g.id = e.game_id LEFT JOIN accounts a ON a.id = e.account_id
+    ORDER BY g.title COLLATE NOCASE, e.id`);
+  const sessions = db.prepare("SELECT started_at, ended_at, window_start, window_end, minutes, source, note FROM sessions WHERE entry_id = ? AND kind = 'play' ORDER BY sort_time");
+  const count = db.prepare("SELECT COUNT(*) n FROM sessions WHERE entry_id = ? AND kind = 'play'");
+  if (format === 'csv') {
+    yield CSV_COLS.join(',') + '\n';
+    let buf = '';
+    for (const r of rows.iterate()) {
+      const rec = { title: r.title, platform: r.platform, account: r.account_name, playtime_minutes: r.playtime_min, playtime_hours: (r.playtime_min / 60).toFixed(1),
+        last_played: iso(r.last_played_at), status: r.status, rating: r.rating, favorite: !!r.favorite, excluded: !!r.excluded, sessions: count.get(r.id).n, notes: r.notes };
+      buf += CSV_COLS.map((c) => csvEsc(rec[c])).join(',') + '\n';
+      if (buf.length > 64_000) { yield buf; buf = ''; }
+    }
+    if (buf) yield buf;
+    return;
   }
-  return lines.join('\n');
+  yield `{"format":"playtracker-export","version":1,"exported_at":"${new Date().toISOString()}","games":[`;
+  let first = true;
+  let buf = '';
+  for (const r of rows.iterate()) {
+    const rec = {
+      title: r.title, platform: r.platform, account: r.account_name || null, playtime_minutes: r.playtime_min, last_played: iso(r.last_played_at),
+      status: r.status, rating: r.rating, notes: r.notes, favorite: !!r.favorite, excluded: !!r.excluded,
+      sessions: sessions.all(r.id).map((s) => ({
+        started_at: iso(s.started_at || s.window_start || s.window_end), ended_at: iso(s.ended_at), window_end: iso(s.window_end),
+        minutes: s.minutes, source: s.source, note: s.note,
+      })),
+    };
+    buf += (first ? '\n' : ',\n') + JSON.stringify(rec);
+    first = false;
+    if (buf.length > 64_000) { yield buf; buf = ''; }
+  }
+  yield `${buf}\n]}\n`;
 }

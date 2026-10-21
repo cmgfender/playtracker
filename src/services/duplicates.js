@@ -1,4 +1,5 @@
 import { matchScore } from './titles.js';
+import { memo } from './stats.js';
 
 /**
  * Duplicate tracking:
@@ -7,40 +8,44 @@ import { matchScore } from './titles.js';
  *                    playtime (same platform twice, or near-identical totals) - exclude one
  *  - cross_platform: games owned on several platforms/accounts (already grouped)
  */
-export function findDuplicates(db, { threshold = 0.8 } = {}) {
+export function findDuplicates(db, { threshold = 0.8, limit = 300 } = {}) {
+  return memo(db, `dupes:${threshold}:${limit}`, () => compute(db, threshold, limit));
+}
+
+function compute(db, threshold, limit) {
   const dismissed = new Set(db.prepare('SELECT key FROM dismissed_duplicates').all().map((r) => r.key));
   const games = db.prepare(`SELECT g.id, g.title, g.norm_title, g.cover_url,
       COALESCE(SUM(CASE WHEN e.excluded = 0 THEN e.playtime_min END), 0) minutes,
       GROUP_CONCAT(DISTINCT e.platform) platforms, COUNT(e.id) entries
     FROM games g JOIN entries e ON e.game_id = g.id GROUP BY g.id`).all();
 
-  // Blocking by first token keeps this ~linear for big libraries.
-  const blocks = new Map();
-  for (const g of games) {
-    const k = g.norm_title.split(' ')[0] || g.norm_title;
-    if (!blocks.has(k)) blocks.set(k, []);
-    blocks.get(k).push(g);
-  }
+  // Sorted-neighbourhood comparison: titles that only differ by a suffix (editions,
+  // subtitles) sort next to each other, so comparing each title with its next few
+  // neighbours finds them in O(n·W) instead of O(n²) - fine for 100k+ games.
+  const WINDOW = 12;
   const suggestions = [];
-  for (const list of blocks.values()) {
-    if (list.length < 2 || list.length > 400) continue;
-    for (let i = 0; i < list.length; i++) {
-      for (let j = i + 1; j < list.length; j++) {
-        const a = list[i]; const b = list[j];
-        const score = matchScore(a.norm_title, b.norm_title);
-        if (score < threshold) continue;
-        const key = `merge:${Math.min(a.id, b.id)}:${Math.max(a.id, b.id)}`;
-        if (dismissed.has(key)) continue;
-        suggestions.push({ key, score: Math.round(score * 100) / 100, games: [a, b].map(slim) });
-      }
-    }
-  }
+  const seen = new Set();
+  const consider = (a, b) => {
+    if (a.id === b.id) return;
+    const key = `merge:${Math.min(a.id, b.id)}:${Math.max(a.id, b.id)}`;
+    if (seen.has(key) || dismissed.has(key)) return;
+    seen.add(key);
+    const score = matchScore(a.norm_title, b.norm_title);
+    if (score >= threshold) suggestions.push({ key, score: Math.round(score * 100) / 100, games: [a, b].map(slim) });
+  };
+  const sweep = (list) => {
+    for (let i = 0; i < list.length; i++) for (let j = i + 1; j <= i + WINDOW && j < list.length; j++) consider(list[i], list[j]);
+  };
+  sweep([...games].sort((a, b) => (a.norm_title < b.norm_title ? -1 : a.norm_title > b.norm_title ? 1 : 0)));
+  // second pass on reversed titles catches prefix differences ("the ...", "tom clancy's ...")
+  const rev = (t) => [...t].reverse().join('');
+  sweep(games.map((g) => ({ ...g, r: rev(g.norm_title) })).sort((a, b) => (a.r < b.r ? -1 : a.r > b.r ? 1 : 0)));
   suggestions.sort((x, y) => y.score - x.score);
 
-  const entries = db.prepare(`SELECT e.id, e.game_id, e.account_id, e.platform, e.title, e.playtime_min, e.excluded, e.last_played_at,
+  const entries = db.prepare(`WITH multi AS (SELECT game_id FROM entries GROUP BY game_id HAVING COUNT(*) > 1)
+    SELECT e.id, e.game_id, e.account_id, e.platform, e.title, e.playtime_min, e.excluded, e.last_played_at,
       a.name account_name, g.title game_title, g.cover_url
-    FROM entries e JOIN games g ON g.id = e.game_id LEFT JOIN accounts a ON a.id = e.account_id
-    WHERE e.game_id IN (SELECT game_id FROM entries GROUP BY game_id HAVING COUNT(*) > 1)
+    FROM multi m JOIN entries e ON e.game_id = m.game_id JOIN games g ON g.id = e.game_id LEFT JOIN accounts a ON a.id = e.account_id
     ORDER BY e.game_id, e.id`).all();
   const byGame = new Map();
   for (const e of entries) {
@@ -71,7 +76,12 @@ export function findDuplicates(db, { threshold = 0.8 } = {}) {
     }
   }
   crossPlatform.sort((a, b) => b.platforms.length - a.platforms.length || a.game.title.localeCompare(b.game.title));
-  return { suggestions: suggestions.slice(0, 200), double_counted: doubleCounted, cross_platform: crossPlatform };
+  return {
+    counts: { suggestions: suggestions.length, double_counted: doubleCounted.length, cross_platform: crossPlatform.length },
+    suggestions: suggestions.slice(0, limit),
+    double_counted: doubleCounted.slice(0, limit),
+    cross_platform: crossPlatform.slice(0, limit),
+  };
 }
 
 const slim = (g) => ({ id: g.id, title: g.title, cover_url: g.cover_url, minutes: g.minutes, platforms: (g.platforms || '').split(',').filter(Boolean), entries: g.entries });

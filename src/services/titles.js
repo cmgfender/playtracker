@@ -39,7 +39,17 @@ export function normalizeTitle(title) {
   return t || String(title || '').toLowerCase().trim();
 }
 
+const bigramCache = new Map();
 function bigrams(s) {
+  const hit = bigramCache.get(s);
+  if (hit) return hit;
+  if (bigramCache.size > 200_000) bigramCache.clear();
+  const out = computeBigrams(s);
+  bigramCache.set(s, out);
+  return out;
+}
+
+function computeBigrams(s) {
   const t = s.replace(/\s/g, '');
   const out = new Map();
   for (let i = 0; i < t.length - 1; i++) {

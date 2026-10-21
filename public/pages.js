@@ -316,36 +316,60 @@ async function library(view, stale) {
     <div id="lib-more" style="height:40px"></div>
     <button class="fab" id="fab-add" aria-label="Add game">${icon('plus')}</button>`;
 
-  let items = []; let shown = 0; const PAGE = 90;
+  // Server-side paging: only one page of games is ever in memory/DOM per scroll step,
+  // so 50k-game libraries stay smooth on phones.
+  const PAGE = 120;
+  let total = 0; let loaded = 0; let maxMin = 1; let loading = false; let seq = 0;
   const box = $('#lib-items');
-  const draw = (reset) => {
-    if (reset) { shown = 0; box.innerHTML = st.view === 'grid' ? '<div class="lib-grid"></div>' : '<div class="card pad-0 lib-list"></div>'; }
+  const render = (items) => {
     const host = box.firstElementChild;
-    const next = items.slice(shown, shown + PAGE);
-    const maxMin = Math.max(1, ...items.map((g) => g.minutes));
-    host.insertAdjacentHTML('beforeend', next.map((g) => st.view === 'grid'
+    host.insertAdjacentHTML('beforeend', items.map((g) => st.view === 'grid'
       ? `<a class="tile" href="/game/${g.id}" data-link><div style="position:relative">${cover(g)}<div class="flags">${g.favorite ? `<span class="badge">♥</span>` : '<span></span>'}${g.status !== 'unset' ? `<span class="badge">${STATUSES[g.status]?.label || g.status}</span>` : ''}</div>${g.minutes ? `<div class="bar"><i style="width:${Math.max(3, Math.sqrt(g.minutes / maxMin) * 100)}%"></i></div>` : ''}</div>
           <div class="t">${esc(g.title)}</div><div class="m">${g.platforms.filter((p) => p !== 'manual' || g.platforms.length === 1).map(platDot).join('')}<span>${g.minutes ? fmtMin(g.minutes, { short: g.minutes >= 600 }) : 'Unplayed'}</span>${g.entry_count > 1 ? `<span class="dim">· ${g.entry_count}×</span>` : ''}</div></a>`
       : `<a class="li" href="/game/${g.id}" data-link>${cover(g)}<div class="grow"><div class="ellipsis" style="font-weight:620">${esc(g.title)}</div><div class="small muted row" style="gap:6px">${g.platforms.map(platDot).join('')}${g.last_played_at ? `Played ${ago(g.last_played_at)}` : 'Never played'}${g.status !== 'unset' ? ` · ${STATUSES[g.status]?.label}` : ''}</div></div><div class="amt" style="font-weight:700">${fmtMin(g.minutes, { short: g.minutes >= 600 })}</div></a>`).join(''));
-    shown += next.length;
   };
-  const load = async () => {
-    const p = new URLSearchParams({ limit: '5000', sort: st.sort });
+  const params = (offset) => {
+    const p = new URLSearchParams({ limit: String(PAGE), offset: String(offset), sort: st.sort });
     if (st.q) p.set('q', st.q);
     if (st.platform) p.set('platform', st.platform);
     if (st.status) p.set('status', st.status);
     if (st.played) p.set('played', st.played);
     if (st.hidden) p.set('hidden', st.hidden);
-    const r = await api(`/games?${p}`);
-    if (stale()) return;
-    items = r.items;
-    const total = items.reduce((a, g) => a + g.minutes, 0);
-    $('#lib-count').textContent = `${r.total.toLocaleString()} game${r.total === 1 ? '' : 's'} · ${fmtHours(total)}h total`;
-    if (!items.length) {
+    return p;
+  };
+  const more = async () => {
+    if (loading || loaded >= total) return;
+    loading = true;
+    const my = seq;
+    try {
+      const r = await api(`/games?${params(loaded)}`);
+      if (my !== seq || stale()) return;
+      loaded += r.items.length;
+      render(r.items);
+      if (!r.items.length) total = loaded;
+    } finally { loading = false; }
+    checkMore();
+  };
+  const load = async () => {
+    const my = ++seq;
+    loading = true;
+    let r;
+    try { r = await api(`/games?${params(0)}`); } finally { loading = false; }
+    if (my !== seq || stale()) return;
+    total = r.total; loaded = r.items.length; maxMin = Math.max(1, r.max_minutes || 1);
+    $('#lib-count').textContent = `${r.total.toLocaleString()} game${r.total === 1 ? '' : 's'} · ${fmtHours(r.total_minutes)}h total`;
+    if (!r.items.length) {
       box.innerHTML = platforms.games ? emptyState('search', 'No matches', 'Try a different search or filter.') : emptyState('library', 'Your library is empty', 'Connect an account to import your games, or add one manually.', `<a class="btn primary" href="/accounts?add=1" data-link>${icon('plus')}Connect an account</a>`);
       return;
     }
-    draw(true);
+    box.innerHTML = st.view === 'grid' ? '<div class="lib-grid"></div>' : '<div class="card pad-0 lib-list"></div>';
+    render(r.items);
+    checkMore();
+  };
+  // keep loading while the sentinel is on screen (tall screens / fast scrolling)
+  const checkMore = () => {
+    const el = $('#lib-more');
+    if (el && el.getBoundingClientRect().top < window.innerHeight + 800) more();
   };
   const sync = () => {
     const p = new URLSearchParams();
@@ -385,7 +409,7 @@ async function library(view, stale) {
   });
   $('#lib-add').addEventListener('click', addGame);
   $('#fab-add').addEventListener('click', addGame);
-  const io = new IntersectionObserver((es) => { if (es[0].isIntersecting && shown < items.length) draw(false); }, { rootMargin: '600px' });
+  const io = new IntersectionObserver((es) => { if (es[0].isIntersecting) more(); }, { rootMargin: '800px' });
   io.observe($('#lib-more'));
   await load();
 }
@@ -441,6 +465,7 @@ async function game(view, id, stale) {
         ${hasSeries ? `<div class="card"><div class="card-h"><h2>Playtime by month</h2></div>${barChart(g.series.slice(-24).map((x) => ({ label: seriesLabel(x.key, 'month'), value: x.minutes, tip: seriesTip(x.key, 'month', x.minutes) })), { height: 180 })}</div>` : ''}
         <div class="card"><div class="card-h"><h2>Sessions</h2><button class="btn sm" id="g-log">${icon('plus')}Log session</button></div>
           <div class="list" id="g-sessions">${g.sessions.length ? groupByDay(g.sessions.filter((x) => x.kind === 'play')).map((grp, i) => (i === 25 ? '<button class="btn sm" id="g-more" style="margin:12px auto">Show all sessions</button><div id="g-rest" class="hide">' : '') + `<div class="day-h"><span>${dayLabel(grp.day)}</span><span>${fmtMin(grp.minutes)}</span></div>${grp.items.map((x) => sessionItem(x, { showGame: false })).join('')}`).join('') + (groupByDay(g.sessions.filter((x) => x.kind === 'play')).length > 25 ? '</div>' : '') : '<p class="muted">No sessions yet.</p>'}
+          ${g.sessions_truncated ? `<a class="btn sm" href="/sessions?game_id=${g.id}" data-link style="margin:12px 0">All ${s.sessions.toLocaleString()} sessions →</a>` : ''}
           ${g.sessions.filter((x) => x.kind === 'baseline').map((x) => `<div class="item"><span class="dot" style="background:var(--line);width:10px;height:10px"></span><div class="grow"><div class="sub"><b style="color:var(--text)">${esc(plat(x.platform).label)}</b> ${esc(x.note || 'History')} · ${fmtDate(x.window_end)}</div></div><div class="amt muted">${fmtMin(x.minutes)}</div><button class="btn ghost sm icon" data-edit-session="${x.id}">${icon('edit')}</button></div>`).join('')}
           </div>
         </div>
@@ -544,8 +569,8 @@ function mergeModal(g) {
 // Sessions
 // =====================================================================
 async function sessions(view, stale) {
-  const f = { platform: '', source: '', q: '', kind: 'play' };
-  let offset = 0; let all = []; let total = 0; let totalMin = 0; let selecting = false; const sel = new Set();
+  const f = { platform: '', source: '', q: '', kind: 'play', game_id: new URLSearchParams(location.search).get('game_id') || '' };
+  let cursor = null; let all = []; let total = 0; let totalMin = 0; let selecting = false; const sel = new Set();
   const lt = await api('/stats/lifetime');
   if (stale()) return;
   view.innerHTML = `
@@ -569,19 +594,21 @@ async function sessions(view, stale) {
   const draw = () => {
     list.innerHTML = all.length ? groupByDay(all).map((grp) => `<div class="day-h"><span>${dayLabel(grp.day)}</span><span>${fmtMin(grp.minutes)}</span></div>${grp.items.map((s) => sessionItem(s, { selectable: selecting, selected: sel.has(s.id) })).join('')}`).join('')
       : emptyState('sessions', 'No sessions', f.kind === 'baseline' ? 'No imported history.' : 'Sessions appear when a sync detects new playtime, or when you log one.');
-    $('#s-more').innerHTML = all.length < total ? `<button class="btn" id="s-load">Load more</button>` : (all.length ? '<span class="tiny dim">That’s everything</span>' : '');
+    $('#s-more').innerHTML = cursor && all.length < total ? `<button class="btn" id="s-load">Load more</button>` : (all.length ? '<span class="tiny dim">That’s everything</span>' : '');
     $('#s-load')?.addEventListener('click', () => load(false));
-    $('#s-count').textContent = `${total.toLocaleString()} session${total === 1 ? '' : 's'} · ${fmtMin(totalMin, { short: true })}`;
+    $('#s-count').innerHTML = `${total.toLocaleString()} session${total === 1 ? '' : 's'} · ${fmtMin(totalMin, { short: true })}${f.game_id && all[0] ? ` · ${esc(all[0].title)} <a href="/sessions" data-link style="color:var(--accent)">show all games</a>` : ''}`;
     $('#s-bulk-n').textContent = `${sel.size} selected`;
   };
   const load = async (reset = true) => {
-    if (reset) { offset = 0; all = []; }
-    const p = new URLSearchParams({ limit: '150', offset: String(offset), kind: f.kind });
+    if (reset) { cursor = null; all = []; }
+    const p = new URLSearchParams({ limit: '150', kind: f.kind });
+    if (cursor) p.set('before', cursor);
     if (f.platform) p.set('platform', f.platform);
     if (f.source) p.set('source', f.source);
     if (f.q) p.set('q', f.q);
+    if (f.game_id) p.set('game_id', f.game_id);
     const r = await api(`/sessions?${p}`);
-    all = all.concat(r.items); total = r.total; totalMin = r.total_minutes; offset += r.items.length;
+    all = all.concat(r.items); total = r.total; totalMin = r.total_minutes; cursor = r.next;
     draw();
   };
   let t;
@@ -703,7 +730,7 @@ async function duplicates(view, stale) {
   view.innerHTML = `
     <div class="page-h"><div><h1>Duplicates</h1><p>Keep one game per title and make sure nothing is counted twice.</p></div></div>
     <div class="stack">
-      <div class="card"><div class="card-h"><h2>Possible double counting <span class="badge ${d.double_counted.length ? 'warn' : ''}">${d.double_counted.length}</span></h2></div>
+      <div class="card"><div class="card-h"><h2>Possible double counting <span class="badge ${d.counts.double_counted ? 'warn' : ''}">${d.counts.double_counted.toLocaleString()}</span></h2></div>
         <p class="small muted" style="margin-top:-6px">The same game is counted from two sources that probably report the same playtime — e.g. an imported spreadsheet plus the live Steam account, or two accounts sharing a library.</p>
         <div class="list">${d.double_counted.map((x) => `<div class="item" style="flex-wrap:wrap">
           <a href="/game/${x.game.id}" data-link>${cover(x.game)}</a>
@@ -711,14 +738,15 @@ async function duplicates(view, stale) {
             <div class="sub">${x.entries.map((e) => `${platDot(e.platform)}${esc(e.account_name || plat(e.platform).label)} ${fmtMin(e.playtime_min)}`).join(' &nbsp;·&nbsp; ')}</div></div>
           <div class="row"><button class="btn sm primary" data-exclude="${x.suggest_exclude}">Exclude ${esc((x.entries.find((e) => e.id === x.suggest_exclude)?.account_name) || plat(x.entries.find((e) => e.id === x.suggest_exclude)?.platform).label)}</button><button class="btn sm ghost" data-dismiss="${esc(x.key)}">Ignore</button></div></div>`).join('') || '<p class="muted">Nothing double counted. 🎉</p>'}</div>
       </div>
-      <div class="card"><div class="card-h"><h2>Merge suggestions <span class="badge ${d.suggestions.length ? 'accent' : ''}">${d.suggestions.length}</span></h2>${d.suggestions.length > 1 ? '<button class="btn sm" id="merge-all">Merge all ≥ 95%</button>' : ''}</div>
-        <p class="small muted" style="margin-top:-6px">Similar titles that weren’t grouped automatically (editions, subtitles, platform tags).</p>
+      <div class="card"><div class="card-h"><h2>Merge suggestions <span class="badge ${d.counts.suggestions ? 'accent' : ''}">${d.counts.suggestions.toLocaleString()}</span></h2>${d.suggestions.length > 1 ? '<button class="btn sm" id="merge-all">Merge all ≥ 95%</button>' : ''}</div>
+        <p class="small muted" style="margin-top:-6px">Similar titles that weren’t grouped automatically (editions, subtitles, platform tags).${d.counts.suggestions > d.suggestions.length ? ` Showing the ${d.suggestions.length} strongest — resolve some and more appear.` : ''}</p>
         <div class="list">${d.suggestions.map((x) => `<div class="item" style="flex-wrap:wrap;gap:14px">
           ${gameCard(x.games[0])}<span class="badge">${Math.round(x.score * 100)}%</span>${gameCard(x.games[1])}
           <div class="row"><button class="btn sm primary" data-merge="${x.games[0].id}:${x.games[1].id}">${icon('merge')}Merge</button><button class="btn sm ghost" data-dismiss="${esc(x.key)}">Not the same</button></div></div>`).join('') || '<p class="muted">No suggestions.</p>'}</div>
       </div>
-      <div class="card"><div class="card-h"><h2>Owned on multiple platforms <span class="badge">${d.cross_platform.length}</span></h2></div>
-        <div class="list">${d.cross_platform.slice(0, 100).map((x) => `<a class="item" href="/game/${x.game.id}" data-link>${cover(x.game)}<div class="grow"><div class="ttl ellipsis">${esc(x.game.title)}</div><div class="sub">${x.entries.map((e) => `<span style="${e.excluded ? 'text-decoration:line-through;opacity:.6' : ''}">${platDot(e.platform)} ${esc(e.account_name || plat(e.platform).label)} ${fmtMin(e.playtime_min)}</span>`).join(' &nbsp;')}</div></div></a>`).join('') || '<p class="muted">No games are grouped across platforms yet.</p>'}</div>
+      <div class="card"><div class="card-h"><h2>Owned on multiple platforms <span class="badge">${d.counts.cross_platform.toLocaleString()}</span></h2></div>
+        ${d.counts.cross_platform > d.cross_platform.length ? `<p class="small muted" style="margin-top:-6px">Showing the first ${d.cross_platform.length}.</p>` : ''}
+        <div class="list">${d.cross_platform.map((x) => `<a class="item" href="/game/${x.game.id}" data-link>${cover(x.game)}<div class="grow"><div class="ttl ellipsis">${esc(x.game.title)}</div><div class="sub">${x.entries.map((e) => `<span style="${e.excluded ? 'text-decoration:line-through;opacity:.6' : ''}">${platDot(e.platform)} ${esc(e.account_name || plat(e.platform).label)} ${fmtMin(e.playtime_min)}</span>`).join(' &nbsp;')}</div></div></a>`).join('') || '<p class="muted">No games are grouped across platforms yet.</p>'}</div>
       </div>
     </div>`;
   view.addEventListener('click', async (e) => {

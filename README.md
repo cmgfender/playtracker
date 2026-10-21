@@ -152,6 +152,29 @@ Main endpoints:
 
 Everything else (schedule, detection thresholds, webhook, theme) lives in **Settings**.
 
+## Big libraries
+
+PlayTracker is built for libraries with tens of thousands of games and years of hourly syncs:
+
+- **Pre-aggregated stats:** every session's minutes are split into per-day and per-hour rollup rows when the session is written. Database triggers queue every change, so edits, merges, exclusions and deletes stay consistent. Stats, charts, streaks, heatmaps and the library are then served from covering indexes, never by scanning raw sessions.
+- **Paging:** the library pages from the server with infinite scroll. Sessions use keyset paging (`?before=<next>`), so page 1000 is as fast as page 1.
+- **Caching:** results are cached until the next write.
+- **Streaming:** exports stream, and imports take bodies up to 256 MB.
+- **Duplicate detection** compares each title with its neighbours in sorted order (O(n), not O(n²)).
+
+`npm run bench -- 20000 500000` seeds 20k games across three accounts plus 500k sessions, then times the API. Typical results on a small VM:
+
+| Endpoint | Cold | Cached |
+|---|---|---|
+| Dashboard `/summary` | ~0.4 s | ~45 ms |
+| Library page (any sort/offset) | 30–60 ms | |
+| Stats, 30 days / 12 months / all time | 0.1 / 0.2 / 1 s | ~5 ms |
+| Sessions page | ~60 ms | |
+| Follow-up sync of a 20k-game account | ~0.4 s | |
+| Streamed export of everything (79 MB) | ~5 s | |
+
+On upgrade, or if the container's `TZ` changes, the rollups are rebuilt once at startup. That takes about 10 s per 500k sessions.
+
 ## Development
 
 ```bash

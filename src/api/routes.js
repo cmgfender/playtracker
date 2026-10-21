@@ -6,9 +6,9 @@ import { providers, providerInfo } from '../providers/index.js';
 import { parseAccount } from '../services/sync.js';
 import { validateSettings } from '../services/settings.js';
 import { describeSchedule, nextRun } from '../services/schedule.js';
-import { computeStats, heatmap, lifetime, yearInReview } from '../services/stats.js';
+import { computeStats, heatmap, lifetime, yearInReview, memo } from '../services/stats.js';
 import { findDuplicates } from '../services/duplicates.js';
-import { importRows, exportAll, parseCsv, toCsv } from '../services/importer.js';
+import { importRows, exportChunks, parseCsv } from '../services/importer.js';
 import { manualEntry, mergeGames, pruneEmptyGames, splitEntry, findOrCreateGame, cleanTitle } from '../services/library.js';
 import { normalizeTitle } from '../services/titles.js';
 import { HttpError, toInt, toTime } from '../util.js';
@@ -57,14 +57,31 @@ function gameRow(g) {
   };
 }
 
-const GAME_SELECT = `SELECT g.*,
-    COALESCE(SUM(CASE WHEN e.excluded = 0 THEN e.playtime_min END), 0) minutes,
-    GROUP_CONCAT(DISTINCT e.platform) platforms,
-    COUNT(e.id) entry_count,
-    MAX(e.last_played_at) last_played_entry,
-    (SELECT MAX(COALESCE(s.ended_at, s.window_end)) FROM sessions s JOIN entries e2 ON e2.id = s.entry_id WHERE e2.game_id = g.id AND s.kind = 'play' AND e2.excluded = 0) last_session,
-    (SELECT COALESCE(SUM(s.minutes), 0) FROM sessions s JOIN entries e3 ON e3.id = s.entry_id WHERE e3.game_id = g.id AND s.kind = 'play' AND e3.excluded = 0 AND COALESCE(s.ended_at, s.window_end) >= ?) recent_minutes
-  FROM games g JOIN entries e ON e.game_id = g.id`;
+// Library listing: per-game aggregates come from the (indexed) entries table and the
+// per-day rollup, never from scanning sessions, so it stays fast for huge libraries.
+const RECENT_DAYS = 14;
+function recentFromDay() {
+  const d = new Date(Date.now() - (RECENT_DAYS - 1) * 86_400_000);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+const GAME_LIST = `WITH agg AS (
+    SELECT game_id,
+      COALESCE(SUM(CASE WHEN excluded = 0 THEN playtime_min END), 0) minutes,
+      GROUP_CONCAT(DISTINCT platform) platforms,
+      COUNT(*) entry_count,
+      MAX(COALESCE(last_played_at, 0)) last_played_entry,
+      MAX(CASE WHEN excluded = 0 THEN COALESCE(last_session_at, 0) ELSE 0 END) last_session
+    FROM entries GROUP BY game_id),
+  rec AS (
+    SELECT game_id, SUM(minutes) recent_minutes FROM play_days WHERE excluded = 0 AND day >= ? GROUP BY game_id)
+  SELECT g.*, agg.minutes, agg.platforms, agg.entry_count, agg.last_played_entry, agg.last_session, COALESCE(rec.recent_minutes, 0) recent_minutes
+  FROM games g JOIN agg ON agg.game_id = g.id LEFT JOIN rec ON rec.game_id = g.id`;
+
+const GAME_SORTS = {
+  recent: 'MAX(agg.last_session, agg.last_played_entry) DESC, agg.minutes DESC, g.id',
+  playtime: 'agg.minutes DESC, g.id', title: 'g.title COLLATE NOCASE ASC, g.id', added: 'g.created_at DESC, g.id',
+  rating: 'COALESCE(g.rating, -1) DESC, agg.minutes DESC, g.id', trending: 'recent_minutes DESC, agg.minutes DESC, g.id',
+};
 
 function sessionRow(s) {
   return {
@@ -115,11 +132,10 @@ export function registerRoutes(r, app) {
     const week = computeStats(db, { range: 'week', group: 'day', weekStartsOn });
     const month = computeStats(db, { range: '30d', group: 'day', weekStartsOn });
     const today = computeStats(db, { range: '1d', group: 'day', weekStartsOn });
-    const recent = db.prepare(`${SESSION_SELECT} WHERE s.kind = 'play' AND e.excluded = 0 ORDER BY COALESCE(s.ended_at, s.window_end) DESC LIMIT 12`).all().map(sessionRow);
-    const since = Date.now() - 14 * 86_400_000;
-    const nowPlaying = db.prepare(`${GAME_SELECT} GROUP BY g.id HAVING recent_minutes > 0 ORDER BY last_session DESC LIMIT 12`).all(since).map(gameRow);
+    const recent = db.prepare(`${SESSION_SELECT} WHERE s.kind = 'play' AND e.excluded = 0 ORDER BY s.sort_time DESC LIMIT 12`).all().map(sessionRow);
+    const nowPlaying = db.prepare(`${GAME_LIST} WHERE rec.recent_minutes > 0 AND g.hidden = 0 ORDER BY agg.last_session DESC LIMIT 12`).all(recentFromDay()).map(gameRow);
     const accounts = db.prepare('SELECT * FROM accounts ORDER BY id').all().map(parseAccount).map((a) => publicAccount(a, sync));
-    const pending = db.prepare("SELECT COUNT(*) n FROM sessions WHERE kind = 'play' AND created_at > ?").get(Date.now() - 86_400_000).n;
+    const pending = db.prepare("SELECT COUNT(*) n FROM sessions WHERE kind = 'play' AND sort_time > ? AND created_at > ?").get(Date.now() - 30 * 86_400_000, Date.now() - 86_400_000).n;
     return { lifetime: lifetime(db), today, week, month, recent_sessions: recent, now_playing: nowPlaying, accounts, new_sessions_24h: pending };
   }, { summary: 'Everything the dashboard needs in one call' });
 
@@ -127,8 +143,7 @@ export function registerRoutes(r, app) {
   r.get('/api/v1/games', (c) => {
     const q = c.query;
     const where = [];
-    const having = [];
-    const args = [Date.now() - 14 * 86_400_000];
+    const args = [recentFromDay()];
     if (q.q) { where.push('(g.title LIKE ? OR g.norm_title LIKE ?)'); args.push(`%${q.q}%`, `%${normalizeTitle(q.q)}%`); }
     if (q.status) { where.push(`g.status IN (${q.status.split(',').map(() => '?').join(',')})`); args.push(...q.status.split(',')); }
     if (q.favorite === 'true' || q.favorite === '1') where.push('g.favorite = 1');
@@ -136,22 +151,18 @@ export function registerRoutes(r, app) {
     else if (q.hidden !== 'true' && q.hidden !== 'all') where.push('g.hidden = 0');
     if (q.platform) { where.push(`g.id IN (SELECT game_id FROM entries WHERE platform IN (${q.platform.split(',').map(() => '?').join(',')}))`); args.push(...q.platform.split(',')); }
     if (q.account_id) { where.push('g.id IN (SELECT game_id FROM entries WHERE account_id = ?)'); args.push(toInt(q.account_id)); }
-    if (q.played === 'true') having.push('minutes > 0');
-    if (q.played === 'false') having.push('minutes = 0');
-    if (q.multi === 'true') having.push('COUNT(e.id) > 1');
-    const sorts = {
-      recent: 'MAX(COALESCE(last_session, 0), COALESCE(last_played_entry, 0)) DESC, minutes DESC',
-      playtime: 'minutes DESC', title: 'g.title COLLATE NOCASE ASC', added: 'g.created_at DESC',
-      rating: 'COALESCE(g.rating, -1) DESC, minutes DESC', trending: 'recent_minutes DESC, minutes DESC',
-    };
-    const order = sorts[q.sort] || sorts[settings.get('default_library_sort')] || sorts.recent;
-    const limit = Math.min(5000, toInt(q.limit, 100));
-    const offset = toInt(q.offset, 0);
-    const base = `${GAME_SELECT} ${where.length ? `WHERE ${where.join(' AND ')}` : ''} GROUP BY g.id ${having.length ? `HAVING ${having.join(' AND ')}` : ''}`;
-    const total = db.prepare(`SELECT COUNT(*) n FROM (${base})`).get(...args).n;
+    if (q.played === 'true') where.push('agg.minutes > 0');
+    if (q.played === 'false') where.push('agg.minutes = 0');
+    if (q.multi === 'true') where.push('agg.entry_count > 1');
+    if (q.recent === 'true') where.push('rec.recent_minutes > 0');
+    const order = GAME_SORTS[q.sort] || GAME_SORTS[settings.get('default_library_sort')] || GAME_SORTS.recent;
+    const limit = Math.min(5000, Math.max(1, toInt(q.limit, 100)));
+    const offset = Math.max(0, toInt(q.offset, 0));
+    const base = `${GAME_LIST} ${where.length ? `WHERE ${where.join(' AND ')}` : ''}`;
+    const totals = memo(db, `games-count:${JSON.stringify(args)}:${where.join('|')}`, () => db.prepare(`SELECT COUNT(*) n, COALESCE(SUM(minutes), 0) m, COALESCE(MAX(minutes), 0) mx FROM (${base})`).get(...args));
     const items = db.prepare(`${base} ORDER BY ${order} LIMIT ? OFFSET ?`).all(...args, limit, offset).map(gameRow);
-    return { total, limit, offset, items };
-  }, { summary: 'List / search the library', query: { q: 'search', platform: 'steam,xbox,psn,…', status: 'comma list', sort: 'recent|playtime|title|added|rating|trending', played: 'true|false', favorite: 'true', hidden: 'true|only', multi: 'true = only games with several entries', limit: 'max 5000', offset: '' } });
+    return { total: totals.n, total_minutes: totals.m, max_minutes: totals.mx, limit, offset, items };
+  }, { summary: 'List / search the library (paginated)', query: { q: 'search', platform: 'steam,xbox,psn,…', status: 'comma list', sort: 'recent|playtime|title|added|rating|trending', played: 'true|false', favorite: 'true', hidden: 'true|only', multi: 'true = only games with several entries', recent: 'true = played in the last 14 days', limit: 'max 5000 (default 100)', offset: '' } });
 
   r.post('/api/v1/games', (c) => {
     const title = String(c.body.title || '').trim();
@@ -169,7 +180,11 @@ export function registerRoutes(r, app) {
   }, { summary: 'Add a game manually (Switch, retro, …)', body: '{ title, cover_url?, status?, merge? }' });
 
   function getGame(id) {
-    const g = db.prepare(`${GAME_SELECT} WHERE g.id = ? GROUP BY g.id`).get(Date.now() - 14 * 86_400_000, id);
+    const base = db.prepare('SELECT * FROM games WHERE id = ?').get(id);
+    const ea = db.prepare(`SELECT COALESCE(SUM(CASE WHEN excluded = 0 THEN playtime_min END), 0) minutes, GROUP_CONCAT(DISTINCT platform) platforms, COUNT(*) entry_count,
+      MAX(COALESCE(last_played_at, 0)) last_played_entry, MAX(CASE WHEN excluded = 0 THEN COALESCE(last_session_at, 0) ELSE 0 END) last_session FROM entries WHERE game_id = ?`).get(id);
+    const rec = db.prepare('SELECT COALESCE(SUM(minutes), 0) m FROM play_days WHERE game_id = ? AND excluded = 0 AND day >= ?').get(id, recentFromDay()).m;
+    const g = base && ea.entry_count ? { ...base, ...ea, recent_minutes: rec } : null;
     if (!g) {
       const bare = db.prepare('SELECT * FROM games WHERE id = ?').get(id);
       if (!bare) throw new HttpError(404, 'Game not found');
@@ -199,11 +214,15 @@ export function registerRoutes(r, app) {
 
   r.get('/api/v1/games/:id', (c) => {
     const game = getGame(toInt(c.params.id));
-    const sessions = db.prepare(`${SESSION_SELECT} WHERE e.game_id = ? ORDER BY COALESCE(s.ended_at, s.window_end) DESC LIMIT 300`).all(game.id).map(sessionRow);
-    const stats = computeStats(db, { range: 'all', gameId: game.id, group: 'month', weekStartsOn: settings.get('week_starts_on') });
-    const snapshots = db.prepare('SELECT sn.taken_at, sn.playtime_min, sn.entry_id FROM snapshots sn JOIN entries e ON e.id = sn.entry_id WHERE e.game_id = ? ORDER BY sn.taken_at').all(game.id);
-    return { ...game, sessions, series: stats.series, weekday: stats.weekday, snapshots };
-  }, { summary: 'Game detail with entries, sessions, history' });
+    const sessions = db.prepare(`${SESSION_SELECT} WHERE s.entry_id IN (SELECT id FROM entries WHERE game_id = ?) ORDER BY s.sort_time DESC, s.id DESC LIMIT 300`).all(game.id).map(sessionRow);
+    const stats = computeStats(db, { range: 'all', gameId: game.id, group: 'month', weekStartsOn: settings.get('week_starts_on'), topLimit: 1 });
+    return { ...game, sessions, sessions_truncated: game.summary && game.summary.sessions > 300, series: stats.series, weekday: stats.weekday };
+  }, { summary: 'Game detail with entries, latest 300 sessions, monthly history' });
+
+  r.get('/api/v1/entries/:id/snapshots', (c) => {
+    const limit = Math.min(10000, toInt(c.query.limit, 1000));
+    return db.prepare('SELECT taken_at, playtime_min, sync_id FROM snapshots WHERE entry_id = ? ORDER BY taken_at DESC LIMIT ?').all(toInt(c.params.id), limit);
+  }, { summary: 'Raw playtime snapshots for an entry (newest first)', query: { limit: 'max 10000' } });
 
   r.patch('/api/v1/games/:id', (c) => {
     const id = toInt(c.params.id);
@@ -293,22 +312,29 @@ export function registerRoutes(r, app) {
     const where = []; const args = [];
     const kind = q.kind || 'play';
     if (kind !== 'all') { where.push('s.kind = ?'); args.push(kind); }
-    if (q.include_excluded !== 'true') where.push('e.excluded = 0');
-    if (q.game_id) { where.push('e.game_id = ?'); args.push(toInt(q.game_id)); }
-    if (q.platform) { where.push('e.platform = ?'); args.push(q.platform); }
-    if (q.account_id) { where.push('e.account_id = ?'); args.push(toInt(q.account_id)); }
+    if (q.include_excluded !== 'true') where.push('s.entry_id NOT IN (SELECT id FROM entries WHERE excluded = 1)');
+    if (q.game_id) { where.push('s.entry_id IN (SELECT id FROM entries WHERE game_id = ?)'); args.push(toInt(q.game_id)); }
+    if (q.platform) { where.push('s.entry_id IN (SELECT id FROM entries WHERE platform = ?)'); args.push(q.platform); }
+    if (q.account_id) { where.push('s.entry_id IN (SELECT id FROM entries WHERE account_id = ?)'); args.push(toInt(q.account_id)); }
     if (q.source) { where.push('s.source = ?'); args.push(q.source); }
     if (q.sync_id) { where.push('s.sync_id = ?'); args.push(toInt(q.sync_id)); }
-    if (q.from) { where.push('COALESCE(s.ended_at, s.window_end) >= ?'); args.push(toTime(q.from)); }
+    if (q.from) { where.push('s.sort_time >= ?'); args.push(toTime(q.from)); }
     if (q.to) { where.push('COALESCE(s.started_at, s.window_start, s.window_end) <= ?'); args.push(toTime(q.to)); }
-    if (q.q) { where.push('g.title LIKE ?'); args.push(`%${q.q}%`); }
+    if (q.q) { where.push('s.entry_id IN (SELECT e2.id FROM entries e2 JOIN games g2 ON g2.id = e2.game_id WHERE g2.title LIKE ?)'); args.push(`%${q.q}%`); }
     const w = where.length ? `WHERE ${where.join(' AND ')}` : '';
-    const limit = Math.min(1000, toInt(q.limit, 100));
-    const offset = toInt(q.offset, 0);
-    const total = db.prepare(`SELECT COUNT(*) n, COALESCE(SUM(s.minutes),0) m FROM sessions s JOIN entries e ON e.id = s.entry_id JOIN games g ON g.id = e.game_id ${w}`).get(...args);
-    const items = db.prepare(`${SESSION_SELECT} ${w} ORDER BY COALESCE(s.ended_at, s.window_end) DESC, s.id DESC LIMIT ? OFFSET ?`).all(...args, limit, offset).map(sessionRow);
-    return { total: total.n, total_minutes: total.m, limit, offset, items };
-  }, { summary: 'List sessions', query: { from: 'date/ISO/epoch', to: '', game_id: '', platform: '', account_id: '', source: 'sync|manual|import|api', kind: 'play|baseline|all', sync_id: '', q: 'title search', limit: '', offset: '' } });
+    const limit = Math.min(1000, Math.max(1, toInt(q.limit, 100)));
+    const offset = Math.max(0, toInt(q.offset, 0));
+    const total = memo(db, `sess-count:${w}:${JSON.stringify(args)}`, () => db.prepare(`SELECT COUNT(*) n, COALESCE(SUM(s.minutes),0) m FROM sessions s ${w}`).get(...args));
+    // Keyset pagination: pass back `next` as ?before= to page deep into huge histories cheaply.
+    const pw = [...where]; const pargs = [...args];
+    const cur = /^(\d+):(\d+)$/.exec(q.before || '');
+    if (cur) { pw.push('(s.sort_time < ? OR (s.sort_time = ? AND s.id < ?))'); pargs.push(Number(cur[1]), Number(cur[1]), Number(cur[2])); }
+    const items = db.prepare(`${SESSION_SELECT} ${pw.length ? `WHERE ${pw.join(' AND ')}` : ''} ORDER BY s.sort_time DESC, s.id DESC LIMIT ? OFFSET ?`)
+      .all(...pargs, limit, cur ? 0 : offset).map(sessionRow);
+    const last = items.at(-1);
+    const sortTime = (x) => x.ended_at || x.window_end || x.created_at;
+    return { total: total.n, total_minutes: total.m, limit, offset, items, next: items.length === limit && last ? `${sortTime(last)}:${last.id}` : null };
+  }, { summary: 'List sessions (newest first). Use `before` = previous `next` for fast deep paging.', query: { from: 'date/ISO/epoch', to: '', game_id: '', platform: '', account_id: '', source: 'sync|manual|import|api', kind: 'play|baseline|all', sync_id: '', q: 'title search', limit: 'max 1000', offset: '', before: 'cursor from `next`' } });
 
   r.get('/api/v1/sessions/:id', (c) => {
     const s = db.prepare(`${SESSION_SELECT} WHERE s.id = ?`).get(toInt(c.params.id));
@@ -406,15 +432,19 @@ export function registerRoutes(r, app) {
   r.get('/api/v1/stats/heatmap', (c) => heatmap(db, { year: c.query.year, gameId: toInt(c.query.game_id) }), { summary: 'Minutes per day for a year', query: { year: '', game_id: '' } });
   r.get('/api/v1/stats/year/:year', (c) => yearInReview(db, toInt(c.params.year), { weekStartsOn: settings.get('week_starts_on') }), { summary: 'Year in review' });
   r.get('/api/v1/stats/years', () => {
-    const rows = db.prepare("SELECT DISTINCT CAST(strftime('%Y', COALESCE(ended_at, window_end) / 1000, 'unixepoch', 'localtime') AS INTEGER) y FROM sessions WHERE kind = 'play' ORDER BY y DESC").all();
-    const ys = rows.map((x) => x.y).filter(Boolean);
+    const first = db.prepare('SELECT MIN(day) d FROM play_days').get().d;
+    const ys = [];
+    if (first) for (let y = new Date().getFullYear(); y >= Number(first.slice(0, 4)); y--) if (db.prepare('SELECT 1 FROM play_days WHERE day >= ? AND day <= ? LIMIT 1').get(`${y}-01-01`, `${y}-12-31`)) ys.push(y);
     const cur = new Date().getFullYear();
     if (!ys.includes(cur)) ys.unshift(cur);
     return ys;
   }, { summary: 'Years that have play data' });
 
   // ---------- duplicates ----------
-  r.get('/api/v1/duplicates', (c) => findDuplicates(db, { threshold: Number(c.query.threshold) || 0.8 }), { summary: 'Merge suggestions, double-counted entries, cross-platform games', query: { threshold: '0..1 (default 0.8)' } });
+  r.get('/api/v1/duplicates', (c) => {
+    const d = findDuplicates(db, { threshold: Number(c.query.threshold) || 0.8, limit: Math.min(5000, toInt(c.query.limit, 300)) });
+    return c.query.summary === 'true' ? { counts: d.counts } : d;
+  }, { summary: 'Merge suggestions, double-counted entries, cross-platform games (each list capped; see counts)', query: { threshold: '0..1 (default 0.8)', limit: 'per list, default 300', summary: 'true = counts only' } });
   r.post('/api/v1/duplicates/dismiss', (c) => {
     if (!c.body.key) throw new HttpError(400, 'key is required');
     db.prepare('INSERT OR IGNORE INTO dismissed_duplicates(key, created_at) VALUES (?, ?)').run(String(c.body.key), Date.now());
@@ -552,15 +582,15 @@ export function registerRoutes(r, app) {
     return res;
   }, { summary: 'Import games/history (CSV or JSON). Totals without sessions become baseline history.', body: 'CSV text or { games: [{ title, platform?, playtime_minutes|playtime_hours, last_played?, status?, rating?, notes?, sessions?: [{ date|started_at, minutes }] }] }' });
 
-  r.get('/api/v1/export', (c) => {
-    const data = exportAll(db);
-    if (c.query.format === 'csv') {
-      c.sendRaw(200, toCsv(data.games), 'text/csv; charset=utf-8', { 'Content-Disposition': 'attachment; filename="playtracker-export.csv"' });
-      return undefined;
+  r.get('/api/v1/export', async (c) => {
+    const csv = c.query.format === 'csv';
+    c.stream(200, csv ? 'text/csv; charset=utf-8' : 'application/json', { 'Content-Disposition': `attachment; filename="playtracker-export.${csv ? 'csv' : 'json'}"` });
+    for (const chunk of exportChunks(db, csv ? 'csv' : 'json')) {
+      if (!c.res.write(chunk)) await new Promise((r) => c.res.once('drain', r));
     }
-    c.sendRaw(200, JSON.stringify(data, null, 1), 'application/json', { 'Content-Disposition': 'attachment; filename="playtracker-export.json"' });
+    c.res.end();
     return undefined;
-  }, { summary: 'Export everything (JSON, or ?format=csv)', query: { format: 'json|csv' } });
+  }, { summary: 'Export everything (streamed JSON, or ?format=csv)', query: { format: 'json|csv' } });
 
   r.get('/api/v1/backup', (c) => {
     const tmp = path.join(os.tmpdir(), `playtracker-backup-${Date.now()}.db`);
@@ -576,7 +606,7 @@ export function registerRoutes(r, app) {
     const l = lifetime(db);
     const w = computeStats(db, { range: 'week', weekStartsOn: settings.get('week_starts_on') });
     const t = computeStats(db, { range: '1d' });
-    const last = db.prepare(`${SESSION_SELECT} WHERE s.kind = 'play' AND e.excluded = 0 ORDER BY COALESCE(s.ended_at, s.window_end) DESC LIMIT 1`).get();
+    const last = db.prepare(`${SESSION_SELECT} WHERE s.kind = 'play' AND e.excluded = 0 ORDER BY s.sort_time DESC LIMIT 1`).get();
     return {
       today_hours: +(t.total_minutes / 60).toFixed(1), week_hours: +(w.total_minutes / 60).toFixed(1), lifetime_hours: Math.round(l.total_minutes / 60),
       games: l.games, sessions: l.sessions, streak_days: w.streaks.current, top_game_week: w.top_games[0]?.title || null, last_played: last?.title || null,
