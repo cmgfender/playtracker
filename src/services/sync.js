@@ -420,7 +420,12 @@ export class SyncService {
 
   computeNext(account) {
     if (!account.enabled || providers[account.platform]?.push) return null;
-    const scheduled = nextRun(this.scheduleFor(account), account.last_sync_at, Date.now());
+    let scheduled = nextRun(this.scheduleFor(account), account.last_sync_at, Date.now());
+    // titles deferred by an hourly API budget (Xbox first import): keep going hour by hour
+    if (account.state?.deferred_titles?.length && account.last_sync_at) {
+      const backfill = account.last_sync_at + HOUR + 2 * MIN;
+      if (scheduled == null || backfill < scheduled) scheduled = backfill;
+    }
     const soon = this.soon.get(account.id);
     return soon && (scheduled == null || soon < scheduled) ? soon : scheduled;
   }
@@ -702,7 +707,7 @@ export class SyncService {
           // back off 30 minutes after a failed attempt
           const last = this.db.prepare('SELECT started_at, status FROM syncs WHERE account_id = ? ORDER BY id DESC LIMIT 1').get(a.id);
           if (!(last?.status === 'error' && now - last.started_at < 30 * MIN)) {
-            const trigger = this.soon.has(a.id) && this.soon.get(a.id) <= now ? 'session-end' : 'schedule';
+            const trigger = this.soon.has(a.id) && this.soon.get(a.id) <= now ? 'session-end' : a.state?.deferred_titles?.length ? 'backfill' : 'schedule';
             this.sync(a.id, trigger).catch(() => {});
           }
         }
