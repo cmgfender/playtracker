@@ -790,6 +790,7 @@ export class SyncService {
       st.error = res.unavailable || null;
       // the last non-empty raw report, for diagnostics
       if (res.seen?.length) st.seen = { at: now, online: res.online || null, titles: res.seen.slice(0, 10) };
+      if (res.shape) st.shape = { at: now, ...res.shape };
       else if (res.online) st.online = res.online;
       this.applyPresence(account, res.playing || [], { intervalSec: provider.profile.presence.interval_sec, now });
       if (st.failures >= 3) this.plog.info(`${account.platform}/${account.name}: presence recovered`);
@@ -816,7 +817,7 @@ export class SyncService {
 
   presenceInfo(accountId) {
     const st = this.presenceState.get(accountId);
-    return st ? { last_poll: st.lastPoll || null, failures: st.failures, error: st.error || null, online: st.online || st.seen?.online || null, last_seen: st.seen || null } : null;
+    return st ? { last_poll: st.lastPoll || null, failures: st.failures, error: st.error || null, online: st.online || st.seen?.online || null, last_seen: st.seen || null, reply_shape: st.shape || undefined } : null;
   }
 
   notify(account, result, error) {

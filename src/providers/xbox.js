@@ -21,16 +21,25 @@ export function findMinutesPlayed(obj) {
 /** Outline of a stats response for diagnostics: top-level keys, stat names, size. No values. */
 export function outline(obj) {
   const names = new Set();
+  let minutesStat = null;
   const walk = (o, d = 0) => {
     if (!o || typeof o !== 'object' || d > 8) return;
     if (Array.isArray(o)) { for (const v of o) walk(v, d + 1); return; }
     if (typeof (o.name ?? o.Name) === 'string') names.add(o.name ?? o.Name);
+    // how the playtime stat itself looks (its fields, and the value - just a minute count)
+    if (String(o.name ?? o.Name).toLowerCase() === 'minutesplayed' && !minutesStat) minutesStat = { keys: Object.keys(o).slice(0, 12), value: o.value ?? o.Value ?? null };
     for (const v of Object.values(o)) walk(v, d + 1);
   };
   walk(obj);
   let bytes = 0;
   try { bytes = JSON.stringify(obj ?? null).length; } catch { /* ignore */ }
-  return { keys: obj && typeof obj === 'object' ? Object.keys(obj).slice(0, 12) : [typeof obj], stat_names: [...names].slice(0, 20), bytes };
+  const inner = unwrap(obj);
+  return {
+    keys: obj && typeof obj === 'object' ? Object.keys(obj).slice(0, 12) : [typeof obj],
+    ...(inner !== obj && inner && typeof inner === 'object' ? { content_keys: Object.keys(inner).slice(0, 12) } : {}),
+    ...(obj && typeof obj === 'object' && 'code' in obj ? { code: obj.code } : {}),
+    stat_names: [...names].slice(0, 20), ...(minutesStat ? { minutes_stat: minutesStat } : {}), bytes,
+  };
 }
 
 /** Collect achievement unlock timestamps from either the modern or the Xbox 360 payload shape. */
@@ -62,6 +71,18 @@ export function captureTimes(obj, out = new Map()) {
   }
   for (const v of Object.values(obj)) if (v && typeof v === 'object') captureTimes(v, out);
   return out;
+}
+
+/** OpenXBL wraps many replies as { content, code }; return what is inside. */
+export function unwrap(d) {
+  return d && typeof d === 'object' && !Array.isArray(d) && 'content' in d && ('code' in d || Object.keys(d).length <= 2) ? d.content : d;
+}
+
+/** Find the signed-in player's xuid in a titleHistory / presence reply. */
+function xuidOf(d) {
+  const b = unwrap(d);
+  const x = b?.xuid ?? (Array.isArray(b) ? b[0]?.xuid : b?.people?.[0]?.xuid);
+  return x != null ? String(x) : null;
 }
 
 const DEFAULT_HOURLY = 150; // OpenXBL free tier
@@ -119,7 +140,7 @@ export const xbox = {
   async fetchLibrary(account, ctx) {
     const headers = this.headers(account);
     const hist = await ctx.http(`${API}/player/titleHistory`, { headers });
-    const titles = hist?.titles || hist?.content?.titles || [];
+    const titles = unwrap(hist)?.titles || hist?.titles || [];
     // keep ~15% of the hour for presence & retries
     let budget = Math.max(0, (ctx.remainingBudget?.(this.hourlyLimit(account)) ?? this.hourlyLimit(account)) - Math.ceil(this.hourlyLimit(account) * 0.15));
     const items = [];
@@ -193,7 +214,7 @@ export const xbox = {
         ...(minutes == null && !failure ? fallback : {}),
       });
     }
-    const state = { ...account.state, xuid: hist?.xuid || account.state.xuid };
+    const state = { ...account.state, xuid: xuidOf(hist) || account.state.xuid };
     // only titles actually waiting for budget (not skipped apps) - they are fetched by hourly back-fill syncs
     state.deferred_titles = deferredIds.slice(0, 5000);
     state.zero_checked = zeroChecked;
@@ -206,7 +227,8 @@ export const xbox = {
 
   async presence(account, ctx) {
     if ((ctx.remainingBudget?.(this.hourlyLimit(account)) ?? 1) < 3) return null; // leave room for syncs
-    const data = await ctx.http(`${API}/presence`, { headers: this.headers(account) }, { retries: 0 });
+    const raw = await ctx.http(`${API}/presence`, { headers: this.headers(account) }, { retries: 0 });
+    const data = unwrap(raw);
     const people = Array.isArray(data) ? data : data?.people || [data];
     const me = people.find((p) => !account.state.xuid || String(p?.xuid) === String(account.state.xuid)) || people[0];
     const playing = [];
@@ -224,7 +246,8 @@ export const xbox = {
         playing.push({ extId: id, title: t.name || null, device: d.type || null });
       }
     }
-    return { playing, seen, online: me?.state || null };
+    // no devices at all: keep the reply's outline so diagnostics show what came back
+    return { playing, seen, online: me?.state || null, ...(me?.devices ? {} : { shape: outline(raw) }), ...(xuidOf(raw) && !account.state.xuid ? { state: { xuid: xuidOf(raw) } } : {}) };
   },
 
   async enrich(account, entries, ctx) {
