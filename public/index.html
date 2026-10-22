@@ -12,7 +12,7 @@
   <link rel="icon" href="/icon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="/icon-192.png">
   <link rel="stylesheet" href="/app.css">
-  <script>try{var t=localStorage.getItem('pt-theme');if(t)document.documentElement.dataset.theme=t;var a=localStorage.getItem('pt-accent');if(a)document.documentElement.style.setProperty('--accent',a)}catch(e){}</script>
+  <script>try{var t=localStorage.getItem('pt-theme');if(t)document.documentElement.dataset.theme=t;var a=localStorage.getItem('pt-accent');if(a)document.documentElement.style.setProperty('--accent',a);var u=JSON.parse(localStorage.getItem('pt-ui')||'{}');for(var k in u)document.documentElement.dataset[k]=u[k]}catch(e){}</script>
 </head>
 <body>
   <div id="app"></div>

@@ -43,6 +43,8 @@ function publicAccount(a, sync) {
     games: a.games ?? undefined, minutes: a.minutes ?? undefined,
     presence: p?.presence || p?.push ? { enabled: sync.presenceEnabled(a), interval_sec: p.profile?.presence?.interval_sec || null, ...(sync.presenceInfo(a.id) || {}) } : null,
     api_usage_hour: sync.usage(a.id),
+    // what the API itself last reported about the quota (shared with anything else using the key)
+    api_quota: sync.quota?.get(a.id) ? { ...sync.quota.get(a.id) } : null,
     hourly_limit: p?.hourlyLimit ? p.hourlyLimit(a) : null,
     history_model: p ? modelFor(p, a).describe() : null,
     profile: a.state?.persona ? { name: a.state.persona, avatar: a.state.avatar, account_created_at: a.state.account_created_at || null } : null,

@@ -26,6 +26,10 @@
   --font: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, "Helvetica Neue", Arial, sans-serif;
   color-scheme: dark;
 }
+:root[data-theme="black"] {
+  --bg: #000; --bg2: #060607; --panel: #0c0c0f; --panel2: #141418; --line: #202128;
+  --shadow: 0 10px 30px -10px rgba(0, 0, 0, .9);
+}
 :root[data-theme="light"] {
   --bg: #f4f5f9; --bg2: #eceef4; --panel: #ffffff; --panel2: #f3f4f8; --line: #e1e4ec;
   --text: #141824; --muted: #5f6880; --dim: #9aa2b5; --shadow: 0 10px 30px -14px rgba(20, 24, 36, .25);
@@ -183,7 +187,7 @@ select.input { appearance: none; background-image: linear-gradient(45deg, transp
 
 /* ---------- covers / library ---------- */
 .cover { position: relative; aspect-ratio: 2 / 3; border-radius: 12px; overflow: hidden; background: var(--panel2); flex: none; }
-.cover img { width: 100%; height: 100%; object-fit: cover; opacity: 0; transition: opacity .3s; }
+.cover img { position: absolute; inset: 0; z-index: 1; width: 100%; height: 100%; object-fit: cover; opacity: 0; transition: opacity .3s; }
 .cover img.ok { opacity: 1; }
 .cover .ph .ini { display: none; }
 .item .cover .ph .full, .hbar .cover .ph .full, .lib-list .cover .ph .full, .row > .cover .ph .full { display: none; }
@@ -370,3 +374,59 @@ pre.code { padding: 12px; overflow-x: auto; white-space: pre; display: block; }
 select.input.sm { padding-right: 26px; }
 .hist-row .cover { flex: none; }
 .hist-row .ttl { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+
+/* ---------- customization: titles on covers ---------- */
+:root[data-cover-titles="always"] .tile .cover .ph { z-index: 2; place-items: end center; padding: 10px 8px; background: linear-gradient(180deg, transparent 50%, rgba(0,0,0,.82)); font-size: 13px; }
+:root[data-cover-titles="always"] .tile .cover .ph .full { display: block; }
+:root[data-cover-titles="always"] .tile .flags { z-index: 3; }
+:root[data-cover-titles="always"] .lib-grid .tile .t, :root[data-cover-titles="always"] .carousel .tile .t { display: none; }
+:root[data-cover-titles="never"] .cover .ph .full { display: none; }
+:root[data-cover-titles="never"] .cover .ph .ini { display: block; font-size: 26px; opacity: .9; }
+.tile .bar { z-index: 3; }
+.tile .flags { z-index: 3; }
+
+/* ---------- customization: library cover size ---------- */
+:root[data-covers="s"] .lib-grid { grid-template-columns: repeat(auto-fill, minmax(112px, 1fr)); gap: 14px 10px; }
+:root[data-covers="s"] .lib-grid .tile .t { font-size: 12.5px; }
+:root[data-covers="l"] .lib-grid { grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 22px 18px; }
+@media (max-width: 600px) {
+  :root[data-covers="s"] .lib-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px 8px; }
+  :root[data-covers="s"] .lib-grid .tile .m { font-size: 11px; }
+  :root[data-covers="l"] .lib-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px 12px; }
+}
+
+/* ---------- customization: compact density ---------- */
+:root[data-density="compact"] { --radius: 12px; }
+:root[data-density="compact"] body { font-size: 14px; }
+:root[data-density="compact"] .card { padding: 13px 14px; }
+:root[data-density="compact"] .kpi { padding: 10px 12px; }
+:root[data-density="compact"] .kpi .value { font-size: 23px; }
+:root[data-density="compact"] .kpis { gap: 8px; }
+:root[data-density="compact"] .grid { gap: 10px; }
+:root[data-density="compact"] .page-h { margin-bottom: 12px; }
+:root[data-density="compact"] h1 { font-size: 22px; }
+:root[data-density="compact"] .item { padding: 7px 0; }
+:root[data-density="compact"] .setting { padding: 10px 0; }
+:root[data-density="compact"] .main { padding-top: 18px; }
+:root[data-density="compact"] .carousel { gap: 10px; }
+:root[data-density="compact"] .dash { gap: 10px; }
+
+/* ---------- home sections ---------- */
+.dash { display: flex; flex-direction: column; gap: 16px; }
+.dash > .grid { margin: 0; }
+
+/* ---------- home layout editor ---------- */
+.layout-list { display: flex; flex-direction: column; gap: 6px; }
+.layout-row { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--bg2); }
+.layout-row.off { opacity: .55; }
+.layout-row .grow { font-weight: 600; font-size: 14px; }
+.layout-row .d { font-size: 12px; color: var(--muted); font-weight: 400; }
+.layout-row .btn.icon { width: 30px; height: 30px; }
+input[type="color"].swatch { width: 32px; height: 32px; padding: 0; border: 1px solid var(--line); border-radius: 9px; background: none; cursor: pointer; }
+input[type="color"].swatch::-webkit-color-swatch-wrapper { padding: 3px; }
+input[type="color"].swatch::-webkit-color-swatch { border: 0; border-radius: 6px; }
+
+/* settings rows: controls drop below the label instead of overflowing */
+.setting { flex-wrap: wrap; }
+.setting > div:first-child { flex: 1 1 200px; min-width: 0; }
+.tile .flags .badge { max-width: 100%; overflow: hidden; text-overflow: ellipsis; }

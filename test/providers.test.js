@@ -40,6 +40,12 @@ function mockFetch(url, opts = {}) {
       { apiname: 'd', achieved: 0, unlocktime: 0 },
     ] } });
   }
+  if (u.pathname.includes('IStoreBrowseService/GetItems')) {
+    const ids = JSON.parse(u.searchParams.get('input_json')).ids.map((x) => x.appid);
+    return json({ response: { store_items: ids.map((appid) => ({ appid, id: appid, success: 1, assets: appid === 20
+      ? { asset_url_format: `steam/apps/${appid}/\${FILENAME}?t=1`, library_capsule: 'abc123/library_600x900.jpg', header: 'abc123/header.jpg' }
+      : { asset_url_format: `steam/apps/${appid}/\${FILENAME}?t=1`, library_capsule: 'library_600x900.jpg' } })) } });
+  }
   if (u.host === 'store.steampowered.com') return json({ 10: { success: true, data: { release_date: { coming_soon: false, date: '1 Nov, 2000' } } } });
   // ---- PSN ----
   if (u.pathname.endsWith('/oauth/authorize')) return new Response(null, { status: 302, headers: { Location: 'com.scee.psxandroid.scecompcall://redirect/?code=v3.abc' } });
@@ -130,6 +136,20 @@ test('steam: initial import dates history, enrichment adds achievement anchors, 
   assert.ok(usage.calls >= 5);
 });
 
+test('steam: covers stored under hashed store paths are found, classic ones left alone', async () => {
+  const acc = (await call('/accounts')).find((a) => a.platform === 'steam');
+  // runs in the background after each sync; run it directly too (no-op if already done)
+  await app.app.sync.resolveCovers(acc.id);
+  const tfc = (await call('/games?q=Team%20Fortress')).items[0];
+  assert.equal(tfc.cover_url, 'https://shared.cloudflare.steamstatic.com/store_item_assets/steam/apps/20/abc123/library_600x900.jpg?t=1');
+  const cs = (await call('/games?q=Counter')).items[0];
+  assert.match(cs.cover_url, /\/steam\/apps\/10\/library_600x900\.jpg$/);
+  // checked once; later syncs keep the resolved cover
+  assert.deepEqual((await app.app.sync.resolveCovers(acc.id)), { updated: 0 });
+  await call(`/accounts/${acc.id}/sync?wait=true`, { method: 'POST' });
+  assert.match((await call('/games?q=Team%20Fortress')).items[0].cover_url, /abc123/);
+});
+
 test('psn: first/last played + play count give high-confidence history; play count splits deltas', async () => {
   state.psnTitles = [{ titleId: 'PPSA01411_00', name: "Marvel's Spider-Man 2", playDuration: 'PT40H', firstPlayedDateTime: new Date(NOW - 200 * DAY).toISOString(), lastPlayedDateTime: new Date(NOW - 20 * DAY).toISOString(), playCount: 30, category: 'ps5_native_game', concept: { id: 1 } }];
   const acc = await call('/accounts', { method: 'POST', body: { platform: 'psn', name: 'P', config: { npsso: 'abc' }, sync: false } });
@@ -187,6 +207,37 @@ test('xbox: testing credentials only samples; deferred titles are back-filled ho
     assert.ok(a.state.deferred_titles.length > 20, `${a.state.deferred_titles.length} deferred`);
     const next = app.app.sync.computeNext(a);
     assert.ok(next - a.last_sync_at <= 65 * 60_000, 'back-fill within the hour, not at the daily sync');
+  } finally { globalThis.fetch = prev; }
+});
+
+test('xbox: quota headers cap the budget; a 429 pauses the account until the reset instead of retrying', async () => {
+  const resetAt = Math.floor(Date.now() / 1000) + 1800;
+  let statCalls = 0;
+  const prev = globalThis.fetch;
+  globalThis.fetch = async (url, o) => {
+    const u = new URL(url);
+    const h = { 'X-RateLimit-Limit': '150', 'X-RateLimit-Reset': String(resetAt) };
+    if (u.pathname === '/api/v2/player/titleHistory') {
+      return json({ xuid: '2533', titles: Array.from({ length: 30 }, (_, i) => ({ titleId: String(7000 + i), name: `Q ${i}`, type: 'Game', titleHistory: { lastTimePlayed: new Date(NOW - DAY).toISOString() } })) }, 200, { ...h, 'X-RateLimit-Remaining': '30' });
+    }
+    if (u.pathname.startsWith('/api/v2/achievements/stats/')) {
+      statCalls++;
+      if (statCalls > 2) return json({ error: 'limit' }, 429, { ...h, 'X-RateLimit-Remaining': '0' });
+      return json({ statlistscollection: [{ stats: [{ name: 'MinutesPlayed', value: '60' }] }] }, 200, { ...h, 'X-RateLimit-Remaining': String(30 - statCalls) });
+    }
+    return mockFetch(url, o);
+  };
+  try {
+    const acc = await call('/accounts', { method: 'POST', body: { platform: 'xbox', name: 'Q', config: { api_key: 'k2' }, sync: false } });
+    await call(`/accounts/${acc.id}/sync?wait=true`, { method: 'POST' });
+    // the API said 30 left (not our own 150): 30 minus the 15% reserve = 7 at most; the 429 on
+    // the third call stops it without retrying
+    assert.equal(statCalls, 3);
+    const s = app.app.sync;
+    assert.ok(Math.abs(s.blockedUntil(acc.id) - resetAt * 1000) < 2000, 'paused until the reported reset');
+    assert.ok(s.computeNext(s.account(acc.id)) >= resetAt * 1000 - 1000, 'next sync waits for the reset');
+    const sys = (await call('/accounts')).find((a) => a.id === acc.id);
+    assert.equal(sys.api_quota.remaining, 0);
   } finally { globalThis.fetch = prev; }
 });
 
