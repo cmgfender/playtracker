@@ -204,8 +204,8 @@ export function inferHistory(e, { pacePerDay = 90, maxPerDay = 600, minDay = 15,
       // unknown start: games are played over a much longer span than their raw hours suggest
       // (this player's own pace - minutes per day of a game's life - when it has been learned)
       // learned: as far back as the player's most similar games reach before their last session
-      // (only with enough games: a start-less guess from a handful of games does more harm than good)
-      const back = lambda && !knownStart && style.games >= STYLE_MIN_GAMES_UNBOUNDED ? neighbours(style, remaining, null, 'back') : null;
+      // (only with enough fully tracked games: a start-less guess from a handful, or from unlock times alone, does more harm than good)
+      const back = lambda && !knownStart && (style.tracked ?? 0) >= STYLE_MIN_GAMES_UNBOUNDED ? neighbours(style, remaining, null, 'back') : null;
       const defSpan = Math.ceil(remaining / shape.unknownStartPace);
       const span0 = back ? Math.round((1 - lambda) * defSpan + lambda * back.spans[back.spans.length >> 1]) : defSpan;
       if (!knownStart) start = addDays(end, -Math.max(burstDays, span0));
@@ -304,6 +304,7 @@ const STYLE_MAX_SAMPLES = 240;
  */
 export function learnStyle(samples, { minPoints = 4, minSpanDays = 7 } = {}) {
   const out = [];
+  let tracked = 0;
   for (const pts of samples) {
     const list = (pts || []).filter((p) => p && p.t && p.minutes > 0).sort((a, b) => a.t - b.t);
     if (list.length < minPoints) continue;
@@ -320,6 +321,7 @@ export function learnStyle(samples, { minPoints = 4, minSpanDays = 7 } = {}) {
     }
     const r5 = (x) => +x.toFixed(4);
     out.push({ m: Math.round(total), s: spanDays, rel: rel.map(r5), back: back.map(r5) });
+    if (pts.tracked !== false) tracked++;
   }
   if (out.length < 3) return null;
   // keep a spread of sizes when there are more games than we store
@@ -327,7 +329,8 @@ export function learnStyle(samples, { minPoints = 4, minSpanDays = 7 } = {}) {
   const step = Math.max(1, out.length / STYLE_MAX_SAMPLES);
   const kept = [];
   for (let i = 0; i < out.length && kept.length < STYLE_MAX_SAMPLES; i += step) kept.push(out[Math.floor(i)]);
-  return { v: 1, games: out.length, samples: kept };
+  // tracked: games with real session minutes (unlock-time samples only show when unlocks happened)
+  return { v: 2, games: out.length, tracked, samples: kept };
 }
 
 /** Average signature of the k games most similar in size (and span, when known). */
@@ -364,8 +367,9 @@ export function learnStyleFromDb(db, { now = Date.now(), quietDays = 30, minAnch
   if (pts.length) samples.push(pts);
   // anchors carry no minutes: every unlock stands for an equal share of the game's time
   for (const r of db.prepare("SELECT hist FROM entries WHERE baseline_min > 0 AND excluded = 0 AND json_array_length(json_extract(hist, '$.anchors')) >= ? LIMIT ?").all(minAnchors, maxGames)) {
-    const a = JSON.parse(r.hist).anchors;
-    samples.push(a.map((t) => ({ t, minutes: 1 })));
+    const pts = JSON.parse(r.hist).anchors.map((t) => ({ t, minutes: 1 }));
+    pts.tracked = false;
+    samples.push(pts);
   }
   return learnStyle(samples);
 }
@@ -383,7 +387,8 @@ export function styleOf(db) {
 export function relearnStyle(db, { settings = null, log = null, now = Date.now() } = {}) {
   const old = styleOf(db);
   const next = settings?.history_learn === false ? null : learnStyleFromDb(db, { now });
-  const changed = !old !== !next || (old && next && Math.abs(next.games - old.games) >= Math.max(2, old.games * 0.2));
+  const changed = !old !== !next || (old && next && (old.v !== next.v || Math.abs(next.games - old.games) >= Math.max(2, old.games * 0.2)
+    || ((old.tracked ?? 0) >= STYLE_MIN_GAMES_UNBOUNDED) !== (next.tracked >= STYLE_MIN_GAMES_UNBOUNDED)));
   if (!changed) return false;
   if (next) {
     db.prepare("INSERT INTO settings(key, value) VALUES ('history_style', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")

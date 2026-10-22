@@ -501,7 +501,8 @@ export function registerRoutes(r, app) {
     let calls = 0;
     const ctx = {
       http: (url, opts, cfg = {}) => httpJson(url, opts, { ...cfg, onResult: () => { calls++; } }),
-      getEntry: () => null, warn: (m) => warnings.push(m), remainingBudget: (limit) => limit, stopped: () => false,
+      // a test only samples: never spend an hourly budget (Xbox) before the real import runs
+      getEntry: () => null, warn: (m) => warnings.push(m), remainingBudget: (limit) => Math.ceil(limit * 0.15) + 3, stopped: () => false,
     };
     const fake = { id: 0, platform, config, state: {} };
     const res = await p.fetchLibrary(fake, ctx);
@@ -512,7 +513,8 @@ export function registerRoutes(r, app) {
     const withDates = res.items.filter((i) => i.lastPlayedAt || i.firstPlayedAt).length;
     return {
       ok: true, games: res.items.length, played: res.items.filter((i) => i.playtimeMin > 0).length, minutes: res.items.reduce((a, i) => a + (i.playtimeMin || 0), 0),
-      with_dates: withDates, presence, api_calls: calls, warning: [res.warning, ...warnings].filter(Boolean).join('; ') || null,
+      with_dates: withDates, presence, api_calls: calls,
+      warning: [res.info?.deferred ? `Sampled a few of ${res.info.titles} titles; the full import runs within the hourly API limit after saving` : res.warning, ...warnings].filter(Boolean).join('; ') || null,
       account_created_at: res.state?.account_created_at || null, sample: res.items.slice(0, 5).map((i) => i.title),
     };
   }, { summary: 'Test credentials without saving', body: '{ platform, config }' });

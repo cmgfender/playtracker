@@ -108,7 +108,7 @@ export const xbox = {
     // keep ~15% of the hour for presence & retries
     let budget = Math.max(0, (ctx.remainingBudget?.(this.hourlyLimit(account)) ?? this.hourlyLimit(account)) - Math.ceil(this.hourlyLimit(account) * 0.15));
     const items = [];
-    let deferred = 0;
+    const deferredIds = [];
     let missing = 0;
     // most recently played first so active games are always fresh
     titles.sort((a, b) => Date.parse(b.titleHistory?.lastTimePlayed || 0) - Date.parse(a.titleHistory?.lastTimePlayed || 0));
@@ -130,7 +130,7 @@ export const xbox = {
         items.push({ ...base, playtimeMin: existing.playtime_min });
         continue;
       }
-      if (budget <= 0) { deferred++; continue; }
+      if (budget <= 0) { deferredIds.push(extId); continue; }
       budget--;
       let minutes = null;
       try {
@@ -138,16 +138,17 @@ export const xbox = {
         minutes = findMinutesPlayed(stats);
       } catch (err) {
         if (err.auth) throw err;
-        if (err.rateLimited) { deferred++; budget = 0; continue; }
+        if (err.rateLimited) { deferredIds.push(extId); budget = 0; continue; }
       }
       if (minutes == null) missing++;
       // a title seen for the first time on a later sync while being deferred earlier is history, not new play
       items.push({ ...base, playtimeMin: minutes ?? existing?.playtime_min ?? 0, backfill: !existing && account.state.deferred_titles?.includes(extId) });
     }
     const state = { ...account.state, xuid: hist?.xuid || account.state.xuid };
-    const got = new Set(items.map((i) => i.extId));
-    state.deferred_titles = titles.map((t) => String(t.titleId)).filter((id) => !got.has(id) && !HOME_TITLE_IDS.has(id)).slice(0, 5000);
-    const warning = deferred ? `${deferred} titles deferred to the next sync to stay within the OpenXBL hourly limit` : null;
+    // only titles actually waiting for budget (not skipped apps) - they are fetched by hourly back-fill syncs
+    state.deferred_titles = deferredIds.slice(0, 5000);
+    const deferred = deferredIds.length;
+    const warning = deferred ? `${deferred} titles deferred to stay within the OpenXBL hourly limit - fetched by hourly back-fill syncs` : null;
     return { items, state, warning, complete: deferred === 0, info: { titles: titles.length, missing_minutes: missing, deferred } };
   },
 

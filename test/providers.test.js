@@ -170,6 +170,26 @@ test('xbox: home title skipped, minutes from stats, presence parsed, achievement
   assert.equal((await call(`/games/${g.id}`)).entries[0].history.evidence.anchors, 2);
 });
 
+test('xbox: testing credentials only samples; deferred titles are back-filled hourly', async () => {
+  const many = Array.from({ length: 40 }, (_, i) => ({ titleId: String(5000 + i), name: `Game ${i}`, type: 'Game', titleHistory: { lastTimePlayed: new Date(NOW - (i + 1) * DAY).toISOString() } }));
+  const prev = globalThis.fetch;
+  globalThis.fetch = (url, o) => (new URL(url).pathname === '/api/v2/player/titleHistory' ? Promise.resolve(json({ xuid: '2533', titles: many })) : mockFetch(url, o));
+  try {
+    const before_ = state.calls.length;
+    const t = await call('/accounts/test', { method: 'POST', body: { platform: 'xbox', config: { api_key: 'k' } } });
+    const stats = state.calls.slice(before_).filter((c) => c.includes('/achievements/stats/')).length;
+    assert.ok(stats <= 3, `test spent ${stats} stat calls`);
+    assert.match(t.warning, /Sampled a few of 40 titles/);
+    // a real sync with a tiny hourly limit defers most titles and schedules a back-fill within the hour
+    const acc = await call('/accounts', { method: 'POST', body: { platform: 'xbox', name: 'X2', config: { api_key: 'k', hourly_limit: '20' }, sync: false } });
+    await call(`/accounts/${acc.id}/sync?wait=true`, { method: 'POST' });
+    const a = app.app.sync.account(acc.id);
+    assert.ok(a.state.deferred_titles.length > 20, `${a.state.deferred_titles.length} deferred`);
+    const next = app.app.sync.computeNext(a);
+    assert.ok(next - a.last_sync_at <= 65 * 60_000, 'back-fill within the hour, not at the daily sync');
+  } finally { globalThis.fetch = prev; }
+});
+
 test('test endpoint reports data quality without saving', async () => {
   const r = await call('/accounts/test', { method: 'POST', body: { platform: 'steam', config: { api_key: 'k', steam_id: '76561197960287930' } } });
   assert.equal(r.ok, true);
