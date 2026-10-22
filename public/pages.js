@@ -68,6 +68,7 @@ function sourceBadge(s) {
   if (s.kind === 'baseline') return '<span class="badge">history</span>';
   if (s.kind === 'estimate') return `<span class="badge" title="${esc(CONF[s.confidence]?.[2] || '')}">estimated · ${esc(s.confidence || '')}</span>`;
   if (s.source === 'manual') return '<span class="badge accent">manual</span>';
+  if (s.note?.startsWith('Length estimated')) return '<span class="badge" title="The platform reports no playtime for this game and live presence missed this session: it ends at the reported last-played time, with your typical session length. Edit it if you know better.">≈ length</span>';
   if (s.confidence === 'exact') return `<span class="badge good" title="${CONF.exact[2]}">● live</span>${s.device ? `<span class="badge">${esc(s.device)}</span>` : ''}`;
   if (s.device) return `<span class="badge">${esc(s.device)}</span>${s.precise ? '' : '<span class="badge" title="Exact time unknown — spread across the sync window">≈</span>'}`;
   if (s.source === 'import') return '<span class="badge">imported</span>';

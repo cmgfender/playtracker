@@ -126,6 +126,7 @@ export const xbox = {
     const deferredIds = [];
     let missing = 0;
     const zeroChecked = { ...(account.state.zero_checked || {}) };
+    const unmetered = { ...(account.state.unmetered || {}) };
     const samples = [];
     // most recently played first so active games are always fresh
     titles.sort((a, b) => Date.parse(b.titleHistory?.lastTimePlayed || 0) - Date.parse(a.titleHistory?.lastTimePlayed || 0));
@@ -143,10 +144,20 @@ export const xbox = {
         coverUrl: t.displayImage || null,
         meta: { devices: t.devices, achievement: t.achievement, pfn: t.pfn },
       };
-      // unchanged since last time: reuse the stored minutes - except titles stuck at 0 minutes,
-      // which are asked again once a week (a failed or odd response must not stick forever)
-      const zeroDue = existing && !existing.playtime_min && !(zeroChecked[extId] > Date.now() - 7 * 86_400_000);
-      if (existing && existing.last_played_at && lastPlayedAt && lastPlayedAt <= existing.last_played_at && !zeroDue) {
+      const changed = !(existing && existing.last_played_at && lastPlayedAt && lastPlayedAt <= existing.last_played_at);
+      // titles without a playtime stat are asked again once a week (the stat may appear, and a
+      // failed or odd response must not stick forever)
+      const recheckDue = !(zeroChecked[extId] > Date.now() - 7 * 86_400_000);
+      const wasUnmetered = !!unmetered[extId];
+      // played since last time, but the platform reports no playtime: tracked by presence, with
+      // a fallback session ending at the new last-played time when presence missed it
+      const fallback = existing && changed && lastPlayedAt ? { unmeteredPlayAt: lastPlayedAt, prevPlayedAt: existing.last_played_at || null } : {};
+      if (existing && wasUnmetered && !recheckDue) {
+        items.push({ ...base, playtimeMin: existing.playtime_min, ...fallback });
+        continue;
+      }
+      // unchanged since last time: reuse the stored minutes (titles stuck at 0 are rechecked)
+      if (existing && !changed && !(!existing.playtime_min && recheckDue)) {
         items.push({ ...base, playtimeMin: existing.playtime_min });
         continue;
       }
@@ -166,16 +177,27 @@ export const xbox = {
       if (minutes == null) {
         missing++;
         zeroChecked[extId] = Date.now();
+        // answered, but without a MinutesPlayed stat (many PC / Game Pass titles): sessions for
+        // this title come from live presence instead
+        if (!failure) unmetered[extId] = 1;
         // keep a few response outlines (shape and stat names, no values) for diagnostics
         if (samples.length < 6) samples.push({ title_id: extId, title: t.name, at: new Date().toISOString(), ...(failure ? { error: failure.slice(0, 200) } : outline(stats)) });
-      } else delete zeroChecked[extId];
+      } else { delete zeroChecked[extId]; delete unmetered[extId]; }
       // a title seen for the first time on a later sync while being deferred earlier is history, not new play
-      items.push({ ...base, playtimeMin: minutes ?? existing?.playtime_min ?? 0, backfill: !existing && account.state.deferred_titles?.includes(extId) });
+      items.push({
+        ...base,
+        playtimeMin: minutes ?? existing?.playtime_min ?? 0,
+        // the first real total of a title so far tracked by presence includes what presence
+        // already recorded; the rest is history, never new play
+        backfill: (!existing && account.state.deferred_titles?.includes(extId)) || (minutes != null && wasUnmetered),
+        ...(minutes == null && !failure ? fallback : {}),
+      });
     }
     const state = { ...account.state, xuid: hist?.xuid || account.state.xuid };
     // only titles actually waiting for budget (not skipped apps) - they are fetched by hourly back-fill syncs
     state.deferred_titles = deferredIds.slice(0, 5000);
     state.zero_checked = zeroChecked;
+    state.unmetered = unmetered;
     if (samples.length) state.missing_minutes_samples = samples;
     const deferred = deferredIds.length;
     const warning = deferred ? `${deferred} titles deferred to stay within the OpenXBL hourly limit - fetched by hourly back-fill syncs` : null;
