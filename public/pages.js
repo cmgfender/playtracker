@@ -1186,7 +1186,8 @@ async function settings(view, stale) {
       <div class="stack">
         <div class="card" id="import"><div class="card-h"><h2>Import</h2></div>
           <p class="small muted" style="margin-top:-6px">Bring history from spreadsheets, other trackers, Switch, etc. CSV columns: <code>title</code>, <code>platform</code>, <code>playtime_hours</code> or <code>playtime_minutes</code>, <code>last_played</code>, <code>status</code>, <code>rating</code>, <code>notes</code>. JSON may include per-game <code>sessions</code>. Totals without sessions become <b>history</b> — counted in lifetime, never as a burst in your charts.</p>
-          <label class="btn" style="cursor:pointer">${icon('upload')}Choose CSV / JSON<input type="file" id="imp-file" accept=".csv,.json,.txt,text/csv,application/json" hidden></label>
+          <label class="btn" style="cursor:pointer">${icon('upload')}Choose CSV / JSON / GameTrack .zip<input type="file" id="imp-file" accept=".csv,.json,.txt,.zip,text/csv,application/json,application/zip" hidden></label>
+          <p class="tiny muted" style="margin:8px 0 0">GameTrack: in GameTrack choose Settings → Export, then pick the .zip here. Unlock times date your synced games' history; hours no account here tracks are added as history; nothing is counted twice.</p>
           <details style="margin-top:12px"><summary class="small muted" style="cursor:pointer">…or paste</summary><textarea class="input mono" id="imp-text" placeholder="title,platform,playtime_hours,status&#10;Hades,switch,42,completed" style="margin-top:8px"></textarea><button class="btn sm" id="imp-go" style="margin-top:8px">Import pasted data</button></details>
           <div id="imp-r" class="small" style="margin-top:10px"></div>
         </div>
@@ -1244,7 +1245,28 @@ async function settings(view, stale) {
       out.innerHTML = `<div class="card" style="padding:12px;border-color:var(--good)"><b style="color:var(--good)">✓ Imported ${r.games} games</b> — ${r.entries_created} new, ${r.entries_updated} updated, ${r.sessions} sessions (${fmtMin(r.tracked_minutes)}), ${fmtHours(r.baseline_minutes)}h added as history${r.skipped ? `, ${r.skipped} rows skipped` : ''}.<div class="muted">Check <a href="/duplicates" data-link style="color:var(--accent)">Duplicates</a> if these games are also on a synced account.</div></div>`;
     } catch (e) { out.innerHTML = `<div class="card" style="padding:12px;border-color:var(--bad);color:var(--bad)">${esc(e.message)}</div>`; }
   };
-  $('#imp-file').addEventListener('change', async (e) => { const f = e.target.files[0]; if (f) doImport(await f.text(), f.name.toLowerCase()); e.target.value = ''; });
+  const doGameTrack = async (file) => {
+    const out = $('#imp-r');
+    out.innerHTML = '<span class="pulse muted">Reading GameTrack export…</span>';
+    try {
+      const r = await api('/import/gametrack', { method: 'POST', body: file, headers: { 'Content-Type': 'application/zip' } });
+      const i = r.import || {};
+      out.innerHTML = `<div class="card" style="padding:12px;border-color:var(--good)"><b style="color:var(--good)">✓ GameTrack: ${r.gametrack_games.toLocaleString()} games read</b>
+        <ul class="small" style="margin:6px 0 0;padding-left:18px">
+          <li>${r.anchors.toLocaleString()} achievement / trophy times now date history${r.anchored_entries ? ` of ${r.anchored_entries} synced games` : ''}</li>
+          <li>${r.imported_titles} games with playtime no account here tracks imported as history (${fmtHours(i.baseline_minutes || 0)}h)</li>
+          ${r.skipped_synced ? `<li>${r.skipped_synced} games skipped: already counted by your synced accounts</li>` : ''}
+          <li>${r.statuses} statuses, ${r.ratings} ratings, ${r.covers} covers filled in${r.wishlist_added ? ` · ${r.wishlist_added} wish-listed games added` : ''}</li>
+          ${r.skipped_no_playtime ? `<li class="muted">${r.skipped_no_playtime} collection games without playtime left out</li>` : ''}
+        </ul><div class="muted small" style="margin-top:6px">Importing the same file again changes nothing.</div></div>`;
+    } catch (err) { out.innerHTML = `<div class="card" style="padding:12px;border-color:var(--bad);color:var(--bad)">${esc(err.message)}</div>`; }
+  };
+  $('#imp-file').addEventListener('change', async (e) => {
+    const f = e.target.files[0];
+    if (f && /\.zip$/i.test(f.name)) doGameTrack(f);
+    else if (f) doImport(await f.text(), f.name.toLowerCase());
+    e.target.value = '';
+  });
   $('#imp-go').addEventListener('click', () => { const t = $('#imp-text').value; if (t.trim()) doImport(t); });
   $('#pw-f')?.addEventListener('submit', async (e) => {
     e.preventDefault();

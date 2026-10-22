@@ -295,6 +295,8 @@ function migrate(db) {
 }
 
 export function tx(db, fn) {
+  // nested: join the outer transaction (it commits or rolls back everything)
+  if (db.isTransaction) return fn();
   db.exec('BEGIN IMMEDIATE');
   db._inTx = true;
   try {

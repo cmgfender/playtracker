@@ -14,6 +14,8 @@ import { normalizeTitle } from '../services/titles.js';
 import { reinferMany, reinferPending, relearnStyle, styleOf, INFER_VERSION } from '../services/inference.js';
 import { flushRollups } from '../services/rollup.js';
 import { applyLicenses } from '../services/licenses.js';
+import { readZip, isZip } from '../services/zip.js';
+import { gameTrackTables, importGameTrack } from '../services/gametrack.js';
 import { modelFor } from '../services/model.js';
 import fsp from 'node:fs';
 import { httpJson } from '../providers/http.js';
@@ -709,6 +711,13 @@ export function registerRoutes(r, app) {
     res.style_relearned = relearnStyle(db, { settings: settings.all(), log: app.log?.scoped?.('inference') });
     return res;
   }, { summary: 'Import games/history (CSV or JSON). Totals without sessions become baseline history.', body: 'CSV text or { games: [{ title, platform?, playtime_minutes|playtime_hours, last_played?, status?, rating?, notes?, sessions?: [{ date|started_at, minutes }] }] }', bigBody: true });
+
+  r.post('/api/v1/import/gametrack', (c) => {
+    const buf = c.rawBuffer;
+    if (!isZip(buf)) throw new HttpError(400, 'Upload the GameTrack export .zip (Settings → Export in GameTrack)');
+    const res = importGameTrack(db, gameTrackTables(readZip(buf)), { settings: settings.all() });
+    return res;
+  }, { summary: 'Import a GameTrack export ZIP: unlock times date synced history, untracked hours become history, statuses/ratings/covers fill gaps', body: 'the .zip file (Content-Type: application/zip)', bigBody: true, binary: true });
 
   r.get('/api/v1/export', async (c) => {
     const csv = c.query.format === 'csv';

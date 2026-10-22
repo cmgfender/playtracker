@@ -8,7 +8,7 @@ import { mergeEvidence, reinferMany } from './inference.js';
 const MIN = 60_000;
 const STATUSES = new Set(['unset', 'backlog', 'playing', 'paused', 'completed', 'beaten', 'dropped', 'wishlist']);
 
-export function parseCsv(text) {
+export function parseCsv(text, { commaOnly = false } = {}) {
   const rows = [];
   let row = []; let cell = ''; let q = false;
   const src = String(text).replace(/^﻿/, '');
@@ -17,7 +17,7 @@ export function parseCsv(text) {
     if (q) {
       if (c === '"' && src[i + 1] === '"') { cell += '"'; i++; } else if (c === '"') q = false; else cell += c;
     } else if (c === '"') q = true;
-    else if (c === ',' || c === ';' || c === '\t') { row.push(cell); cell = ''; }
+    else if (c === ',' || (!commaOnly && (c === ';' || c === '\t'))) { row.push(cell); cell = ''; }
     else if (c === '\n' || c === '\r') {
       if (c === '\r' && src[i + 1] === '\n') i++;
       row.push(cell); rows.push(row); row = []; cell = '';

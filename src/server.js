@@ -74,7 +74,7 @@ async function readBody(req, limit = 256 * 1024 * 1024) {
     if (size > limit) throw new HttpError(413, 'Request body too large');
     chunks.push(c);
   }
-  return Buffer.concat(chunks).toString('utf8');
+  return Buffer.concat(chunks);
 }
 
 function sendJson(req, res, status, data) {
@@ -171,7 +171,9 @@ export function createApp({ dbFile = process.env.PLAYTRACKER_DB || path.join(dat
     try {
       if (req.method !== 'GET' && req.method !== 'HEAD' && req.method !== 'DELETE') {
         // big bodies only where they belong (imports), and never before authentication
-        const raw = await readBody(req, m.route.doc.bigBody ? 256 * 1024 * 1024 : m.route.doc.public ? 64 * 1024 : 4 * 1024 * 1024);
+        const buf = await readBody(req, m.route.doc.bigBody ? 256 * 1024 * 1024 : m.route.doc.public ? 64 * 1024 : 4 * 1024 * 1024);
+        ctx.rawBuffer = buf; // binary uploads (ZIP exports)
+        const raw = m.route.doc.binary ? '' : buf.toString('utf8');
         ctx.rawBody = raw;
         const type = String(req.headers['content-type'] || '');
         if (/csv|text\/plain/.test(type)) { ctx.rawType = 'csv'; ctx.body = raw; } else if (raw.trim()) {
