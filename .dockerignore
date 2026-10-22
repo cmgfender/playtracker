@@ -1,0 +1,9 @@
+.git
+data
+test
+node_modules
+*.db*
+.github
+scripts
+docs
+unraid

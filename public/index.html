@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>PlayTracker</title>
+  <meta name="description" content="Self-hosted playtime and session tracker for Steam, Xbox and PlayStation">
+  <meta name="theme-color" content="#0b0d12">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/icon-192.png">
+  <link rel="stylesheet" href="/app.css">
+  <script>try{var t=localStorage.getItem('pt-theme');if(t)document.documentElement.dataset.theme=t;var a=localStorage.getItem('pt-accent');if(a)document.documentElement.style.setProperty('--accent',a)}catch(e){}</script>
+</head>
+<body>
+  <div id="app"></div>
+  <div class="toasts" id="toasts"></div>
+  <noscript>PlayTracker needs JavaScript.</noscript>
+  <script type="module" src="/app.js"></script>
+</body>
+</html>

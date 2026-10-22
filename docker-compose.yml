@@ -1,0 +1,18 @@
+services:
+  playtracker:
+    image: ghcr.io/cmgfender/playtracker:latest
+    # build: .
+    container_name: playtracker
+    restart: unless-stopped
+    ports:
+      - "7720:7720"
+    volumes:
+      - ./data:/data
+    environment:
+      TZ: America/New_York          # used for daily buckets and sync times
+      PUID: 1000
+      PGID: 1000
+      # PLAYTRACKER_PASSWORD: change-me   # optional UI/API password (or set it in Settings)
+      # PLAYTRACKER_SECURE_COOKIE: "true" # when served over HTTPS via a reverse proxy
+      # LOG_LEVEL: debug                  # debug | info | warn | error
+      # PLAYTRACKER_LOG_FILE: /data/playtracker.log
