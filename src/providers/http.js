@@ -31,15 +31,16 @@ export async function httpJson(url, opts = {}, { retries = 2, timeoutMs = 30_000
       }
       const text = await res.text();
       // some APIs (OpenXBL) put the quota reset in the 429 body instead of a header
-      if (rateLimited && !rate.resetAt) rate.resetAt = bodyResetAt(text);
+      const header = retryAfterSeconds(res.headers.get('retry-after'));
+      if (rateLimited && !rate.resetAt) rate.resetAt = bodyResetAt(text) || (header ? Date.now() + header * 1000 : null);
       onResult?.({ url, host, status: res.status, ms: Date.now() - t0, ok: res.ok, rateLimited, rate });
       if (rateLimited || res.status >= 500) {
-        const header = Number(res.headers.get('retry-after'));
         const retryAfter = header || (rateLimited && rate.resetAt ? Math.ceil((rate.resetAt - Date.now()) / 1000) : 0) || 2 ** attempt * 2;
         lastErr = new ProviderError(`${host} responded ${res.status}${rateLimited ? ' (rate limited)' : ''}`, { status: res.status, rateLimited, retryAfter, resetAt: rate.resetAt });
         // a 429 without a short Retry-After means a quota is used up: retrying now only burns more of it
         if (rateLimited && !header) { lastErr.final = true; throw lastErr; }
         if (attempt < retries && retryAfter <= maxRetryWaitS) { await sleep(retryAfter * 1000); continue; }
+        lastErr.final = true; // waited enough, or told to wait longer than we will: stop here
         throw lastErr;
       }
       if (!res.ok) {
@@ -70,6 +71,15 @@ export async function httpJson(url, opts = {}, { retries = 2, timeoutMs = 30_000
 }
 
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/** Retry-After as seconds: a number, or an HTTP date. 0 when absent or unreadable. */
+export function retryAfterSeconds(v, now = Date.now()) {
+  if (v == null || v === '') return 0;
+  const n = Number(v);
+  if (Number.isFinite(n)) return Math.max(0, n);
+  const d = Date.parse(v);
+  return Number.isFinite(d) ? Math.max(1, Math.ceil((d - now) / 1000)) : 0;
+}
 
 /** Reset time from a JSON rate-limit body: { resetAt: ISO | epoch } or { retryAfter: seconds }. */
 export function bodyResetAt(text, now = Date.now()) {

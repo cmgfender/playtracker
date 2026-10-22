@@ -14,7 +14,8 @@ self.addEventListener('fetch', (e) => {
     }).catch(() => caches.match(e.request).then((r) => r || new Response(JSON.stringify({ error: 'offline' }), { status: 503, headers: { 'Content-Type': 'application/json' } }))));
     return;
   }
-  e.respondWith(fetch(e.request).then((res) => {
+  // revalidate with the server every time (cheap: ETag -> 304) so an update shows up at once
+  e.respondWith(fetch(e.request, { cache: 'no-cache' }).then((res) => {
     if (res.ok) { const copy = res.clone(); caches.open(VERSION).then((c) => c.put(url.pathname.includes('.') ? e.request : '/', copy)); }
     return res;
   }).catch(() => caches.match(url.pathname.includes('.') ? e.request : '/')));

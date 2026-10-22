@@ -200,7 +200,7 @@ export function computeStats(db, opts = {}) {
 
     // longest session: walk sessions by minutes (index) for long ranges, by time for short ones
     const lwhere = ["s.kind = 'play'", 'e.excluded = 0', 's.sort_time >= ?', 's.sort_time <= ?'];
-    const largs = [from, to + DAY];
+    const largs = [from, to]; // `to` already ends the period (or is now)
     if (gameId) { lwhere.push('s.entry_id IN (SELECT id FROM entries WHERE game_id = ?)'); largs.push(gameId); }
     if (platform) { lwhere.push('e.platform = ?'); largs.push(platform); }
     const idx = gameId ? '' : span > 120 ? 'INDEXED BY sessions_kind_minutes' : 'INDEXED BY sessions_kind_time';

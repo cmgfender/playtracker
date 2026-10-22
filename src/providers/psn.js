@@ -192,7 +192,10 @@ export const psn = {
         const data = await ctx.http(`${M}/userProfile/v1/internal/users/${id}/basicPresences?type=primary`, { headers: { Authorization: `Bearer ${tok.access_token}` } }, { retries: 0 });
         const p = data?.basicPresence || {};
         return { playing: (p.gameTitleInfoList || []).map((g) => ({ extId: g.npTitleId, title: g.titleName, device: g.launchPlatform || g.format || null })), state: tok };
-      } catch (err) { lastErr = err; }
+      } catch (err) {
+        if (err.rateLimited || err.auth) throw err; // the fallback id would only cost another call
+        lastErr = err;
+      }
     }
     throw lastErr;
   },

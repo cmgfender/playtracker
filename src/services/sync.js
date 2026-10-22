@@ -15,6 +15,13 @@ const HOUR = 60 * MIN;
 const DAY = 24 * HOUR;
 const PIN_MAX = 360; // a single delta up to 6h is treated as one continuous session
 
+/** Apply the keys that changed between `before` and `after` to the current stored state. */
+export function mergeState(current, before, after) {
+  const out = { ...current };
+  for (const [k, v] of Object.entries(after)) if (JSON.stringify(v) !== JSON.stringify(before?.[k])) out[k] = v;
+  return out;
+}
+
 export function parseAccount(row) {
   if (!row) return null;
   return {
@@ -162,7 +169,12 @@ export function applyItems(db, account, items, { settings, now = Date.now(), syn
         if (v) stats.calibration[v]++;
       }
       remaining -= covered;
-      if (remaining < Math.max(1, minSession)) return;
+      if (remaining <= 0) return;
+      if (remaining < Math.max(1, minSession)) {
+        // a few minutes beyond what presence saw: part of the last observed session, not a new one
+        const last = lastPlay.get(entry.id);
+        if (last) { extendSession.run(Math.round(remaining), last.ended_at ?? last.window_end ?? now, last.window_end ?? now, last.id); return; }
+      }
     }
 
     const pcDelta = model.play_count && it.playCount != null && entry.play_count != null ? it.playCount - entry.play_count : 0;
@@ -239,7 +251,9 @@ export function applyItems(db, account, items, { settings, now = Date.now(), syn
     // 4) big delta over a multi-day window: spread over days, weighted to the last activity
     if (remaining > PIN_MAX && spanDays > 1.2) {
       const anchor = model.lastActivity(it.lastPlayedAt, remaining, ws, we);
-      const end = anchor || we;
+      let end = anchor || we;
+      // an end at exactly local midnight leaves no time on that day (date-only timestamps)
+      if (end === startOfDay(end) && end > ws) end -= 1;
       const d0 = startOfDay(ws);
       const n = Math.max(1, Math.round((startOfDay(end) - d0) / DAY) + 1);
       const weights = Array.from({ length: n }, (_, i) => 1 + (anchor ? 3 * Math.exp(-((n - 1 - i) ** 2) / 2) : 0));
@@ -334,10 +348,26 @@ export function applyItems(db, account, items, { settings, now = Date.now(), syn
       continue;
     }
 
+    if (delta < 0) {
+      // A lower total than before is almost always a glitch (an empty stat, a bad report) that
+      // comes back later; following it would count the time again on recovery. The total stays
+      // at its high-water mark and only play above it is new.
+      touchEntry.run(String(it.title || entry.title), it.iconUrl || null, it.coverUrl || null, lastPlayedAt, it.firstPlayedAt || null, entry.id);
+      stats.decreases = (stats.decreases || 0) + 1;
+      continue;
+    }
+
     const prevMeta = safeJson(entry.meta, {});
     updEntry.run(String(it.title || entry.title), it.iconUrl || null, it.coverUrl || null, playtime, lastPlayedAt, it.firstPlayedAt || null, it.playCount ?? null, now, metaJson, entry.id);
     insSnap.run(entry.id, syncId, now, playtime);
-    if (delta < 0) continue; // playtime went down (refund/reset); totals follow the platform
+    if (it.backfill) {
+      // a total that only now became available (a title tracked by presence whose platform starts
+      // reporting playtime): what we tracked is part of it, the rest is history from before
+      // tracking - never new play today
+      const firstTracked = db.prepare("SELECT MIN(COALESCE(started_at, window_start)) t FROM sessions WHERE entry_id = ? AND kind = 'play'").get(entry.id).t;
+      history(entry, delta, { ...it, lastPlayedAt: firstTracked ? Math.min(it.lastPlayedAt ?? firstTracked, firstTracked) : it.lastPlayedAt }, { tracking_start: firstTracked || now });
+      continue;
+    }
 
     stats.games_changed++;
     let [ws, we] = model.window(entry.last_synced_at || prevSync || entry.first_seen_at, now);
@@ -406,6 +436,7 @@ export class SyncService {
     this.plog = asLogger(log).scoped('presence');
     this.running = new Map();
     this.enriching = new Map(); // accountId -> in-flight promise
+    this.enrichTries = new Map(); // entryId -> failed enrichment attempts
     this.soon = new Map();
     this.quota = new Map(); // accountId -> { limit, remaining, resetAt, blockedUntil } from API headers
     for (const a of db.prepare("SELECT id, json_extract(state, '$.rate_limited_until') u FROM accounts").all()) {
@@ -556,8 +587,10 @@ export class SyncService {
         const details = { api: counters, warnings, info, history_minutes: s.history_minutes, estimated_minutes: s.estimated_minutes, exact_sessions: s.exact_sessions, late_minutes: s.late_minutes, removed: s.removed, calibration: s.calibration };
         db.prepare(`UPDATE syncs SET finished_at = ?, status = ?, games_seen = ?, games_changed = ?, games_new = ?, sessions_created = ?, minutes_added = ?, baseline_minutes = ?, error = ?, duration_ms = ?, details = ? WHERE id = ?`)
           .run(now, warning ? 'warning' : 'ok', s.games_seen, s.games_changed, s.games_new, s.sessions_created, s.minutes_added, s.history_minutes + s.baseline_minutes, warning, Date.now() - startedAt, JSON.stringify(details), syncId);
+        // only what this sync changed, onto the latest stored state (presence polls, quota pauses,
+        // cover lookups may have written to it while the sync was running)
         db.prepare('UPDATE accounts SET state = ?, last_sync_at = ?, last_status = ?, last_error = ? WHERE id = ?')
-          .run(JSON.stringify(state || {}), now, warning ? 'warning' : 'ok', warning, account.id);
+          .run(JSON.stringify(mergeState(this.account(account.id).state, account.state, state || {})), now, warning ? 'warning' : 'ok', warning, account.id);
         return s;
       });
       this.refreshNext(account.id);
@@ -620,13 +653,17 @@ export class SyncService {
     try {
       const { updates, state } = await provider.enrich(account, entries, this.ctxFor(account, { counters }));
       let anchored = 0;
+      let progressed = 0;
       tx(this.db, () => {
         // refreshed tokens (PSN) are kept
         if (state) this.db.prepare('UPDATE accounts SET state = ? WHERE id = ?').run(JSON.stringify({ ...this.account(accountId).state, ...state }), accountId);
         for (const u of updates) {
           mergeEvidence(this.db, u.entryId, { anchors: u.anchors?.length ? u.anchors : undefined, release_at: u.release_at });
           if (u.anchors?.length) anchored++;
-          if (u.done) this.db.prepare('UPDATE entries SET enriched_at = ? WHERE id = ?').run(Date.now(), u.entryId);
+          // a title that keeps failing is given up after 3 attempts (no endless retry loop)
+          const tries = u.done ? 0 : (this.enrichTries.get(u.entryId) || 0) + 1;
+          if (u.done || tries >= 3) { this.db.prepare('UPDATE entries SET enriched_at = ? WHERE id = ?').run(Date.now(), u.entryId); this.enrichTries.delete(u.entryId); } else this.enrichTries.set(u.entryId, tries);
+          if (u.done || tries >= 3) progressed++;
         }
         flushRollups(this.db);
         reinferMany(this.db, updates.map((u) => u.entryId), { account, settings: this.settings.all() });
@@ -636,7 +673,7 @@ export class SyncService {
       this.log.info(`Enriched ${updates.length} ${account.platform} titles (${anchored} with activity timestamps) in ${Math.round((Date.now() - t0) / 1000)}s, ${counters.calls} API calls`);
       // more to do? continue later within rate limits
       const left = this.db.prepare('SELECT COUNT(*) n FROM entries WHERE account_id = ? AND baseline_min > 0 AND enriched_at IS NULL').get(accountId).n;
-      if (left && updates.length && !this.stopping) setTimeout(() => this.enrich(accountId).catch((e) => this.log.error('Enrichment failed', e)), account.platform === 'xbox' ? HOUR / 2 : account.platform === 'psn' ? 15 * MIN : 5000).unref?.();
+      if (left && progressed && !this.stopping) setTimeout(() => this.enrich(accountId).catch((e) => this.log.error('Enrichment failed', e)), account.platform === 'xbox' ? HOUR / 2 : account.platform === 'psn' ? 15 * MIN : 5000).unref?.();
       return { updated: updates.length, anchored, remaining: left };
     } catch (err) {
       this.log.error(`Enrichment of ${account.platform}/${account.name} failed: ${err.message}`, err);
@@ -786,7 +823,7 @@ export class SyncService {
     try {
       const res = await provider.presence(account, ctx);
       if (res === null) return; // provider declined (no budget / not configured yet)
-      if (res.state) this.db.prepare('UPDATE accounts SET state = ? WHERE id = ?').run(JSON.stringify({ ...account.state, ...res.state }), account.id);
+      if (res.state) this.db.prepare('UPDATE accounts SET state = ? WHERE id = ?').run(JSON.stringify({ ...this.account(account.id).state, ...res.state }), account.id);
       st.error = res.unavailable || null;
       // the last non-empty raw report, for diagnostics
       if (res.seen?.length) st.seen = { at: now, online: res.online || null, titles: res.seen.slice(0, 10) };

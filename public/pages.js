@@ -5,6 +5,8 @@ import {
 import { barChart, sparkline, donut, heatmap, topList, platformLegend, bindTips } from './charts.js';
 
 const WD = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+// a URL safe inside CSS url('...'): quotes, parentheses, backslashes and newlines percent-encoded
+const cssUrl = (u) => String(u).replace(/['"()\\\s]/g, (c) => `%${c.charCodeAt(0).toString(16).padStart(2, '0')}`);
 
 function seriesLabel(key, group) {
   if (group === 'month') return new Date(`${key}-01T12:00`).toLocaleDateString(undefined, { month: 'short' });
@@ -399,11 +401,9 @@ function layoutModal() {
 // =====================================================================
 function libState() {
   const q = new URLSearchParams(location.search);
-  let saved = {};
-  try { saved = JSON.parse(localStorage.getItem('pt-lib') || '{}'); } catch { /* ignore */ }
   return {
     q: q.get('q') || '', platform: q.get('platform') || '', status: q.get('status') || '',
-    sort: q.get('sort') || saved.sort || state.settings?.default_library_sort || 'recent',
+    sort: q.get('sort') || state.settings?.default_library_sort || 'recent', // the URL keeps any other sort
     view: state.settings?.library_view || 'grid',
     // "hide never-played" setting: show played games unless a filter in the URL says otherwise
     played: q.get('played') ?? (state.settings?.library_hide_unplayed ? 'true' : ''), hidden: q.get('hidden') || '',
@@ -502,7 +502,6 @@ async function library(view, stale) {
     if (st.played !== (state.settings?.library_hide_unplayed ? 'true' : '')) p.set('played', st.played);
     if (st.sort !== (state.settings?.default_library_sort || 'recent')) p.set('sort', st.sort);
     history.replaceState({}, '', `/library${p.toString() ? `?${p}` : ''}`);
-    try { localStorage.setItem('pt-lib', JSON.stringify({ sort: st.sort })); } catch { /* ignore */ }
     load();
   };
   let t;
@@ -560,7 +559,7 @@ async function game(view, id, stale) {
   view.innerHTML = `
     <a href="/library" data-link class="btn ghost sm" style="margin:-4px 0 10px -6px" onclick="if(history.length>1){event.preventDefault();event.stopPropagation();history.back()}">${icon('back')}Back</a>
     <div class="hero fade-in">
-      ${g.cover_url ? `<div class="bg" style="background-image:url('${esc(g.cover_url)}')"></div>` : ''}
+      ${g.cover_url ? `<div class="bg" style="background-image:url('${esc(cssUrl(g.cover_url))}')"></div>` : ''}
       <div class="in">
         ${cover(g)}
         <div class="grow">
@@ -794,16 +793,19 @@ async function sessions(view, stale) {
     $('#s-count').innerHTML = `${total.toLocaleString()} session${total === 1 ? '' : 's'} · ${fmtMin(totalMin, { short: true })}${f.game_id && all[0] ? ` · ${esc(all[0].title)} <a href="/sessions" data-link style="color:var(--accent)">show all games</a>` : ''}`;
     $('#s-bulk-n').textContent = `${sel.size} selected`;
   };
+  let seq = 0;
   const load = async (reset = true) => {
-    if (reset) { cursor = null; all = []; }
+    // only the latest request may draw (fast filter clicks / typing overlap)
+    const my = ++seq;
     const p = new URLSearchParams({ limit: '150', kind: f.kind });
-    if (cursor) p.set('before', cursor);
+    if (!reset && cursor) p.set('before', cursor);
     if (f.platform) p.set('platform', f.platform);
     if (f.source) p.set('source', f.source);
     if (f.q) p.set('q', f.q);
     if (f.game_id) p.set('game_id', f.game_id);
     const r = await api(`/sessions?${p}`);
-    all = all.concat(r.items); total = r.total; totalMin = r.total_minutes; cursor = r.next;
+    if (my !== seq || stale()) return;
+    all = (reset ? [] : all).concat(r.items); total = r.total; totalMin = r.total_minutes; cursor = r.next;
     draw();
   };
   let t;

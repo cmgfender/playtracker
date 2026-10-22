@@ -10,7 +10,7 @@ export function findMinutesPlayed(obj) {
     for (const v of obj) { const r = findMinutesPlayed(v); if (r != null) return r; }
     return null;
   }
-  if (String(obj.name || obj.Name || '').toLowerCase() === 'minutesplayed' && (obj.value ?? obj.Value) != null) {
+  if (String(obj.name || obj.Name || '').toLowerCase() === 'minutesplayed' && (obj.value ?? obj.Value) != null && String(obj.value ?? obj.Value).trim() !== '') {
     const n = Number(obj.value ?? obj.Value);
     return Number.isFinite(n) ? Math.floor(n) : null;
   }
@@ -193,6 +193,8 @@ export const xbox = {
       } catch (err) {
         if (err.auth) throw err;
         if (err.rateLimited) { deferredIds.push(extId); budget = 0; continue; }
+        // a server or network error says nothing about the title: ask again next sync
+        if (!err.status || err.status >= 500) { deferredIds.push(extId); continue; }
         failure = err.message;
       }
       if (minutes == null) {
@@ -275,7 +277,7 @@ export const xbox = {
         const r = await ctx.http(`${API}/achievements/player/${encodeURIComponent(xuid)}/${encodeURIComponent(e.ext_id)}`, { headers }, { retries: 0 });
         updates.push({ entryId: e.id, anchors: [...findUnlockTimes(r), ...(captures.get(String(e.ext_id)) || [])], done: true });
       } catch (err) {
-        if (err.rateLimited) break;
+        if (err.rateLimited || err.auth) break;
         updates.push({ entryId: e.id, anchors: captures.get(String(e.ext_id)) || [], done: err.status === 404 || err.status === 400 });
       }
     }

@@ -53,7 +53,8 @@ function staticServer(dir, { dev }) {
     if (!f) return false;
     const headers = {
       'Content-Type': f.type, ETag: f.etag, Vary: 'Accept-Encoding',
-      'Cache-Control': rel === '/index.html' || rel === '/sw.js' ? 'no-cache' : 'public, max-age=3600',
+      // app code revalidates (ETag) so a container update reaches browsers immediately
+      'Cache-Control': /\.(html|js|css|webmanifest)$/.test(rel) ? 'no-cache' : 'public, max-age=3600',
     };
     if (req.headers['if-none-match'] === f.etag) { res.writeHead(304, headers); res.end(); return true; }
     const ae = String(req.headers['accept-encoding'] || '');
