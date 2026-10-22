@@ -234,10 +234,35 @@ test('xbox: quota headers cap the budget; a 429 pauses the account until the res
     // the third call stops it without retrying
     assert.equal(statCalls, 3);
     const s = app.app.sync;
-    assert.ok(Math.abs(s.blockedUntil(acc.id) - resetAt * 1000) < 2000, 'paused until the reported reset');
+    assert.ok(Math.abs(s.blockedUntil(acc.id) - resetAt * 1000) < 10_000, 'paused until the reported reset');
     assert.ok(s.computeNext(s.account(acc.id)) >= resetAt * 1000 - 1000, 'next sync waits for the reset');
     const sys = (await call('/accounts')).find((a) => a.id === acc.id);
     assert.equal(sys.api_quota.remaining, 0);
+  } finally { globalThis.fetch = prev; }
+});
+
+test('xbox: OpenXBL-style 429 (reset in the body, no reset header) pauses until that reset', async () => {
+  const resetAt = new Date(Date.now() + 786_000);
+  resetAt.setMilliseconds(0);
+  const prev = globalThis.fetch;
+  globalThis.fetch = async (url, o) => {
+    const u = new URL(url);
+    if (u.host === 'xbl.io') {
+      return json({ code: 'RATE_LIMIT_EXCEEDED', message: 'Rate limit exceeded.', limit: 150, spent: 150, resetAt: resetAt.toISOString(), retryAfter: 786 }, 429,
+        { 'x-ratelimit-limit': '150', 'x-ratelimit-remaining': '0', 'x-ratelimit-spent': '150' });
+    }
+    return mockFetch(url, o);
+  };
+  try {
+    const acc = await call('/accounts', { method: 'POST', body: { platform: 'xbox', name: 'Q2', config: { api_key: 'k3' }, sync: false } });
+    const r = await realFetch(`${base}/accounts/${acc.id}/sync?wait=true`, { method: 'POST' });
+    assert.equal(r.status, 429, await r.clone().text());
+    const s = app.app.sync;
+    const until = s.blockedUntil(acc.id);
+    assert.ok(Math.abs(until - resetAt.getTime()) < 10_000, `paused until ${new Date(until).toISOString()}, reset ${resetAt.toISOString()}`);
+    const a = s.account(acc.id);
+    assert.equal(a.last_status, 'warning');
+    assert.ok(s.computeNext(a) >= resetAt.getTime());
   } finally { globalThis.fetch = prev; }
 });
 

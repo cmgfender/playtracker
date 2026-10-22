@@ -6,7 +6,7 @@ import { createApp } from '../src/server.js';
 import { allocate, inferHistory, learnStyle, styleOf, STYLE_BINS } from '../src/services/inference.js';
 import { parseLicenses } from '../src/services/licenses.js';
 import { earnedTimes } from '../src/providers/psn.js';
-import { captureTimes } from '../src/providers/xbox.js';
+import { captureTimes, outline } from '../src/providers/xbox.js';
 
 const DAY = 86_400_000;
 const NOW = Date.now();
@@ -154,4 +154,9 @@ test('PSN trophy and Xbox capture payloads yield timestamps', () => {
   ] });
   assert.deepEqual(m.get('219630713'), [Date.parse('2022-02-02T20:00:00Z'), Date.parse('2022-03-02T20:00:00Z')]);
   assert.equal(m.has('1'), false);
+  // outline for diagnostics: shape and stat names only, never values
+  const o = outline({ groups: [{ statlistscollection: [{ stats: [{ name: 'Kills', value: '42' }] }] }], statlistscollection: [] });
+  assert.deepEqual(o.keys, ['groups', 'statlistscollection']);
+  assert.deepEqual(o.stat_names, ['Kills']);
+  assert.ok(!JSON.stringify(o).includes('42'));
 });

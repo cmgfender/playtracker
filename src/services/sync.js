@@ -466,7 +466,8 @@ export class SyncService {
     if (r.rateLimited) {
       // pause this account's calls (syncs, presence, enrichment) until the quota resets
       const q = this.quota.get(accountId) || {};
-      const until = Math.max(Date.now() + MIN, Math.min(Date.now() + HOUR, q.resetAt && q.at > Date.now() - MIN ? q.resetAt : Date.now() + 15 * MIN));
+      const reset = r.rate?.resetAt || (q.resetAt && q.at > Date.now() - MIN ? q.resetAt : null);
+      const until = Math.max(Date.now() + MIN, Math.min(Date.now() + HOUR + MIN, reset ? reset + 5000 : Date.now() + 15 * MIN));
       this.quota.set(accountId, { ...q, remaining: 0, blockedUntil: until });
       try { this.db.prepare("UPDATE accounts SET state = json_set(COALESCE(state, '{}'), '$.rate_limited_until', ?) WHERE id = ?").run(until, accountId); } catch { /* best effort */ }
     }
@@ -496,7 +497,9 @@ export class SyncService {
         if (this.blockedUntil(account.id) > Date.now()) return 0;
         const own = limit - this.usage(account.id).calls;
         const q = this.quota.get(account.id);
-        return q && q.remaining != null && (!q.resetAt || q.resetAt > Date.now()) ? Math.min(own, q.remaining) : own;
+        // a reported count is trusted until its reset (or for an hour when the API names none)
+        const fresh = q && q.remaining != null && (q.resetAt ? q.resetAt > Date.now() : q.at > Date.now() - HOUR);
+        return fresh ? Math.min(own, q.remaining) : own;
       },
       warn: (m) => { warnings?.push(m); this.log.warn(m, { account: `${account.platform}/${account.name}` }); },
       stopped: () => this.stopping,

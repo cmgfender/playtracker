@@ -18,6 +18,21 @@ export function findMinutesPlayed(obj) {
   return null;
 }
 
+/** Outline of a stats response for diagnostics: top-level keys, stat names, size. No values. */
+export function outline(obj) {
+  const names = new Set();
+  const walk = (o, d = 0) => {
+    if (!o || typeof o !== 'object' || d > 8) return;
+    if (Array.isArray(o)) { for (const v of o) walk(v, d + 1); return; }
+    if (typeof (o.name ?? o.Name) === 'string') names.add(o.name ?? o.Name);
+    for (const v of Object.values(o)) walk(v, d + 1);
+  };
+  walk(obj);
+  let bytes = 0;
+  try { bytes = JSON.stringify(obj ?? null).length; } catch { /* ignore */ }
+  return { keys: obj && typeof obj === 'object' ? Object.keys(obj).slice(0, 12) : [typeof obj], stat_names: [...names].slice(0, 20), bytes };
+}
+
 /** Collect achievement unlock timestamps from either the modern or the Xbox 360 payload shape. */
 export function findUnlockTimes(obj, out = []) {
   if (!obj || typeof obj !== 'object') return out;
@@ -110,6 +125,8 @@ export const xbox = {
     const items = [];
     const deferredIds = [];
     let missing = 0;
+    const zeroChecked = { ...(account.state.zero_checked || {}) };
+    const samples = [];
     // most recently played first so active games are always fresh
     titles.sort((a, b) => Date.parse(b.titleHistory?.lastTimePlayed || 0) - Date.parse(a.titleHistory?.lastTimePlayed || 0));
     for (const t of titles) {
@@ -126,27 +143,40 @@ export const xbox = {
         coverUrl: t.displayImage || null,
         meta: { devices: t.devices, achievement: t.achievement, pfn: t.pfn },
       };
-      if (existing && existing.last_played_at && lastPlayedAt && lastPlayedAt <= existing.last_played_at) {
+      // unchanged since last time: reuse the stored minutes - except titles stuck at 0 minutes,
+      // which are asked again once a week (a failed or odd response must not stick forever)
+      const zeroDue = existing && !existing.playtime_min && !(zeroChecked[extId] > Date.now() - 7 * 86_400_000);
+      if (existing && existing.last_played_at && lastPlayedAt && lastPlayedAt <= existing.last_played_at && !zeroDue) {
         items.push({ ...base, playtimeMin: existing.playtime_min });
         continue;
       }
       if (budget <= 0) { deferredIds.push(extId); continue; }
       budget--;
       let minutes = null;
+      let failure = null;
+      let stats = null;
       try {
-        const stats = await ctx.http(`${API}/achievements/stats/${encodeURIComponent(extId)}`, { headers }, { retries: 1 });
+        stats = await ctx.http(`${API}/achievements/stats/${encodeURIComponent(extId)}`, { headers }, { retries: 1 });
         minutes = findMinutesPlayed(stats);
       } catch (err) {
         if (err.auth) throw err;
         if (err.rateLimited) { deferredIds.push(extId); budget = 0; continue; }
+        failure = err.message;
       }
-      if (minutes == null) missing++;
+      if (minutes == null) {
+        missing++;
+        zeroChecked[extId] = Date.now();
+        // keep a few response outlines (shape and stat names, no values) for diagnostics
+        if (samples.length < 6) samples.push({ title_id: extId, title: t.name, at: new Date().toISOString(), ...(failure ? { error: failure.slice(0, 200) } : outline(stats)) });
+      } else delete zeroChecked[extId];
       // a title seen for the first time on a later sync while being deferred earlier is history, not new play
       items.push({ ...base, playtimeMin: minutes ?? existing?.playtime_min ?? 0, backfill: !existing && account.state.deferred_titles?.includes(extId) });
     }
     const state = { ...account.state, xuid: hist?.xuid || account.state.xuid };
     // only titles actually waiting for budget (not skipped apps) - they are fetched by hourly back-fill syncs
     state.deferred_titles = deferredIds.slice(0, 5000);
+    state.zero_checked = zeroChecked;
+    if (samples.length) state.missing_minutes_samples = samples;
     const deferred = deferredIds.length;
     const warning = deferred ? `${deferred} titles deferred to stay within the OpenXBL hourly limit - fetched by hourly back-fill syncs` : null;
     return { items, state, warning, complete: deferred === 0, info: { titles: titles.length, missing_minutes: missing, deferred } };

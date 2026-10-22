@@ -46,6 +46,8 @@ function publicAccount(a, sync) {
     // what the API itself last reported about the quota (shared with anything else using the key)
     api_quota: sync.quota?.get(a.id) ? { ...sync.quota.get(a.id) } : null,
     hourly_limit: p?.hourlyLimit ? p.hourlyLimit(a) : null,
+    // outlines of platform responses that had no playtime (diagnostics)
+    missing_minutes_samples: a.state?.missing_minutes_samples || undefined,
     history_model: p ? modelFor(p, a).describe() : null,
     profile: a.state?.persona ? { name: a.state.persona, avatar: a.state.avatar, account_created_at: a.state.account_created_at || null } : null,
   };
