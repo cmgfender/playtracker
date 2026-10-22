@@ -6,7 +6,7 @@ import { nextRun } from './schedule.js';
 import { sendWebhook } from './webhook.js';
 import { flushRollups } from './rollup.js';
 import { allocate } from './inference.js';
-import { reinferMany, mergeEvidence, reinferPending } from './inference.js';
+import { reinferMany, mergeEvidence, reinferPending, relearnStyle } from './inference.js';
 import { asLogger } from '../logger.js';
 import { modelFor, deviceDelta, intSplit } from './model.js';
 
@@ -520,6 +520,7 @@ export class SyncService {
         return s;
       });
       this.refreshNext(account.id);
+      this.relearn();
       const result = { sync_id: syncId, account_id: account.id, initial, ...stats, api_calls: counters.calls, duration_ms: Date.now() - startedAt };
       this.log.info(`${label}: ${stats.games_seen} games, ${stats.sessions_created} sessions (+${stats.minutes_added}m)${stats.history_minutes ? `, ${Math.round(stats.history_minutes / 60)}h history dated (${Math.round(stats.estimated_minutes / 60)}h charted)` : ''}${initial ? ' [initial import]' : ''} in ${result.duration_ms}ms, ${counters.calls} API calls`);
       this.notify(account, result, null);
@@ -563,9 +564,11 @@ export class SyncService {
     const counters = { calls: 0, errors: 0, rate_limited: 0, ms: 0, hosts: {} };
     const t0 = Date.now();
     try {
-      const { updates } = await provider.enrich(account, entries, this.ctxFor(account, { counters }));
+      const { updates, state } = await provider.enrich(account, entries, this.ctxFor(account, { counters }));
       let anchored = 0;
       tx(this.db, () => {
+        // refreshed tokens (PSN) are kept
+        if (state) this.db.prepare('UPDATE accounts SET state = ? WHERE id = ?').run(JSON.stringify({ ...this.account(accountId).state, ...state }), accountId);
         for (const u of updates) {
           mergeEvidence(this.db, u.entryId, { anchors: u.anchors?.length ? u.anchors : undefined, release_at: u.release_at });
           if (u.anchors?.length) anchored++;
@@ -575,10 +578,11 @@ export class SyncService {
         reinferMany(this.db, updates.map((u) => u.entryId), { account, settings: this.settings.all() });
         flushRollups(this.db);
       });
+      if (anchored) this.relearn({ force: true });
       this.log.info(`Enriched ${updates.length} ${account.platform} titles (${anchored} with activity timestamps) in ${Math.round((Date.now() - t0) / 1000)}s, ${counters.calls} API calls`);
       // more to do? continue later within rate limits
       const left = this.db.prepare('SELECT COUNT(*) n FROM entries WHERE account_id = ? AND baseline_min > 0 AND enriched_at IS NULL').get(accountId).n;
-      if (left && updates.length && !this.stopping) setTimeout(() => this.enrich(accountId).catch((e) => this.log.error('Enrichment failed', e)), account.platform === 'xbox' ? HOUR / 2 : 5000).unref?.();
+      if (left && updates.length && !this.stopping) setTimeout(() => this.enrich(accountId).catch((e) => this.log.error('Enrichment failed', e)), account.platform === 'xbox' ? HOUR / 2 : account.platform === 'psn' ? 15 * MIN : 5000).unref?.();
       return { updated: updates.length, anchored, remaining: left };
     } catch (err) {
       this.log.error(`Enrichment of ${account.platform}/${account.name} failed: ${err.message}`, err);
@@ -672,9 +676,21 @@ export class SyncService {
     sendWebhook(s.webhook_url, { account, result, error }).catch((e) => this.log.warn(`Webhook delivery failed: ${e.message}`));
   }
 
+  /** Newly finished tracked games teach the player's style; re-date history if it moved. */
+  relearn({ force = false } = {}) {
+    // cheap, but no need to redo it for every account of a burst of syncs
+    if (!force && this.learnedAt && Date.now() - this.learnedAt < 10 * MIN) return;
+    this.learnedAt = Date.now();
+    try { relearnStyle(this.db, { settings: this.settings.all(), log: this.log }); } catch (e) { this.log.error('Learning play style failed', e); }
+  }
+
   start() {
     // History inferred by an older algorithm version (or migrated installs) is redone once.
-    try { flushRollups(this.db); reinferPending(this.db, { log: this.log, settings: this.settings.all() }); flushRollups(this.db); } catch (e) { this.log.error('History inference failed', e); }
+    try {
+      flushRollups(this.db);
+      if (!relearnStyle(this.db, { settings: this.settings.all(), log: this.log })) reinferPending(this.db, { log: this.log, settings: this.settings.all() });
+      flushRollups(this.db);
+    } catch (e) { this.log.error('History inference failed', e); }
     const tick = async () => {
       const rows = this.db.prepare('SELECT * FROM accounts WHERE enabled = 1').all().map(parseAccount);
       const now = Date.now();

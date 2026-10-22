@@ -25,7 +25,9 @@
 // The result is stored as 'estimate' sessions: charted (and flagged) in stats, excluded
 // from streaks; anything we can't date at all stays 'baseline' (lifetime totals only).
 
-export const INFER_VERSION = 3;
+import { flushRollups } from './rollup.js';
+
+export const INFER_VERSION = 4;
 const DAY = 86_400_000;
 
 function startOfDay(t) { const d = new Date(t); d.setHours(0, 0, 0, 0); return d.getTime(); }
@@ -50,35 +52,40 @@ export function allocate(minutes, weights, { cap = 600, minDay = 15 } = {}) {
     alloc[best] = Math.min(minutes, capOf(best));
     return alloc;
   }
-  const active = weights.map((w, i) => w > 0 && capOf(i) > 0);
-  if (!active.some(Boolean)) active.fill(true);
-  for (let iter = 0; iter < 25; iter++) {
-    let wsum = 0;
-    for (let i = 0; i < n; i++) if (active[i] && alloc[i] < capOf(i)) wsum += weights[i] || 1e-9;
-    const fixed = alloc.reduce((a, x, i) => a + (active[i] && alloc[i] >= capOf(i) ? capOf(i) : 0), 0);
-    let remaining = minutes - fixed;
-    // distribute remaining over non-capped active days
-    for (let i = 0; i < n; i++) {
-      if (!active[i]) { alloc[i] = 0; continue; }
-      if (alloc[i] >= capOf(i)) { alloc[i] = capOf(i); continue; }
-      alloc[i] = wsum ? (remaining * (weights[i] || 1e-9)) / wsum : 0;
-    }
+  // 1) proportional water-filling under the per-day caps
+  const open = weights.map((w, i) => capOf(i) > 0);
+  if (!open.some(Boolean)) return alloc;
+  for (let iter = 0; iter < 50; iter++) {
+    let wsum = 0; let fixed = 0;
+    for (let i = 0; i < n; i++) if (open[i]) wsum += weights[i] > 0 ? weights[i] : 1e-9; else fixed += alloc[i];
+    const rest = minutes - fixed;
+    if (rest <= 0 || !wsum) break;
     let changed = false;
-    for (let i = 0; i < n; i++) if (alloc[i] > capOf(i)) { alloc[i] = capOf(i); changed = true; }
-    // fold tiny days into busier ones (never drop the last active day)
-    if (minutes >= minDay) {
-      const activeCount = active.filter(Boolean).length;
-      let smallest = -1;
-      for (let i = 0; i < n; i++) if (active[i] && alloc[i] < minDay && (smallest < 0 || alloc[i] < alloc[smallest])) smallest = i;
-      if (smallest >= 0 && activeCount > 1 && wsum > 0) {
-        // drop all tiny days at once for speed, keeping the heaviest-weighted one
-        let best = -1;
-        for (let i = 0; i < n; i++) if (active[i] && (best < 0 || weights[i] > weights[best])) best = i;
-        for (let i = 0; i < n; i++) if (active[i] && alloc[i] < minDay && i !== best) { active[i] = false; changed = true; }
-      }
+    for (let i = 0; i < n; i++) {
+      if (!open[i]) continue;
+      alloc[i] = (rest * (weights[i] > 0 ? weights[i] : 1e-9)) / wsum;
+      if (alloc[i] > capOf(i)) { alloc[i] = capOf(i); open[i] = false; changed = true; }
     }
-    remaining = minutes - alloc.reduce((a, x) => a + x, 0);
-    if (!changed && Math.abs(remaining) < 0.01) break;
+    if (!changed) break;
+  }
+  // 2) days too small to be a real session: gather them into the next days with room, so a
+  //    long low-intensity tail stays spread over its period instead of moving to busy days
+  let carry = 0; let lastKept = -1;
+  for (let i = 0; i < n; i++) {
+    const v = alloc[i] + carry;
+    if (v >= minDay && capOf(i) >= minDay) {
+      const put = Math.min(v, capOf(i));
+      alloc[i] = put; carry = v - put; lastKept = i;
+    } else { carry = v; alloc[i] = 0; }
+  }
+  if (carry > 0) {
+    // leftovers at the end go to the last kept day(s) with room, else the heaviest day
+    for (let i = n - 1; i >= 0 && carry > 1e-9; i--) {
+      if (alloc[i] <= 0 && lastKept >= 0) continue;
+      const room = capOf(i) - alloc[i];
+      if (room <= 0) continue;
+      const put = Math.min(room, carry); alloc[i] += put; carry -= put;
+    }
   }
   return alloc;
 }
@@ -100,7 +107,7 @@ function chunkDays(dayStart, alloc, { maxRun = 7, hardEnd = Infinity } = {}) {
   }
   // day granularity must never cross the hard end (last played / start of tracking)
   for (const c of chunks) {
-    if (c.end > hardEnd) c.end = Math.max(hardEnd, c.start + 60_000);
+    if (c.end > hardEnd) c.end = hardEnd;
     if (c.start >= c.end) c.start = c.end - 60_000;
   }
   return chunks;
@@ -131,9 +138,15 @@ function roundChunks(chunks, total) {
  * @param {'auto'|'undated'} [e.mode]
  */
 // Tuned against simulated burst, steady and binge players (month-level placement error).
-export const SHAPE = { tail: 0.1, tauMult: 1, endBump: 0.6, countTau: 1.2, unknownStartPace: 30 };
+export const SHAPE = { tail: 0.05, tauMult: 1, endBump: 0.6, countTau: 1.2, unknownStartPace: 30 };
+export const STYLE_BINS = 20;
+const STYLE_PRIOR_GAMES = 5;
+const STYLE_MIN_GAMES_UNBOUNDED = 20; // games needed before learning also shapes start-less history // how many games' worth of evidence the default shape is worth
+const binOfBack = (d) => { for (let b = 0; b < BACK_BINS.length - 1; b++) if (d < BACK_BINS[b + 1]) return b; return BACK_BINS.length - 2; };
 
-export function inferHistory(e, { pacePerDay = 90, maxPerDay = 600, minDay = 15, dayRoom = null, shape = SHAPE } = {}) {
+export function inferHistory(e, { pacePerDay = 90, maxPerDay = 600, minDay = 15, dayRoom = null, shape = SHAPE, style = null } = {}) {
+  // learned player style (see learnStyle): blended with the default shape by evidence size
+  const lambda = style?.samples?.length >= 3 ? style.games / (style.games + STYLE_PRIOR_GAMES) : 0;
   // per-day capacity: this game's own cap, limited by what other games already use that day
   const capsFor = (d0, n) => Array.from({ length: n }, (_, i) => Math.min(maxPerDay, dayRoom ? dayRoom(addDays(d0, i)) : Infinity));
   const total = Math.max(0, Math.round(e.minutes || 0));
@@ -176,6 +189,8 @@ export function inferHistory(e, { pacePerDay = 90, maxPerDay = 600, minDay = 15,
     if (end == null && anchorMax) end = anchorMax;
     if (end == null && e.recent?.minutes > 0) end = upper; // known to be before the recent window
     if (end != null) end = Math.min(end, upper);
+    // an end at exactly midnight (tracking began at 00:00) leaves no time on that day
+    if (end != null && end === startOfDay(end)) end -= 1;
     let start = e.manual?.start ?? e.firstPlayedAt ?? (anchors.length ? anchors[0] : null) ?? e.dateAdded ?? null;
     const knownStart = start != null;
     const knownEnd = end != null;
@@ -187,7 +202,13 @@ export function inferHistory(e, { pacePerDay = 90, maxPerDay = 600, minDay = 15,
     } else {
       if (!knownEnd) end = Math.min(upper, addDays(start, burstDays));
       // unknown start: games are played over a much longer span than their raw hours suggest
-      if (!knownStart) start = addDays(end, -Math.max(burstDays, Math.ceil(remaining / shape.unknownStartPace)));
+      // (this player's own pace - minutes per day of a game's life - when it has been learned)
+      // learned: as far back as the player's most similar games reach before their last session
+      // (only with enough games: a start-less guess from a handful of games does more harm than good)
+      const back = lambda && !knownStart && style.games >= STYLE_MIN_GAMES_UNBOUNDED ? neighbours(style, remaining, null, 'back') : null;
+      const defSpan = Math.ceil(remaining / shape.unknownStartPace);
+      const span0 = back ? Math.round((1 - lambda) * defSpan + lambda * back.spans[back.spans.length >> 1]) : defSpan;
+      if (!knownStart) start = addDays(end, -Math.max(burstDays, span0));
       start = Math.max(start, lower);
       if (start > end) start = startOfDay(end);
       // make room if even capped days cannot hold everything
@@ -199,15 +220,37 @@ export function inferHistory(e, { pacePerDay = 90, maxPerDay = 600, minDay = 15,
         n = daysBetween(d0, end) + 1;
       }
       const origStart = d0;
+      const tailW = shape.tail;
+      // learned profile over the game's life: by position in a known span, or (start unknown)
+      // by days before the last session
+      let prof = null;
+      if (back) prof = (i, off, endIdx) => { const b = binOfBack(endIdx - i); return back.avg[b] / (BACK_BINS[b + 1] - BACK_BINS[b]); };
+      else if (lambda && knownStart && knownEnd) {
+        const rel = neighbours(style, remaining, n, 'rel').avg;
+        prof = (i, off, endIdx, span) => rel[Math.min(STYLE_BINS - 1, Math.floor((Math.max(0, i - off) / (span + 1)) * STYLE_BINS))];
+      }
       const build = (dStart, len) => {
         const endIdx = len - 1;
         const off = daysBetween(dStart, origStart); // days added before the original start (when widened)
         const tau = Math.max(1, Math.min(burstDays * shape.tauMult, len));
         const tauEnd = Math.max(2, tau / 3);
         const anchorIdx = anchors.filter((a) => a >= dStart && a <= end).map((a) => daysBetween(dStart, a));
-        return Array.from({ length: len }, (_, i) => {
-          let w = (knownStart ? 1 : 0.6) * Math.exp(-Math.max(0, i - off) / tau) + shape.tail;
+        const span = Math.max(1, endIdx - off);
+        const raw = Array.from({ length: len }, (_, i) => {
+          let w = (knownStart ? 1 : 0.6) * Math.exp(-Math.max(0, i - off) / tau) + tailW;
           if (knownEnd) w += shape.endBump * Math.exp(-(endIdx - i) / tauEnd);
+          return w;
+        });
+        let base = raw;
+        if (prof) {
+          // blend the default curve with the player's learned profile (both normalised)
+          const p = Array.from({ length: len }, (_, i) => prof(i, off, endIdx, span) + 1e-6);
+          const rawSum = raw.reduce((a, x) => a + x, 0) || 1;
+          const pSum = p.reduce((a, x) => a + x, 0) || 1;
+          base = raw.map((x, i) => ((1 - lambda) * (x / rawSum) + lambda * (p[i] / pSum)) * len);
+        }
+        return base.map((b, i) => {
+          let w = b;
           for (const a of anchorIdx) w += 1.5 * Math.exp(-((a - i) ** 2) / 4.5);
           return w;
         });
@@ -248,6 +291,110 @@ export function inferHistory(e, { pacePerDay = 90, maxPerDay = 600, minDay = 15,
   return result;
 }
 
+// days-before-last-play bins for the backward profile (used when a game's start is unknown)
+export const BACK_BINS = [0, 1, 2, 4, 7, 14, 30, 60, 120, 240, 480, 1000];
+const STYLE_MAX_SAMPLES = 240;
+
+/**
+ * Learn how THIS player spreads a game's playtime over its life, from games whose timeline is
+ * actually known (fully tracked games, or history dense with unlock times). Each sample is a
+ * list of { t, minutes } points. Keeps a compact signature per game - total minutes, span,
+ * share of minutes per 1/STYLE_BINS of the span (rel) and per BACK_BINS range of days before
+ * the last session (back) - so a new game can be dated like the player's most similar games.
+ */
+export function learnStyle(samples, { minPoints = 4, minSpanDays = 7 } = {}) {
+  const out = [];
+  for (const pts of samples) {
+    const list = (pts || []).filter((p) => p && p.t && p.minutes > 0).sort((a, b) => a.t - b.t);
+    if (list.length < minPoints) continue;
+    const first = startOfDay(list[0].t);
+    const lastDay = startOfDay(list.at(-1).t);
+    const spanDays = daysBetween(first, lastDay) + 1;
+    if (spanDays < minSpanDays) continue;
+    const total = list.reduce((a, p) => a + p.minutes, 0);
+    const rel = new Array(STYLE_BINS).fill(0);
+    const back = new Array(BACK_BINS.length - 1).fill(0);
+    for (const p of list) {
+      rel[Math.min(STYLE_BINS - 1, Math.floor((daysBetween(first, p.t) / spanDays) * STYLE_BINS))] += p.minutes / total;
+      back[binOfBack(daysBetween(p.t, lastDay))] += p.minutes / total;
+    }
+    const r5 = (x) => +x.toFixed(4);
+    out.push({ m: Math.round(total), s: spanDays, rel: rel.map(r5), back: back.map(r5) });
+  }
+  if (out.length < 3) return null;
+  // keep a spread of sizes when there are more games than we store
+  out.sort((a, b) => a.m - b.m);
+  const step = Math.max(1, out.length / STYLE_MAX_SAMPLES);
+  const kept = [];
+  for (let i = 0; i < out.length && kept.length < STYLE_MAX_SAMPLES; i += step) kept.push(out[Math.floor(i)]);
+  return { v: 1, games: out.length, samples: kept };
+}
+
+/** Average signature of the k games most similar in size (and span, when known). */
+function neighbours(style, minutes, spanDays, key, k = 8) {
+  const lm = Math.log(Math.max(1, minutes));
+  const ls = spanDays ? Math.log(Math.max(1, spanDays)) : null;
+  const near = style.samples
+    .map((x) => ({ x, d: (Math.log(Math.max(1, x.m)) - lm) ** 2 + (ls == null ? 0 : (Math.log(x.s) - ls) ** 2) }))
+    .sort((a, b) => a.d - b.d).slice(0, Math.min(k, style.samples.length));
+  const avg = new Array(near[0].x[key].length).fill(0);
+  for (const { x } of near) x[key].forEach((v, i) => { avg[i] += v / near.length; });
+  return { avg, spans: near.map((n) => n.x.s).sort((a, b) => a - b) };
+}
+
+/**
+ * Collect learning samples from the database: games tracked from their very first session
+ * (no pre-tracking history) that have gone quiet for a month, plus history entries with
+ * many unlock times (their anchors trace the real timeline).
+ */
+export function learnStyleFromDb(db, { now = Date.now(), quietDays = 30, minAnchors = 8, maxGames = 400 } = {}) {
+  const samples = [];
+  const tracked = db.prepare(`SELECT s.entry_id, COALESCE(s.started_at, s.window_end) t, s.minutes FROM sessions s
+    WHERE s.kind = 'play' AND s.entry_id IN (
+      SELECT e.id FROM entries e WHERE e.baseline_min = 0 AND e.excluded = 0 AND e.playtime_min > 0
+        AND (SELECT MAX(COALESCE(started_at, window_end)) FROM sessions WHERE entry_id = e.id AND kind = 'play') < ?
+        AND (SELECT COUNT(*) FROM sessions WHERE entry_id = e.id AND kind = 'play') >= 4
+      ORDER BY e.playtime_min DESC LIMIT ?)
+    ORDER BY s.entry_id`).all(now - quietDays * DAY, maxGames);
+  let cur = null; let pts = [];
+  for (const r of tracked) {
+    if (r.entry_id !== cur) { if (pts.length) samples.push(pts); pts = []; cur = r.entry_id; }
+    pts.push({ t: r.t, minutes: r.minutes });
+  }
+  if (pts.length) samples.push(pts);
+  // anchors carry no minutes: every unlock stands for an equal share of the game's time
+  for (const r of db.prepare("SELECT hist FROM entries WHERE baseline_min > 0 AND excluded = 0 AND json_array_length(json_extract(hist, '$.anchors')) >= ? LIMIT ?").all(minAnchors, maxGames)) {
+    const a = JSON.parse(r.hist).anchors;
+    samples.push(a.map((t) => ({ t, minutes: 1 })));
+  }
+  return learnStyle(samples);
+}
+
+/** Cached learned style (settings key history_style); null until enough games are known. */
+export function styleOf(db) {
+  const row = db.prepare("SELECT value FROM settings WHERE key = 'history_style'").get();
+  try { return row ? JSON.parse(row.value) : null; } catch { return null; }
+}
+
+/**
+ * Re-learn the player's style and, when it changed meaningfully (first learned, switched off,
+ * or 20%+ more/fewer games behind it), re-date all inferred history with it.
+ */
+export function relearnStyle(db, { settings = null, log = null, now = Date.now() } = {}) {
+  const old = styleOf(db);
+  const next = settings?.history_learn === false ? null : learnStyleFromDb(db, { now });
+  const changed = !old !== !next || (old && next && Math.abs(next.games - old.games) >= Math.max(2, old.games * 0.2));
+  if (!changed) return false;
+  if (next) {
+    db.prepare("INSERT INTO settings(key, value) VALUES ('history_style', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
+      .run(JSON.stringify({ ...next, learned_at: now }));
+  } else db.prepare("DELETE FROM settings WHERE key = 'history_style'").run();
+  db.prepare("UPDATE entries SET inferred_v = 0 WHERE baseline_min > 0").run();
+  log?.info?.(next ? `Learned play style from ${next.games} fully known games; re-dating history` : 'Play-style learning off; re-dating history with the default shape');
+  if (!db.isTransaction) { flushRollups(db); reinferPending(db, { log, settings }); flushRollups(db); }
+  return true;
+}
+
 /** Evidence object for an entry row (+ account context). */
 export function evidenceFor(entry, account, trackingStart) {
   const h = typeof entry.hist === 'string' ? JSON.parse(entry.hist || '{}') : (entry.hist || {});
@@ -271,14 +418,15 @@ export function evidenceFor(entry, account, trackingStart) {
  * Replace an entry's inferred history sessions (estimates + undated baseline) based on
  * its stored evidence. Safe to call repeatedly (e.g. after enrichment adds anchors).
  */
-export function reinferEntry(db, entryId, { account = null, load = null, settings = null } = {}) {
+export function reinferEntry(db, entryId, { account = null, load = null, settings = null, style } = {}) {
   const entry = db.prepare('SELECT * FROM entries WHERE id = ?').get(entryId);
   if (!entry) return null;
   db.prepare("DELETE FROM sessions WHERE entry_id = ? AND source = 'inferred'").run(entryId);
   const acc = account || (entry.account_id ? db.prepare('SELECT state FROM accounts WHERE id = ?').get(entry.account_id) : null);
   const accountObj = acc ? { state: typeof acc.state === 'string' ? JSON.parse(acc.state || '{}') : acc.state } : null;
   const ev = evidenceFor(entry, accountObj, entry.first_seen_at);
-  const res = inferHistory(ev, { dayRoom: load ? (t) => load.room(t) : null, maxPerDay: Number(settings?.history_max_game_day_minutes) || 600 });
+  if (style === undefined) style = settings?.history_learn === false ? null : styleOf(db);
+  const res = inferHistory(ev, { dayRoom: load ? (t) => load.room(t) : null, maxPerDay: Number(settings?.history_max_game_day_minutes) || 600, style });
   load?.add(res.chunks);
   const now = Date.now();
   const ins = db.prepare(`INSERT INTO sessions(entry_id, source, kind, minutes, window_start, window_end, confidence, note, created_at)
@@ -329,7 +477,8 @@ export function reinferMany(db, ids, { account = null, settings = null } = {}) {
   };
   rows.sort((a, b) => score(b) - score(a) || b.baseline_min - a.baseline_min);
   const load = createDayLoad(db, list, { dailyCap: Number(settings?.history_max_day_minutes) || 720 });
-  return rows.map((r) => reinferEntry(db, r.id, { account, load, settings }));
+  const style = settings?.history_learn === false ? null : styleOf(db);
+  return rows.map((r) => reinferEntry(db, r.id, { account, load, settings, style }));
 }
 
 /** (Re)infer every entry with history that was inferred by an older algorithm version. */

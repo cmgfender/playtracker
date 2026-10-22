@@ -15,6 +15,7 @@ export const DEFAULT_SETTINGS = {
   stats_estimates: 'include', // charts include inferred pre-tracking history (flagged) - 'include' | 'exclude'
   history_max_day_minutes: 720,      // inferred history: max minutes per day across all games
   history_max_game_day_minutes: 600, // inferred history: max minutes per day for one game
+  history_learn: true,               // learn this player's play pattern from fully tracked games to date history
 
   // Notifications
   webhook_url: '',
@@ -58,6 +59,7 @@ export class Settings {
   public() {
     const s = this.all();
     delete s.password_hash;
+    delete s.history_style; // learned data, not a setting
     return s;
   }
 }

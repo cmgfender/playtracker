@@ -10,7 +10,7 @@ import { tx } from '../src/db.js';
 import { applyItems, parseAccount } from '../src/services/sync.js';
 import { importRows, parseCsv, exportChunks } from '../src/services/importer.js';
 import { providers } from '../src/providers/index.js';
-import { mergeEvidence, reinferMany } from '../src/services/inference.js';
+import { mergeEvidence, reinferMany, relearnStyle, styleOf, INFER_VERSION } from '../src/services/inference.js';
 import { flushRollups } from '../src/services/rollup.js';
 import { rng } from './helpers/world.js';
 import { nextRun } from '../src/services/schedule.js';
@@ -226,6 +226,17 @@ test('tracked play matches the truth day by day (DST included)', () => {
   assert.ok(exact >= real * 0.97, `psn exact ${exact} vs ${real}`);
 });
 
+// month-level accuracy of dated history vs where the play really happened
+function historyErrs() {
+  const monthErr = (p, truth, cut) => {
+    const exp = minutesByMonth(minutesByDay(truth.filter((s) => s.end <= cut && !s.legacy)));
+    const got = minutesByMonth(new Map(db.prepare("SELECT p.day, SUM(p.minutes) m FROM play_days p JOIN entries e ON e.id = p.entry_id WHERE p.estimated = 1 AND e.account_id IS ? AND e.platform = ? GROUP BY p.day")
+      .all(p === 'switch' ? null : accounts[p], p).map((r) => [r.day, r.m])));
+    return misplacement(exp, got);
+  };
+  return { psn: monthErr('psn', psnTruth, PSN_AT), switch: monthErr('switch', switchTruth, T0), steam: monthErr('steam', steamTruth, T0), xbox: monthErr('xbox', xboxTruth, XBOX_AT) };
+}
+
 test('history is dated before tracking began, never spikes, and lands in the right months', () => {
   // no estimate on/after the entry's tracking start
   const late = db.prepare(`SELECT e.title, MAX(s.window_end) w, json_extract(e.hist, '$.tracking_start') ts FROM sessions s JOIN entries e ON e.id = s.entry_id
@@ -241,19 +252,49 @@ test('history is dated before tracking began, never spikes, and lands in the rig
     const m = db.prepare('SELECT COALESCE(SUM(minutes), 0) m FROM play_days WHERE estimated = 1 AND day = ?').get(k).m;
     assert.ok(m <= 720, `import day ${k} has ${Math.round(m)} estimated minutes`);
   }
-  // month-level accuracy of dated history vs where the play really happened
-  const monthErr = (p, truth, cut) => {
-    const exp = minutesByMonth(minutesByDay(truth.filter((s) => s.end <= cut && !s.legacy)));
-    const got = minutesByMonth(new Map(db.prepare("SELECT p.day, SUM(p.minutes) m FROM play_days p JOIN entries e ON e.id = p.entry_id WHERE p.estimated = 1 AND e.account_id IS ? AND e.platform = ? GROUP BY p.day")
-      .all(p === 'switch' ? null : accounts[p], p).map((r) => [r.day, r.m])));
-    return misplacement(exp, got);
-  };
-  const errs = { psn: monthErr('psn', psnTruth, PSN_AT), switch: monthErr('switch', switchTruth, T0), steam: monthErr('steam', steamTruth, T0), xbox: monthErr('xbox', xboxTruth, XBOX_AT) };
+  const errs = historyErrs();
   say(`history in the wrong month: ${Object.entries(errs).map(([k, v]) => `${k} ${(v * 100).toFixed(1)}%`).join(', ')}`);
   assert.ok(errs.psn < 0.45 && errs.switch < 0.45, 'first/last-played history lands mostly in the right months');
   // Steam legacy titles (no timestamps) stay undated, not charted
   const legacy = db.prepare("SELECT COALESCE(SUM(s.minutes),0) m FROM sessions s JOIN entries e ON e.id = s.entry_id WHERE e.ext_id IN ('1028','1029') AND s.kind = 'baseline'").get().m;
   assert.equal(legacy, steamTruth.filter((s) => s.legacy).reduce((a, s) => a + s.minutes, 0));
+});
+
+test('play style learned from fully tracked games re-dates history without making it worse', () => {
+  const before_ = historyErrs();
+  const learned = relearnStyle(db, { settings: settings.all(), now: END });
+  const style = styleOf(db);
+  say(`learned play style from ${style?.games ?? 0} fully tracked games`);
+  assert.ok(learned && style?.games >= 3, 'games started and finished during tracking teach the style');
+  const after_ = historyErrs();
+  say(`history in the wrong month with learned style: ${Object.entries(after_).map(([k, v]) => `${k} ${(before_[k] * 100).toFixed(1)}% -> ${(v * 100).toFixed(1)}%`).join(', ')}`);
+  const avg = (o) => Object.values(o).reduce((a, x) => a + x, 0) / 4;
+  assert.ok(avg(after_) <= avg(before_) + 0.002, `learned style should not hurt (${avg(before_)} -> ${avg(after_)})`);
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM entries WHERE baseline_min > 0 AND inferred_v < ?').get(INFER_VERSION).n, 0, 'everything re-dated');
+  const bad = db.prepare('SELECT e.id FROM entries e LEFT JOIN sessions s ON s.entry_id = e.id GROUP BY e.id HAVING COALESCE(SUM(s.minutes),0) != e.playtime_min').all();
+  assert.deepEqual(bad, []);
+});
+
+test('pasted Steam licenses page (purchase dates) bounds Steam history', async () => {
+  const before_ = historyErrs().steam;
+  const r = rng(9);
+  const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const lines = ['Date\tItem\tAcquisition Method'];
+  for (let g = 0; g < STEAM_GAMES; g++) {
+    const first = steamTruth.find((s) => s.game === g);
+    if (!first) continue;
+    // bought the day it was first played, or up to a month before (sales, backlog)
+    const d = new Date(first.start - (r() < 0.5 ? 0 : Math.floor(r() * 30)) * DAY);
+    lines.push(`${d.getDate()} ${months[d.getMonth()]}, ${d.getFullYear()}\t${platforms.steam.title(g)}${r() < 0.3 ? ' Deluxe Edition' : ''}\tSteam Store`);
+    if (r() < 0.2) lines.push(`${d.getDate()} ${months[d.getMonth()]}, ${d.getFullYear()}\t${platforms.steam.title(g)} Soundtrack\tSteam Store`);
+  }
+  lines.push('1 Jan, 2015\tSome Bundle Pack\tRetail');
+  const res = await call(`/accounts/${accounts.steam}/licenses`, { method: 'POST', body: { text: lines.join('\n') } });
+  assert.ok(res.matched >= STEAM_GAMES - 3, JSON.stringify(res));
+  assert.equal(res.unmatched, 1);
+  const after_ = historyErrs().steam;
+  say(`steam history in the wrong month: ${(before_ * 100).toFixed(1)}% -> ${(after_ * 100).toFixed(1)}% with the licenses page`);
+  assert.ok(after_ < before_ * 0.8, `purchase dates should clearly help (${before_} -> ${after_})`);
 });
 
 test('achievement unlock times (enrichment) sharpen Steam history dating', () => {
@@ -278,7 +319,7 @@ test('achievement unlock times (enrichment) sharpen Steam history dating', () =>
   });
   const after_ = steamMonths();
   say(`steam history in the wrong month: ${(before_ * 100).toFixed(1)}% -> ${(after_ * 100).toFixed(1)}% with achievement times`);
-  assert.ok(after_ < before_ * 0.75, `achievements should clearly help (${before_} -> ${after_})`);
+  assert.ok(after_ < before_ * 0.9, `achievements should help even on top of purchase dates (${before_} -> ${after_})`);
   // still consistent
   const bad = db.prepare('SELECT e.id FROM entries e LEFT JOIN sessions s ON s.entry_id = e.id GROUP BY e.id HAVING COALESCE(SUM(s.minutes),0) != e.playtime_min').all();
   assert.deepEqual(bad, []);

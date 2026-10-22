@@ -31,6 +31,24 @@ export function findUnlockTimes(obj, out = []) {
   return out;
 }
 
+/** Capture (screenshot / game clip) times per title id, from either media API shape. */
+export function captureTimes(obj, out = new Map()) {
+  if (!obj || typeof obj !== 'object') return out;
+  if (Array.isArray(obj)) { for (const v of obj) captureTimes(v, out); return out; }
+  const when = obj.captureDate ?? obj.dateRecorded ?? obj.dateTaken ?? obj.datePublished;
+  if (obj.titleId != null && when) {
+    const ms = Date.parse(when);
+    if (Number.isFinite(ms) && ms > Date.UTC(2005, 0, 1)) {
+      const k = String(obj.titleId);
+      if (!out.has(k)) out.set(k, []);
+      out.get(k).push(ms);
+    }
+    return out;
+  }
+  for (const v of Object.values(obj)) if (v && typeof v === 'object') captureTimes(v, out);
+  return out;
+}
+
 const DEFAULT_HOURLY = 150; // OpenXBL free tier
 
 export const xbox = {
@@ -61,7 +79,7 @@ export const xbox = {
     play_count: null,
     per_device: 'devices the title is available on (not per-device minutes)',
     presence: 'presence: current title + placement (Full/Snapped)',
-    history_anchors: 'Achievement unlock times (modern + Xbox 360 titles)',
+    history_anchors: 'Achievement unlock times (modern + Xbox 360 titles) and screenshot / game clip capture dates (2 requests per enrichment run)',
     rate_limit: 'OpenXBL: 150 requests/hour on the free plan (configurable for paid plans)',
     limitations: [
       'Requires the third-party OpenXBL service (Microsoft offers no public consumer API).',
@@ -157,16 +175,27 @@ export const xbox = {
     const headers = this.headers(account);
     const gap = spacer(1000);
     const updates = [];
+    // screenshots + game clips: two requests for the whole library, moments of real play
+    const captures = new Map();
+    for (const kind of ['screenshots', 'gameclips']) {
+      try {
+        await gap();
+        captureTimes(await ctx.http(`${API}/dvr/${kind}`, { headers }, { retries: 0 }), captures);
+      } catch (err) {
+        if (err.rateLimited) return { updates };
+        ctx.warn?.(`Xbox ${kind}: ${err.message}`);
+      }
+    }
     for (const e of entries) {
       if (ctx.stopped?.()) break;
       if ((ctx.remainingBudget?.(this.hourlyLimit(account)) ?? 0) <= Math.ceil(this.hourlyLimit(account) * 0.3)) break;
       await gap();
       try {
         const r = await ctx.http(`${API}/achievements/player/${encodeURIComponent(xuid)}/${encodeURIComponent(e.ext_id)}`, { headers }, { retries: 0 });
-        updates.push({ entryId: e.id, anchors: findUnlockTimes(r), done: true });
+        updates.push({ entryId: e.id, anchors: [...findUnlockTimes(r), ...(captures.get(String(e.ext_id)) || [])], done: true });
       } catch (err) {
         if (err.rateLimited) break;
-        updates.push({ entryId: e.id, anchors: [], done: err.status === 404 || err.status === 400 });
+        updates.push({ entryId: e.id, anchors: captures.get(String(e.ext_id)) || [], done: err.status === 404 || err.status === 400 });
       }
     }
     return { updates };

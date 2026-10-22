@@ -1,4 +1,4 @@
-import { ProviderError } from './http.js';
+import { ProviderError, spacer } from './http.js';
 
 // Same public client used by the PlayStation App (and the psn-api project).
 const AUTH_BASE = 'https://ca.account.sony.com/api/authz/v3/oauth';
@@ -57,6 +57,17 @@ async function getToken(account, ctx) {
   return exchangeNpsso(ctx, account.config.npsso.trim());
 }
 
+/** Earned-trophy timestamps from a trophies payload. */
+export function earnedTimes(payload) {
+  const out = [];
+  for (const t of payload?.trophies || []) {
+    if (!t.earned || !t.earnedDateTime) continue;
+    const ms = Date.parse(t.earnedDateTime);
+    if (Number.isFinite(ms) && ms > Date.UTC(2013, 0, 1)) out.push(ms);
+  }
+  return out;
+}
+
 export const psn = {
   id: 'psn',
   label: 'PlayStation',
@@ -86,7 +97,7 @@ export const psn = {
     play_count: 'playCount (number of launches) - deltas split syncs into individual sessions',
     per_device: 'category (ps4_game / ps5_native_game / pspc_game)',
     presence: 'basicPresences: gameTitleInfoList while online',
-    history_anchors: 'first + last played + launch count (high confidence); trophy timestamps not needed',
+    history_anchors: 'first + last played + launch count (high confidence), plus trophy earned times (trophy API, ~1 request per game) for when play happened in between',
     rate_limit: 'Undocumented; roughly 300 requests per 15 minutes. A sync costs ~1 request per 200 titles.',
     limitations: [
       'Only PS4 / PS5 (and PC titles using PSN) - no PS3, Vita or PSP.',
@@ -123,6 +134,52 @@ export const psn = {
       offset = data.nextOffset;
     }
     return { items, state };
+  },
+
+  /**
+   * Trophy earned times: real moments of play between first and last played. Maps titles to
+   * trophy sets 5 at a time, then reads each set's earned trophies (PS5 sets are "trophy2").
+   * Kept well under Sony's ~300 requests / 15 min: spaced calls, at most 120 per run.
+   */
+  async enrich(account, entries, ctx) {
+    const tok = await getToken(account, ctx);
+    if (tok.access_token !== account.state.access_token) Object.assign(account.state, tok);
+    const headers = { Authorization: `Bearer ${tok.access_token}`, 'Accept-Language': 'en-US' };
+    const gap = spacer(3200);
+    const updates = [];
+    let calls = 0;
+    for (let i = 0; i < entries.length && calls < 120; i += 5) {
+      if (ctx.stopped?.()) break;
+      const batch = entries.slice(i, i + 5);
+      let titles;
+      await gap(); calls++;
+      try {
+        const r = await ctx.http(`${M}/trophy/v1/users/me/titles/trophyTitles?npTitleIds=${batch.map((e) => encodeURIComponent(e.ext_id)).join(',')}`, { headers }, { retries: 1 });
+        titles = new Map((r?.titles || []).map((t) => [t.npTitleId, t.trophyTitles || []]));
+      } catch (err) {
+        if (err.rateLimited || err.auth) break;
+        for (const e of batch) updates.push({ entryId: e.id, anchors: [], done: err.status === 404 || err.status === 400 });
+        continue;
+      }
+      for (const e of batch) {
+        const sets = titles.get(e.ext_id) || [];
+        const u = { entryId: e.id, anchors: [], done: true };
+        for (const set of sets.slice(0, 2)) {
+          if (calls >= 120 || ctx.stopped?.()) { u.done = false; break; }
+          await gap(); calls++;
+          try {
+            const svc = set.npServiceName || (JSON.parse(e.meta || '{}').category === 'ps5_native_game' ? 'trophy2' : 'trophy');
+            const r = await ctx.http(`${M}/trophy/v1/users/me/npCommunicationIds/${encodeURIComponent(set.npCommunicationId)}/trophyGroups/all/trophies?npServiceName=${svc}`, { headers }, { retries: 1 });
+            u.anchors.push(...earnedTimes(r));
+          } catch (err) {
+            if (err.rateLimited) { u.done = false; break; }
+            if (!(err.status === 404 || err.status === 400 || err.status === 403)) u.done = false;
+          }
+        }
+        updates.push(u);
+      }
+    }
+    return { updates, state: tok };
   },
 
   async presence(account, ctx) {

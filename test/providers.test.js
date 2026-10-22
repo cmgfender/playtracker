@@ -48,6 +48,13 @@ function mockFetch(url, opts = {}) {
     return json({ access_token: `x.${claims}.y`, expires_in: 3600, refresh_token: 'r', refresh_token_expires_in: 5184000 });
   }
   if (u.pathname.includes('/gamelist/v2/users/me/titles')) return json({ titles: state.psnTitles, nextOffset: null, totalItemCount: state.psnTitles.length });
+  if (u.pathname.endsWith('/trophy/v1/users/me/titles/trophyTitles')) {
+    return json({ titles: u.searchParams.get('npTitleIds').split(',').map((id) => ({ npTitleId: id, trophyTitles: [{ npCommunicationId: 'NPWR1_00', npServiceName: 'trophy2' }] })) });
+  }
+  if (u.pathname.includes('/npCommunicationIds/NPWR1_00/trophyGroups/all/trophies')) {
+    state.calls.push(`svc=${u.searchParams.get('npServiceName')}`);
+    return json({ trophies: [{ earned: true, earnedDateTime: new Date(NOW - 150 * DAY).toISOString() }, { earned: true, earnedDateTime: new Date(NOW - 100 * DAY).toISOString() }, { earned: false }] });
+  }
   if (u.pathname.includes('basicPresences')) return json({ basicPresence: { availability: 'availableToPlay', gameTitleInfoList: [] } });
   // ---- Xbox (OpenXBL) ----
   if (u.pathname === '/api/v2/player/titleHistory') return json({ xuid: '2533', titles: [{ titleId: '111', name: 'Forza Horizon 5', titleHistory: { lastTimePlayed: new Date(NOW - 3 * DAY).toISOString() }, devices: ['XboxSeries'] }, { titleId: '750323071', name: 'Home' }] });
@@ -56,6 +63,8 @@ function mockFetch(url, opts = {}) {
     return json({ statlistscollection: [{ stats: [{ name: 'MinutesPlayed', value: String(state.xboxMinutes[id] ?? 0) }] }] });
   }
   if (u.pathname.startsWith('/api/v2/achievements/player/')) return json({ achievements: [{ progressState: 'Achieved', progression: { timeUnlocked: new Date(NOW - 50 * DAY).toISOString() } }, { progressState: 'NotStarted', progression: { timeUnlocked: '0001-01-01T00:00:00.0000000Z' } }] });
+  if (u.pathname === '/api/v2/dvr/screenshots') return json({ values: [{ titleId: 111, captureDate: new Date(NOW - 40 * DAY).toISOString() }, { titleId: 999, captureDate: new Date(NOW - 10 * DAY).toISOString() }] });
+  if (u.pathname === '/api/v2/dvr/gameclips') return json({ values: [] });
   if (u.pathname === '/api/v2/presence') return json([{ xuid: '2533', state: 'Online', devices: [{ type: 'Scarlett', titles: [{ id: '750323071', name: 'Home', placement: 'Background', state: 'Active' }, { id: '111', name: 'Forza Horizon 5', placement: 'Full', state: 'Active' }] }] }]);
   return json({ error: `unmocked ${url}` }, 404);
 }
@@ -140,6 +149,11 @@ test('psn: first/last played + play count give high-confidence history; play cou
   const acct = (await call('/accounts')).find((a) => a.id === acc.id);
   assert.equal(app.app.sync.account(acc.id).state.account_id, '1234567890');
   assert.ok(acct.presence?.enabled);
+  // trophy earned times become anchors (PS5 set read as trophy2)
+  const en = await app.app.sync.enrich(acc.id);
+  assert.equal(en.anchored, 1);
+  assert.ok(state.calls.includes('svc=trophy2'));
+  assert.equal((await call(`/games/${g.id}`)).entries[0].history.evidence.anchors, 2);
 });
 
 test('xbox: home title skipped, minutes from stats, presence parsed, achievements anchor history', async () => {
@@ -152,7 +166,8 @@ test('xbox: home title skipped, minutes from stats, presence parsed, achievement
   assert.ok(s.nowPlaying().some((p) => p.ext_id === '111'));
   await s.enrich(acc.id);
   const g = (await call('/games?q=Forza')).items[0];
-  assert.equal((await call(`/games/${g.id}`)).entries[0].history.evidence.anchors, 1);
+  // one achievement + one screenshot of this title (the other capture is another game)
+  assert.equal((await call(`/games/${g.id}`)).entries[0].history.evidence.anchors, 2);
 });
 
 test('test endpoint reports data quality without saving', async () => {

@@ -365,3 +365,8 @@ pre.code { padding: 12px; overflow-x: auto; white-space: pre; display: block; }
 .meter { height: 6px; border-radius: 9px; background: var(--bg2); overflow: hidden; }
 .meter i { display: block; height: 100%; background: var(--accent2); }
 .meter i.hot { background: var(--warn); }
+/* improve-history page */
+.input.sm { height: 32px; padding: 0 8px; font-size: 13px; border-radius: 8px; }
+select.input.sm { padding-right: 26px; }
+.hist-row .cover { flex: none; }
+.hist-row .ttl { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }

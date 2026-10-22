@@ -196,6 +196,7 @@ const NAV = [
   { path: '/sessions', label: 'Sessions', icon: 'sessions', tab: true },
   { path: '/stats', label: 'Stats', icon: 'stats', tab: true },
   { path: '/duplicates', label: 'Duplicates', icon: 'dupes' },
+  { path: '/history', label: 'Improve history', icon: 'clock' },
   { path: '/accounts', label: 'Accounts', icon: 'accounts' },
   { path: '/system', label: 'System', icon: 'info' },
   { path: '/settings', label: 'Settings', icon: 'settings' },
@@ -249,6 +250,7 @@ const ROUTES = [
   [/^\/settings$/, 'settings'],
   [/^\/api$/, 'apidocs'],
   [/^\/system$/, 'system'],
+  [/^\/history$/, 'history'],
   [/^\/more$/, 'more'],
 ];
 

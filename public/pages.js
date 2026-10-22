@@ -1042,6 +1042,7 @@ async function settings(view, stale) {
           <div class="setting"><div><div class="t">Minimum session</div><div class="d">Smaller deltas accumulate until they reach this many minutes</div></div><input class="input" type="number" min="0" max="120" data-num="min_session_minutes" value="${s.min_session_minutes}" style="width:90px"></div>
           <div class="setting"><div><div class="t">Wall-clock tolerance</div><div class="d">If a platform reports more playtime than time elapsed since the last sync (+ this many minutes), the excess is filed as history</div></div><input class="input" type="number" min="0" max="600" data-num="max_overage_minutes" value="${s.max_overage_minutes}" style="width:90px"></div>
           ${sw('use_recent_on_import', 'Use Steam “last 2 weeks” on import', 'On a first import, Steam’s two-week playtime becomes a real session instead of history')}
+          ${sw('history_learn', 'Learn my play pattern', 'Games tracked from first session to last teach how you spread play over a game; pre-tracking history is dated the same way')}
           ${sw('auto_merge_titles', 'Auto-group same titles', 'Same game on Steam/Xbox/PSN becomes one library entry (editions & platform tags ignored)')}
           <div class="setting"><div><div class="t">Week starts on</div></div><select class="input" data-num="week_starts_on" style="width:auto"><option value="1" ${s.week_starts_on === 1 ? 'selected' : ''}>Monday</option><option value="0" ${s.week_starts_on === 0 ? 'selected' : ''}>Sunday</option></select></div>
         </div>
@@ -1195,7 +1196,7 @@ async function system(view, stale) {
         <td class="nowrap small">${a.presence ? (a.presence.enabled ? (a.presence.error ? `<span style="color:var(--warn)">${esc(a.presence.error)}</span>` : a.presence.last_poll ? `ok · ${ago(a.presence.last_poll)}` : 'waiting') : 'off') : '—'}</td>
         <td class="small">${!a.can_enrich ? '<span class="muted">from platform dates</span>' : a.enrichment_pending ? `${a.enrichment_pending} titles queued` : 'up to date'}</td></tr>`).join('') || '<tr><td colspan="8" class="muted">No accounts.</td></tr>'}
       </tbody></table></div>
-      <div class="row wrap" style="margin-top:12px"><button class="btn sm" id="sys-reinfer">Re-date all history</button>${sys.accounts.filter((a) => a.enrichment_pending && a.can_enrich).map((a) => `<button class="btn sm ghost" data-enrich="${a.id}">Fetch history dates for ${esc(a.name)}</button>`).join('')}</div>
+      <div class="row wrap" style="margin-top:12px"><button class="btn sm" id="sys-reinfer">Re-date all history</button><a class="btn sm ghost" href="/history" data-link>Improve history →</a>${sys.accounts.filter((a) => a.enrichment_pending && a.can_enrich).map((a) => `<button class="btn sm ghost" data-enrich="${a.id}">Fetch history dates for ${esc(a.name)}</button>`).join('')}</div>
     </div>
     <div class="card" style="margin-top:16px"><div class="card-h"><h2>Error log</h2><div class="row">
         <div class="seg" id="log-lvl"><button data-l="error,warn" class="on">Errors &amp; warnings</button><button data-l="error">Errors</button><button data-l="warn">Warnings</button></div>
@@ -1235,12 +1236,107 @@ async function system(view, stale) {
 }
 
 // =====================================================================
+// Improve history: answer "when did you play this?" for the least certain games
+// =====================================================================
+const PERIODS = [['year', 'Whole year', 0, 11], ['q1', 'Jan – Mar', 0, 2], ['q2', 'Apr – Jun', 3, 5], ['q3', 'Jul – Sep', 6, 8], ['q4', 'Oct – Dec', 9, 11],
+  ...['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'].map((m, i) => [`m${i}`, m, i, i])];
+
+async function historyPage(view, stale) {
+  const [rev, accts] = await Promise.all([api('/history/review?limit=30'), api('/accounts')]);
+  if (stale()) return;
+  const steam = (accts.items || accts).filter((a) => a.platform === 'steam');
+  const m = rev.meter;
+  const all = Object.values(m).reduce((a, x) => a + x, 0) || 1;
+  const seg = [['high', 'var(--good)', 'High confidence'], ['manual', 'var(--accent)', 'Set by you'], ['medium', 'var(--warn)', 'Medium'], ['low', 'var(--bad)', 'Low'], ['undated', 'var(--line)', 'Undated']];
+  const sure = Math.round(((m.high + m.manual + m.medium * 0.5) / all) * 100);
+  const yearOpts = (it) => {
+    const hi = new Date(Math.min(Date.now(), it.evidence.tracking_start || Date.now())).getFullYear();
+    const lo = Math.max(2003, it.evidence.release_at ? new Date(it.evidence.release_at).getFullYear() : hi - 20);
+    const guess = it.window ? new Date((it.window[0] + it.window[1]) / 2).getFullYear() : hi;
+    const out = [];
+    for (let y = hi; y >= lo; y--) out.push(`<option value="${y}" ${y === guess ? 'selected' : ''}>${y}</option>`);
+    return out.join('');
+  };
+  const row = (it) => `<div class="item hist-row" data-entry="${it.entry_id}" style="align-items:flex-start;padding:14px 4px">
+      ${cover({ title: it.title, cover_url: it.cover_url }, 'sm')}
+      <div class="grow stack" style="gap:6px;min-width:0">
+        <div class="row between wrap"><a class="ttl" href="/game/${it.game_id}" data-link>${esc(it.title)}</a><b class="nowrap">${fmtMin(it.minutes, { short: it.minutes >= 600 })}</b></div>
+        <div class="tiny muted">${platDot(it.platform)} ${esc(it.account_name || plat(it.platform).label)} · ${it.window
+          ? `now guessed <b>${fmtDate(it.window[0], { year: 'numeric', month: 'short' })} – ${fmtDate(it.window[1], { year: 'numeric', month: 'short' })}</b> <span class="conf-${it.confidence}">(${it.confidence})</span>`
+          : 'no dates known'}${it.undated ? ` · ${fmtMin(it.undated)} undated` : ''}${it.evidence.last_played_at ? ` · last played ${fmtDate(it.evidence.last_played_at, { year: 'numeric', month: 'short', day: 'numeric' })}` : ''}</div>
+        <div class="row wrap" style="gap:6px"><span class="small">Mostly played in</span>
+          <select class="input sm" name="y" style="width:auto">${yearOpts(it)}</select>
+          <select class="input sm" name="p" style="width:auto">${PERIODS.map(([k, l]) => `<option value="${k}">${l}</option>`).join('')}</select>
+          <label class="small row" style="gap:4px"><input type="checkbox" name="span"> until</label>
+          <select class="input sm hide" name="y2" style="width:auto">${yearOpts(it)}</select>
+          <button class="btn sm primary" data-answer>${icon('check')}Save</button>
+          <button class="btn sm ghost" data-undated>Don’t chart</button>
+          <button class="btn sm ghost" data-skip>Skip</button></div>
+      </div></div>`;
+  view.innerHTML = `
+    <div class="page-h"><div><h1>Improve history</h1><p>Platforms only report lifetime totals, so play from before tracking is dated from whatever evidence exists. Answer roughly when you played the least certain games — one click each.</p></div></div>
+    <div class="card"><div class="card-h"><h2>How well your history is dated</h2><b class="nowrap">${sure}% solid</b></div>
+      <div class="meter" style="height:12px;display:flex">${seg.map(([k, c]) => (m[k] ? `<i style="width:${(m[k] / all) * 100}%;background:${c}" title="${k}"></i>` : '')).join('')}</div>
+      <div class="row wrap" style="margin-top:10px;gap:14px">${seg.map(([k, c, l]) => `<span class="tiny"><span class="dot" style="background:${c}"></span> ${l} ${fmtHours(m[k], 0)}h</span>`).join('')}</div>
+      <p class="tiny muted" style="margin-bottom:0">${rev.style ? `Dating uses your own play pattern, learned from ${rev.style.games} games tracked from start to finish.` : 'Once a few games have been tracked from first session to last, PlayTracker learns how you spread play over a game and dates history the same way.'}</p></div>
+    ${steam.length ? `<div class="card" style="margin-top:16px"><div class="card-h"><h2>Steam purchase dates</h2><a class="small" href="https://store.steampowered.com/account/licenses/" target="_blank" rel="noopener">Open your licenses page ↗</a></div>
+      <p class="small muted" style="margin-top:0">Steam never shares when you got a game, but its licenses page lists it. Select the whole table there (Ctrl+A works), copy, and paste it here — every matched game gets a start date for its history.</p>
+      <div class="field"><textarea class="input" id="lic-text" rows="4" style="height:auto;padding:10px 12px;font-family:var(--mono, monospace);font-size:12.5px" placeholder="20 Nov, 2015	Counter-Strike: Global Offensive	Steam Store"></textarea></div>
+      <div class="row wrap" style="margin-top:10px">${steam.length > 1 ? `<select class="input sm" id="lic-acc" style="width:auto">${steam.map((a) => `<option value="${a.id}">${esc(a.name)}</option>`).join('')}</select>` : `<input type="hidden" id="lic-acc" value="${steam[0].id}">`}
+        <button class="btn primary sm" id="lic-go">Import purchase dates</button><span class="tiny muted" id="lic-res"></span></div></div>` : ''}
+    <div class="card" style="margin-top:16px"><div class="card-h"><h2>Least certain first</h2><span class="tiny muted">${rev.total} games · ${fmtHours(rev.uncertain_minutes, 0)}h uncertain</span></div>
+      <div id="hist-list">${rev.items.map(row).join('') || `<div class="empty" style="padding:24px"><div class="em-ic">${icon('check')}</div><h2>Nothing left to answer</h2><p>All pre-tracking history is dated from solid evidence or by you.</p></div>`}</div>
+      ${rev.total > rev.items.length ? '<button class="btn sm ghost" id="hist-more" style="margin-top:10px">Show more</button>' : ''}</div>`;
+  let offset = rev.items.length;
+  const done = (el, msg) => { el.style.opacity = '.45'; el.querySelectorAll('button,select,input').forEach((x) => { x.disabled = true; }); if (msg) toast(msg); };
+  view.addEventListener('change', (e) => {
+    if (e.target.name === 'span') e.target.closest('.hist-row').querySelector('[name=y2]').classList.toggle('hide', !e.target.checked);
+  });
+  view.addEventListener('click', async (e) => {
+    const el = e.target.closest('.hist-row');
+    if (el && e.target.closest('[data-skip]')) { el.remove(); return; }
+    if (el && e.target.closest('[data-undated]')) {
+      try { await api(`/entries/${el.dataset.entry}/history`, { method: 'PATCH', body: { mode: 'undated' } }); done(el, 'Kept out of charts'); } catch (err) { fail(err); }
+      return;
+    }
+    if (el && e.target.closest('[data-answer]')) {
+      const y = Number(el.querySelector('[name=y]').value);
+      const [, , m0, m1] = PERIODS.find(([k]) => k === el.querySelector('[name=p]').value);
+      const y2 = el.querySelector('[name=span]').checked ? Math.max(y, Number(el.querySelector('[name=y2]').value)) : y;
+      const start = new Date(y, m0, 1, 12);
+      const end = new Date(Math.min(Date.now(), new Date(y2, m1 + 1, 0, 20).getTime()));
+      try {
+        await api(`/entries/${el.dataset.entry}/history`, { method: 'PATCH', body: { first_played_at: start.toISOString(), last_played_at: end.toISOString(), mode: 'auto' } });
+        done(el, `Re-dated to ${fmtDate(start, { year: 'numeric', month: 'short' })} – ${fmtDate(end, { year: 'numeric', month: 'short' })}`);
+      } catch (err) { fail(err); }
+      return;
+    }
+    if (e.target.closest('#hist-more')) {
+      const more = await api(`/history/review?limit=30&offset=${offset}`);
+      offset += more.items.length;
+      $('#hist-list').insertAdjacentHTML('beforeend', more.items.map(row).join(''));
+      if (offset >= more.total || !more.items.length) e.target.closest('#hist-more').remove();
+      return;
+    }
+    if (e.target.closest('#lic-go')) {
+      const text = $('#lic-text').value.trim();
+      if (!text) return toast('Paste the licenses table first', { bad: true });
+      try {
+        const r = await api(`/accounts/${$('#lic-acc').value}/licenses`, { method: 'POST', body: { text } });
+        $('#lic-res').textContent = `${r.licenses} licenses read · ${r.matched} games matched · ${r.history_redated} re-dated${r.unmatched ? ` · ${r.unmatched} not in library (bundles, DLC, removed games)` : ''}`;
+        toast(`Purchase dates added to ${r.matched} games`);
+      } catch (err) { fail(err); }
+    }
+  });
+}
+
+// =====================================================================
 // More (mobile)
 // =====================================================================
 async function more(view) {
-  const links = [['/duplicates', 'dupes', 'Duplicates', 'Merge editions, fix double counting'], ['/accounts', 'accounts', 'Accounts', 'Steam, Xbox, PlayStation, custom'], ['/system', 'info', 'System', 'Error log, API usage, diagnostics'], ['/settings', 'settings', 'Settings', 'Schedule, import/export, security'], ['/api', 'code', 'API', 'Tokens, push endpoint, docs'], [`/wrapped/${new Date().getFullYear()}`, 'gift', 'Year in review', 'Your year in games']];
+  const links = [['/duplicates', 'dupes', 'Duplicates', 'Merge editions, fix double counting'], ['/accounts', 'accounts', 'Accounts', 'Steam, Xbox, PlayStation, custom'], ['/history', 'clock', 'Improve history', 'Date play from before tracking'], ['/system', 'info', 'System', 'Error log, API usage, diagnostics'], ['/settings', 'settings', 'Settings', 'Schedule, import/export, security'], ['/api', 'code', 'API', 'Tokens, push endpoint, docs'], [`/wrapped/${new Date().getFullYear()}`, 'gift', 'Year in review', 'Your year in games']];
   view.innerHTML = `<div class="page-h"><h1>More</h1></div><div class="card pad-0">${links.map(([href, ic, t, d]) => `<a class="item" href="${href}" data-link style="padding:14px 16px"><span style="width:36px;height:36px;border-radius:10px;background:var(--panel2);display:grid;place-items:center">${icon(ic).replace('<svg', '<svg width="19" height="19"')}</span><div class="grow"><div class="ttl">${t}</div><div class="sub">${d}</div></div></a>`).join('')}</div>
     ${state.authEnabled ? `<button class="btn" style="margin-top:16px;width:100%" data-action="logout">${icon('logout')}Log out</button>` : ''}`;
 }
 
-export const pages = { dashboard, library, game, sessions, stats, wrapped, duplicates, accounts, settings, apidocs, more, system };
+export const pages = { dashboard, library, game, sessions, stats, wrapped, duplicates, accounts, settings, apidocs, more, system, history: historyPage };

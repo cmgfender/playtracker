@@ -11,8 +11,9 @@ import { findDuplicates } from '../services/duplicates.js';
 import { importRows, exportChunks, parseCsv } from '../services/importer.js';
 import { manualEntry, mergeGames, pruneEmptyGames, splitEntry, findOrCreateGame, cleanTitle } from '../services/library.js';
 import { normalizeTitle } from '../services/titles.js';
-import { reinferMany, reinferPending, INFER_VERSION } from '../services/inference.js';
+import { reinferMany, reinferPending, relearnStyle, styleOf, INFER_VERSION } from '../services/inference.js';
 import { flushRollups } from '../services/rollup.js';
+import { applyLicenses } from '../services/licenses.js';
 import { modelFor } from '../services/model.js';
 import fsp from 'node:fs';
 import { httpJson } from '../providers/http.js';
@@ -611,6 +612,16 @@ export function registerRoutes(r, app) {
     return { ok: true, started: true };
   }, { summary: 'Fetch achievement times / release dates now to date pre-tracking history', body: '{ reset?: boolean }', query: { wait: 'true' } });
 
+  r.post('/api/v1/accounts/:id/licenses', (c) => {
+    const a = sync.account(toInt(c.params.id));
+    if (!a) throw new HttpError(404, 'Account not found');
+    const text = typeof c.body === 'string' ? c.body : c.body.text;
+    if (!text || typeof text !== 'string') throw new HttpError(400, 'Send { text } with the table copied from store.steampowered.com/account/licenses');
+    const res = applyLicenses(db, a.id, text, { settings: settings.all() });
+    relearnStyle(db, { settings: settings.all() });
+    return res;
+  }, { summary: 'Paste Steam\'s licenses page (date added per product) to bound pre-tracking history', body: '{ text }' });
+
   r.get('/api/v1/now-playing', () => sync.nowPlaying(), { summary: 'Games currently being played (from presence)' });
 
   r.post('/api/v1/sync', () => {
@@ -638,6 +649,7 @@ export function registerRoutes(r, app) {
     settings.set(v.values);
     for (const a of db.prepare('SELECT id FROM accounts').all()) sync.refreshNext(a.id);
     // history caps changed -> re-date history with the new limits
+    if ('history_learn' in v.values && v.values.history_learn !== prev.history_learn) relearnStyle(db, { settings: settings.all() });
     if (['history_max_day_minutes', 'history_max_game_day_minutes', 'use_recent_on_import'].some((k) => k in v.values && v.values[k] !== prev[k])) {
       db.prepare('UPDATE entries SET inferred_v = 0 WHERE baseline_min > 0').run();
       flushRollups(db);
@@ -661,6 +673,7 @@ export function registerRoutes(r, app) {
     else if (typeof c.body.csv === 'string') rows = parseCsv(c.body.csv);
     else throw new HttpError(400, 'Send a CSV body, a JSON array, or { games: [...] }');
     const res = importRows(db, rows, { settings: settings.all() });
+    res.style_relearned = relearnStyle(db, { settings: settings.all(), log: app.log?.scoped?.('inference') });
     return res;
   }, { summary: 'Import games/history (CSV or JSON). Totals without sessions become baseline history.', body: 'CSV text or { games: [{ title, platform?, playtime_minutes|playtime_hours, last_played?, status?, rating?, notes?, sessions?: [{ date|started_at, minutes }] }] }' });
 
@@ -717,10 +730,49 @@ export function registerRoutes(r, app) {
     return { ok: true, entries: n };
   }, { summary: 'Re-date all pre-tracking history with the current algorithm' });
 
+  // Games whose pre-tracking history is least certain first (low-confidence + undated minutes),
+  // for the "Improve history" page: one quick answer per game re-dates it.
+  r.get('/api/v1/history/review', (c) => {
+    const limit = Math.min(200, toInt(c.query.limit, 30));
+    const offset = toInt(c.query.offset, 0);
+    const platform = c.query.platform || null;
+    return memo(db, `hist-review:${limit}:${offset}:${platform}`, () => {
+      const where = `e.baseline_min > 0 AND e.excluded = 0 AND json_extract(e.hist, '$.manual') IS NULL
+        AND COALESCE(json_extract(e.hist, '$.mode'), 'auto') = 'auto' ${platform ? 'AND e.platform = ?' : ''}`;
+      const args = platform ? [platform] : [];
+      const rows = db.prepare(`SELECT * FROM (SELECT e.id, e.platform, e.baseline_min, e.hist, e.game_id, g.title, g.cover_url, a.name account_name,
+          (SELECT SUM(CASE WHEN s.kind = 'baseline' OR s.confidence = 'low' THEN s.minutes WHEN s.confidence = 'medium' THEN s.minutes * 0.5 ELSE 0 END)
+             FROM sessions s WHERE s.entry_id = e.id AND s.source = 'inferred') unc
+        FROM entries e JOIN games g ON g.id = e.game_id LEFT JOIN accounts a ON a.id = e.account_id WHERE ${where})
+        WHERE unc > 0 ORDER BY unc DESC, id LIMIT ? OFFSET ?`).all(...args, limit, offset);
+      const total = db.prepare(`SELECT COUNT(*) n, COALESCE(SUM(unc), 0) m FROM (SELECT (SELECT SUM(CASE WHEN s.kind = 'baseline' OR s.confidence = 'low' THEN s.minutes WHEN s.confidence = 'medium' THEN s.minutes * 0.5 ELSE 0 END)
+          FROM sessions s WHERE s.entry_id = e.id AND s.source = 'inferred') unc FROM entries e WHERE ${where}) WHERE unc > 0`).get(...args);
+      const meter = Object.fromEntries(['high', 'medium', 'low', 'undated', 'manual'].map((k) => [k, 0]));
+      for (const r of db.prepare(`SELECT CASE WHEN json_extract(e.hist, '$.manual') IS NOT NULL THEN 'manual' WHEN s.kind = 'baseline' THEN 'undated' ELSE s.confidence END k, SUM(s.minutes) m
+          FROM sessions s JOIN entries e ON e.id = s.entry_id WHERE s.source = 'inferred' AND e.excluded = 0 GROUP BY k`).all()) meter[r.k || 'low'] = (meter[r.k || 'low'] || 0) + r.m;
+      const style = styleOf(db);
+      return {
+        total: total.n, uncertain_minutes: Math.round(total.m), meter,
+        style: style ? { games: style.games, learned_at: style.learned_at } : null,
+        items: rows.map((r) => {
+          const h = JSON.parse(r.hist || '{}');
+          return {
+            entry_id: r.id, game_id: r.game_id, title: r.title, cover_url: r.cover_url, platform: r.platform, account_name: r.account_name,
+            minutes: r.baseline_min, uncertain_minutes: Math.round(r.unc), confidence: h.inference?.confidence || null, window: h.inference?.window || null,
+            undated: h.inference?.undated || 0, reasons: h.inference?.reasons || [],
+            evidence: { first_played_at: h.first_played_at || null, last_played_at: h.last_played_at || null, date_added: h.date_added || null, release_at: h.release_at || null, tracking_start: h.tracking_start || null },
+          };
+        }),
+      };
+    });
+  }, { summary: 'Games whose pre-tracking history dating is least certain (for quick manual answers)', query: { limit: 'max 200', offset: '', platform: '' } });
+
   r.get('/api/v1/history/summary', () => memo(db, 'hist-summary', () => {
     const rows = db.prepare(`SELECT s.kind, s.confidence, COUNT(DISTINCT s.entry_id) entries, SUM(s.minutes) minutes FROM sessions s JOIN entries e ON e.id = s.entry_id
       WHERE s.source = 'inferred' AND e.excluded = 0 GROUP BY s.kind, s.confidence`).all();
-    return { rows, pending_enrichment: db.prepare('SELECT COUNT(*) n FROM entries WHERE baseline_min > 0 AND enriched_at IS NULL AND account_id IS NOT NULL').get().n, version: INFER_VERSION };
+    const style = styleOf(db);
+    return { rows, pending_enrichment: db.prepare('SELECT COUNT(*) n FROM entries WHERE baseline_min > 0 AND enriched_at IS NULL AND account_id IS NOT NULL').get().n, version: INFER_VERSION,
+      style: style ? { games: style.games, learned_at: style.learned_at } : null };
   }), { summary: 'How much pre-tracking history is dated, by confidence' });
 
   // ---------- logs & diagnostics ----------

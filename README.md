@@ -86,12 +86,13 @@ npm run demo -- ./data/playtracker.db && npm start
 
 Importing a library with 3,000 hours would normally make "today" look like a 3,000-hour day. PlayTracker never records pre-tracking time as play. Instead it **dates** it from everything the platforms report:
 
-- **PlayStation:** first played, last played and launch count.
-- **Steam and Xbox:** last played, the 2-week counter, and achievement unlock times.
+- **PlayStation:** first played, last played, launch count and trophy earned times.
+- **Steam:** last played, the 2-week counter, achievement unlock times, and purchase dates pasted from your licenses page.
+- **Xbox:** last played, achievement unlock times, and screenshot / game clip dates.
 - **Bounds:** release dates, account creation date, and dates added from CSV imports.
 
 It then spreads the time over that period:
-- The shape is a burst after starting a game, a taper, and a bump near the last session.
+- **Your own play pattern.** Once a few games have been tracked from first session to last, PlayTracker learns how *you* spread play over a game (an early binge, steady evenings, a long tail) and dates history the same way, using your most similar games. Until then it uses a default shape: a burst after starting a game, a taper, and a bump near the last session.
 - Each game is capped at 10 hours a day.
 - All games together are capped at 12 hours a day, shared across the whole library.
 
@@ -100,7 +101,7 @@ The result:
 - **Charts and year-in-review** show this **estimated history** hatched, with a confidence of high, medium or low per game. Toggle it on the Stats page.
 - **Today, this week, streaks, session counts and averages** only ever use **tracked** play.
 - **Time that can't be dated** stays as undated history (lifetime totals only).
-- **Corrections:** on a game's page, set the dates you actually played it, or choose "Don't chart".
+- **Corrections:** the **Improve history** page lists the least certain games first. Answer "mostly played in 2023, Apr–Jun" with two taps per game, or choose "Don't chart". It also shows how much of your history is solidly dated, and takes the Steam licenses paste. Exact dates can be set on a game's page.
 
 Each platform also *reports* history differently:
 - Steam writes totals when a game closes and stamps last-played at **launch**.

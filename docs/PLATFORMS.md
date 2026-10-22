@@ -11,7 +11,7 @@ None of the platforms expose a play-session history. They only report **lifetime
 | Recent minutes | ✅ `playtime_2weeks` | ❌ | ❌ | optional (`recent_minutes`) | Exact minutes in the last 14 days on import; narrows weekly/monthly windows |
 | Per-device minutes | ✅ Windows / Mac / Linux / **Steam Deck** / offline | category (PS4 / PS5 / PC) | device list only | optional | Tags each session with the device it was played on; flags offline play |
 | Live "currently playing" | ✅ `GetPlayerSummaries.gameid` | ✅ `basicPresences` | ✅ `/presence` | ✅ `POST /accounts/:id/presence` | Exact session start/end; triggers a sync when you stop playing |
-| Activity timestamps | ✅ achievement unlock times | (not needed: first/last played) | ✅ achievement unlock times | — | Dates pre-tracking history |
+| Activity timestamps | ✅ achievement unlock times; purchase dates via the pasted licenses page | ✅ trophy earned times (plus first/last played) | ✅ achievement unlock times; screenshot / clip dates | — | Dates pre-tracking history |
 | Release date | ✅ store `appdetails` | — | — | — | History can't start before release |
 | Account creation date | ✅ `timecreated` | — | — | — | History can't start before the account existed |
 | Date added / purchased | ❌ | ❌ | ❌ | ✅ `date_added` (CSV/JSON) | Lower bound for history |
@@ -37,7 +37,7 @@ None of the platforms expose a play-session history. They only report **lifetime
 - **Retries:** 429 and 5xx responses are retried, and `Retry-After` is respected.
 
 **Limitations:**
-- **No session history and no purchase date.** The API only returns lifetime totals.
+- **No session history and no purchase date.** The API only returns lifetime totals. The purchase date is on your [licenses page](https://store.steampowered.com/account/licenses/), which the API can't read: copy the table and paste it on **Improve history** (`POST /api/v1/accounts/:id/licenses`). Products are matched to games by title (editions included; soundtracks, DLC and bundles are skipped), and the earliest date becomes the start of that game's history window. English month names are parsed.
 - **Playtime is written when the game exits.** A game left running shows up on the sync after it closes.
 - **Offline play** is reported when the client reconnects. It's tracked through `playtime_disconnected`, and sessions are tagged "includes offline play". If the delta is larger than the real time since the last sync, the excess is filed as undated history instead of an impossible session.
 - **Privacy:** your profile and "Game details" must be **Public**. Presence also needs a public profile; private profiles get a clear warning.
@@ -58,6 +58,7 @@ None of the platforms expose a play-session history. They only report **lifetime
 
 **Advantages:**
 - **The best data of any platform.** First and last played plus launch count date your history with **high confidence**.
+- **Trophy earned times** fill in when play happened between first and last played. Background enrichment maps each title to its trophy set(s) (`trophy/v1/users/me/titles/trophyTitles?npTitleIds=`, 5 titles per request), then reads earned trophies per set (`npServiceName=trophy2` for PS5, `trophy` for PS4). Calls are spaced 3.2 s apart, at most 120 per run, with 15 minutes between runs, to stay well inside Sony's limits.
 - **Launch-count deltas** split a sync window into the right number of sessions.
 
 **Limits:** undocumented, roughly 300 requests per 15 minutes. A sync is cheap: 1 request per 200 titles.
@@ -76,6 +77,7 @@ Microsoft has no public consumer API, so PlayTracker uses [OpenXBL](https://xbl.
 **Calls per sync:**
 - 1 call to `player/titleHistory`, which gives the title list and last played times.
 - 1 call to `achievements/stats/{titleId}` per title **whose last-played time changed**. Unchanged titles reuse the stored value.
+- Enrichment also reads `dvr/screenshots` and `dvr/gameclips` (2 requests per run). Capture dates are moments of real play and anchor history like achievements do. Only captures still stored by Xbox are returned, so this mostly helps recent history.
 - Titles are checked most recently played first.
 
 **Hourly budget:**
@@ -201,11 +203,35 @@ Accuracy over those 6 months:
 | | Steam | PlayStation | Xbox (no presence) |
 |---|---|---|---|
 | Tracked minutes on the wrong day | 0.04% | 0.04% | 0.02% |
-| Pre-tracking history in the wrong **month** | 23% (9.7% once achievement times are fetched) | 18% | 26% |
-| Switch spreadsheet history in the wrong month (first/last dates) | | | 29% |
-| Busiest day of estimated history (all games) | ≤ 9.3 h (cap 12 h) | | |
+| Pre-tracking history in the wrong **month** | 23% | 14% | 27% |
+| … with the learned play style (only 4 fully tracked games) | 23%¹ | 12% | 27%¹ |
+| … plus the pasted licenses page | 12% | | |
+| … plus achievement times | 9.6% | | |
+| Switch spreadsheet history in the wrong month (first/last dates) | | | 26% → 24% with the learned style |
+| Busiest day of estimated history (all games) | ≤ 9.4 h (cap 12 h) | | |
 
-The shape parameters for dating history (`SHAPE` in `inference.js`) were tuned against three different simulated player behaviours: burst then taper, steady sporadic play, and short binges. They were not tuned against the long-run scenario. Dating history from last played alone remains the weakest case (about 50% in the wrong month), which is why Steam and Xbox achievement times are fetched in the background.
+¹ When only last played is known, the learned style is used only once 20+ games are behind it. With a handful of games, a start-less guess did more harm than good in testing.
+
+#### Learning the player's style
+
+The biggest error left after the evidence is used up is *how* a player spreads a game's hours, which differs a lot between people. So PlayTracker learns it from the player's own data (`learnStyle` / `learnStyleFromDb` in `inference.js`):
+
+- **Teachers:** games tracked from their very first session (no pre-tracking time) that have gone quiet for 30 days, plus history entries with 8+ achievement/trophy times. Each is kept as a compact signature: total minutes, span, the share of minutes in each twentieth of its life, and the share by days before its last session.
+- **Use:** a game is dated like the k = 8 most similar teachers (by size, and by span when the start is known), blended with the default shape by evidence: weight = games / (games + 5).
+- **Updates:** relearned after syncs (at most every 10 minutes), enrichment, imports and the licenses paste. When the style shifts by 20%+ (or is learned for the first time), all history is re-dated. Settings → "Learn my play pattern" turns it off.
+
+Measured on simulated players (history known from first/last played, month-level error), learning from 30 of the player's games:
+
+| Player | Default shape | Learned style | Best possible² |
+|---|---|---|---|
+| Burst then taper | 26% | 21% | 17% |
+| Steady sporadic play | 19% | 13% | 13% |
+| Short binges | 24% | 11% | 12% |
+| Mixed | 24% | 22% | |
+
+² An oracle that knows the generator exactly and only has the same first/last dates.
+
+The same work fixed a flaw in spreading: days that would get under 15 minutes used to be dropped and their minutes moved to the busiest days, which erased long low-intensity tails. They are now gathered into nearby days instead. The default shape (`SHAPE`) was re-tuned for that. Neither was tuned against the long-run scenario.
 
 What remains is information the platforms simply don't provide. The clearest case is two Steam sessions of the same game between two daily syncs: only the later launch time is reported. **Enable live presence (the default) for exact sessions.** Without it, sync more often for better day placement.
 
@@ -220,16 +246,16 @@ When a game is first seen with existing playtime, that time is history, not play
 
 1. **Window:**
    - **End:** last played. It never extends past last played or past the start of tracking.
-   - **Start:** first played, else the first achievement, else the date added. If none is known, the start is estimated from a plausible pace of play.
+   - **Start:** first played, else the first achievement/trophy/capture, else the date added (CSV, or the Steam licenses page). If none is known, the start is estimated from a plausible pace of play, or from how far back the player's similar games reach once 20+ are learned.
    - **Lower bounds:** release date and account creation date.
 2. **Shape:**
-   - Play is assumed to be intense after starting a game and to taper off, with a bump near the last session.
+   - The player's learned style when available (see above); otherwise play is assumed to be intense after starting a game and to taper off, with a bump near the last session.
    - Achievement unlock days get extra weight.
    - With Steam's 2-week counter, those minutes go exactly into the last 14 days.
 3. **Realistic days:**
    - Each game is capped at 10 hours a day.
    - All games together are capped at **12 hours a day**, and the budget is shared across the whole library. Games with the best evidence are placed first, so a 2,000-game import never stacks 40 hours onto one Saturday.
-   - Days with only a few minutes are folded into busier ones.
+   - Days with only a few minutes are gathered into nearby days, so quiet stretches keep their share.
 4. **Result:**
    - Stored as **estimated** sessions with a confidence of high, medium or low.
    - **In charts:** included, drawn hatched.
@@ -237,5 +263,5 @@ When a game is first seen with existing playtime, that time is history, not play
    - **Undatable time:** kept as undated history, which counts toward lifetime totals only.
 5. **Re-dating:**
    - **Automatic:** whenever new evidence arrives (achievements or release dates from background enrichment).
-   - **Manual:** on the game page, set the dates you played it, or choose "Don't chart".
+   - **Manual:** the **Improve history** page ranks games by uncertain hours (low-confidence + undated, medium at half weight) and takes a year / quarter / month answer per game (`GET /api/v1/history/review`). Exact dates can be set on the game page, or choose "Don't chart".
    - **Everything at once:** from the System page.
