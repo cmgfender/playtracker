@@ -788,6 +788,9 @@ export class SyncService {
       if (res === null) return; // provider declined (no budget / not configured yet)
       if (res.state) this.db.prepare('UPDATE accounts SET state = ? WHERE id = ?').run(JSON.stringify({ ...account.state, ...res.state }), account.id);
       st.error = res.unavailable || null;
+      // the last non-empty raw report, for diagnostics
+      if (res.seen?.length) st.seen = { at: now, online: res.online || null, titles: res.seen.slice(0, 10) };
+      else if (res.online) st.online = res.online;
       this.applyPresence(account, res.playing || [], { intervalSec: provider.profile.presence.interval_sec, now });
       if (st.failures >= 3) this.plog.info(`${account.platform}/${account.name}: presence recovered`);
       st.failures = 0;
@@ -813,7 +816,7 @@ export class SyncService {
 
   presenceInfo(accountId) {
     const st = this.presenceState.get(accountId);
-    return st ? { last_poll: st.lastPoll || null, failures: st.failures, error: st.error || null } : null;
+    return st ? { last_poll: st.lastPoll || null, failures: st.failures, error: st.error || null, online: st.online || st.seen?.online || null, last_seen: st.seen || null } : null;
   }
 
   notify(account, result, error) {

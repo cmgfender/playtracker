@@ -210,16 +210,21 @@ export const xbox = {
     const people = Array.isArray(data) ? data : data?.people || [data];
     const me = people.find((p) => !account.state.xuid || String(p?.xuid) === String(account.state.xuid)) || people[0];
     const playing = [];
+    const seen = []; // everything reported, for diagnostics (which titles were skipped and why)
     for (const d of me?.devices || []) {
+      // on a PC a running game is often not reported as the full-screen foreground title
+      const pc = /windows|win32|pc/i.test(String(d.type || ''));
       for (const t of d.titles || []) {
         const id = String(t.id ?? t.titleId ?? '');
-        if (!id || HOME_TITLE_IDS.has(id)) continue;
-        if (t.placement && !['Full', 'Fill', 'Snapped'].includes(t.placement)) continue;
-        if (t.state && t.state !== 'Active') continue;
+        const row = { id, name: t.name || null, device: d.type || null, placement: t.placement || null, state: t.state || null };
+        seen.push(row);
+        if (!id || HOME_TITLE_IDS.has(id)) { row.skipped = 'home'; continue; }
+        if (t.state && t.state !== 'Active') { row.skipped = 'inactive'; continue; }
+        if (t.placement && !['Full', 'Fill', 'Snapped'].includes(t.placement) && !(pc && ctx.getEntry?.(id))) { row.skipped = 'background'; continue; }
         playing.push({ extId: id, title: t.name || null, device: d.type || null });
       }
     }
-    return { playing };
+    return { playing, seen, online: me?.state || null };
   },
 
   async enrich(account, entries, ctx) {
