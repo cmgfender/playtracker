@@ -6,7 +6,7 @@ import { createApp } from '../src/server.js';
 import { allocate, inferHistory, learnStyle, styleOf, STYLE_BINS } from '../src/services/inference.js';
 import { parseLicenses } from '../src/services/licenses.js';
 import { earnedTimes } from '../src/providers/psn.js';
-import { captureTimes } from '../src/providers/xbox.js';
+import { captureTimes, outline } from '../src/providers/xbox.js';
 
 const DAY = 86_400_000;
 const NOW = Date.now();
@@ -126,6 +126,24 @@ test('review page lists least certain history first; an answer removes it from t
   assert.ok(after_.data.meter.manual > 0);
 });
 
+test('"looks right" keeps the estimate exactly and survives re-dating', async () => {
+  const rev = await call('/history/review?limit=50');
+  const it = rev.data.items.find((i) => i.window);
+  const before_ = app.app.db.prepare("SELECT window_start, window_end, minutes FROM sessions WHERE entry_id = ? AND source = 'inferred' ORDER BY window_start").all(it.entry_id);
+  const r = await call(`/entries/${it.entry_id}/history`, { method: 'PATCH', body: { confirm: true } });
+  assert.equal(r.status, 200, JSON.stringify(r.data));
+  const after_ = app.app.db.prepare("SELECT window_start, window_end, minutes, confidence FROM sessions WHERE entry_id = ? AND source = 'inferred' ORDER BY window_start").all(it.entry_id);
+  assert.deepEqual(after_.map(({ confidence, ...x }) => x), before_.map((x) => ({ ...x })));
+  assert.ok(after_.filter((x) => x.window_start).every((x) => x.confidence === 'high'));
+  assert.ok(!(await call('/history/review?limit=50')).data.items.some((i) => i.entry_id === it.entry_id));
+  // a later full re-date keeps it inside the confirmed window, still high confidence
+  await call('/history/reinfer', { method: 'POST' });
+  const h = JSON.parse(app.app.db.prepare('SELECT hist FROM entries WHERE id = ?').get(it.entry_id).hist);
+  assert.equal(h.inference.confidence, 'high');
+  assert.equal(h.inference.reasons[0], 'You confirmed this estimate');
+  assert.ok(h.inference.window[0] >= it.window[0] - 86_400_000 && h.inference.window[1] <= it.window[1]);
+});
+
 test('PSN trophy and Xbox capture payloads yield timestamps', () => {
   assert.deepEqual(earnedTimes({ trophies: [
     { earned: true, earnedDateTime: '2021-05-01T10:00:00Z' }, { earned: false }, { earned: true, earnedDateTime: 'bad' },
@@ -136,4 +154,9 @@ test('PSN trophy and Xbox capture payloads yield timestamps', () => {
   ] });
   assert.deepEqual(m.get('219630713'), [Date.parse('2022-02-02T20:00:00Z'), Date.parse('2022-03-02T20:00:00Z')]);
   assert.equal(m.has('1'), false);
+  // outline for diagnostics: shape and stat names only, never values
+  const o = outline({ groups: [{ statlistscollection: [{ stats: [{ name: 'Kills', value: '42' }] }] }], statlistscollection: [] });
+  assert.deepEqual(o.keys, ['groups', 'statlistscollection']);
+  assert.deepEqual(o.stat_names, ['Kills']);
+  assert.ok(!JSON.stringify(o).includes('42'));
 });

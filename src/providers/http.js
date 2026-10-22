@@ -1,11 +1,12 @@
 export class ProviderError extends Error {
-  constructor(message, { status, auth = false, rateLimited = false, retryAfter } = {}) {
+  constructor(message, { status, auth = false, rateLimited = false, retryAfter, resetAt } = {}) {
     super(message);
     this.name = 'ProviderError';
     this.status = status;
     this.auth = auth;
     this.rateLimited = rateLimited;
     this.retryAfter = retryAfter;
+    this.resetAt = resetAt;
   }
 }
 
@@ -23,12 +24,21 @@ export async function httpJson(url, opts = {}, { retries = 2, timeoutMs = 30_000
     try {
       const res = await fetch(url, { ...opts, signal: ctrl.signal, redirect: opts.redirect || 'follow' });
       const rateLimited = res.status === 429;
-      onResult?.({ url, host, status: res.status, ms: Date.now() - t0, ok: res.ok || (opts.raw && res.status < 400), rateLimited });
-      if (opts.raw) return res;
+      const rate = rateHeaders(res.headers);
+      if (opts.raw) {
+        onResult?.({ url, host, status: res.status, ms: Date.now() - t0, ok: res.status < 400, rateLimited, rate });
+        return res;
+      }
       const text = await res.text();
+      // some APIs (OpenXBL) put the quota reset in the 429 body instead of a header
+      if (rateLimited && !rate.resetAt) rate.resetAt = bodyResetAt(text);
+      onResult?.({ url, host, status: res.status, ms: Date.now() - t0, ok: res.ok, rateLimited, rate });
       if (rateLimited || res.status >= 500) {
-        const retryAfter = Number(res.headers.get('retry-after')) || 2 ** attempt * 2;
-        lastErr = new ProviderError(`${host} responded ${res.status}${rateLimited ? ' (rate limited)' : ''}`, { status: res.status, rateLimited, retryAfter });
+        const header = Number(res.headers.get('retry-after'));
+        const retryAfter = header || (rateLimited && rate.resetAt ? Math.ceil((rate.resetAt - Date.now()) / 1000) : 0) || 2 ** attempt * 2;
+        lastErr = new ProviderError(`${host} responded ${res.status}${rateLimited ? ' (rate limited)' : ''}`, { status: res.status, rateLimited, retryAfter, resetAt: rate.resetAt });
+        // a 429 without a short Retry-After means a quota is used up: retrying now only burns more of it
+        if (rateLimited && !header) { lastErr.final = true; throw lastErr; }
         if (attempt < retries && retryAfter <= maxRetryWaitS) { await sleep(retryAfter * 1000); continue; }
         throw lastErr;
       }
@@ -42,7 +52,7 @@ export async function httpJson(url, opts = {}, { retries = 2, timeoutMs = 30_000
         throw new ProviderError(`${host} returned invalid JSON: ${text.slice(0, 120)}`, { status: res.status });
       }
     } catch (err) {
-      if (err instanceof ProviderError && !(err.rateLimited || err.status >= 500)) throw err;
+      if (err instanceof ProviderError && (err.final || !(err.rateLimited || err.status >= 500))) throw err;
       if (err.name === 'AbortError') {
         onResult?.({ url, host, status: 0, ms: Date.now() - t0, ok: false, rateLimited: false });
         lastErr = new ProviderError(`Request to ${host} timed out after ${timeoutMs / 1000}s`);
@@ -60,6 +70,35 @@ export async function httpJson(url, opts = {}, { retries = 2, timeoutMs = 30_000
 }
 
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/** Reset time from a JSON rate-limit body: { resetAt: ISO | epoch } or { retryAfter: seconds }. */
+export function bodyResetAt(text, now = Date.now()) {
+  try {
+    const b = JSON.parse(text);
+    const r = b?.resetAt ?? b?.reset_at ?? b?.error?.resetAt;
+    if (r != null) {
+      const t = typeof r === 'number' ? (r > 1e12 ? r : r * 1000) : Date.parse(r);
+      if (Number.isFinite(t) && t > now) return t;
+    }
+    const after = Number(b?.retryAfter ?? b?.retry_after);
+    if (Number.isFinite(after) && after > 0) return now + after * 1000;
+  } catch { /* not JSON */ }
+  return null;
+}
+
+/**
+ * Quota headers (X-RateLimit-* / RateLimit-*), as OpenXBL and many APIs send them. The reset
+ * may be epoch seconds, epoch ms or seconds from now. Fields are null when absent.
+ */
+export function rateHeaders(headers, now = Date.now()) {
+  const get = (k) => headers.get(`x-ratelimit-${k}`) ?? headers.get(`ratelimit-${k}`);
+  const num = (v) => (v == null || v === '' || !Number.isFinite(Number(v)) ? null : Number(v));
+  const limit = num(get('limit'));
+  const remaining = num(get('remaining'));
+  const reset = num(get('reset'));
+  const resetAt = reset == null ? null : reset > 1e12 ? reset : reset > 1e9 ? reset * 1000 : now + reset * 1000;
+  return { limit, remaining, resetAt };
+}
 
 /** Simple spacing limiter: at most one call every `ms` per key. */
 export function spacer(ms) {

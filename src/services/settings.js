@@ -21,10 +21,31 @@ export const DEFAULT_SETTINGS = {
   webhook_url: '',
   webhook_on: 'sessions',     // 'sessions' | 'always' | 'errors'
 
-  // UI
-  theme: 'dark',
+  // UI (stored server-side so every device gets the same look)
+  theme: 'dark',              // 'dark' | 'black' (OLED) | 'light' | 'auto'
   accent: '#7c5cff',
   default_library_sort: 'recent',
+  ui_density: 'comfortable',  // 'comfortable' | 'compact'
+  cover_size: 'm',            // library grid: 's' | 'm' | 'l'
+  cover_titles: 'auto',       // title on covers: 'auto' (only without art) | 'always' | 'never'
+  library_view: 'grid',       // 'grid' | 'list'
+  library_hide_unplayed: false,
+  time_format: 'hm',          // 'hm' (1h 5m) | 'decimal' (1.1h)
+  start_page: 'home',         // 'home' | 'library' | 'sessions' | 'stats'
+  // home sections in order; a leading '-' hides one
+  dashboard_layout: 'kpis,live,jump,chart,top,recent,accounts,-heatmap,-backlog',
+};
+
+export const DASHBOARD_SECTIONS = ['kpis', 'live', 'jump', 'chart', 'top', 'recent', 'accounts', 'heatmap', 'backlog'];
+const ENUMS = {
+  theme: ['dark', 'black', 'light', 'auto'],
+  ui_density: ['comfortable', 'compact'],
+  cover_size: ['s', 'm', 'l'],
+  cover_titles: ['auto', 'always', 'never'],
+  library_view: ['grid', 'list'],
+  time_format: ['hm', 'decimal'],
+  start_page: ['home', 'library', 'sessions', 'stats'],
+  default_library_sort: ['recent', 'trending', 'playtime', 'title', 'added', 'rating'],
 };
 
 export class Settings {
@@ -89,5 +110,14 @@ export function validateSettings(patch) {
   if ('schedule_monthday' in out && (out.schedule_monthday < 1 || out.schedule_monthday > 28)) errors.push('schedule_monthday must be 1..28');
   if (out.webhook_url && !/^https?:\/\//.test(out.webhook_url)) errors.push('webhook_url must be http(s)');
   if (out.stats_estimates && !['include', 'exclude'].includes(out.stats_estimates)) errors.push('stats_estimates must be include or exclude');
+  for (const [k, allowed] of Object.entries(ENUMS)) if (k in out && !allowed.includes(out[k])) errors.push(`${k} must be one of ${allowed.join(', ')}`);
+  if ('accent' in out && !/^#[0-9a-f]{6}$/i.test(out.accent)) errors.push('accent must be a #rrggbb color');
+  if ('dashboard_layout' in out) {
+    const parts = out.dashboard_layout.split(',').map((x) => x.trim()).filter(Boolean);
+    const names = parts.map((x) => x.replace(/^-/, ''));
+    if (names.some((n) => !DASHBOARD_SECTIONS.includes(n)) || new Set(names).size !== names.length) errors.push(`dashboard_layout sections: ${DASHBOARD_SECTIONS.join(', ')}`);
+    // sections added in later versions appear (hidden) at the end
+    else out.dashboard_layout = [...parts, ...DASHBOARD_SECTIONS.filter((n) => !names.includes(n)).map((n) => `-${n}`)].join(',');
+  }
   return { values: out, errors };
 }

@@ -404,6 +404,10 @@ export class SyncService {
     this.running = new Map();
     this.enriching = new Map(); // accountId -> in-flight promise
     this.soon = new Map();
+    this.quota = new Map(); // accountId -> { limit, remaining, resetAt, blockedUntil } from API headers
+    for (const a of db.prepare("SELECT id, json_extract(state, '$.rate_limited_until') u FROM accounts").all()) {
+      if (a.u > Date.now()) this.quota.set(a.id, { remaining: 0, blockedUntil: a.u });
+    }
     this.presenceState = new Map(); // accountId -> { lastPoll, failures, error }
     this.timer = null;
     this.stopping = false;
@@ -427,7 +431,10 @@ export class SyncService {
       if (scheduled == null || backfill < scheduled) scheduled = backfill;
     }
     const soon = this.soon.get(account.id);
-    return soon && (scheduled == null || soon < scheduled) ? soon : scheduled;
+    const next = soon && (scheduled == null || soon < scheduled) ? soon : scheduled;
+    // never before an exhausted API quota resets
+    const blocked = this.blockedUntil(account.id);
+    return next != null && blocked > next ? blocked : next;
   }
 
   refreshNext(accountId) {
@@ -445,8 +452,25 @@ export class SyncService {
     return this.db.prepare('SELECT calls, errors, rate_limited FROM api_usage WHERE account_id = ? AND hour = ?').get(accountId, hour) || { calls: 0, errors: 0, rate_limited: 0 };
   }
 
+  /** Until when an account's API quota is exhausted (0 when it isn't). */
+  blockedUntil(accountId) {
+    return this.quota.get(accountId)?.blockedUntil || 0;
+  }
+
   recordCall(accountId, r, counters) {
     const hour = Math.floor(Date.now() / HOUR);
+    if (r.rate && (r.rate.remaining != null || r.rate.resetAt)) {
+      const q = this.quota.get(accountId) || {};
+      this.quota.set(accountId, { ...q, limit: r.rate.limit ?? q.limit, remaining: r.rate.remaining, resetAt: r.rate.resetAt, at: Date.now() });
+    }
+    if (r.rateLimited) {
+      // pause this account's calls (syncs, presence, enrichment) until the quota resets
+      const q = this.quota.get(accountId) || {};
+      const reset = r.rate?.resetAt || (q.resetAt && q.at > Date.now() - MIN ? q.resetAt : null);
+      const until = Math.max(Date.now() + MIN, Math.min(Date.now() + HOUR + MIN, reset ? reset + 5000 : Date.now() + 15 * MIN));
+      this.quota.set(accountId, { ...q, remaining: 0, blockedUntil: until });
+      try { this.db.prepare("UPDATE accounts SET state = json_set(COALESCE(state, '{}'), '$.rate_limited_until', ?) WHERE id = ?").run(until, accountId); } catch { /* best effort */ }
+    }
     try {
       this.db.prepare(`INSERT INTO api_usage(account_id, hour, calls, errors, rate_limited) VALUES (?, ?, 1, ?, ?)
         ON CONFLICT(account_id, hour) DO UPDATE SET calls = calls + 1, errors = errors + excluded.errors, rate_limited = rate_limited + excluded.rate_limited`)
@@ -467,7 +491,16 @@ export class SyncService {
     return {
       http: (url, opts, cfg = {}) => httpJson(url, opts, { ...cfg, onResult: (r) => this.recordCall(account.id, r, counters) }),
       getEntry: (ext) => getEntry.get(account.id, String(ext)),
-      remainingBudget: (limit) => limit - this.usage(account.id).calls,
+      // our own count for this hour, tightened by what the API itself reports (it also counts
+      // calls made elsewhere with the same key)
+      remainingBudget: (limit) => {
+        if (this.blockedUntil(account.id) > Date.now()) return 0;
+        const own = limit - this.usage(account.id).calls;
+        const q = this.quota.get(account.id);
+        // a reported count is trusted until its reset (or for an hour when the API names none)
+        const fresh = q && q.remaining != null && (q.resetAt ? q.resetAt > Date.now() : q.at > Date.now() - HOUR);
+        return fresh ? Math.min(own, q.remaining) : own;
+      },
       warn: (m) => { warnings?.push(m); this.log.warn(m, { account: `${account.platform}/${account.name}` }); },
       stopped: () => this.stopping,
     };
@@ -530,9 +563,21 @@ export class SyncService {
       this.log.info(`${label}: ${stats.games_seen} games, ${stats.sessions_created} sessions (+${stats.minutes_added}m)${stats.history_minutes ? `, ${Math.round(stats.history_minutes / 60)}h history dated (${Math.round(stats.estimated_minutes / 60)}h charted)` : ''}${initial ? ' [initial import]' : ''} in ${result.duration_ms}ms, ${counters.calls} API calls`);
       this.notify(account, result, null);
       if (provider.enrich) this.enrich(account.id).catch((e) => this.log.error(`Enrichment failed for ${label}`, e));
+      if (provider.resolveCovers) this.resolveCovers(account.id).catch((e) => this.log.warn(`Cover lookup failed for ${label}: ${e.message}`));
       return result;
     } catch (err) {
       const msg = String(err?.message || err);
+      if (err?.rateLimited) {
+        // quota used up: not a failure of the account; it resumes when the quota resets
+        const until = this.blockedUntil(account.id) || Date.now() + 15 * MIN;
+        const note = `${msg} - paused until ${new Date(until).toLocaleTimeString()}, then continues automatically`;
+        db.prepare("UPDATE syncs SET finished_at = ?, status = 'warning', error = ?, duration_ms = ?, details = ? WHERE id = ?")
+          .run(Date.now(), note, Date.now() - startedAt, JSON.stringify({ api: counters, warnings, rate_limited_until: until }), syncId);
+        db.prepare("UPDATE accounts SET last_status = 'warning', last_error = ? WHERE id = ?").run(note, account.id);
+        this.refreshNext(account.id);
+        this.log.warn(`${label}: ${note}`, { account_id: account.id, trigger });
+        throw Object.assign(err, { syncId, status: 429 });
+      }
       const status = err?.auth ? 'auth' : 'error';
       db.prepare("UPDATE syncs SET finished_at = ?, status = 'error', error = ?, duration_ms = ?, details = ? WHERE id = ?")
         .run(Date.now(), msg, Date.now() - startedAt, JSON.stringify({ api: counters, warnings, auth: !!err?.auth, stack: err?.stack?.split('\n').slice(0, 6).join('\n') }), syncId);
@@ -593,6 +638,34 @@ export class SyncService {
       this.log.error(`Enrichment of ${account.platform}/${account.name} failed: ${err.message}`, err);
       throw err;
     }
+  }
+
+  /** Fix cover art for titles whose art isn't at the platform's classic path (Steam). */
+  async resolveCovers(accountId) {
+    const account = this.account(accountId);
+    const provider = providers[account?.platform];
+    if (!provider?.resolveCovers) return null;
+    const done = new Set(account.state.cover_checked || []);
+    const todo = this.db.prepare('SELECT ext_id FROM entries WHERE account_id = ?').all(accountId).map((r) => r.ext_id).filter((id) => !done.has(Number(id)));
+    if (!todo.length) return { updated: 0 };
+    const counters = { calls: 0, errors: 0, rate_limited: 0, ms: 0, hosts: {} };
+    const { covers, checked } = await provider.resolveCovers(account, todo, this.ctxFor(account, { counters }));
+    let updated = 0;
+    tx(this.db, () => {
+      const fresh = this.account(accountId).state;
+      const state = { ...fresh, covers: { ...(fresh.covers || {}), ...covers }, cover_checked: [...done, ...checked.map(Number)] };
+      this.db.prepare('UPDATE accounts SET state = ? WHERE id = ?').run(JSON.stringify(state), accountId);
+      const upd = this.db.prepare(`UPDATE games SET cover_url = ? WHERE id = (SELECT game_id FROM entries WHERE account_id = ? AND ext_id = ?)
+        AND (cover_url IS NULL OR cover_url LIKE '%/steam/apps/%/library_600x900.jpg')`);
+      const updEntry = this.db.prepare('UPDATE entries SET cover_url = ? WHERE account_id = ? AND ext_id = ?');
+      for (const [appid, url] of Object.entries(covers)) {
+        updated += upd.run(url, accountId, String(appid)).changes;
+        updEntry.run(url, accountId, String(appid));
+      }
+    });
+    if (updated) this.log.info(`Found cover art for ${updated} ${account.platform} titles`);
+    if (todo.length > checked.length && checked.length && !this.stopping) setTimeout(() => this.resolveCovers(accountId).catch(() => {}), 60_000).unref?.();
+    return { updated, remaining: todo.length - checked.length };
   }
 
   // ---------- presence ("currently playing") ----------
@@ -711,13 +784,19 @@ export class SyncService {
             this.sync(a.id, trigger).catch(() => {});
           }
         }
-        if (provider?.presence && this.presenceEnabled(a) && a.last_sync_at) {
+        if (provider?.presence && this.presenceEnabled(a) && a.last_sync_at && this.blockedUntil(a.id) <= now) {
           const st = this.presenceState.get(a.id) || {};
           const backoff = Math.min(10, 2 ** Math.max(0, (st.failures || 0) - 1));
           if (!st.lastPoll || now - st.lastPoll >= provider.profile.presence.interval_sec * 1000 * backoff) await this.pollPresence(a);
         }
       }
     };
+    // cover art for titles imported before cover lookup existed (or added since)
+    setTimeout(() => {
+      for (const a of this.db.prepare('SELECT id, platform FROM accounts WHERE enabled = 1 AND last_sync_at IS NOT NULL').all()) {
+        if (providers[a.platform]?.resolveCovers) this.resolveCovers(a.id).catch((e) => this.log.warn(`Cover lookup failed: ${e.message}`));
+      }
+    }, 20_000).unref?.();
     const run = () => tick().catch((e) => this.log.error('Scheduler tick failed', e));
     this.timer = setInterval(run, 30_000);
     this.timer.unref?.();

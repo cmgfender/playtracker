@@ -137,7 +137,7 @@ export function topList(games, { coverFn, limit = 10 } = {}) {
       ${coverFn(g)}
       <div style="min-width:0"><div class="ellipsis" style="font-weight:620">${esc(g.title)}</div>
         <div class="track" style="display:flex"><i style="width:${((g.minutes - (g.estimated_minutes || 0)) / max) * 100}%;background:${i === 0 ? 'linear-gradient(90deg,var(--accent),var(--accent2))' : 'var(--accent)'};opacity:${1 - i * 0.05}"></i>${g.estimated_minutes ? `<i class="hatch-bg" style="width:${(g.estimated_minutes / max) * 100}%" title="${fmtMin(g.estimated_minutes)} estimated from history"></i>` : ''}</div></div>
-      <div class="nowrap" style="font-weight:700;font-variant-numeric:tabular-nums">${fmtMin(g.minutes, { short: g.minutes > 600 })}<div class="tiny muted" style="text-align:right">${g.sessions} sess.</div></div>
+      <div class="nowrap" style="font-weight:700;font-variant-numeric:tabular-nums">${fmtMin(g.minutes, { short: g.minutes > 600 })}<div class="tiny muted" style="text-align:right">${g.sessions ? `${g.sessions} sess.` : g.estimated_minutes ? 'est.' : ''}</div></div>
     </a>`).join('');
 }
 

@@ -59,6 +59,8 @@ function computeBigrams(s) {
   return out;
 }
 
+const numbers = (t) => (t.match(/\b\d+\b/g) || []).sort().join(' ');
+
 /** Sørensen–Dice similarity of two (already normalised) strings, 0..1 */
 export function similarity(a, b) {
   if (a === b) return 1;
@@ -78,6 +80,9 @@ export function similarity(a, b) {
  */
 export function matchScore(a, b) {
   if (a === b) return 1;
+  // different numbers mean different games: sequels (civilization 5 / 6), episodes, volumes,
+  // remakes (resident evil 2 / 3). Roman numerals are already digits after normalisation.
+  if (numbers(a) !== numbers(b)) return Math.min(similarity(a, b), 0.5);
   const sim = similarity(a, b);
   const [short, long] = a.length <= b.length ? [a, b] : [b, a];
   if (short.length >= 5 && long.startsWith(short + ' ')) {

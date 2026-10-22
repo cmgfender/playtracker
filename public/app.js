@@ -11,6 +11,10 @@ export function esc(v) {
 export function fmtMin(m, { short = false } = {}) {
   m = Math.round(Number(m) || 0);
   if (m < 60) return `${m}m`;
+  if (state.settings?.time_format === 'decimal') {
+    const h = m / 60;
+    return short || h >= 100 ? `${Math.round(h).toLocaleString()}h` : `${h.toFixed(1).replace(/\.0$/, '')}h`;
+  }
   const h = Math.floor(m / 60);
   const r = m % 60;
   if (short || h >= 100) return `${h.toLocaleString()}h`;
@@ -366,9 +370,15 @@ export function applyTheme(s) {
   const root = document.documentElement;
   const theme = s.theme === 'auto' ? (matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark') : s.theme;
   root.dataset.theme = theme;
+  root.dataset.density = s.ui_density || 'comfortable';
+  root.dataset.covers = s.cover_size || 'm';
+  root.dataset.coverTitles = s.cover_titles || 'auto';
   if (s.accent) root.style.setProperty('--accent', s.accent);
-  document.querySelector('meta[name=theme-color]').content = theme === 'light' ? '#f4f5f9' : '#0b0d12';
-  try { localStorage.setItem('pt-theme', theme); localStorage.setItem('pt-accent', s.accent || ''); } catch { /* private mode */ }
+  document.querySelector('meta[name=theme-color]').content = theme === 'light' ? '#f4f5f9' : theme === 'black' ? '#000000' : '#0b0d12';
+  try {
+    localStorage.setItem('pt-theme', theme); localStorage.setItem('pt-accent', s.accent || '');
+    localStorage.setItem('pt-ui', JSON.stringify({ density: root.dataset.density, covers: root.dataset.covers, coverTitles: root.dataset.coverTitles }));
+  } catch { /* private mode */ }
 }
 
 async function boot() {
@@ -377,6 +387,13 @@ async function boot() {
   if (!st.authenticated) { state.needLogin = true; return render(); }
   state.settings = await api('/settings').catch(() => ({}));
   applyTheme(state.settings);
+  // follow the theme when it is 'auto' and the system switches
+  matchMedia('(prefers-color-scheme: light)').addEventListener?.('change', () => { if (state.settings?.theme === 'auto') applyTheme(state.settings); });
+  // start page (only when opening the app at its root)
+  const start = { library: '/library', sessions: '/sessions', stats: '/stats' }[state.settings.start_page];
+  let started = false;
+  try { started = !!sessionStorage.getItem('pt-started'); sessionStorage.setItem('pt-started', '1'); } catch { /* ignore */ }
+  if (start && current() === '/' && !started) history.replaceState({}, '', start);
   await route();
   watchSync({ refresh: true });
   refreshDupeBadge();

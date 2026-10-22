@@ -101,7 +101,8 @@ export const steam = {
       recentWindowDays: 14,
       lastPlayedAt: g.rtime_last_played ? g.rtime_last_played * 1000 : null,
       iconUrl: g.img_icon_url ? `https://media.steampowered.com/steamcommunity/public/images/apps/${g.appid}/${g.img_icon_url}.jpg` : null,
-      coverUrl: `https://cdn.cloudflare.steamstatic.com/steam/apps/${g.appid}/library_600x900.jpg`,
+      // newer apps keep their art under hashed paths (resolved once via resolveCovers)
+      coverUrl: account.state.covers?.[g.appid] || `https://cdn.cloudflare.steamstatic.com/steam/apps/${g.appid}/library_600x900.jpg`,
       devices: {
         windows: g.playtime_windows_forever || 0, mac: g.playtime_mac_forever || 0, linux: g.playtime_linux_forever || 0,
         deck: g.playtime_deck_forever || 0, offline: g.playtime_disconnected || 0,
@@ -122,6 +123,38 @@ export const steam = {
     if (!p) return null;
     if (p.communityvisibilitystate !== 3) return { playing: [], unavailable: 'Profile is private - presence unavailable' };
     return { playing: p.gameid ? [{ extId: String(p.gameid), title: p.gameextrainfo || null }] : [] };
+  },
+
+  /**
+   * Real cover art paths from the store (IStoreBrowseService/GetItems, 100 apps per request).
+   * Older apps live at the classic library_600x900.jpg path; newer ones only under a hashed
+   * path, and some have no portrait capsule at all (then the header image is used).
+   * Returns { appid: url } for apps whose art is NOT at the classic path.
+   */
+  async resolveCovers(account, appids, ctx, { maxCalls = 10 } = {}) {
+    const out = {};
+    const checked = [];
+    for (let i = 0; i < appids.length && i / 100 < maxCalls; i += 100) {
+      const ids = appids.slice(i, i + 100);
+      const input = { ids: ids.map((appid) => ({ appid: Number(appid) })), context: { language: 'english', country_code: 'US' }, data_request: { include_assets: true } };
+      let r;
+      try {
+        r = await ctx.http(`${API}/IStoreBrowseService/GetItems/v1/?input_json=${encodeURIComponent(JSON.stringify(input))}`, {}, { retries: 1 });
+      } catch (err) {
+        ctx.warn?.(`Steam cover lookup: ${err.message}`);
+        break;
+      }
+      for (const it of r?.response?.store_items || []) {
+        const a = it.assets;
+        if (!a?.asset_url_format) continue;
+        const file = a.library_capsule || a.header;
+        if (!file) continue;
+        const url = `https://shared.cloudflare.steamstatic.com/store_item_assets/${a.asset_url_format.replace('${FILENAME}', file)}`;
+        if (file !== 'library_600x900.jpg') out[it.appid ?? it.id] = url;
+      }
+      checked.push(...ids);
+    }
+    return { covers: out, checked };
   },
 
   /**
