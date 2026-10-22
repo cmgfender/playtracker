@@ -44,10 +44,11 @@ function staticServer(dir, { dev }) {
     return entry;
   };
   return (req, res, pathname) => {
-    let rel = decodeURIComponent(pathname);
+    let rel;
+    try { rel = decodeURIComponent(pathname); } catch { return false; } // malformed %-escapes
     if (rel === '/' || !path.extname(rel)) rel = '/index.html'; // SPA fallback
     const file = path.normalize(path.join(dir, rel));
-    if (!file.startsWith(dir)) return false;
+    if (file !== dir && !file.startsWith(dir.endsWith(path.sep) ? dir : dir + path.sep)) return false;
     const f = load(file);
     if (!f) return false;
     const headers = {
@@ -133,16 +134,21 @@ export function createApp({ dbFile = process.env.PLAYTRACKER_DB || path.join(dat
     }
     for (const [k, v] of Object.entries(corsHeaders())) res.setHeader(k, v);
 
-    const m = router.match(req.method, pathname);
+    let m;
+    try { m = router.match(req.method, pathname); } catch { return sendJson(req, res, 400, { error: 'Malformed URL' }); }
     if (!m) return sendJson(req, res, 404, { error: 'Not found' });
     if (m.methodNotAllowed) return sendJson(req, res, 405, { error: 'Method not allowed' });
     const cookies = parseCookies(req.headers.cookie);
     const who = auth.identify(req, cookies, url);
     if (!who.ok && !m.route.doc.public) return sendJson(req, res, 401, { error: 'Unauthorized' });
-    // CSRF: cookie-authenticated writes must come from our own origin
-    if (who.via === 'cookie' && req.method !== 'GET' && req.headers.origin) {
+    // CSRF: browser writes (cookie login, or an instance without a password) must come from our
+    // own origin or the configured CORS origin. Token requests are not sent by browsers on their own.
+    if (who.via !== 'token' && !['GET', 'HEAD'].includes(req.method) && req.headers.origin) {
       const host = req.headers['x-forwarded-host'] || req.headers.host;
-      if (new URL(req.headers.origin).host !== host) return sendJson(req, res, 403, { error: 'Cross-origin request blocked' });
+      let originHost = null;
+      try { originHost = new URL(req.headers.origin).host; } catch { /* "null" or garbage */ }
+      const allowed = process.env.PLAYTRACKER_CORS_ORIGIN && req.headers.origin === process.env.PLAYTRACKER_CORS_ORIGIN;
+      if (originHost !== host && !allowed) return sendJson(req, res, 403, { error: 'Cross-origin request blocked' });
     }
 
     flushRollups(db); // no-op unless sessions changed outside a request (cheap queue check)
@@ -164,7 +170,8 @@ export function createApp({ dbFile = process.env.PLAYTRACKER_DB || path.join(dat
     };
     try {
       if (req.method !== 'GET' && req.method !== 'HEAD' && req.method !== 'DELETE') {
-        const raw = await readBody(req);
+        // big bodies only where they belong (imports), and never before authentication
+        const raw = await readBody(req, m.route.doc.bigBody ? 256 * 1024 * 1024 : m.route.doc.public ? 64 * 1024 : 4 * 1024 * 1024);
         ctx.rawBody = raw;
         const type = String(req.headers['content-type'] || '');
         if (/csv|text\/plain/.test(type)) { ctx.rawType = 'csv'; ctx.body = raw; } else if (raw.trim()) {
@@ -178,7 +185,12 @@ export function createApp({ dbFile = process.env.PLAYTRACKER_DB || path.join(dat
       if (req.method !== 'GET') flushRollups(db);
       if (!sent) sendJson(req, res, 200, out ?? { ok: true });
       const ms = Date.now() - t;
-      if (ms > 3000) { http_.slow++; apiLog.warn(`Slow request ${req.method} ${pathname} took ${ms}ms`, { query: url.search || undefined }); }
+      if (ms > 3000) {
+        http_.slow++;
+        const q = new URLSearchParams(url.search);
+        q.delete('api_key'); // never log credentials
+        apiLog.warn(`Slow request ${req.method} ${pathname} took ${ms}ms`, { query: q.toString() || undefined });
+      }
       else if (process.env.LOG_REQUESTS === 'true') apiLog.info(`${req.method} ${pathname} ${ms}ms`);
     } catch (err) {
       const status = err.status && err.status >= 400 && err.status < 600 ? err.status : 500;

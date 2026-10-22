@@ -56,33 +56,62 @@ export function importRows(db, rows, { settings, now = Date.now() } = {}) {
     findEntry: db.prepare('SELECT * FROM entries WHERE account_id IS NULL AND platform = ? AND ext_id = ?'),
     insEntry: db.prepare('INSERT INTO entries(account_id, game_id, platform, ext_id, title, playtime_min, last_played_at, first_seen_at, last_synced_at) VALUES (NULL, ?, ?, ?, ?, 0, ?, ?, ?)'),
     getEntry: db.prepare('SELECT * FROM entries WHERE id = ?'),
-    existing: db.prepare("SELECT started_at, minutes FROM sessions WHERE entry_id = ? AND kind = 'play' AND started_at IS NOT NULL"),
+    // same key the export writes (start, else the window), so re-imports are recognised
+    existing: db.prepare("SELECT COALESCE(started_at, window_start, window_end) started_at, minutes FROM sessions WHERE entry_id = ? AND kind = 'play'"),
     insPlay: db.prepare("INSERT INTO sessions(entry_id, source, kind, minutes, window_start, window_end, started_at, ended_at, note, created_at) VALUES (?, 'import', 'play', ?, ?, ?, ?, ?, ?, ?)"),
     addHistory: db.prepare('UPDATE entries SET baseline_min = baseline_min + ? WHERE id = ?'),
     updEntry: db.prepare('UPDATE entries SET playtime_min = ?, last_played_at = COALESCE(?, last_played_at) WHERE id = ?'),
     exclude: db.prepare('UPDATE entries SET excluded = 1 WHERE id = ?'),
   };
   const toInfer = new Set();
+  // existing entries by platform + account name + title, so re-importing an export (or a file
+  // that overlaps games already here) updates them instead of adding a second copy
+  let index = null;
+  const indexed = () => {
+    if (!index) {
+      index = new Map();
+      for (const e of db.prepare('SELECT e.id, e.platform, e.title, e.account_id, lower(a.name) acc FROM entries e LEFT JOIN accounts a ON a.id = e.account_id').iterate()) {
+        const k = `${e.platform}|${e.acc || ''}|${normalizeTitle(e.title)}`;
+        if (!index.has(k)) index.set(k, e);
+      }
+    }
+    return index;
+  };
+  const str = (v) => (v == null ? '' : typeof v === 'string' ? v : typeof v === 'object' ? '' : String(v));
   return tx(db, () => {
     for (const row of rows) {
-      const title = String(row.title || row.name || row.game || '').trim();
+      if (!row || typeof row !== 'object' || Array.isArray(row)) { res.skipped++; continue; }
+      const title = str(row.title || row.name || row.game).trim();
       if (!title) { res.skipped++; continue; }
       const platform = String(row.platform || row.source || 'import').toLowerCase().replace(/[^a-z0-9_-]+/g, '-').slice(0, 32) || 'import';
-      const gameId = findOrCreateGame(db, { title, coverUrl: row.cover_url || null }, { autoMerge: settings?.auto_merge_titles !== false, now });
+      const gameId = findOrCreateGame(db, { title, coverUrl: str(row.cover_url) || null }, { autoMerge: settings?.auto_merge_titles !== false, now });
       res.games++;
-      const status = String(row.status || '').toLowerCase();
+      const status = str(row.status).toLowerCase();
       st.game.run(STATUSES.has(status) ? status : '', STATUSES.has(status) ? status : '', row.rating ? Math.min(10, Math.max(0, Number(row.rating) || 0)) : null,
-          row.notes || '', row.favorite === true || row.favorite === 'true' || row.favorite === '1' ? 1 : 0, now, gameId);
+          str(row.notes), row.favorite === true || row.favorite === 'true' || row.favorite === '1' ? 1 : 0, now, gameId);
 
       // one entry per source: our own exports carry the account name, so two copies of a game
       // (e.g. a Steam account entry and a spreadsheet entry) stay separate on re-import
-      const acc = row.account ? String(row.account).trim().toLowerCase() : '';
+      const acc = str(row.account).trim().toLowerCase();
       const extId = acc ? `import:${acc}:${normalizeTitle(title)}` : `import:${normalizeTitle(title)}`;
       let entry = st.findEntry.get(platform, extId);
+      if (!entry) {
+        const same = indexed().get(`${platform}|${acc}|${normalizeTitle(title)}`);
+        if (same?.account_id != null) {
+          // a synced account already tracks this game: its totals come from the platform, so only
+          // the game's details and exclusion are taken from the file
+          if (row.excluded === true || row.excluded === 'true' || row.excluded === '1') st.exclude.run(same.id);
+          res.matched_synced = (res.matched_synced || 0) + 1;
+          continue;
+        }
+        if (same) entry = st.getEntry.get(same.id); // manual / imported entry already here
+      }
+      const existed = !!entry;
       const lastPlayed = toTime(row.last_played || row.last_played_at);
       if (!entry) {
         const r = st.insEntry.run(gameId, platform, extId, title, lastPlayed, now, now);
         entry = st.getEntry.get(r.lastInsertRowid);
+        index?.set(`${platform}|${acc}|${normalizeTitle(title)}`, { id: entry.id, account_id: null });
         res.entries_created++;
       } else res.entries_updated++;
 
@@ -90,7 +119,7 @@ export function importRows(db, rows, { settings, now = Date.now() } = {}) {
       let earliestSession = Infinity;
       const sessions = Array.isArray(row.sessions) ? row.sessions : [];
       // re-imports are idempotent: skip sessions already present (same start + length)
-      const have = sessions.length && res.entries_updated ? new Set(st.existing.all(entry.id).map((x) => `${x.started_at}:${x.minutes}`)) : new Set();
+      const have = sessions.length && existed ? new Set(st.existing.all(entry.id).map((x) => `${x.started_at}:${x.minutes}`)) : new Set();
       for (const s of sessions) {
         const minutes = Math.round(Number(s.minutes) || 0);
         const start = toTime(s.started_at || s.date || s.start);
@@ -142,7 +171,7 @@ export function importRows(db, rows, { settings, now = Date.now() } = {}) {
 const CSV_COLS = ['title', 'platform', 'account', 'playtime_minutes', 'playtime_hours', 'last_played', 'status', 'rating', 'favorite', 'excluded', 'sessions', 'notes'];
 const csvEsc = (v) => {
   const s = v == null ? '' : String(v);
-  return /[",\n;]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  return /[",\n\r\t;]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 };
 const iso = (t) => (t ? new Date(t).toISOString() : null);
 

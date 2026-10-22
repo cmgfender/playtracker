@@ -115,6 +115,13 @@ const SESSION_SELECT = `SELECT s.*, e.game_id, e.platform, e.account_id, a.name 
   FROM sessions s JOIN entries e ON e.id = s.entry_id JOIN games g ON g.id = e.game_id LEFT JOIN accounts a ON a.id = e.account_id`;
 
 export function registerRoutes(r, app) {
+  // query numbers within sane bounds (SQLite treats LIMIT -1 as "no limit")
+  const clamp = (v, def, min, max) => Math.min(max, Math.max(min, toInt(v, def)));
+  const arr = (v, name) => {
+    if (v == null) return [];
+    if (!Array.isArray(v)) throw new HttpError(400, `${name} must be an array`);
+    return v;
+  };
   const { db, settings, sync, auth, version } = app;
 
   // ---------- meta ----------
@@ -123,9 +130,24 @@ export function registerRoutes(r, app) {
 
   // ---------- auth ----------
   r.get('/api/v1/auth/status', (c) => ({ auth_enabled: auth.enabled(), authenticated: c.auth.ok, via: c.auth.via, password_source: auth.passwordSource() }), { summary: 'Auth status', public: true });
+  // failed logins per client address: after 5 within 15 minutes, wait (grows up to 15 minutes)
+  const failures = new Map();
   r.post('/api/v1/auth/login', (c) => {
     if (!auth.enabled()) return { ok: true };
-    if (!auth.checkPassword(String(c.body.password || ''))) throw new HttpError(401, 'Wrong password');
+    const ip = c.req.socket.remoteAddress || '?';
+    const now = Date.now();
+    const f = failures.get(ip);
+    if (f && f.blockedUntil > now) throw new HttpError(429, `Too many attempts - try again in ${Math.ceil((f.blockedUntil - now) / 1000)}s`);
+    const pw = typeof c.body.password === 'string' ? c.body.password : '';
+    if (pw.length > 1024 || !auth.checkPassword(pw)) {
+      const rec = f && now - f.first < 15 * 60_000 ? f : { first: now, count: 0, blockedUntil: 0 };
+      rec.count++;
+      if (rec.count >= 5) rec.blockedUntil = now + Math.min(15 * 60_000, 30_000 * 2 ** (rec.count - 5));
+      failures.set(ip, rec);
+      if (failures.size > 10_000) failures.clear();
+      throw new HttpError(401, 'Wrong password');
+    }
+    failures.delete(ip);
     const s = auth.createLoginSession();
     c.setCookie('pt_session', s.token, s.maxAge);
     return { ok: true };
@@ -258,7 +280,7 @@ export function registerRoutes(r, app) {
   }, { summary: 'Game detail with entries, latest 300 sessions, monthly history' });
 
   r.get('/api/v1/entries/:id/snapshots', (c) => {
-    const limit = Math.min(10000, toInt(c.query.limit, 1000));
+    const limit = clamp(c.query.limit, 1000, 1, 10000);
     return db.prepare('SELECT taken_at, playtime_min, sync_id FROM snapshots WHERE entry_id = ? ORDER BY taken_at DESC LIMIT ?').all(toInt(c.params.id), limit);
   }, { summary: 'Raw playtime snapshots for an entry (newest first)', query: { limit: 'max 10000' } });
 
@@ -290,7 +312,7 @@ export function registerRoutes(r, app) {
 
   r.post('/api/v1/games/:id/merge', (c) => {
     const target = toInt(c.params.id);
-    const ids = (c.body.source_ids || c.body.ids || []).map(Number).filter(Boolean);
+    const ids = arr(c.body.source_ids || c.body.ids, 'source_ids').map(Number).filter(Boolean);
     if (!ids.length) throw new HttpError(400, 'source_ids is required');
     tx(db, () => mergeGames(db, target, ids));
     return getGame(target);
@@ -455,7 +477,7 @@ export function registerRoutes(r, app) {
     { summary: 'Delete a manual session, or drop a synced one from stats (becomes baseline)' });
 
   r.post('/api/v1/sessions/bulk', (c) => {
-    const ids = (c.body.ids || []).map(Number).filter(Boolean);
+    const ids = arr(c.body.ids, 'ids').map(Number).filter(Boolean);
     const action = c.body.action;
     if (!['baseline', 'play', 'delete'].includes(action)) throw new HttpError(400, 'action must be baseline, play or delete');
     tx(db, () => { for (const id of ids) action === 'delete' ? removeSession(id) : changeSession(id, { kind: action }); });
@@ -480,7 +502,7 @@ export function registerRoutes(r, app) {
 
   // ---------- duplicates ----------
   r.get('/api/v1/duplicates', (c) => {
-    const d = findDuplicates(db, { threshold: Number(c.query.threshold) || 0.8, limit: Math.min(5000, toInt(c.query.limit, 300)) });
+    const d = findDuplicates(db, { threshold: Number(c.query.threshold) || 0.8, limit: clamp(c.query.limit, 300, 1, 5000) });
     return c.query.summary === 'true' ? { counts: d.counts } : d;
   }, { summary: 'Merge suggestions, double-counted entries, cross-platform games (each list capped; see counts)', query: { threshold: '0..1 (default 0.8)', limit: 'per list, default 300', summary: 'true = counts only' } });
   r.post('/api/v1/duplicates/dismiss', (c) => {
@@ -528,7 +550,12 @@ export function registerRoutes(r, app) {
     const config = c.body.config || {};
     requireFields(platform, config);
     const name = String(c.body.name || providers[platform].label).slice(0, 80);
-    const schedule = c.body.schedule ? JSON.stringify(validateSettings(c.body.schedule).values) : null;
+    let schedule = null;
+    if (c.body.schedule) {
+      const v = validateSettings(c.body.schedule);
+      if (v.errors.length) throw new HttpError(400, v.errors.join('; '));
+      schedule = JSON.stringify(v.values);
+    }
     const id = Number(db.prepare('INSERT INTO accounts(platform, name, config, enabled, schedule, created_at) VALUES (?, ?, ?, ?, ?, ?)')
       .run(platform, name, JSON.stringify(config), c.body.enabled === false ? 0 : 1, schedule, Date.now()).lastInsertRowid);
     if (!providers[platform].push && c.body.sync !== false) sync.sync(id, 'initial').catch(() => {});
@@ -583,7 +610,7 @@ export function registerRoutes(r, app) {
     if (!sync.account(id)) throw new HttpError(404, 'Account not found');
     const games = c.body.games || c.body.items;
     if (!Array.isArray(games)) throw new HttpError(400, 'games must be an array');
-    const items = games.map((g) => ({
+    const items = games.filter((g) => g && typeof g === 'object').map((g) => ({
       extId: String(g.id ?? g.ext_id ?? g.title),
       title: g.title || g.name || String(g.id),
       playtimeMin: g.playtime_minutes ?? (g.playtime_hours != null ? Math.round(g.playtime_hours * 60) : 0),
@@ -599,12 +626,12 @@ export function registerRoutes(r, app) {
       backfill: !!g.backfill,
     }));
     return sync.report(id, items);
-  }, { summary: 'Push lifetime totals for an account; deltas become sessions. Optional dates/play counts are used to date history on the first report.', body: '{ games: [{ id, title, playtime_minutes, last_played_at?, first_played_at?, date_added?, play_count?, recent_minutes?, recent_days?, device?, cover_url?, backfill? }] }' });
+  }, { summary: 'Push lifetime totals for an account; deltas become sessions. Optional dates/play counts are used to date history on the first report.', body: '{ games: [{ id, title, playtime_minutes, last_played_at?, first_played_at?, date_added?, play_count?, recent_minutes?, recent_days?, device?, cover_url?, backfill? }] }', bigBody: true });
 
   r.post('/api/v1/accounts/:id/presence', (c) => {
     const a = sync.account(toInt(c.params.id));
     if (!a) throw new HttpError(404, 'Account not found');
-    const playing = (c.body.playing || []).map((p) => ({ extId: String(p.id ?? p.ext_id ?? p.title), title: p.title || null, device: p.device || null }));
+    const playing = arr(c.body.playing, 'playing').filter((p) => p && typeof p === 'object').map((p) => ({ extId: String(p.id ?? p.ext_id ?? p.title), title: p.title || null, device: p.device || null }));
     return sync.applyPresence(a, playing, { intervalSec: toInt(c.body.interval_sec, 120) });
   }, { summary: 'Push "currently playing" for an account (e.g. from Home Assistant); used to pin sessions to exact times', body: '{ playing: [{ id, title? }], interval_sec? }' });
 
@@ -626,7 +653,7 @@ export function registerRoutes(r, app) {
     const res = applyLicenses(db, a.id, text, { settings: settings.all() });
     relearnStyle(db, { settings: settings.all() });
     return res;
-  }, { summary: 'Paste Steam\'s licenses page (date added per product) to bound pre-tracking history', body: '{ text }' });
+  }, { summary: 'Paste Steam\'s licenses page (date added per product) to bound pre-tracking history', body: '{ text }', bigBody: true });
 
   r.get('/api/v1/now-playing', () => sync.nowPlaying(), { summary: 'Games currently being played (from presence)' });
 
@@ -640,7 +667,7 @@ export function registerRoutes(r, app) {
     const where = []; const args = [];
     if (c.query.account_id) { where.push('s.account_id = ?'); args.push(toInt(c.query.account_id)); }
     return db.prepare(`SELECT s.*, a.name account_name, a.platform FROM syncs s LEFT JOIN accounts a ON a.id = s.account_id ${where.length ? `WHERE ${where.join(' AND ')}` : ''} ORDER BY s.id DESC LIMIT ?`)
-      .all(...args, Math.min(500, toInt(c.query.limit, 50))).map((r) => ({ ...r, details: r.details ? JSON.parse(r.details) : null }));
+      .all(...args, clamp(c.query.limit, 50, 1, 500)).map((r) => ({ ...r, details: r.details ? JSON.parse(r.details) : null }));
   }, { summary: 'Sync history', query: { account_id: '', limit: '' } });
 
   // ---------- settings & tokens ----------
@@ -681,7 +708,7 @@ export function registerRoutes(r, app) {
     const res = importRows(db, rows, { settings: settings.all() });
     res.style_relearned = relearnStyle(db, { settings: settings.all(), log: app.log?.scoped?.('inference') });
     return res;
-  }, { summary: 'Import games/history (CSV or JSON). Totals without sessions become baseline history.', body: 'CSV text or { games: [{ title, platform?, playtime_minutes|playtime_hours, last_played?, status?, rating?, notes?, sessions?: [{ date|started_at, minutes }] }] }' });
+  }, { summary: 'Import games/history (CSV or JSON). Totals without sessions become baseline history.', body: 'CSV text or { games: [{ title, platform?, playtime_minutes|playtime_hours, last_played?, status?, rating?, notes?, sessions?: [{ date|started_at, minutes }] }] }', bigBody: true });
 
   r.get('/api/v1/export', async (c) => {
     const csv = c.query.format === 'csv';
@@ -754,8 +781,8 @@ export function registerRoutes(r, app) {
   // Games whose pre-tracking history is least certain first (low-confidence + undated minutes),
   // for the "Improve history" page: one quick answer per game re-dates it.
   r.get('/api/v1/history/review', (c) => {
-    const limit = Math.min(200, toInt(c.query.limit, 30));
-    const offset = toInt(c.query.offset, 0);
+    const limit = clamp(c.query.limit, 30, 1, 200);
+    const offset = clamp(c.query.offset, 0, 0, 1e9);
     const platform = c.query.platform || null;
     return memo(db, `hist-review:${limit}:${offset}:${platform}`, () => {
       const where = `e.baseline_min > 0 AND e.excluded = 0 AND json_extract(e.hist, '$.manual') IS NULL
@@ -806,7 +833,7 @@ export function registerRoutes(r, app) {
     if (q.since) { where.push('time >= ?'); args.push(toTime(q.since)); }
     if (q.before) { where.push('id < ?'); args.push(toInt(q.before)); }
     const w = where.length ? `WHERE ${where.join(' AND ')}` : '';
-    const items = db.prepare(`SELECT * FROM logs ${w} ORDER BY id DESC LIMIT ?`).all(...args, Math.min(1000, toInt(q.limit, 200)))
+    const items = db.prepare(`SELECT * FROM logs ${w} ORDER BY id DESC LIMIT ?`).all(...args, clamp(q.limit, 200, 1, 1000))
       .map((l) => ({ ...l, context: l.context ? JSON.parse(l.context) : null }));
     const counts = db.prepare('SELECT level, COUNT(*) n FROM logs WHERE time > ? GROUP BY level').all(Date.now() - 86_400_000);
     return { items, counts_24h: Object.fromEntries(counts.map((x) => [x.level, x.n])), next: items.length ? items.at(-1).id : null };
