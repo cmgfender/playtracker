@@ -270,7 +270,7 @@ export function inferHistory(e, { pacePerDay = 90, maxPerDay = 600, minDay = 15,
       result.chunks.push(...chunkDays(d0, alloc, { hardEnd: Math.min(T, end) }).map((c) => ({ ...c, why: 'history' })));
       if (remaining - placed > 0.5) result.undated += Math.round(remaining - placed);
       let c;
-      if (e.manual?.start || e.manual?.end) { c = 'high'; result.reasons.push('Window set manually'); }
+      if (e.manual?.start || e.manual?.end) { c = 'high'; result.reasons.push(e.manual.confirmed ? 'You confirmed this estimate' : 'Window set manually'); }
       else if (e.firstPlayedAt && knownEnd) { c = 'high'; result.reasons.push('Platform reports first and last played dates'); }
       else if (anchors.length >= 3) { c = 'medium'; result.reasons.push(`${anchors.length} achievement/trophy unlock times`); }
       else if (knownStart && knownEnd) { c = 'medium'; result.reasons.push('Bounded by date added/first activity and last played'); }

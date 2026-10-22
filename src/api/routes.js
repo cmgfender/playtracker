@@ -715,6 +715,21 @@ export function registerRoutes(r, app) {
       h.manual = start || end ? { start: start || undefined, end: end || undefined } : null;
     }
     if (b.reset) { delete h.manual; h.mode = 'auto'; }
+    if (b.confirm) {
+      // "looks right": keep the current estimate exactly as it is, and pin its window so
+      // later re-dating (new evidence, algorithm updates) never moves it
+      const w = h.inference?.window;
+      if (!w) throw new HttpError(400, 'There is no estimate to confirm');
+      h.manual = { start: w[0], end: w[1], confirmed: true };
+      h.mode = 'auto';
+      h.inference = { ...h.inference, confidence: 'high', reasons: ['You confirmed this estimate', ...(h.inference.reasons || []).filter((r) => r !== 'You confirmed this estimate')] };
+      tx(db, () => {
+        db.prepare('UPDATE entries SET hist = ? WHERE id = ?').run(JSON.stringify(h), id);
+        db.prepare("UPDATE sessions SET confidence = 'high' WHERE entry_id = ? AND source = 'inferred' AND kind = 'estimate'").run(id);
+        flushRollups(db);
+      });
+      return getGame(e.game_id);
+    }
     tx(db, () => {
       db.prepare('UPDATE entries SET hist = ? WHERE id = ?').run(JSON.stringify(h), id);
       flushRollups(db);
@@ -722,7 +737,7 @@ export function registerRoutes(r, app) {
       flushRollups(db);
     });
     return getGame(e.game_id);
-  }, { summary: 'Adjust how pre-tracking history is dated: manual first/last played window, or mode=undated to keep it out of charts', body: '{ first_played_at?, last_played_at?, mode?: "auto"|"undated", reset?: boolean }' });
+  }, { summary: 'Adjust how pre-tracking history is dated: manual first/last played window, or mode=undated to keep it out of charts', body: '{ first_played_at?, last_played_at?, mode?: "auto"|"undated", reset?: boolean, confirm?: boolean (keep the current estimate) }' });
 
   r.post('/api/v1/history/reinfer', () => {
     db.prepare('UPDATE entries SET inferred_v = 0 WHERE baseline_min > 0').run();

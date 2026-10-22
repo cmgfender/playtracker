@@ -554,7 +554,9 @@ async function game(view, id, stale) {
     if (ed) return historyModal(g.entries.find((x) => x.id === Number(ed.dataset.histEdit)), rerender);
     const md = ev.target.closest('[data-hist-mode]');
     const rs = ev.target.closest('[data-hist-reset]');
+    const cf = ev.target.closest('[data-hist-confirm]');
     try {
+      if (cf) { await api(`/entries/${cf.dataset.histConfirm}/history`, { method: 'PATCH', body: { confirm: true } }); toast('Kept as guessed'); rerender(); }
       if (md) { await api(`/entries/${md.dataset.entry}/history`, { method: 'PATCH', body: { mode: md.dataset.histMode } }); toast(md.dataset.histMode === 'undated' ? 'Removed from charts' : 'Charted'); rerender(); }
       if (rs) { await api(`/entries/${rs.dataset.histReset}/history`, { method: 'PATCH', body: { reset: true } }); toast('Back to automatic dating'); rerender(); }
     } catch (err) { fail(err); }
@@ -597,7 +599,7 @@ function historyBlock(e) {
       : `<div class="small muted">No dates known — counts toward lifetime only.${e.platform === 'steam' && !h.enriched ? ' Looking up achievement times…' : ''}</div>`}
     ${(h.reasons || []).length ? `<div class="tiny muted">${h.reasons.map(esc).join(' · ')}</div>` : ''}
     ${chips.length ? `<div class="evidence">${chips.map(([k, v]) => `<span class="badge">${k}: ${esc(v)}</span>`).join('')}</div>` : ''}
-    <div class="row wrap"><button class="btn sm" data-hist-edit="${e.id}">${icon('edit')}Set dates</button>
+    <div class="row wrap">${h.window && !h.manual && h.mode !== 'undated' && conf !== 'high' ? `<button class="btn sm" data-hist-confirm="${e.id}">${icon('check')}Looks right</button>` : ''}<button class="btn sm" data-hist-edit="${e.id}">${icon('edit')}Set dates</button>
       ${h.mode === 'undated' ? `<button class="btn sm ghost" data-hist-mode="auto" data-entry="${e.id}">Chart it</button>` : `<button class="btn sm ghost" data-hist-mode="undated" data-entry="${e.id}">Don’t chart</button>`}
       ${h.manual || h.mode === 'undated' ? `<button class="btn sm ghost" data-hist-reset="${e.id}">Reset to automatic</button>` : ''}</div>
   </div>`;
@@ -1264,6 +1266,7 @@ async function historyPage(view, stale) {
         <div class="tiny muted">${platDot(it.platform)} ${esc(it.account_name || plat(it.platform).label)} · ${it.window
           ? `now guessed <b>${fmtDate(it.window[0], { year: 'numeric', month: 'short' })} – ${fmtDate(it.window[1], { year: 'numeric', month: 'short' })}</b> <span class="conf-${it.confidence}">(${it.confidence})</span>`
           : 'no dates known'}${it.undated ? ` · ${fmtMin(it.undated)} undated` : ''}${it.evidence.last_played_at ? ` · last played ${fmtDate(it.evidence.last_played_at, { year: 'numeric', month: 'short', day: 'numeric' })}` : ''}</div>
+        ${it.window ? `<div class="row wrap" style="gap:6px"><button class="btn sm" data-confirm>${icon('check')}Looks right</button><span class="tiny muted">or correct it:</span></div>` : ''}
         <div class="row wrap" style="gap:6px"><span class="small">Mostly played in</span>
           <select class="input sm" name="y" style="width:auto">${yearOpts(it)}</select>
           <select class="input sm" name="p" style="width:auto">${PERIODS.map(([k, l]) => `<option value="${k}">${l}</option>`).join('')}</select>
@@ -1295,6 +1298,10 @@ async function historyPage(view, stale) {
   view.addEventListener('click', async (e) => {
     const el = e.target.closest('.hist-row');
     if (el && e.target.closest('[data-skip]')) { el.remove(); return; }
+    if (el && e.target.closest('[data-confirm]')) {
+      try { await api(`/entries/${el.dataset.entry}/history`, { method: 'PATCH', body: { confirm: true } }); done(el, 'Kept as guessed'); } catch (err) { fail(err); }
+      return;
+    }
     if (el && e.target.closest('[data-undated]')) {
       try { await api(`/entries/${el.dataset.entry}/history`, { method: 'PATCH', body: { mode: 'undated' } }); done(el, 'Kept out of charts'); } catch (err) { fail(err); }
       return;
