@@ -77,6 +77,10 @@ Microsoft has no public consumer API, so PlayTracker uses [OpenXBL](https://xbl.
 **Calls per sync:**
 - 1 call to `player/titleHistory`, which gives the title list and last played times.
 - 1 call to `achievements/stats/{titleId}` per title **whose last-played time changed**. Unchanged titles reuse the stored value.
+- **Titles with no `MinutesPlayed` stat** (many PC / Game Pass games) report no playtime at all, so there is nothing to subtract:
+  - Each finished live-presence span becomes an exact session and is added to the title's total.
+  - If presence missed a session (quota pause, container down, presence off) but the title's last-played time moved, one session is recorded ending at that time. It is as long as your typical session, capped by the time since the previous play, and marked "≈ length".
+  - These titles are rechecked weekly. If the stat appears, its first value is filed as history minus what was already tracked, so nothing is counted twice.
 - Enrichment also reads `dvr/screenshots` and `dvr/gameclips` (2 requests per run). Capture dates are moments of real play and anchor history like achievements do. Only captures still stored by Xbox are returned, so this mostly helps recent history.
 - Titles are checked most recently played first.
 

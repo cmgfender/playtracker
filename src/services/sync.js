@@ -278,7 +278,7 @@ export function applyItems(db, account, items, { settings, now = Date.now(), syn
     if (!it || it.extId == null) continue;
     stats.games_seen++;
     const extId = String(it.extId);
-    const playtime = Math.max(0, Math.floor(Number(it.playtimeMin) || 0));
+    let playtime = Math.max(0, Math.floor(Number(it.playtimeMin) || 0));
     const lastPlayedAt = it.lastPlayedAt || null;
     const meta = { ...(it.meta || {}), ...(it.devices ? { devices: it.devices } : {}) };
     const metaJson = JSON.stringify(meta);
@@ -322,6 +322,9 @@ export function applyItems(db, account, items, { settings, now = Date.now(), syn
     }
 
     seen.push(entry.id);
+    // totals of presence-tracked titles (no platform playtime) are ours: a report fetched before a
+    // presence session was recorded must never take it away
+    if (account.state?.unmetered?.[extId] && !it.backfill) playtime = Math.max(playtime, entry.playtime_min);
     const delta = playtime - entry.playtime_min;
     if (delta === 0 || (delta > 0 && delta < minSession)) {
       // Nothing (or too little) changed. Keep the old snapshot time when a small delta is
@@ -558,6 +561,7 @@ export class SyncService {
         return s;
       });
       this.refreshNext(account.id);
+      this.presenceSessions(account.id, { fallbacks: items.filter((i) => i.unmeteredPlayAt).map((i) => ({ extId: String(i.extId), at: i.unmeteredPlayAt, prev: i.prevPlayedAt })) });
       this.relearn();
       const result = { sync_id: syncId, account_id: account.id, initial, ...stats, api_calls: counters.calls, duration_ms: Date.now() - startedAt };
       this.log.info(`${label}: ${stats.games_seen} games, ${stats.sessions_created} sessions (+${stats.minutes_added}m)${stats.history_minutes ? `, ${Math.round(stats.history_minutes / 60)}h history dated (${Math.round(stats.estimated_minutes / 60)}h charted)` : ''}${initial ? ' [initial import]' : ''} in ${result.duration_ms}ms, ${counters.calls} API calls`);
@@ -699,6 +703,7 @@ export class SyncService {
       // keep presence history bounded
       db.prepare('DELETE FROM presence WHERE account_id = ? AND ended_at IS NOT NULL AND ended_at < ?').run(account.id, now - 90 * DAY);
     });
+    if (closed) this.presenceSessions(account.id, { now });
     if (closed && !providers[account.platform]?.push) {
       const delay = (providers[account.platform]?.profile?.presence?.sync_after_sec || 300) * 1000;
       this.soon.set(account.id, now + delay);
@@ -706,6 +711,71 @@ export class SyncService {
       this.plog.info(`${account.platform}/${account.name}: session ended, syncing in ${Math.round(delay / 60000)} min`);
     }
     return { open: ids.size, closed };
+  }
+
+  /**
+   * Titles whose platform reports no playtime at all (Xbox PC / Game Pass titles without a
+   * MinutesPlayed stat) can only be tracked by presence: each finished presence span becomes an
+   * exact session and is added to the title's total (the platform never reports one to compare).
+   */
+  presenceSessions(accountId, { now = Date.now(), fallbacks = [] } = {}) {
+    const account = this.account(accountId);
+    const unmetered = account?.state?.unmetered;
+    if (!unmetered || !Object.keys(unmetered).length) return 0;
+    const db = this.db;
+    const minMin = Math.max(1, Number(this.settings.get('min_session_minutes')) || 2);
+    const spans = db.prepare(`SELECT * FROM presence WHERE account_id = ? AND ended_at IS NOT NULL AND session_id IS NULL AND ended_at > ?
+      ORDER BY started_at`).all(accountId, now - 3 * DAY).filter((sp) => unmetered[sp.ext_id]);
+    const missed = fallbacks.filter((f) => unmetered[f.extId] && f.at && f.at <= now + 5 * MIN);
+    if (!spans.length && !missed.length) return 0;
+    let made = 0;
+    let estimated = 0;
+    tx(db, () => {
+      for (const sp of spans) {
+        const entry = db.prepare('SELECT * FROM entries WHERE account_id = ? AND ext_id = ?').get(accountId, sp.ext_id);
+        if (!entry) continue; // not in the library yet: the sync after this span adds it
+        const minutes = Math.round((sp.ended_at - sp.started_at) / MIN);
+        if (minutes < minMin) { db.prepare('UPDATE presence SET session_id = 0 WHERE id = ?').run(sp.id); continue; }
+        const r = db.prepare(`INSERT INTO sessions(entry_id, sync_id, source, kind, minutes, window_start, window_end, started_at, ended_at, confidence, device, note, created_at)
+          VALUES (?, NULL, 'presence', 'play', ?, ?, ?, ?, ?, 'exact', ?, ?, ?)`)
+          .run(entry.id, minutes, sp.started_at, sp.ended_at, sp.started_at, sp.ended_at, sp.device || null, 'From live presence (platform reports no playtime for this title)', now);
+        db.prepare('UPDATE presence SET session_id = ? WHERE id = ?').run(r.lastInsertRowid, sp.id);
+        db.prepare('UPDATE entries SET playtime_min = playtime_min + ?, last_played_at = MAX(COALESCE(last_played_at, 0), ?) WHERE id = ?').run(minutes, sp.ended_at, entry.id);
+        made++;
+      }
+      // fallback: the platform says the title was played (new last-played time) but presence saw
+      // nothing (quota pause, container down, presence off). Record one session ending then, as
+      // long as this player's typical session (capped by the time since the previous play),
+      // clearly marked as an estimated length.
+      if (missed.length) {
+        const lens = db.prepare(`SELECT s.minutes FROM sessions s JOIN entries e ON e.id = s.entry_id
+          WHERE e.account_id = ? AND s.kind = 'play' AND s.confidence = 'exact' ORDER BY s.id DESC LIMIT 200`).all(accountId).map((r) => r.minutes).sort((a, b) => a - b);
+        const typical = lens.length >= 5 ? lens[lens.length >> 1] : 60;
+        for (const f of missed) {
+          const entry = db.prepare('SELECT * FROM entries WHERE account_id = ? AND ext_id = ?').get(accountId, f.extId);
+          if (!entry) continue;
+          // presence running then or ending near it (Xbox last-played marks the end), or an
+          // existing session ending near it, already explains this play
+          const seen = db.prepare(`SELECT 1 FROM presence WHERE account_id = ? AND ext_id = ? AND started_at <= ? AND COALESCE(ended_at, ?) >= ? LIMIT 1`)
+            .get(accountId, f.extId, f.at + 30 * MIN, now, f.at - 30 * MIN);
+          const covered = db.prepare(`SELECT 1 FROM sessions WHERE entry_id = ? AND kind = 'play' AND COALESCE(ended_at, window_end) BETWEEN ? AND ? LIMIT 1`)
+            .get(entry.id, f.at - 30 * MIN, f.at + 30 * MIN);
+          if (seen || covered) continue;
+          const gap = f.prev ? Math.floor((f.at - f.prev) / MIN) : Infinity;
+          const minutes = Math.max(minMin, Math.min(typical, gap, 360));
+          const start = f.at - minutes * MIN;
+          const r = db.prepare(`INSERT INTO sessions(entry_id, sync_id, source, kind, minutes, window_start, window_end, started_at, ended_at, confidence, device, note, created_at)
+            VALUES (?, NULL, 'sync', 'play', ?, ?, ?, ?, ?, 'pinned', NULL, ?, ?)`)
+            .run(entry.id, minutes, start, f.at, start, f.at, 'Length estimated: the platform reports no playtime for this title and live presence missed this session', now);
+          db.prepare('UPDATE entries SET playtime_min = playtime_min + ?, last_played_at = MAX(COALESCE(last_played_at, 0), ?) WHERE id = ?').run(minutes, f.at, entry.id);
+          if (r.lastInsertRowid) estimated++;
+        }
+      }
+      flushRollups(db);
+    });
+    if (made) this.plog.info(`${account.platform}/${account.name}: ${made} session${made > 1 ? 's' : ''} recorded from presence (title reports no playtime)`);
+    if (estimated) this.plog.info(`${account.platform}/${account.name}: ${estimated} session${estimated > 1 ? 's' : ''} with estimated length (no playtime reported and presence missed ${estimated > 1 ? 'them' : 'it'})`);
+    return made + estimated;
   }
 
   async pollPresence(account) {
@@ -718,6 +788,9 @@ export class SyncService {
       if (res === null) return; // provider declined (no budget / not configured yet)
       if (res.state) this.db.prepare('UPDATE accounts SET state = ? WHERE id = ?').run(JSON.stringify({ ...account.state, ...res.state }), account.id);
       st.error = res.unavailable || null;
+      // the last non-empty raw report, for diagnostics
+      if (res.seen?.length) st.seen = { at: now, online: res.online || null, titles: res.seen.slice(0, 10) };
+      else if (res.online) st.online = res.online;
       this.applyPresence(account, res.playing || [], { intervalSec: provider.profile.presence.interval_sec, now });
       if (st.failures >= 3) this.plog.info(`${account.platform}/${account.name}: presence recovered`);
       st.failures = 0;
@@ -743,7 +816,7 @@ export class SyncService {
 
   presenceInfo(accountId) {
     const st = this.presenceState.get(accountId);
-    return st ? { last_poll: st.lastPoll || null, failures: st.failures, error: st.error || null } : null;
+    return st ? { last_poll: st.lastPoll || null, failures: st.failures, error: st.error || null, online: st.online || st.seen?.online || null, last_seen: st.seen || null } : null;
   }
 
   notify(account, result, error) {

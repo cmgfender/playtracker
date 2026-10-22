@@ -266,6 +266,67 @@ test('xbox: OpenXBL-style 429 (reset in the body, no reset header) pauses until 
   } finally { globalThis.fetch = prev; }
 });
 
+test('xbox PC titles without a playtime stat: sessions from presence, safe fallbacks, no double counting', async () => {
+  const xs = { last: NOW - 30 * DAY, minutes: null };
+  const prev = globalThis.fetch;
+  globalThis.fetch = async (url, o) => {
+    const u = new URL(url);
+    if (u.pathname === '/api/v2/player/titleHistory') return json({ xuid: '2533', titles: [{ titleId: '8001', name: 'PC Game', type: 'Game', titleHistory: { lastTimePlayed: new Date(xs.last).toISOString() } }] });
+    if (u.pathname === '/api/v2/achievements/stats/8001') return json({ groups: [], statlistscollection: [{ stats: xs.minutes == null ? [] : [{ name: 'MinutesPlayed', value: String(xs.minutes) }] }] });
+    return mockFetch(url, o);
+  };
+  const db = app.app.db;
+  const s = app.app.sync;
+  const sum = (id) => db.prepare('SELECT COALESCE(SUM(minutes), 0) m FROM sessions WHERE entry_id = ?').get(id).m;
+  try {
+    const acc = await call('/accounts', { method: 'POST', body: { platform: 'xbox', name: 'PC', config: { api_key: 'k4', presence: 'off' }, sync: false } });
+    await call(`/accounts/${acc.id}/sync?wait=true`, { method: 'POST' });
+    assert.equal(s.account(acc.id).state.unmetered['8001'], 1, 'marked as reporting no playtime');
+    const entry = () => db.prepare("SELECT * FROM entries WHERE account_id = ? AND ext_id = '8001'").get(acc.id);
+
+    // 1) presence sees a 40-minute session -> one exact session, total follows
+    const t0 = Date.now() - 2 * 3600_000;
+    s.applyPresence(s.account(acc.id), [{ extId: '8001', title: 'PC Game' }], { intervalSec: 300, now: t0 });
+    s.applyPresence(s.account(acc.id), [{ extId: '8001', title: 'PC Game' }], { intervalSec: 300, now: t0 + 40 * 60_000 });
+    s.applyPresence(s.account(acc.id), [], { intervalSec: 300, now: t0 + 45 * 60_000 });
+    const live = db.prepare("SELECT * FROM sessions WHERE entry_id = ? AND kind = 'play'").all(entry().id);
+    assert.equal(live.length, 1);
+    assert.equal(live[0].confidence, 'exact');
+    assert.ok(live[0].minutes >= 40 && live[0].minutes <= 45, `${live[0].minutes} min`);
+    assert.equal(entry().playtime_min, live[0].minutes);
+
+    // 2) the next sync reports no playtime again: the total is kept, nothing added
+    xs.last = t0 + 44 * 60_000;
+    await call(`/accounts/${acc.id}/sync?wait=true`, { method: 'POST' });
+    assert.equal(entry().playtime_min, live[0].minutes);
+    assert.equal(db.prepare("SELECT COUNT(*) n FROM sessions WHERE entry_id = ? AND kind = 'play'").get(entry().id).n, 1, 'covered by presence: no fallback');
+
+    // 3) played while presence was down: one fallback session ending at the new last-played time
+    xs.last = Date.now() - 10 * 60_000;
+    await call(`/accounts/${acc.id}/sync?wait=true`, { method: 'POST' });
+    const fb = db.prepare("SELECT * FROM sessions WHERE entry_id = ? AND kind = 'play' AND confidence = 'pinned'").all(entry().id);
+    assert.equal(fb.length, 1);
+    assert.equal(fb[0].ended_at, xs.last);
+    assert.match(fb[0].note, /Length estimated/);
+    assert.equal(sum(entry().id), entry().playtime_min);
+    // the same last-played time again never adds another one
+    await call(`/accounts/${acc.id}/sync?wait=true`, { method: 'POST' });
+    assert.equal(db.prepare("SELECT COUNT(*) n FROM sessions WHERE entry_id = ? AND kind = 'play'").get(entry().id).n, 2);
+
+    // 4) the platform starts reporting a real total (weekly recheck): what presence recorded is
+    //    part of it, the rest is history - nothing counted twice, no fake session today
+    const tracked = entry().playtime_min;
+    xs.minutes = 600;
+    db.prepare('UPDATE accounts SET state = json_set(state, \'$.zero_checked\', json(\'{}\')) WHERE id = ?').run(acc.id);
+    xs.last = Date.now() - 60_000;
+    await call(`/accounts/${acc.id}/sync?wait=true`, { method: 'POST' });
+    assert.equal(entry().playtime_min, 600);
+    assert.equal(sum(entry().id), 600);
+    assert.equal(db.prepare("SELECT COALESCE(SUM(minutes), 0) m FROM sessions WHERE entry_id = ? AND kind = 'play'").get(entry().id).m, tracked, 'tracked play unchanged');
+    assert.equal(s.account(acc.id).state.unmetered['8001'], undefined);
+  } finally { globalThis.fetch = prev; }
+});
+
 test('test endpoint reports data quality without saving', async () => {
   const r = await call('/accounts/test', { method: 'POST', body: { platform: 'steam', config: { api_key: 'k', steam_id: '76561197960287930' } } });
   assert.equal(r.ok, true);

@@ -6,7 +6,7 @@ import { createApp } from '../src/server.js';
 import { allocate, inferHistory, learnStyle, styleOf, STYLE_BINS } from '../src/services/inference.js';
 import { parseLicenses } from '../src/services/licenses.js';
 import { earnedTimes } from '../src/providers/psn.js';
-import { captureTimes, outline } from '../src/providers/xbox.js';
+import { captureTimes, outline, xbox } from '../src/providers/xbox.js';
 
 const DAY = 86_400_000;
 const NOW = Date.now();
@@ -159,4 +159,16 @@ test('PSN trophy and Xbox capture payloads yield timestamps', () => {
   assert.deepEqual(o.keys, ['groups', 'statlistscollection']);
   assert.deepEqual(o.stat_names, ['Kills']);
   assert.ok(!JSON.stringify(o).includes('42'));
+});
+
+test('xbox presence: a library game running on a PC counts even when not reported as foreground', async () => {
+  const payload = [{ xuid: '1', state: 'Online', devices: [
+    { type: 'WindowsOneCore', titles: [{ id: '750323071', name: 'Home', placement: 'Background', state: 'Active' }, { id: '42', name: 'PC Game', placement: 'Background', state: 'Active' }, { id: '77', name: 'Some App', placement: 'Background', state: 'Active' }] },
+    { type: 'Scarlett', titles: [{ id: '43', name: 'Console Game', placement: 'Background', state: 'Active' }, { id: '44', name: 'Suspended', placement: 'Full', state: 'Inactive' }] },
+  ] }];
+  const ctx = { http: async () => payload, remainingBudget: () => 100, getEntry: (id) => (['42', '43'].includes(id) ? { id } : null) };
+  const r = await xbox.presence({ config: { api_key: 'k' }, state: { xuid: '1' } }, ctx);
+  assert.deepEqual(r.playing.map((p) => p.extId), ['42'], 'PC library game in; unknown PC app, console background and inactive titles out');
+  assert.equal(r.online, 'Online');
+  assert.deepEqual(r.seen.map((x) => x.skipped || 'kept'), ['home', 'kept', 'background', 'background', 'inactive']);
 });
