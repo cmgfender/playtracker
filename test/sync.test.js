@@ -137,8 +137,18 @@ test('auto-merge groups same game across platforms; duplicates flagged', () => {
   assert.match(dup.suggestions[0].games[0].title, /Hollow Knight/);
   assert.equal(dup.cross_platform.length, 1);
 
-  // An import of the same game on the same platform is flagged as double counted
-  importRows(db, [{ title: 'DOOM Eternal', platform: 'steam', playtime_hours: 10 }], { settings: settings.all() });
+  // An import of a game a synced account already tracks joins it (assists, never adds hours)
+  const before_ = lifetime(db).total_minutes;
+  const r = importRows(db, [{ title: 'DOOM Eternal', platform: 'steam', playtime_hours: 10, status: 'beaten' }], { settings: settings.all() });
+  assert.equal(r.merged_synced, 1);
+  assert.equal(r.entries_created, 0);
+  assert.equal(lifetime(db).total_minutes, before_);
+  assert.equal(findDuplicates(db).double_counted.length, 0);
+  assert.equal(db.prepare("SELECT status FROM games WHERE title = 'DOOM Eternal'").get().status, 'beaten', 'empty status filled');
+
+  // a second copy on the same platform that already exists (older data) is still flagged
+  const g = db.prepare("SELECT id FROM games WHERE title = 'DOOM Eternal'").get().id;
+  db.prepare("INSERT INTO entries(account_id, game_id, platform, ext_id, title, playtime_min, first_seen_at, last_synced_at) VALUES (NULL, ?, 'steam', 'import:old:doom', 'DOOM Eternal', 600, 0, 0)").run(g);
   const dup2 = findDuplicates(db);
   assert.equal(dup2.double_counted.length, 1);
   assert.match(dup2.double_counted[0].reason, /twice on steam/);

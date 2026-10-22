@@ -49,75 +49,159 @@ function minutesOf(row) {
  * Rows: { title, platform?, playtime_minutes|playtime_hours, last_played?, status?, rating?, notes?, sessions?: [{date|started_at, minutes, note}] }
  */
 export function importRows(db, rows, { settings, now = Date.now() } = {}) {
-  const res = { games: 0, entries_created: 0, entries_updated: 0, sessions: 0, baseline_minutes: 0, tracked_minutes: 0, skipped: 0 };
+  const res = {
+    games: 0, entries_created: 0, entries_updated: 0, merged_synced: 0, sessions: 0, sessions_restored: 0,
+    baseline_minutes: 0, tracked_minutes: 0, skipped: 0, details_filled: 0,
+  };
   const st = {
-    game: db.prepare(`UPDATE games SET status = CASE WHEN ? != '' THEN ? ELSE status END, rating = COALESCE(?, rating),
-        notes = COALESCE(NULLIF(?, ''), notes), favorite = MAX(favorite, ?), updated_at = ? WHERE id = ?`),
+    // imports assist: they fill what is empty and never overwrite what is already set
+    game: db.prepare('SELECT status, rating, notes, favorite FROM games WHERE id = ?'),
+    setGame: db.prepare('UPDATE games SET status = ?, rating = ?, notes = ?, favorite = ?, updated_at = ? WHERE id = ?'),
     findEntry: db.prepare('SELECT * FROM entries WHERE account_id IS NULL AND platform = ? AND ext_id = ?'),
     insEntry: db.prepare('INSERT INTO entries(account_id, game_id, platform, ext_id, title, playtime_min, last_played_at, first_seen_at, last_synced_at) VALUES (NULL, ?, ?, ?, ?, 0, ?, ?, ?)'),
     getEntry: db.prepare('SELECT * FROM entries WHERE id = ?'),
     // same key the export writes (start, else the window), so re-imports are recognised
     existing: db.prepare("SELECT COALESCE(started_at, window_start, window_end) started_at, minutes FROM sessions WHERE entry_id = ? AND kind = 'play'"),
+    overlaps: db.prepare("SELECT 1 FROM sessions WHERE entry_id = ? AND kind = 'play' AND COALESCE(started_at, window_start) < ? AND COALESCE(ended_at, window_end) > ? LIMIT 1"),
     insPlay: db.prepare("INSERT INTO sessions(entry_id, source, kind, minutes, window_start, window_end, started_at, ended_at, note, created_at) VALUES (?, 'import', 'play', ?, ?, ?, ?, ?, ?, ?)"),
     addHistory: db.prepare('UPDATE entries SET baseline_min = baseline_min + ? WHERE id = ?'),
-    updEntry: db.prepare('UPDATE entries SET playtime_min = ?, last_played_at = COALESCE(?, last_played_at) WHERE id = ?'),
+    updEntry: db.prepare('UPDATE entries SET playtime_min = ?, last_played_at = MAX(COALESCE(last_played_at, 0), COALESCE(?, 0)) WHERE id = ?'),
     exclude: db.prepare('UPDATE entries SET excluded = 1 WHERE id = ?'),
   };
   const toInfer = new Set();
-  // existing entries by platform + account name + title, so re-importing an export (or a file
-  // that overlaps games already here) updates them instead of adding a second copy
-  let index = null;
-  const indexed = () => {
-    if (!index) {
-      index = new Map();
-      for (const e of db.prepare('SELECT e.id, e.platform, e.title, e.account_id, lower(a.name) acc FROM entries e LEFT JOIN accounts a ON a.id = e.account_id').iterate()) {
-        const k = `${e.platform}|${e.acc || ''}|${normalizeTitle(e.title)}`;
-        if (!index.has(k)) index.set(k, e);
+  // Existing entries, so a file that overlaps what is already here joins it instead of adding a
+  // second copy: by platform + account name + title (our own exports), and synced entries by
+  // platform + title / title alone.
+  let index = null; let synced = null;
+  const build = () => {
+    index = new Map(); synced = new Map();
+    for (const e of db.prepare('SELECT e.id, e.platform, e.title, e.account_id, e.playtime_min, lower(a.name) acc FROM entries e LEFT JOIN accounts a ON a.id = e.account_id').iterate()) {
+      const norm = normalizeTitle(e.title);
+      const k = `${e.platform}|${e.acc || ''}|${norm}`;
+      if (!index.has(k)) index.set(k, e);
+      if (e.account_id != null) for (const sk of [`${e.platform}|${norm}`, `*|${norm}`]) {
+        if (!synced.has(sk)) synced.set(sk, []);
+        synced.get(sk).push(e);
       }
     }
-    return index;
+  };
+  const indexed = () => { if (!index) build(); return index; };
+  const syncedFor = (platform, acc, norm, minutes) => {
+    if (!synced) build();
+    const same = synced.get(`${platform}|${norm}`) || [];
+    if (same.length) return same.find((e) => acc && e.acc === acc) || same[0];
+    // no platform in the file: the one synced copy of this title, when the file's hours fit it
+    // (more hours than the platform reports means a different copy, e.g. another console)
+    if (GENERIC.has(platform)) {
+      const any = synced.get(`*|${norm}`) || [];
+      if (any.length === 1 && (!minutes || minutes <= any[0].playtime_min * 1.05 + 60)) return any[0];
+    }
+    return null;
   };
   const str = (v) => (v == null ? '' : typeof v === 'string' ? v : typeof v === 'object' ? '' : String(v));
+  const flag = (v) => v === true || v === 'true' || v === '1' || v === 1;
+
+  /** Status / rating / notes / favourite: only where the library has nothing yet. */
+  const fillGame = (gameId, row) => {
+    const g = st.game.get(gameId);
+    if (!g) return;
+    const status = str(row.status).toLowerCase();
+    const rating = row.rating !== undefined && row.rating !== '' && Number.isFinite(Number(row.rating)) && Number(row.rating) > 0 ? Math.min(10, Math.max(0, Number(row.rating))) : null;
+    const notes = str(row.notes).trim();
+    const next = {
+      status: g.status === 'unset' && STATUSES.has(status) && status !== 'unset' ? status : g.status,
+      rating: g.rating == null && rating != null ? rating : g.rating,
+      // notes are added to yours (once), never replace them
+      notes: !notes ? g.notes : !g.notes ? notes : String(g.notes).includes(notes) ? g.notes : `${g.notes}\n\n${notes}`,
+      favorite: Math.max(g.favorite || 0, flag(row.favorite) ? 1 : 0),
+    };
+    if (next.status !== g.status || next.rating !== g.rating || next.notes !== g.notes || next.favorite !== (g.favorite || 0)) {
+      st.setGame.run(next.status, next.rating, next.notes, next.favorite, now, gameId);
+      res.details_filled++;
+    }
+  };
+
+  /** Dates from the file, as evidence: fill gaps, keep the earliest first-played. */
+  const fillEvidence = (entryId, ev) => {
+    const h = JSON.parse(st.getEntry.get(entryId)?.hist || '{}');
+    const patch = {};
+    if (ev.first_played_at && (!h.first_played_at || ev.first_played_at < h.first_played_at)) patch.first_played_at = ev.first_played_at;
+    if (ev.date_added && !h.date_added) patch.date_added = ev.date_added;
+    if (ev.last_played_at && !h.last_played_at) patch.last_played_at = ev.last_played_at;
+    if (ev.play_count && !(h.play_count >= ev.play_count)) patch.play_count = ev.play_count;
+    if (ev.tracking_start) patch.tracking_start = ev.tracking_start; // mergeEvidence keeps an existing one
+    if (Object.keys(patch).length) mergeEvidence(db, entryId, patch);
+    return Object.keys(patch).length > 0;
+  };
+
+  const evidenceOf = (row) => ({
+    first_played_at: toTime(row.first_played || row.first_played_at || row.started) ?? undefined,
+    date_added: toTime(row.date_added || row.added || row.purchased || row.acquired || row.date_acquired) ?? undefined,
+    play_count: Number(row.play_count || row.launches || row.sessions_count) || undefined,
+  });
+
   return tx(db, () => {
     for (const row of rows) {
       if (!row || typeof row !== 'object' || Array.isArray(row)) { res.skipped++; continue; }
       const title = str(row.title || row.name || row.game).trim();
       if (!title) { res.skipped++; continue; }
       const platform = String(row.platform || row.source || 'import').toLowerCase().replace(/[^a-z0-9_-]+/g, '-').slice(0, 32) || 'import';
-      const gameId = findOrCreateGame(db, { title, coverUrl: str(row.cover_url) || null }, { autoMerge: settings?.auto_merge_titles !== false, now });
-      res.games++;
-      const status = str(row.status).toLowerCase();
-      st.game.run(STATUSES.has(status) ? status : '', STATUSES.has(status) ? status : '', row.rating ? Math.min(10, Math.max(0, Number(row.rating) || 0)) : null,
-          str(row.notes), row.favorite === true || row.favorite === 'true' || row.favorite === '1' ? 1 : 0, now, gameId);
-
-      // one entry per source: our own exports carry the account name, so two copies of a game
-      // (e.g. a Steam account entry and a spreadsheet entry) stay separate on re-import
+      const norm = normalizeTitle(title);
       const acc = str(row.account).trim().toLowerCase();
-      const extId = acc ? `import:${acc}:${normalizeTitle(title)}` : `import:${normalizeTitle(title)}`;
-      let entry = st.findEntry.get(platform, extId);
-      if (!entry) {
-        const same = indexed().get(`${platform}|${acc}|${normalizeTitle(title)}`);
-        if (same?.account_id != null) {
-          // a synced account already tracks this game: its totals come from the platform, so only
-          // the game's details and exclusion are taken from the file
-          if (row.excluded === true || row.excluded === 'true' || row.excluded === '1') st.exclude.run(same.id);
-          res.matched_synced = (res.matched_synced || 0) + 1;
-          continue;
-        }
-        if (same) entry = st.getEntry.get(same.id); // manual / imported entry already here
-      }
-      const existed = !!entry;
+      const reported = minutesOf(row);
       const lastPlayed = toTime(row.last_played || row.last_played_at);
+      const sessions = Array.isArray(row.sessions) ? row.sessions : [];
+      res.games++;
+
+      // 1) one of your synced accounts already tracks this game: the platform's total stands; the
+      //    file only adds evidence (dates, details) and exact past sessions in place of estimates
+      const extId = acc ? `import:${acc}:${norm}` : `import:${norm}`;
+      let entry = st.findEntry.get(platform, extId);
+      const same = entry ? null : indexed().get(`${platform}|${acc}|${norm}`);
+      const syncedEntry = !entry && !(same && same.account_id == null) ? (same?.account_id != null ? same : syncedFor(platform, acc, norm, reported)) : null;
+      if (syncedEntry) {
+        const se = st.getEntry.get(syncedEntry.id);
+        fillGame(se.game_id, row);
+        const filled = fillEvidence(se.id, { ...evidenceOf(row), last_played_at: undefined });
+        // exact sessions from before tracking began replace that much estimated history
+        const h = JSON.parse(se.hist || '{}');
+        const trackedFrom = h.tracking_start || se.first_seen_at;
+        let room = se.baseline_min;
+        let restored = 0;
+        const have = new Set(st.existing.all(se.id).map((x) => `${x.started_at}:${x.minutes}`));
+        for (const s of sessions) {
+          const minutes = Math.round(Number(s.minutes) || 0);
+          const start = toTime(s.started_at || s.date || s.start);
+          if (minutes <= 0 || !start || minutes > room) continue;
+          const end = toTime(s.ended_at) || start + minutes * MIN;
+          if (end > trackedFrom || have.has(`${start}:${minutes}`) || st.overlaps.get(se.id, end, start)) continue;
+          st.insPlay.run(se.id, minutes, start, end, start, end, str(s.note) || null, now);
+          have.add(`${start}:${minutes}`);
+          room -= minutes; restored += minutes; res.sessions_restored++;
+        }
+        if (restored) { st.addHistory.run(-restored, se.id); res.tracked_minutes += restored; }
+        if (restored || filled) toInfer.add(se.id);
+        res.merged_synced++;
+        continue;
+      }
+
+      // 2) a manual / imported entry for this game is already here: join it
+      const gameId = entry?.game_id ?? same?.game_id ?? (same ? st.getEntry.get(same.id).game_id : null)
+        ?? findOrCreateGame(db, { title, coverUrl: str(row.cover_url) || null }, { autoMerge: settings?.auto_merge_titles !== false, now });
+      if (!entry && same) entry = st.getEntry.get(same.id);
+      fillGame(gameId, row);
+      const existed = !!entry;
       if (!entry) {
         const r = st.insEntry.run(gameId, platform, extId, title, lastPlayed, now, now);
         entry = st.getEntry.get(r.lastInsertRowid);
-        index?.set(`${platform}|${acc}|${normalizeTitle(title)}`, { id: entry.id, account_id: null });
+        index.set(`${platform}|${acc}|${norm}`, { id: entry.id, game_id: gameId, account_id: null });
         res.entries_created++;
+        // your exclusions only apply to entries the file creates; existing ones keep yours
+        if (flag(row.excluded)) { st.exclude.run(entry.id); res.excluded = (res.excluded || 0) + 1; }
       } else res.entries_updated++;
 
       let sessionMinutes = 0;
       let earliestSession = Infinity;
-      const sessions = Array.isArray(row.sessions) ? row.sessions : [];
       // re-imports are idempotent: skip sessions already present (same start + length)
       const have = sessions.length && existed ? new Set(st.existing.all(entry.id).map((x) => `${x.started_at}:${x.minutes}`)) : new Set();
       for (const s of sessions) {
@@ -128,34 +212,28 @@ export function importRows(db, rows, { settings, now = Date.now() } = {}) {
         const k = `${start}:${minutes}`;
         if (have.has(k)) continue;
         have.add(k);
-        st.insPlay.run(entry.id, minutes, start, end, start, end, s.note || null, now);
+        st.insPlay.run(entry.id, minutes, start, end, start, end, str(s.note) || null, now);
         sessionMinutes += minutes;
         earliestSession = Math.min(earliestSession, start);
         res.sessions++;
         res.tracked_minutes += minutes;
       }
-      const reported = minutesOf(row);
+      // totals never go down: the larger of the file's total and what is already here
       const newTotal = Math.max(reported, entry.playtime_min + sessionMinutes);
       const baseline = newTotal - entry.playtime_min - sessionMinutes;
       if (baseline > 0) {
         // Totals not covered by explicit sessions are history: date them from whatever the
         // file tells us (first played / date added / last played / play count).
         st.addHistory.run(baseline, entry.id);
-        const firstPlayed = toTime(row.first_played || row.first_played_at || row.started);
-        const dateAdded = toTime(row.date_added || row.added || row.purchased || row.acquired || row.date_acquired);
-        const playCount = Number(row.play_count || row.launches || row.sessions_count) || undefined;
-        mergeEvidence(db, entry.id, {
+        fillEvidence(entry.id, {
+          ...evidenceOf(row),
           tracking_start: Number.isFinite(earliestSession) ? earliestSession : now,
           last_played_at: lastPlayed ? Math.min(lastPlayed, Number.isFinite(earliestSession) ? earliestSession : lastPlayed) : undefined,
-          first_played_at: firstPlayed ?? undefined,
-          date_added: dateAdded ?? undefined,
-          play_count: playCount,
         });
         toInfer.add(entry.id);
         res.baseline_minutes += baseline;
-      }
+      } else if (existed && fillEvidence(entry.id, evidenceOf(row)) && entry.baseline_min > 0) toInfer.add(entry.id);
       st.updEntry.run(newTotal, lastPlayed, entry.id);
-      if (row.excluded === true || row.excluded === 'true' || row.excluded === '1') { st.exclude.run(entry.id); res.excluded = (res.excluded || 0) + 1; }
     }
     res.estimated_minutes = 0;
     res.undated_minutes = 0;
@@ -167,6 +245,9 @@ export function importRows(db, rows, { settings, now = Date.now() } = {}) {
     return res;
   });
 }
+
+// platforms that say nothing about where a game was played
+const GENERIC = new Set(['import', 'imported', 'pc', 'other', 'unknown', '']);
 
 const CSV_COLS = ['title', 'platform', 'account', 'playtime_minutes', 'playtime_hours', 'last_played', 'status', 'rating', 'favorite', 'excluded', 'sessions', 'notes'];
 const csvEsc = (v) => {

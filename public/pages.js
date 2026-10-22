@@ -1238,31 +1238,59 @@ async function settings(view, stale) {
   $('#accent-custom').addEventListener('change', (e) => setAccent(e.target.value));
   let layoutTimer;
   layoutEditor($('#set-layout'), parseLayout(s.dashboard_layout), (v) => { clearTimeout(layoutTimer); layoutTimer = setTimeout(() => save({ dashboard_layout: v }, 'Home layout saved'), 400); });
-  const doImport = async (text, name = '') => {
+  // Imports preview first (dry run: nothing changes), then apply on confirm.
+  const li = (cond, html) => (cond ? `<li>${html}</li>` : '');
+  const fileSummary = (r) => `<ul class="small" style="margin:6px 0 0;padding-left:18px">
+      ${li(r.merged_synced, `${r.merged_synced} game${r.merged_synced === 1 ? '' : 's'} your synced accounts already track: their totals stay, the file adds dates and details${r.sessions_restored ? ` and ${r.sessions_restored} exact past sessions (replacing estimates)` : ''}`)}
+      ${li(r.entries_created, `${r.entries_created} new game${r.entries_created === 1 ? '' : 's'} / entries`)}
+      ${li(r.entries_updated, `${r.entries_updated} existing manual or imported entr${r.entries_updated === 1 ? 'y' : 'ies'} joined (totals only grow, never shrink)`)}
+      ${li(r.sessions, `${r.sessions} sessions (${fmtMin(r.tracked_minutes)})`)}
+      ${li(r.baseline_minutes, `${fmtHours(r.baseline_minutes)}h added as history, dated from the file`)}
+      ${li(r.details_filled, `${r.details_filled} games get a status, rating or notes they did not have (yours are never replaced)`)}
+      ${li(r.skipped, `<span class="muted">${r.skipped} rows skipped (no title or unreadable)</span>`)}
+      ${!r.merged_synced && !r.entries_created && !r.entries_updated && !r.details_filled ? '<li>Nothing new - everything in this file is already here.</li>' : ''}
+    </ul>`;
+  const gameTrackSummary = (r) => {
+    const i = r.import || {};
+    return `<ul class="small" style="margin:6px 0 0;padding-left:18px">
+      ${li(true, `${r.gametrack_games.toLocaleString()} GameTrack games read`)}
+      ${li(r.anchors, `${r.anchors.toLocaleString()} achievement / trophy times date history${r.anchored_entries ? ` of ${r.anchored_entries} synced games` : ''}`)}
+      ${li(r.imported_titles, `${r.imported_titles} games with playtime no account here tracks: ${fmtHours(i.baseline_minutes || 0)}h added as history`)}
+      ${li(r.skipped_synced, `${r.skipped_synced} games skipped: already counted by your synced accounts`)}
+      ${li(r.statuses || r.ratings || r.covers, `${r.statuses} statuses, ${r.ratings} ratings, ${r.covers} covers filled in where empty`)}
+      ${li(r.wishlist_added, `${r.wishlist_added} wish-listed games added`)}
+      ${li(r.skipped_no_playtime, `<span class="muted">${r.skipped_no_playtime} collection games without playtime left out</span>`)}
+    </ul>`;
+  };
+  const previewThenApply = async ({ label, send, summary }) => {
     const out = $('#imp-r');
-    out.innerHTML = '<span class="pulse muted">Importing…</span>';
+    out.innerHTML = `<span class="pulse muted">Checking ${esc(label)}…</span>`;
     try {
-      const isJson = name.endsWith('.json') || /^\s*[[{]/.test(text);
-      const r = await api('/import', { method: 'POST', body: isJson ? JSON.parse(text) : text, headers: isJson ? {} : { 'Content-Type': 'text/csv' } });
-      out.innerHTML = `<div class="card" style="padding:12px;border-color:var(--good)"><b style="color:var(--good)">✓ Imported ${r.games} games</b> — ${r.entries_created} new, ${r.entries_updated} updated, ${r.sessions} sessions (${fmtMin(r.tracked_minutes)}), ${fmtHours(r.baseline_minutes)}h added as history${r.skipped ? `, ${r.skipped} rows skipped` : ''}.<div class="muted">Check <a href="/duplicates" data-link style="color:var(--accent)">Duplicates</a> if these games are also on a synced account.</div></div>`;
+      const p = await send(true);
+      out.innerHTML = `<div class="card" style="padding:12px"><b>Preview: ${esc(label)}</b>${summary(p)}
+        <div class="small muted" style="margin-top:6px">Nothing has changed yet. Imports join your library: they fill gaps and add history, never replace what you set.</div>
+        <div class="row" style="margin-top:10px"><button class="btn primary sm" id="imp-apply">${icon('check')}Import</button><button class="btn sm ghost" id="imp-cancel">Cancel</button></div></div>`;
+      $('#imp-cancel').addEventListener('click', () => { out.innerHTML = ''; });
+      $('#imp-apply').addEventListener('click', async () => {
+        out.innerHTML = '<span class="pulse muted">Importing…</span>';
+        try {
+          const r = await send(false);
+          out.innerHTML = `<div class="card" style="padding:12px;border-color:var(--good)"><b style="color:var(--good)">✓ Imported ${esc(label)}</b>${summary(r)}<div class="muted small" style="margin-top:6px">Importing the same file again changes nothing.</div></div>`;
+        } catch (e) { out.innerHTML = `<div class="card" style="padding:12px;border-color:var(--bad);color:var(--bad)">${esc(e.message)}</div>`; }
+      });
     } catch (e) { out.innerHTML = `<div class="card" style="padding:12px;border-color:var(--bad);color:var(--bad)">${esc(e.message)}</div>`; }
   };
-  const doGameTrack = async (file) => {
-    const out = $('#imp-r');
-    out.innerHTML = '<span class="pulse muted">Reading GameTrack export…</span>';
-    try {
-      const r = await api('/import/gametrack', { method: 'POST', body: file, headers: { 'Content-Type': 'application/zip' } });
-      const i = r.import || {};
-      out.innerHTML = `<div class="card" style="padding:12px;border-color:var(--good)"><b style="color:var(--good)">✓ GameTrack: ${r.gametrack_games.toLocaleString()} games read</b>
-        <ul class="small" style="margin:6px 0 0;padding-left:18px">
-          <li>${r.anchors.toLocaleString()} achievement / trophy times now date history${r.anchored_entries ? ` of ${r.anchored_entries} synced games` : ''}</li>
-          <li>${r.imported_titles} games with playtime no account here tracks imported as history (${fmtHours(i.baseline_minutes || 0)}h)</li>
-          ${r.skipped_synced ? `<li>${r.skipped_synced} games skipped: already counted by your synced accounts</li>` : ''}
-          <li>${r.statuses} statuses, ${r.ratings} ratings, ${r.covers} covers filled in${r.wishlist_added ? ` · ${r.wishlist_added} wish-listed games added` : ''}</li>
-          ${r.skipped_no_playtime ? `<li class="muted">${r.skipped_no_playtime} collection games without playtime left out</li>` : ''}
-        </ul><div class="muted small" style="margin-top:6px">Importing the same file again changes nothing.</div></div>`;
-    } catch (err) { out.innerHTML = `<div class="card" style="padding:12px;border-color:var(--bad);color:var(--bad)">${esc(err.message)}</div>`; }
+  const doImport = (text, name = '') => {
+    let body; let headers = {};
+    const isJson = name.endsWith('.json') || /^\s*[[{]/.test(text);
+    try { body = isJson ? JSON.parse(text) : text; } catch { $('#imp-r').innerHTML = '<div class="card" style="padding:12px;border-color:var(--bad);color:var(--bad)">That file is not valid JSON</div>'; return; }
+    if (!isJson) headers = { 'Content-Type': 'text/csv' };
+    return previewThenApply({ label: name || 'pasted data', send: (dry) => api(`/import${dry ? '?dry_run=true' : ''}`, { method: 'POST', body, headers }), summary: fileSummary });
   };
+  const doGameTrack = (file) => previewThenApply({
+    label: file.name, summary: gameTrackSummary,
+    send: (dry) => api(`/import/gametrack${dry ? '?dry_run=true' : ''}`, { method: 'POST', body: file, headers: { 'Content-Type': 'application/zip' } }),
+  });
   $('#imp-file').addEventListener('change', async (e) => {
     const f = e.target.files[0];
     if (f && /\.zip$/i.test(f.name)) doGameTrack(f);
@@ -1499,10 +1527,17 @@ async function historyPage(view, stale) {
     if (e.target.closest('#lic-go')) {
       const text = $('#lic-text').value.trim();
       if (!text) return toast('Paste the licenses table first', { bad: true });
+      const url = (dry) => `/accounts/${$('#lic-acc').value}/licenses${dry ? '?dry_run=true' : ''}`;
       try {
-        const r = await api(`/accounts/${$('#lic-acc').value}/licenses`, { method: 'POST', body: { text } });
-        $('#lic-res').textContent = `${r.licenses} licenses read · ${r.matched} games matched · ${r.history_redated} re-dated${r.unmatched ? ` · ${r.unmatched} not in library (bundles, DLC, removed games)` : ''}`;
-        toast(`Purchase dates added to ${r.matched} games`);
+        const p = await api(url(true), { method: 'POST', body: { text } });
+        $('#lic-res').innerHTML = `Preview: ${p.licenses} licenses · ${p.matched} games matched · ${p.history_redated} would be re-dated${p.unmatched ? ` · ${p.unmatched} not in library (bundles, DLC, removed)` : ''} <button class="btn sm primary" id="lic-apply">Apply</button>`;
+        $('#lic-apply').addEventListener('click', async () => {
+          try {
+            const r = await api(url(false), { method: 'POST', body: { text } });
+            $('#lic-res').textContent = `${r.licenses} licenses read · ${r.matched} games matched · ${r.history_redated} re-dated`;
+            toast(`Purchase dates added to ${r.matched} games`);
+          } catch (err) { fail(err); }
+        });
       } catch (err) { fail(err); }
     }
   });

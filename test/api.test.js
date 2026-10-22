@@ -153,3 +153,18 @@ test('hardening: bad input gets 4xx, never 500; limits are clamped', async () =>
   const own = await fetch(`${base}/games`, { method: 'POST', headers: { Origin: new URL(base).origin, 'Content-Type': 'application/json' }, body: '{"title":"Mine"}' });
   assert.equal(own.status, 200);
 });
+
+test('import preview (dry_run) reports what would happen and changes nothing', async () => {
+  const count = async () => (await call('/stats/lifetime')).data.total_minutes;
+  const before_ = await count();
+  const body = [{ title: 'Preview Only Game', platform: 'switch', playtime_hours: 7 }];
+  const p = await call('/import?dry_run=true', { method: 'POST', body });
+  assert.equal(p.status, 200);
+  assert.equal(p.data.dry_run, true);
+  assert.equal(p.data.entries_created, 1);
+  assert.equal(await count(), before_, 'nothing changed');
+  assert.equal((await call('/games?q=Preview%20Only')).data.items.length, 0);
+  const r = await call('/import', { method: 'POST', body });
+  assert.equal(r.data.entries_created, 1);
+  assert.equal(await count(), before_ + 420);
+});

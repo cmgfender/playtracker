@@ -2,6 +2,7 @@ import { tx } from '../db.js';
 import { providers } from '../providers/index.js';
 import { httpJson } from '../providers/http.js';
 import { findOrCreateGame } from './library.js';
+import { normalizeTitle } from './titles.js';
 import { nextRun } from './schedule.js';
 import { sendWebhook } from './webhook.js';
 import { flushRollups } from './rollup.js';
@@ -80,6 +81,48 @@ export function applyItems(db, account, items, { settings, now = Date.now(), syn
   const touchEntry = db.prepare(`UPDATE entries SET title = ?, icon_url = COALESCE(?, icon_url), cover_url = COALESCE(?, cover_url),
     last_played_at = COALESCE(?, last_played_at), first_played_at = COALESCE(first_played_at, ?), missing_since = NULL WHERE id = ?`);
   const insSnap = db.prepare('INSERT INTO snapshots(entry_id, sync_id, taken_at, playtime_min) VALUES (?, ?, ?, ?)');
+  // Imported copies of this platform's games (a restored export, a spreadsheet, GameTrack) that
+  // a newly synced entry takes over, so linking an account joins your data instead of doubling it.
+  let importedCopies = null;
+  const importedCopy = (title) => {
+    if (!importedCopies) {
+      importedCopies = new Map();
+      for (const e of db.prepare("SELECT * FROM entries WHERE account_id IS NULL AND platform = ? AND ext_id LIKE 'import:%'").all(account.platform)) {
+        const k = normalizeTitle(e.title);
+        if (!importedCopies.has(k)) importedCopies.set(k, e);
+      }
+    }
+    const k = normalizeTitle(title);
+    const e = importedCopies.get(k);
+    if (e) importedCopies.delete(k);
+    return e || null;
+  };
+  /** Move an imported copy's real sessions, evidence and your decisions onto the synced entry. */
+  const adopt = (entry, old, playtime) => {
+    const playMin = db.prepare("SELECT COALESCE(SUM(minutes), 0) m FROM sessions WHERE entry_id = ? AND kind = 'play'").get(old.id).m;
+    const firstPlay = db.prepare("SELECT MIN(COALESCE(started_at, window_start)) t FROM sessions WHERE entry_id = ? AND kind = 'play'").get(old.id).t;
+    db.prepare("UPDATE sessions SET entry_id = ? WHERE entry_id = ? AND kind = 'play'").run(entry.id, old.id);
+    db.prepare('DELETE FROM sessions WHERE entry_id = ?').run(old.id);
+    const h = safeJson(old.hist, {});
+    mergeEvidence(db, entry.id, {
+      anchors: h.anchors?.length ? h.anchors : undefined, first_played_at: h.first_played_at ?? undefined, date_added: h.date_added ?? undefined,
+      release_at: h.release_at ?? undefined, manual: h.manual ?? undefined, mode: h.mode ?? undefined,
+    });
+    if (old.excluded) db.prepare('UPDATE entries SET excluded = 1 WHERE id = ?').run(entry.id);
+    // keep the game you organised (status, rating, notes) when the titles grouped differently
+    if (old.game_id !== entry.game_id) {
+      const created = entry.game_id;
+      db.prepare('UPDATE entries SET game_id = ? WHERE id = ?').run(old.game_id, entry.id);
+      entry.game_id = old.game_id;
+      db.prepare('DELETE FROM games WHERE id = ? AND NOT EXISTS (SELECT 1 FROM entries WHERE game_id = ?) AND created_at = ?').run(created, created, now);
+    }
+    db.prepare('DELETE FROM entries WHERE id = ?').run(old.id);
+    // the platform's total stands; your recorded play is part of it, the rest is history
+    const total = Math.max(playtime, playMin);
+    if (total !== playtime) db.prepare('UPDATE entries SET playtime_min = ? WHERE id = ?').run(total, entry.id);
+    stats.adopted = (stats.adopted || 0) + 1;
+    return { playMin, rest: total - playMin, firstPlay };
+  };
   const fillCover = db.prepare('UPDATE games SET cover_url = ? WHERE id = ? AND cover_url IS NULL');
   const addHistory = db.prepare('UPDATE entries SET baseline_min = baseline_min + ? WHERE id = ?');
   const insSession = db.prepare(`INSERT INTO sessions(entry_id, sync_id, source, kind, minutes, window_start, window_end, started_at, ended_at, confidence, device, note, created_at)
@@ -310,6 +353,12 @@ export function applyItems(db, account, items, { settings, now = Date.now(), syn
       seen.push(entry.id);
       fillCover.run(it.coverUrl || null, gameId);
       insSnap.run(entry.id, syncId, now, playtime);
+      const copy = importedCopy(it.title || extId);
+      if (copy) {
+        const a = adopt(entry, copy, playtime);
+        history(entry, a.rest, { ...it, lastPlayedAt: a.firstPlay ? Math.min(it.lastPlayedAt ?? a.firstPlay, a.firstPlay) : it.lastPlayedAt }, a.firstPlay ? { tracking_start: a.firstPlay } : {});
+        continue;
+      }
       if (playtime <= 0) continue;
 
       const [ws, we] = model.window(prevSync ?? now, now);

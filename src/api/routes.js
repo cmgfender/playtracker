@@ -119,6 +119,12 @@ const SESSION_SELECT = `SELECT s.*, e.game_id, e.platform, e.account_id, a.name 
 export function registerRoutes(r, app) {
   // query numbers within sane bounds (SQLite treats LIMIT -1 as "no limit")
   const clamp = (v, def, min, max) => Math.min(max, Math.max(min, toInt(v, def)));
+  // ?dry_run=true: run an import for real inside a transaction, report, then roll it all back
+  const preview = (c, fn) => {
+    if (c.query.dry_run !== 'true' && c.query.dry_run !== '1') return fn();
+    db.exec('BEGIN IMMEDIATE');
+    try { return { ...fn(), dry_run: true }; } finally { db.exec('ROLLBACK'); }
+  };
   const arr = (v, name) => {
     if (v == null) return [];
     if (!Array.isArray(v)) throw new HttpError(400, `${name} must be an array`);
@@ -652,10 +658,12 @@ export function registerRoutes(r, app) {
     if (!a) throw new HttpError(404, 'Account not found');
     const text = typeof c.body === 'string' ? c.body : c.body.text;
     if (!text || typeof text !== 'string') throw new HttpError(400, 'Send { text } with the table copied from store.steampowered.com/account/licenses');
-    const res = applyLicenses(db, a.id, text, { settings: settings.all() });
-    relearnStyle(db, { settings: settings.all() });
-    return res;
-  }, { summary: 'Paste Steam\'s licenses page (date added per product) to bound pre-tracking history', body: '{ text }', bigBody: true });
+    return preview(c, () => {
+      const res = applyLicenses(db, a.id, text, { settings: settings.all() });
+      relearnStyle(db, { settings: settings.all() });
+      return res;
+    });
+  }, { query: { dry_run: 'true = preview only' }, summary: 'Paste Steam\'s licenses page (date added per product) to bound pre-tracking history', body: '{ text }', bigBody: true });
 
   r.get('/api/v1/now-playing', () => sync.nowPlaying(), { summary: 'Games currently being played (from presence)' });
 
@@ -707,17 +715,19 @@ export function registerRoutes(r, app) {
     else if (Array.isArray(c.body.games)) rows = c.body.games;
     else if (typeof c.body.csv === 'string') rows = parseCsv(c.body.csv);
     else throw new HttpError(400, 'Send a CSV body, a JSON array, or { games: [...] }');
-    const res = importRows(db, rows, { settings: settings.all() });
-    res.style_relearned = relearnStyle(db, { settings: settings.all(), log: app.log?.scoped?.('inference') });
-    return res;
-  }, { summary: 'Import games/history (CSV or JSON). Totals without sessions become baseline history.', body: 'CSV text or { games: [{ title, platform?, playtime_minutes|playtime_hours, last_played?, status?, rating?, notes?, sessions?: [{ date|started_at, minutes }] }] }', bigBody: true });
+    return preview(c, () => {
+      const res = importRows(db, rows, { settings: settings.all() });
+      res.style_relearned = relearnStyle(db, { settings: settings.all(), log: app.log?.scoped?.('inference') });
+      return res;
+    });
+  }, { query: { dry_run: 'true = report what would happen without changing anything' }, summary: 'Import games/history (CSV or JSON). Joins what is here: synced games keep their platform totals and gain dates / exact past sessions; manual and imported games are updated; empty details are filled, never overwritten.', body: 'CSV text or { games: [{ title, platform?, playtime_minutes|playtime_hours, last_played?, status?, rating?, notes?, sessions?: [{ date|started_at, minutes }] }] }', bigBody: true });
 
   r.post('/api/v1/import/gametrack', (c) => {
     const buf = c.rawBuffer;
     if (!isZip(buf)) throw new HttpError(400, 'Upload the GameTrack export .zip (Settings → Export in GameTrack)');
-    const res = importGameTrack(db, gameTrackTables(readZip(buf)), { settings: settings.all() });
-    return res;
-  }, { summary: 'Import a GameTrack export ZIP: unlock times date synced history, untracked hours become history, statuses/ratings/covers fill gaps', body: 'the .zip file (Content-Type: application/zip)', bigBody: true, binary: true });
+    const tables = gameTrackTables(readZip(buf));
+    return preview(c, () => importGameTrack(db, tables, { settings: settings.all() }));
+  }, { query: { dry_run: 'true = preview only' }, summary: 'Import a GameTrack export ZIP: unlock times date synced history, untracked hours become history, statuses/ratings/covers fill gaps', body: 'the .zip file (Content-Type: application/zip)', bigBody: true, binary: true });
 
   r.get('/api/v1/export', async (c) => {
     const csv = c.query.format === 'csv';
