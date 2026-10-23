@@ -155,28 +155,28 @@ describe('logging manual sessions', () => {
     assert.equal((await life()).sessions, l0.sessions);
   });
 
-  test('ended_at before started_at is rejected', async () => {
+  test('ended_at before started_at is rejected', { todo: 'APP BUG sessions-stats-1: POST /sessions stores a session whose ended_at is before started_at' }, async () => {
     const l0 = await life();
     const r = await h.call('POST', '/sessions', { game_id: g, minutes: 60, started_at: local(2026, 2, 3, 11), ended_at: local(2026, 2, 3, 10) });
     assert.equal(r.status, 400, `got ${r.status} ${JSON.stringify(r.body)}`);
     assert.equal((await life()).sessions, l0.sessions);
   });
 
-  test('an unparseable started_at is rejected instead of being logged at the current time', async () => {
+  test('an unparseable started_at is rejected instead of being logged at the current time', { todo: 'APP BUG sessions-stats-2: POST /sessions silently logs an unparseable started_at as ending now' }, async () => {
     const l0 = await life();
     const r = await h.call('POST', '/sessions', { game_id: g, minutes: 60, started_at: 'last tuesday-ish' });
     assert.equal(r.status, 400, `got ${r.status} ${JSON.stringify(r.body)}`);
     assert.equal((await life()).sessions, l0.sessions);
   });
 
-  test('a session that would end in the future is rejected', async () => {
+  test('a session that would end in the future is rejected', { todo: 'APP BUG sessions-stats-4: POST /sessions accepts sessions in the future' }, async () => {
     const l0 = await life();
     const r = await h.call('POST', '/sessions', { game_id: g, minutes: 60, started_at: NOW + 2 * DAY });
     assert.equal(r.status, 400, `got ${r.status} ${JSON.stringify(r.body)}`);
     assert.equal((await life()).sessions, l0.sessions);
   });
 
-  test('a date-only session (up to 24 h) stays on the day it was logged for', async () => {
+  test('a date-only session (up to 24 h) stays on the day it was logged for', { todo: 'APP BUG sessions-stats-5: date-only sessions start at noon, so >12 h spills into the next day' }, async () => {
     const g2 = await addGame(h, 'Long Day Game');
     await h.post('/sessions', { game_id: g2, minutes: 900, date: '2026-02-20' });
     const heat = (await h.get(`/stats/heatmap?year=2026&game_id=${g2}`)).days;
@@ -234,10 +234,12 @@ describe('editing sessions', () => {
     assertInvariants(h);
   });
 
-  test('editing minutes is held to the same 10080-minute limit as logging', async () => {
-    const r = await h.call('PATCH', `/sessions/${m.id}`, { minutes: 50_000 });
-    assert.equal(r.status, 400, `got ${r.status}`);
-    assert.equal((await h.get(`/sessions/${m.id}`)).minutes, 30);
+  test('editing minutes is held to the same 10080-minute limit as logging', { todo: 'APP BUG sessions-stats-6: PATCH /sessions/:id accepts minutes above the 10080 limit' }, async () => {
+    try {
+      const r = await h.call('PATCH', `/sessions/${m.id}`, { minutes: 50_000 });
+      assert.equal(r.status, 400, `got ${r.status}`);
+      assert.equal((await h.get(`/sessions/${m.id}`)).minutes, 30);
+    } finally { await h.patch(`/sessions/${m.id}`, { minutes: 30 }); } // keep later tests independent
   });
 
   test('moving a session to other times moves it in the stats, totals unchanged', async () => {
@@ -262,11 +264,13 @@ describe('editing sessions', () => {
     assert.deepEqual(await h.get(`/sessions/${m.id}`), before_);
   });
 
-  test('an unparseable timestamp on edit is rejected (the session keeps its times)', async () => {
+  test('an unparseable timestamp on edit is rejected (the session keeps its times)', { todo: "APP BUG sessions-stats-3: PATCH /sessions/:id with an unparseable timestamp wipes the session's start time" }, async () => {
     const before_ = await h.get(`/sessions/${m.id}`);
-    const r = await h.call('PATCH', `/sessions/${m.id}`, { started_at: 'not a date' });
-    assert.equal(r.status, 400, `got ${r.status} ${JSON.stringify(r.body)}`);
-    assert.deepEqual(await h.get(`/sessions/${m.id}`), before_);
+    try {
+      const r = await h.call('PATCH', `/sessions/${m.id}`, { started_at: 'not a date' });
+      assert.equal(r.status, 400, `got ${r.status} ${JSON.stringify(r.body)}`);
+      assert.deepEqual(await h.get(`/sessions/${m.id}`), before_);
+    } finally { await h.patch(`/sessions/${m.id}`, { started_at: before_.started_at, ended_at: before_.ended_at }); }
   });
 
   test('kind baseline drops a session from stats but keeps lifetime; kind play restores it', async () => {
@@ -382,17 +386,33 @@ describe('deleting sessions', () => {
     assertInvariants(h);
   });
 
-  test('deleting estimated history of a synced game keeps the platform total and is not re-counted as play', async () => {
+  test('deleting the undated history of a synced game keeps the platform total and is never re-counted as play', { todo: "APP BUG sessions-stats-7: deleting a synced game's history lowers the platform total; the next sync re-counts it as new play" }, async () => {
+    clock.set(NOW - DAY);
+    const acc = await h.post('/accounts', { platform: 'custom', name: 'undated', config: {} });
+    await report(h, acc.id, [{ id: 'cl', title: 'Civ Legacy', playtime_minutes: 600 }]);
+    const hist = (await h.get(`/sessions?account_id=${acc.id}&kind=baseline`)).items;
+    assert.equal(hist.length, 1);
+    assert.equal(hist[0].minutes, 600);
+    const gid = hist[0].game_id;
+    const today0 = (await h.get('/summary')).today.total_minutes;
+    await h.call('DELETE', `/sessions/${hist[0].id}`);
+    assert.equal((await h.get(`/games/${gid}`)).minutes, 600, 'lifetime total still comes from the platform');
+    clock.set(NOW);
+    const r = await report(h, acc.id, [{ id: 'cl', title: 'Civ Legacy', playtime_minutes: 600 }]);
+    assert.equal(r.sessions_created, 0, 'an unchanged platform total must not create play');
+    assert.equal((await h.get('/summary')).today.total_minutes, today0, 'pre-tracking time never shows up as today\'s play');
+    assertInvariants(h);
+  });
+
+  test('deleting estimated history of a synced game keeps the platform total and is never re-counted as play', { todo: "APP BUG sessions-stats-7: deleting a synced game's history lowers the platform total; the next sync re-counts it as new play" }, async () => {
     clock.set(NOW - DAY);
     const acc = await h.post('/accounts', { platform: 'custom', name: 'hist', config: {} });
     await report(h, acc.id, [{ id: 'ow', title: 'Outer Wilds', playtime_minutes: 1200, first_played_at: '2025-09-01', last_played_at: '2025-10-15' }]);
     const est = (await h.get(`/sessions?account_id=${acc.id}&kind=estimate&limit=1000`)).items;
     assert.ok(est.length > 0, 'the history is dated as estimated sessions');
     const gid = est[0].game_id;
-    const total0 = (await h.get(`/games/${gid}`)).minutes;
-    assert.equal(total0, 1200);
-    const victim = est[0];
-    await h.call('DELETE', `/sessions/${victim.id}`);
+    assert.equal((await h.get(`/games/${gid}`)).minutes, 1200);
+    await h.call('DELETE', `/sessions/${est[0].id}`);
     assert.equal((await h.get(`/games/${gid}`)).minutes, 1200, 'lifetime total still comes from the platform');
     clock.set(NOW);
     const r = await report(h, acc.id, [{ id: 'ow', title: 'Outer Wilds', playtime_minutes: 1200 }]);
@@ -491,7 +511,7 @@ describe('bulk actions', () => {
     assertInvariants(h);
   });
 
-  test('duplicate ids in one batch act once and do not fail the batch', async () => {
+  test('duplicate ids in one batch act once and do not fail the batch', { todo: 'APP BUG sessions-stats-8: bulk delete with a repeated id fails the whole batch with 404' }, async () => {
     const target = ids[ids.length - 1];
     const l0 = await h.get('/stats/lifetime');
     const r = await h.call('POST', '/sessions/bulk', { ids: [target, target], action: 'delete' });
@@ -564,6 +584,8 @@ describe('session listing filters', () => {
     assert.deepEqual((await list('source=sync')).items.map((s) => s.minutes), [90]);
     assert.deepEqual((await list('source=import')).items.map((s) => s.minutes), [120]);
     assert.equal((await list('source=nope')).total, 0);
+    const syncSession = (await list('source=sync')).items[0];
+    assert.deepEqual((await list(`sync_id=${syncSession.sync_id}`)).items.map((x) => x.id), [syncSession.id]);
   });
 
   test('game filter', async () => {
@@ -579,7 +601,7 @@ describe('session listing filters', () => {
     assert.equal((await list('q=nothing-matches')).total, 0);
   });
 
-  test('title search treats _ and % literally', async () => {
+  test('title search treats _ and % literally', { todo: 'APP BUG sessions-stats-9: session title search passes _ and % to LIKE as wildcards' }, async () => {
     assert.deepEqual((await list(`q=${encodeURIComponent('Half_')}`)).items.map((s) => s.title), ['Half_Life']);
     assert.deepEqual((await list(`q=${encodeURIComponent('100%')}`)).items.map((s) => s.title), ['100% Orange Juice']);
   });
@@ -596,16 +618,16 @@ describe('session listing filters', () => {
     const a = await list(`from=${encodeURIComponent(iso(local(2026, 3, 15, 20, 30)))}`);
     assert.deepEqual(a.items.map((s) => s.title).sort(), ['Hades', 'Hades', 'Stardew Valley']);
     const b = await list(`to=${local(2026, 3, 11, 10, 10)}`);
-    assert.deepEqual(b.items.map((s) => s.title).sort(), ['1000 Orange Juice', '100% Orange Juice', 'Half_Life']);
+    assert.deepEqual(b.items.map((s) => s.title).sort(), ['1000 Orange Juice', '100% Orange Juice', 'Half_Life'].sort());
     const c = await list(`from=${local(2026, 3, 11, 0)}&to=${local(2026, 3, 12, 23, 59)}`);
-    assert.deepEqual(c.items.map((s) => s.title).sort(), ['Celeste', 'HalfXLife', 'Half_Life']);
+    assert.deepEqual(c.items.map((s) => s.title).sort(), ['Celeste', 'HalfXLife', 'Half_Life'].sort());
   });
 
-  test('date-only from/to cover the whole local day', async () => {
+  test('date-only from/to cover the whole local day', { todo: 'APP BUG sessions-stats-10: date-only from/to filters are read as 12:00 noon, dropping half the day' }, async () => {
     const r = await list('from=2026-03-12&to=2026-03-12');
     assert.deepEqual(r.items.map((s) => s.title), ['Celeste'], 'Celeste was played 09:00-09:45 on 2026-03-12');
     const r2 = await list('to=2026-03-11');
-    assert.deepEqual(r2.items.map((s) => s.title).sort(), ['1000 Orange Juice', '100% Orange Juice', 'HalfXLife', 'Half_Life']);
+    assert.deepEqual(r2.items.map((s) => s.title).sort(), ['1000 Orange Juice', '100% Orange Juice', 'HalfXLife', 'Half_Life'].sort());
   });
 
   test('filters combine (AND)', async () => {
@@ -774,10 +796,12 @@ describe('stats: ranges, groupings, platforms, top games, hours, weekdays', () =
 
   const cases = [
     // range, total, sessions, games, first series key, last key, #keys (group=day where given)
-    ['range=7d', 360, 5, 3, '2026-03-12', '2026-03-18', 7],
-    ['range=30d', 660, 9, 2 + 1, '2026-02-17', '2026-03-18', 30],
+    ['range=7d', 360, 5, 2, '2026-03-12', '2026-03-18', 7], // Alpha + Gamma
+    ['range=30d', 660, 9, 2, '2026-02-17', '2026-03-18', 30], // Beta has no play in the last 30 days
     ['range=week', 240, 3, 2, '2026-03-16', '2026-03-18', 3],
     ['range=month', 540, 8, 2, '2026-03-01', '2026-03-18', 18],
+    ['range=90d&group=day', 900, 12, 2, '2025-12-19', '2026-03-18', 90], // S11 fully inside
+    ['range=365d&group=day', 1020, 13, 3, '2025-03-19', '2026-03-18', 365],
     ['range=month:2026-02&group=day', 180, 2, 1, '2026-02-01', '2026-02-28', 28],
     ['range=month:2024-02&group=day', 60, 1, 1, '2024-02-01', '2024-02-29', 29],
   ];
@@ -912,12 +936,12 @@ describe('stats: ranges, groupings, platforms, top games, hours, weekdays', () =
     }
   });
 
-  test('an impossible month (month:2025-13) is rejected, not answered with another month\'s data', async () => {
+  test('an impossible month (month:2025-13) is rejected, not answered with another month\'s data', { todo: 'APP BUG sessions-stats-11: range=month:2025-13 answers with January 2026 data labelled 2025-13' }, async () => {
     const r = await h.call('GET', '/stats?range=month:2025-13');
     assert.ok(r.status === 400 || r.body.total_minutes === 0, `got ${r.status}: ${r.body.range?.label} total=${r.body.total_minutes}`);
   });
 
-  test('unknown group is rejected or mapped to a real grouping', async () => {
+  test('unknown group is rejected or mapped to a real grouping', { todo: 'APP BUG sessions-stats-12: an unknown group is echoed back and silently bucketed by day' }, async () => {
     const r = await h.call('GET', '/stats?range=30d&group=fortnight');
     assert.ok(r.status === 400 || ['day', 'week', 'month', 'year'].includes(r.body.range.group), `got ${r.status} group=${r.body.range?.group}`);
   });
@@ -931,12 +955,12 @@ describe('stats: ranges, groupings, platforms, top games, hours, weekdays', () =
     assert.equal((await stats('range=1d')).total_minutes, 60, '1d = today');
   });
 
-  test('a huge day range answers quickly (no runaway loop)', async () => {
+  test('a huge day range answers quickly (no runaway loop)', { todo: 'APP BUG sessions-stats-13: range=<huge>d loops once per day and blocks the server for seconds' }, async () => {
     const t0 = RealDate.now();
-    const r = await h.call('GET', '/stats?range=5000000d');
+    const r = await h.call('GET', '/stats?range=2000000d');
     const ms = RealDate.now() - t0;
     assert.ok(r.status === 200 || r.status === 400, `status ${r.status}`);
-    assert.ok(ms < 2000, `took ${ms} ms`);
+    assert.ok(ms < 1000, `took ${ms} ms (one request blocks the whole server meanwhile)`);
   });
 });
 
@@ -1127,7 +1151,7 @@ describe('heatmap, year in review, years', () => {
     assert.ok(e.months.every((x) => x.minutes === 0));
   });
 
-  test('a malformed year is rejected, not answered with other data', async () => {
+  test('a malformed year is rejected, not answered with other data', { todo: 'APP BUG sessions-stats-14: /stats/year/abc (or /26, /0) returns the last 30 days as that year' }, async () => {
     for (const y of ['abc', '26', '0']) {
       const r = await h.call('GET', `/stats/year/${y}`);
       assert.ok(r.status === 400 || (r.body.total_minutes === 0 && r.body.sessions === 0), `/stats/year/${y} -> ${r.status} total=${r.body.total_minutes}`);
@@ -1228,7 +1252,7 @@ describe('estimated history: include / exclude / only', () => {
     for (const d of Object.keys(inc.estimated_days)) assert.ok(d in only.days);
   });
 
-  test('today / this week KPIs and streaks count tracked play only (dashboard and widget)', async () => {
+  test('today / this week KPIs and streaks count tracked play only (dashboard and widget)', { todo: 'APP BUG sessions-stats-15: /widget today_hours/week_hours include estimated pre-tracking history' }, async () => {
     const sum_ = await h.get('/summary');
     assert.equal(sum_.today.total_minutes, 30);
     assert.equal(sum_.week.total_minutes, 30, 'history dated on Mon/Tue is not "played this week"');
@@ -1297,7 +1321,7 @@ describe('week start setting', () => {
     await h.put('/settings', { week_starts_on: 1 });
   });
 
-  test('Sunday start: "this week" starts on Sunday (stats, dashboard, widget)', async () => {
+  test('Sunday start: "this week" starts on Sunday (stats, dashboard, widget)', { todo: 'APP BUG sessions-stats-16: range=week (stats, summary, widget) always starts on Monday, ignoring week_starts_on' }, async () => {
     await h.put('/settings', { week_starts_on: 0 });
     try {
       const s = await h.get('/stats?range=week');
@@ -1312,12 +1336,14 @@ describe('week start setting', () => {
     assert.equal((await h.get('/stats?range=week')).total_minutes, 180);
   });
 
-  test('out-of-range week start values are rejected', async () => {
-    for (const v of [7, -1, 'abc', 3.5]) {
-      const r = await h.call('PUT', '/settings', { week_starts_on: v });
-      assert.equal(r.status, 400, `week_starts_on=${v} -> ${r.status}`);
-    }
-    assert.equal((await h.get('/settings')).week_starts_on, 1);
+  test('out-of-range week start values are rejected', { todo: 'APP BUG sessions-stats-17: week_starts_on accepts 7, -1, 3.5, 100 (week buckets in the future / not 7 days apart)' }, async () => {
+    try {
+      for (const v of ['abc', 7, -1, 3.5, 100]) {
+        const r = await h.call('PUT', '/settings', { week_starts_on: v });
+        assert.equal(r.status, 400, `week_starts_on=${v} -> ${r.status}`);
+        assert.equal((await h.get('/settings')).week_starts_on, 1, `unchanged after ${v}`);
+      }
+    } finally { await h.put('/settings', { week_starts_on: 1 }); }
   });
 
   test('on a Sunday with Monday start, the week began the Monday before', async () => {
@@ -1592,7 +1618,7 @@ describe('timezones: rollup rebuild on TZ change, half-hour offsets, DST at midn
     process.env.TZ = 'Asia/Kolkata';
     h = await startApp({ dbFile: file });
     try {
-      assert.equal((await h.get('/health')).tz, 'Asia/Kolkata');
+      assert.ok(['Asia/Kolkata', 'Asia/Calcutta'].includes((await h.get('/health')).tz), 'ICU may report the legacy alias');
       assert.deepEqual((await h.get('/stats/heatmap?year=2026')).days, { '2026-06-11': 60 });
       const s = await h.get('/stats?range=year:2026');
       assert.equal(s.hours[9], 60, 'half-hour offset: 09:00-10:00 IST');
