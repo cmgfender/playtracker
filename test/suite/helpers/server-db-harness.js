@@ -128,16 +128,19 @@ export async function api(base, p, { method = 'GET', body, headers = {} } = {}) 
 }
 
 /** Raw HTTP request without any client-side decoding or path normalisation. */
-export function rawRequest(port, rawPath, { method = 'GET', headers = {} } = {}) {
+export function rawRequest(port, rawPath, { method = 'GET', headers = {}, body } = {}) {
   return new Promise((resolve, reject) => {
-    const req = http.request({ host: '127.0.0.1', port, method, path: rawPath, headers }, (res) => {
+    const h = { ...headers };
+    if (body != null && h['Content-Length'] == null) h['Content-Length'] = Buffer.byteLength(body);
+    // a fresh connection per request: no keep-alive reuse between tests
+    const req = http.request({ host: '127.0.0.1', port, method, path: rawPath, headers: h, agent: false }, (res) => {
       const chunks = [];
       res.on('data', (c) => chunks.push(c));
       res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body: Buffer.concat(chunks) }));
       res.on('error', reject);
     });
     req.on('error', reject);
-    req.end();
+    req.end(body);
   });
 }
 
@@ -146,7 +149,7 @@ export async function startApp(createApp, opts = {}) {
   const app = createApp({ dbFile: ':memory:', password: '', log: quietLog, scheduler: false, ...opts });
   await new Promise((r) => app.server.listen(0, '127.0.0.1', r));
   const base = `http://127.0.0.1:${app.server.address().port}`;
-  return { ...app, base, api: (p, o) => api(base, p, o) };
+  return { ...app, db: app.app.db, base, api: (p, o) => api(base, p, o) };
 }
 
 // ---------- database checks ----------

@@ -7,8 +7,10 @@
 import { describe, test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import {
-  chromium, installFetchGuard, startApp, seed, openPage, waitView, overflow, waitUntil, toast, contrast,
+  chromium, installFetchGuard, startApp, seed, openPage, waitView, overflow, waitUntil, toast, markToasts, modalReady, contrast,
   invariantViolations, DESKTOP, PHONE, MIN, HOUR, DAY,
 } from './helpers/ui-e2e-harness.js';
 
@@ -275,8 +277,8 @@ describe('PlayTracker web UI (no password)', () => {
       assert.equal(new URL(page.url()).searchParams.get('sort'), 'title');
       await page.locator('#lib-sort').selectOption('playtime');
       await waitTitles((t) => t[0] === 'Zelda: TotK', 'most played sort');
-      const byTitle = Object.fromEntries(Object.entries(D.ids).map(([k]) => [k, D.minutes[k]]));
-      const minutesOf = (t) => ({ Celeste: byTitle.celeste, 'Hollow Knight': byTitle.hollow, 'Ori and the Will of the Wisps': 0, 'Zelda: TotK': byTitle.zelda, 'Mario Kart 8 Deluxe': byTitle.mk8, Hades: byTitle.hades, 'Stardew Valley': byTitle.stardew })[t];
+      const M = D.minutes;
+      const minutesOf = (t) => ({ Celeste: M.celeste, 'Hollow Knight': M.hollow, 'Ori and the Will of the Wisps': M.ori, 'Zelda: TotK': M.zelda, 'Mario Kart 8 Deluxe': M.mk8, Hades: M.hades, 'Stardew Valley': M.stardew })[t];
       const mp = (await titles()).map(minutesOf);
       assert.deepEqual(mp, [...mp].sort((a, b) => b - a), 'Most played is ordered by lifetime minutes');
 
@@ -377,6 +379,7 @@ describe('PlayTracker web UI (no password)', () => {
       await d.page.locator('#lib-add').click();
       const m = d.page.locator('.modal', { hasText: 'Add a game' });
       await m.waitFor();
+      await modalReady(d.page);
       await m.locator('#ag-save').click();
       await d.settle();
       assert.ok(await m.isVisible(), 'empty title: dialog stays open');
@@ -396,6 +399,7 @@ describe('PlayTracker web UI (no password)', () => {
       await d.page.goto(`${S.origin}/library`);
       await waitView(d.page);
       await d.page.locator('#lib-add').click();
+      await modalReady(d.page);
       await d.page.locator('.modal [name=title]').fill('celeste');
       await spa(d, d.page.locator('.modal #ag-save'), 'Celeste');
       assert.equal(new URL(d.page.url()).pathname, `/game/${D.ids.celeste}`, 'lands on the existing Celeste');
@@ -410,6 +414,7 @@ describe('PlayTracker web UI (no password)', () => {
       assert.ok(!(await p.page.locator('#lib-add').isVisible()), 'desktop Add button hidden on phone');
       assert.ok(!(await p.page.locator('[data-view="list"]').isVisible()), 'view switch hidden on phone');
       await p.page.locator('#fab-add').click();
+      await modalReady(p.page);
       const evil = '<img src=x onerror="window.__xss=1"> Bad "Title" & Co';
       await p.page.locator('.modal [name=title]').fill(evil);
       await p.page.locator('.modal #ag-save').click();
@@ -439,6 +444,7 @@ describe('PlayTracker web UI (no password)', () => {
       await page.locator('#g-log').click();
       const m = page.locator('.modal', { hasText: 'Log a session' });
       await m.waitFor();
+      await modalReady(page);
       assert.match(await m.innerText(), /Session Lab/, 'the dialog names the game');
       await m.locator('[data-quick="90"]').click();
       assert.equal(await m.locator('[name=h]').inputValue(), '1');
@@ -464,6 +470,7 @@ describe('PlayTracker web UI (no password)', () => {
       // zero duration is refused
       await page.locator('#g-log').click();
       await m.waitFor();
+      await modalReady(page);
       await m.locator('[name=h]').fill('0');
       await m.locator('[name=m]').fill('0');
       await m.locator('#log-save').click();
@@ -498,6 +505,7 @@ describe('PlayTracker web UI (no password)', () => {
       await page.locator('#s-log').click();
       const m = page.locator('.modal', { hasText: 'Log a session' });
       await m.waitFor();
+      await modalReady(page);
       await m.locator('#log-save').click();
       await toast(page, 'Pick a game first');
       await m.locator('#gp').fill('Picker Tar');
@@ -511,6 +519,7 @@ describe('PlayTracker web UI (no password)', () => {
 
       await page.locator('#s-log').click();
       await m.waitFor();
+      await modalReady(page);
       await m.locator('#gp').fill('Brand New From Picker');
       await m.locator('[data-new]').click();
       await waitUntil(async () => (await m.locator('#gp').inputValue()) === 'Brand New From Picker', { message: 'new game picked' });
@@ -551,7 +560,7 @@ describe('PlayTracker web UI (no password)', () => {
     const h = await visit('/sessions');
     const { page } = h;
     const modal = page.locator('.modal', { hasText: 'Edit Lab' });
-    const openEdit = async () => { await page.locator(`[data-edit-session="${s0.id}"]`).click(); await modal.waitFor(); };
+    const openEdit = async () => { await page.locator(`[data-edit-session="${s0.id}"]`).click(); await modal.waitFor(); await modalReady(page); };
     try {
       await page.locator('#s-q').fill('Edit Lab');
       await waitUntil(async () => (await page.locator('#s-list .item').count()) === 1, { message: 'filtered to one session' });
@@ -620,6 +629,7 @@ describe('PlayTracker web UI (no password)', () => {
       await page.locator(`[data-sel="${b1.id}"]`).check();
       await page.locator(`[data-sel="${b2.id}"]`).check();
       assert.equal(await page.locator('#s-bulk-n').innerText(), '2 selected');
+      await markToasts(page);
       await page.locator('[data-bulk="delete"]').click();
       await page.locator('.modal [data-ok]').click();
       await toast(page, 'Updated');
@@ -640,6 +650,8 @@ describe('PlayTracker web UI (no password)', () => {
     try {
       await h.page.locator(`[data-edit-session="${s0.id}"]`).click();
       const m = h.page.locator('.modal', { hasText: 'Span Lab' });
+      await m.waitFor();
+      await modalReady(h.page);
       await m.locator('[name=minutes]').fill('60');
       await m.locator('#s-save').click();
       await toast(h.page, 'Session updated');
@@ -875,25 +887,30 @@ describe('PlayTracker web UI (no password)', () => {
     try {
       for (const theme of ['dark', 'black', 'light']) {
         await S.ok('/settings', { method: 'PUT', body: { theme } });
-        for (const [path, viewport] of [['/', DESKTOP], ['/library', DESKTOP], ['/settings', DESKTOP], ['/', PHONE], ['/stats', PHONE]]) {
-          const h = await visit(path, { viewport });
+        for (const [viewport, paths] of [[DESKTOP, ['/', '/library', '/settings']], [PHONE, ['/', '/stats']]]) {
+          const h = await openPage(browser, S.origin, { viewport });
           try {
-            const c = await h.page.evaluate(() => {
-              const cs = (el, p) => getComputedStyle(el)[p];
-              const bg = cs(document.body, 'backgroundColor');
-              const card = document.querySelector('#view .card, #view .kpi');
-              const muted = document.querySelector('#view .page-h p, #view .muted');
-              return { theme: document.documentElement.dataset.theme, bg, h1: cs(document.querySelector('#view h1'), 'color'), cardBg: card ? cs(card, 'backgroundColor') : null, muted: muted ? cs(muted, 'color') : null };
-            });
-            assert.equal(c.theme, theme);
-            const lum = (rgb) => contrast(rgb, 'rgb(0,0,0)');
-            if (theme === 'light') assert.ok(lum(c.bg) > 15, `${path} light background is light (${c.bg})`);
-            else assert.ok(lum(c.bg) < 1.2, `${path} ${theme} background is dark (${c.bg})`);
-            assert.ok(contrast(c.h1, c.bg) >= 7, `${theme} ${path}: heading contrast ${contrast(c.h1, c.bg).toFixed(2)} (${c.h1} on ${c.bg})`);
-            if (c.muted) assert.ok(contrast(c.muted, c.bg) >= 4.5, `${theme} ${path}: secondary text contrast ${contrast(c.muted, c.bg).toFixed(2)} (${c.muted} on ${c.bg})`);
-            if (c.cardBg) assert.notEqual(c.cardBg, c.bg, `${theme} ${path}: cards stand out from the page`);
-            const o = await overflow(h.page, viewport.width);
-            assert.ok(o.doc <= viewport.width + 1, `${theme} ${path} @${viewport.width}: no horizontal overflow (${o.doc}px)`);
+            for (const path of paths) {
+              await h.page.goto(`${S.origin}${path}`);
+              await waitView(h.page);
+              await h.settle();
+              const c = await h.page.evaluate(() => {
+                const cs = (el, p) => getComputedStyle(el)[p];
+                const bg = cs(document.body, 'backgroundColor');
+                const card = document.querySelector('#view .card, #view .kpi');
+                const muted = document.querySelector('#view .page-h p, #view .muted');
+                return { theme: document.documentElement.dataset.theme, bg, h1: cs(document.querySelector('#view h1'), 'color'), cardBg: card ? cs(card, 'backgroundColor') : null, muted: muted ? cs(muted, 'color') : null };
+              });
+              assert.equal(c.theme, theme);
+              const lum = (rgb) => contrast(rgb, 'rgb(0,0,0)');
+              if (theme === 'light') assert.ok(lum(c.bg) > 15, `${path} light background is light (${c.bg})`);
+              else assert.ok(lum(c.bg) < 1.2, `${path} ${theme} background is dark (${c.bg})`);
+              assert.ok(contrast(c.h1, c.bg) >= 7, `${theme} ${path}: heading contrast ${contrast(c.h1, c.bg).toFixed(2)} (${c.h1} on ${c.bg})`);
+              if (c.muted) assert.ok(contrast(c.muted, c.bg) >= 4.5, `${theme} ${path}: secondary text contrast ${contrast(c.muted, c.bg).toFixed(2)} (${c.muted} on ${c.bg})`);
+              if (c.cardBg) assert.notEqual(c.cardBg, c.bg, `${theme} ${path}: cards stand out from the page`);
+              const o = await overflow(h.page, viewport.width);
+              assert.ok(o.doc <= viewport.width + 1, `${theme} ${path} @${viewport.width}: no horizontal overflow (${o.doc}px)`);
+            }
             clean(h);
           } finally { await h.close(); }
         }
@@ -1065,9 +1082,9 @@ describe('PlayTracker web UI (no password)', () => {
   });
 
   test('import from files: JSON with sessions becomes tracked sessions + history; invalid JSON is rejected without changes', async () => {
-    const dir = fs.mkdtempSync('/tmp/ui-e2e-');
-    const good = `${dir}/tracker.json`;
-    const bad = `${dir}/broken.json`;
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ui-e2e-'));
+    const good = path.join(dir, 'tracker.json');
+    const bad = path.join(dir, 'broken.json');
     fs.writeFileSync(good, JSON.stringify({ games: [{ title: 'Inscryption', platform: 'switch', playtime_minutes: 300, sessions: [{ date: '2026-03-01', minutes: 120 }] }] }));
     fs.writeFileSync(bad, '{ "games": [ { "title": ');
     const h = await visit('/settings');
@@ -1103,6 +1120,57 @@ describe('PlayTracker web UI (no password)', () => {
       clean(h);
     } finally { await h.close(); fs.rmSync(dir, { recursive: true, force: true }); }
     assertInvariant('after file import');
+  });
+
+  // ------------------------------------------------------------------ duplicates
+  test('duplicates: double counting is flagged and one click excludes it; merge and "not the same" resolve suggestions; sequels are not suggested', async () => {
+    // a spreadsheet that mirrors the custom account's Mario Kart hours = the same play counted twice
+    await S.ok('/import', { method: 'POST', body: 'title,platform,playtime_hours,last_played\nMario Kart 8 Deluxe,switch,10,2026-08-01\n' });
+    const extra = [];
+    for (const title of ['Hades II', 'Stardew Valley Expanded Edition', 'Celeste Farewell']) extra.push((await S.ok('/games', { method: 'POST', body: { title, merge: false } })).id);
+    const lt0 = await S.ok('/stats/lifetime');
+    const d0 = await S.ok('/duplicates');
+    assert.equal(d0.counts.double_counted, 1, 'the mirrored import is detected');
+    assert.ok(!d0.suggestions.some((x) => x.games.some((g) => g.title === 'Hades II')), 'Hades II is a sequel, never suggested as a duplicate of Hades');
+    const h = await visit('/duplicates');
+    const { page } = h;
+    const section = (name) => page.locator('.card', { has: page.locator('h2', { hasText: name }) });
+    try {
+      assert.equal(await page.locator('#dupe-badge').innerText(), String(d0.counts.suggestions + d0.counts.double_counted), 'sidebar badge counts open items');
+      const dbl = section('Possible double counting');
+      assert.match(await dbl.innerText(), /Mario Kart 8 Deluxe/);
+      await dbl.locator('[data-exclude]').click();
+      await toast(page, 'Excluded from totals');
+      await section('Possible double counting').locator('text=Nothing double counted').waitFor();
+      const mk = await game(D.ids.mk8);
+      assert.equal(mk.minutes, D.minutes.mk8, 'Mario Kart counted once again');
+      assert.equal(mk.entries.filter((e) => e.excluded).length, 1, 'exactly one copy excluded');
+      assert.ok(!mk.entries.find((e) => e.platform === 'custom').excluded, 'the live account keeps counting');
+      assert.equal((await S.ok('/stats/lifetime')).total_minutes, lt0.total_minutes - 600, 'lifetime drops by the double-counted 10 h');
+
+      const sugg = section('Merge suggestions');
+      const pair = sugg.locator('.item', { hasText: 'Stardew Valley Expanded Edition' });
+      await pair.locator('[data-merge]').click();
+      await toast(page, 'Merged');
+      await waitUntil(async () => (await section('Merge suggestions').locator('.item', { hasText: 'Stardew Valley Expanded Edition' }).count()) === 0, { message: 'merged pair gone' });
+      const sv = await S.ok('/games?q=Stardew&hidden=all');
+      assert.equal(sv.total, 1, 'one Stardew game after merging');
+      assert.equal(sv.items[0].minutes, D.minutes.stardew, 'merging moves entries without changing playtime');
+      assert.equal(sv.items[0].entry_count, 2);
+
+      const cel = section('Merge suggestions').locator('.item', { hasText: 'Celeste Farewell' });
+      await cel.locator('[data-dismiss]').click();
+      await waitUntil(async () => (await section('Merge suggestions').locator('.item', { hasText: 'Celeste Farewell' }).count()) === 0, { message: 'dismissed pair gone' });
+      await page.reload();
+      await waitView(page);
+      assert.equal(await section('Merge suggestions').locator('.item', { hasText: 'Celeste Farewell' }).count(), 0, 'a dismissed suggestion stays dismissed');
+      assert.equal((await S.ok('/stats/lifetime')).total_minutes, lt0.total_minutes - 600, 'resolving suggestions never changes playtime');
+      clean(h);
+    } finally {
+      await h.close();
+      for (const id of extra) await S.api(`/games/${id}`, { method: 'DELETE' });
+    }
+    assertInvariant('after resolving duplicates');
   });
 
   // ------------------------------------------------------------------ system page
@@ -1180,6 +1248,7 @@ describe('PlayTracker web UI (no password)', () => {
       await page.locator('.modal', { hasText: 'Connect an account' }).locator('[data-p="custom"]').click();
       const m = page.locator('.modal', { hasText: 'Connect Custom' });
       await m.waitFor();
+      await modalReady(page);
       assert.match(await m.innerText(), /POST \/api\/v1\/accounts\/:id\/report/);
       await m.locator('[name=name]').fill('Playnite');
       await m.locator('#acc-save').click();
@@ -1194,6 +1263,7 @@ describe('PlayTracker web UI (no password)', () => {
       await card('Playnite').locator('[data-edit]').click();
       const e = page.locator('.modal', { hasText: 'Edit Playnite' });
       await e.waitFor();
+      await modalReady(page);
       await e.locator('[name=name]').fill('Playnite PC');
       await e.locator('#acc-save').click();
       await toast(page, 'Account saved');

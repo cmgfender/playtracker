@@ -89,6 +89,7 @@ export async function openPage(browser, origin, { viewport = DESKTOP, colorSchem
     return route.abort();
   });
   const page = await ctx.newPage();
+  page.__e2e = rec; // lets helpers explain failures
   let inflight = 0;
   let lastChange = Date.now();
   const track = (req, d) => { if (isLocal(req.url())) { inflight += d; lastChange = Date.now(); } };
@@ -158,12 +159,38 @@ export async function waitUntil(fn, { timeout = 5000, interval = 50, message = '
   throw new Error(`Timed out waiting for ${message} (last: ${last instanceof Error ? last.message : JSON.stringify(last)})`);
 }
 
-/** Wait for a toast containing `text` (string or RegExp); returns its text. */
+/**
+ * Wait for a NEW toast containing `text` (string or RegExp) and return its text. Toasts stay up
+ * for ~3 s, so every toast already seen by an earlier wait is marked and can never match again.
+ */
 export async function toast(page, text, timeout = 5000) {
-  const loc = page.locator('#toasts .toast', { hasText: text });
-  await loc.first().waitFor({ state: 'visible', timeout });
-  return loc.first().textContent();
+  const loc = page.locator('#toasts .toast:not([data-e2e-seen])', { hasText: text });
+  try {
+    await loc.first().waitFor({ state: 'visible', timeout });
+  } catch (err) {
+    const shown = await page.locator('#toasts .toast').allInnerTexts().catch(() => []);
+    const modal = await page.locator('.modal').allInnerTexts().catch(() => []);
+    throw new Error(`no new toast matching ${text} within ${timeout}ms; toasts on screen: ${JSON.stringify(shown)}; failed requests: ${JSON.stringify(page.__e2e?.httpErrors?.slice(-5) || [])}; open dialog: ${JSON.stringify(modal.map((m) => m.slice(0, 160)))}`, { cause: err });
+  }
+  const t = await loc.first().textContent();
+  await markToasts(page);
+  return t;
 }
+/**
+ * Wait until the newest dialog has taken its initial focus. The app focuses the first field ~50 ms
+ * after a dialog opens; typing before that lets the late focus move keystrokes into another field.
+ */
+export async function modalReady(page) {
+  await page.locator('.modal').last().waitFor();
+  await page.waitForFunction(() => {
+    const m = [...document.querySelectorAll('.modal')].pop();
+    if (!m) return false;
+    const first = m.querySelector('input:not([type=hidden]):not([type=checkbox]), select, textarea');
+    return !first || document.activeElement === first;
+  }, null, { timeout: 3000 });
+}
+/** Mark every toast currently on screen as seen (call before an action whose toast text repeats). */
+export const markToasts = (page) => page.evaluate(() => document.querySelectorAll('#toasts .toast').forEach((x) => x.setAttribute('data-e2e-seen', ''))).catch(() => {});
 
 /** WCAG contrast ratio of two CSS rgb()/rgba() colors. */
 export function contrast(a, b) {
