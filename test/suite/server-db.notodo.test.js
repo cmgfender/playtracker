@@ -1153,7 +1153,12 @@ describe('scale: 20k games and 200k sessions seeded directly', () => {
   let app; let dbFile; let accIds;
   const exp = { total: 0, byDay: new Map(), byMonth: new Map(), byPlatform: new Map(), byGame: new Map(), sessions: 0 };
   let seedMs = 0; let startMs = 0;
-  const timed = async (p, opts) => { const t = Date.now(); const r = await app.api(p, opts); return { ...r, ms: Date.now() - t }; };
+  const timed = async (p, opts) => {
+    const t = Date.now();
+    const r = await app.api(p, opts);
+    if (process.env.SERVER_DB_TIMINGS) console.log(`[timing] ${opts?.method || 'GET'} ${p.slice(0, 80)} ${Date.now() - t}ms`);
+    return { ...r, ms: Date.now() - t };
+  };
   const fast = (r, what, limit = LIMIT) => { ok(r, what); assert.ok(r.ms < limit, `${what} took ${r.ms}ms (limit ${limit}ms)`); return r.json; };
 
   before(async () => {
