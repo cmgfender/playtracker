@@ -442,7 +442,7 @@ describe('settings: persistence and effects', () => {
     } finally { S.close(); }
   });
 
-  test('week_starts_on = Sunday moves "this week" to start on Sunday', { todo: 'APP BUG settings-system-11: "this week" (summary, widget, stats range=week) always starts on Monday; week_starts_on is ignored' }, async () => {
+  test('week_starts_on = Sunday moves "this week" to start on Sunday', async () => {
     const S = await startApp();
     try {
       assert.equal((await S.put('/api/v1/settings', { week_starts_on: 0 })).status, 200);
@@ -1437,7 +1437,7 @@ describe('widget: /api/v1/widget', () => {
     } finally { S.close(); }
   });
 
-  test('today and this week count tracked play only, never estimated history', { todo: 'APP BUG settings-system-15: /widget computes today/week with estimates included, so imported history shows up as play today/this week and as top_game_week' }, async (t) => {
+  test('today and this week count tracked play only, never estimated history', async (t) => {
     const today = todaySession(90);
     if (!today) return t.skip('within two minutes of local midnight');
     const S = await startApp();

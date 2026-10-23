@@ -130,15 +130,14 @@ describe('first import of a large library (Steam, 603 games)', () => {
       checkCaps(h.db, { label: 'big import' });
     });
 
-  test('the widget\'s today/this-week hours count tracked play only',
-    { todo: 'APP BUG history-8: GET /api/v1/widget week_hours/today_hours include estimated pre-tracking history' }, async () => {
-      const w = await h.get('/widget');
-      assert.equal(w.today_hours, 0);
-      assert.equal(w.week_hours, 0);
-      assert.equal(w.top_game_week, null);
-      assert.equal(w.sessions, 0);
-      assert.equal(w.lifetime_hours, Math.round(reported / 60));
-    });
+  test('the widget\'s today/this-week hours count tracked play only', async () => {
+    const w = await h.get('/widget');
+    assert.equal(w.today_hours, 0);
+    assert.equal(w.week_hours, 0);
+    assert.equal(w.top_game_week, null);
+    assert.equal(w.sessions, 0);
+    assert.equal(w.lifetime_hours, Math.round(reported / 60));
+  });
 
   test('Improve history ranks the whole library least certain first; the meter accounts for every minute', async () => {
     const { items, total } = await allReviewItems(h);

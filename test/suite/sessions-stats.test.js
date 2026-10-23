@@ -936,12 +936,12 @@ describe('stats: ranges, groupings, platforms, top games, hours, weekdays', () =
     }
   });
 
-  test('an impossible month (month:2025-13) is rejected, not answered with another month\'s data', { todo: 'APP BUG sessions-stats-11: range=month:2025-13 answers with January 2026 data labelled 2025-13' }, async () => {
+  test('an impossible month (month:2025-13) is rejected, not answered with another month\'s data', async () => {
     const r = await h.call('GET', '/stats?range=month:2025-13');
     assert.ok(r.status === 400 || r.body.total_minutes === 0, `got ${r.status}: ${r.body.range?.label} total=${r.body.total_minutes}`);
   });
 
-  test('unknown group is rejected or mapped to a real grouping', { todo: 'APP BUG sessions-stats-12: an unknown group is echoed back and silently bucketed by day' }, async () => {
+  test('unknown group is rejected or mapped to a real grouping', async () => {
     const r = await h.call('GET', '/stats?range=30d&group=fortnight');
     assert.ok(r.status === 400 || ['day', 'week', 'month', 'year'].includes(r.body.range.group), `got ${r.status} group=${r.body.range?.group}`);
   });
@@ -955,7 +955,7 @@ describe('stats: ranges, groupings, platforms, top games, hours, weekdays', () =
     assert.equal((await stats('range=1d')).total_minutes, 60, '1d = today');
   });
 
-  test('a huge day range answers quickly (no runaway loop)', { todo: 'APP BUG sessions-stats-13: range=<huge>d loops once per day and blocks the server for seconds' }, async () => {
+  test('a huge day range answers quickly (no runaway loop)', async () => {
     const t0 = RealDate.now();
     const r = await h.call('GET', '/stats?range=2000000d');
     const ms = RealDate.now() - t0;
@@ -1151,7 +1151,7 @@ describe('heatmap, year in review, years', () => {
     assert.ok(e.months.every((x) => x.minutes === 0));
   });
 
-  test('a malformed year is rejected, not answered with other data', { todo: 'APP BUG sessions-stats-14: /stats/year/abc (or /26, /0) returns the last 30 days as that year' }, async () => {
+  test('a malformed year is rejected, not answered with other data', async () => {
     for (const y of ['abc', '26', '0']) {
       const r = await h.call('GET', `/stats/year/${y}`);
       assert.ok(r.status === 400 || (r.body.total_minutes === 0 && r.body.sessions === 0), `/stats/year/${y} -> ${r.status} total=${r.body.total_minutes}`);
@@ -1252,7 +1252,7 @@ describe('estimated history: include / exclude / only', () => {
     for (const d of Object.keys(inc.estimated_days)) assert.ok(d in only.days);
   });
 
-  test('today / this week KPIs and streaks count tracked play only (dashboard and widget)', { todo: 'APP BUG sessions-stats-15: /widget today_hours/week_hours include estimated pre-tracking history' }, async () => {
+  test('today / this week KPIs and streaks count tracked play only (dashboard and widget)', async () => {
     const sum_ = await h.get('/summary');
     assert.equal(sum_.today.total_minutes, 30);
     assert.equal(sum_.week.total_minutes, 30, 'history dated on Mon/Tue is not "played this week"');
@@ -1321,7 +1321,7 @@ describe('week start setting', () => {
     await h.put('/settings', { week_starts_on: 1 });
   });
 
-  test('Sunday start: "this week" starts on Sunday (stats, dashboard, widget)', { todo: 'APP BUG sessions-stats-16: range=week (stats, summary, widget) always starts on Monday, ignoring week_starts_on' }, async () => {
+  test('Sunday start: "this week" starts on Sunday (stats, dashboard, widget)', async () => {
     await h.put('/settings', { week_starts_on: 0 });
     try {
       const s = await h.get('/stats?range=week');
