@@ -135,6 +135,13 @@ export class FakeXbl {
   exhaust() { this.spent.set(this.hour(), this.limit); }
   resetAt() { return (this.hour() + 1) * HOUR; }
 
+  /** A 429 exactly like OpenXBL's, and the quota marked as used up (for `on` handlers). */
+  tooMany() {
+    this.spent.set(this.hour(), this.limit);
+    const reset = this.resetAt();
+    return json(429, { code: 'RATE_LIMIT_EXCEEDED', message: 'Rate limit exceeded.', limit: this.limit, spent: this.limit, resetAt: new Date(reset).toISOString(), retryAfter: Math.ceil((reset - Date.now()) / 1000) }, this.quotaHeaders());
+  }
+
   failNext(ep, ...responses) { (this.queued[ep] ||= []).push(...responses); }
   count(ep, pred = () => true) { return this.calls.filter((c) => (!ep || c.ep === ep) && pred(c)).length; }
   callsSince(i) { return this.calls.slice(i); }

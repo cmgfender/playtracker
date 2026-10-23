@@ -289,7 +289,7 @@ describe('initial import: existing playtime becomes dated history', () => {
   const bigLibrary = (fake) => {
     for (let i = 0; i < 40; i++) fake.game(3000000 + i, { name: `Big Game ${i}`, playtime_forever: 3000, playtime_2weeks: 60, rtime_last_played: unix(T0 - DAY + 5 * HOUR + i * MIN) });
   };
-  test('a 40-game library is spread out instead of stacked: at most 10 h per game per day, none on import day, totals exact', () => scenario({ library: bigLibrary }, async ({ h, api, id }) => {
+  test('a 40-game library is spread out instead of stacked: at most 10 h per game per day, none on import day, totals exact', () => scenario({ library: bigLibrary }, async ({ h, api }) => {
     const life = expect200(await api.get('/stats/lifetime'));
     assert.equal(life.total_minutes, 40 * 3000);
     assert.equal(life.tracked_minutes, 0);
@@ -299,7 +299,6 @@ describe('initial import: existing playtime becomes dated history', () => {
     const recent = expect200(await api.get('/stats?range=15d&estimates=only')).estimated_minutes;
     assert.ok(recent >= 40 * 60 - 1, `the 2-week counters (${40 * 60} min) belong to the last 14 days, got ${recent}`);
     assert.deepEqual(violations(h.db), []);
-    void id;
   }));
 
   test('…and all games together never get more than 12 h of history on one day',
@@ -790,6 +789,20 @@ describe('live presence', () => {
     assert.equal(h.entry(id, BAL).baseline_min, 0, 'no history for a game bought during tracking');
   }));
 
+  test('a failing presence check is reported on the account and clears when the next check works', () => scenario(async ({ h, api, id, fake }) => {
+    fake.failNext('summaries', { status: 400, body: { error: 'bad request' } });
+    clock.set(T0 + HOUR); await h.poll(id);
+    let p = (await h.account(id)).presence;
+    assert.equal(p.failures, 1);
+    assert.match(String(p.error), /400/);
+    clock.set(T0 + HOUR + 2 * MIN); fake.setPlaying(HADES, 'Hades'); await h.poll(id);
+    p = (await h.account(id)).presence;
+    assert.equal(p.failures, 0);
+    assert.equal(p.error, null);
+    assert.equal(p.last_poll, T0 + HOUR + 2 * MIN);
+    assert.equal(expect200(await api.get('/now-playing')).length, 1);
+  }));
+
   test('presence on a private profile says presence is unavailable and records nothing', () => scenario(async ({ h, api, id, fake }) => {
     fake.player.communityvisibilitystate = 1;
     fake.setPlaying(HADES, 'Hades');
@@ -914,8 +927,8 @@ describe('history enrichment from achievements and store release dates', () => {
 
   test('enrichment calls are counted in the account’s API usage', async () => {
     const a = await h.account(id);
-    assert.equal(a.api_usage_hour.calls, fake.calls.length);
-    assert.equal(a.api_usage_hour.errors, fake.calls.filter((c) => c.ep === 'achievements' && Number(c.params.appid) !== HADES).length, 'the 400/403 answers are counted as failed calls');
+    assert.equal(a.api_usage_hour.calls, fake.calls.length, 'achievement and store lookups are counted too');
+    assert.ok(fake.count('achievements') === 3 && fake.count('appdetails') === 3);
   });
 });
 
@@ -1141,6 +1154,21 @@ describe('sync schedule', () => {
     assert.equal(next - local(2027, 3, 13, 15, 0), 12 * HOUR);
   }));
 
+  test('the running scheduler starts a due sync on its own and polls presence', () => scenario({ scheduler: true }, async ({ h, api, id, fake }) => {
+    fake.play(HADES, { start: local(2026, 10, 24, 20, 0), minutes: 90 });
+    const due = await nextSync(h, id);
+    clock.set(due + 30_000); // the scheduler's first tick comes ~5 s (real time) after start
+    const summaries = fake.count('summaries');
+    await waitFor(async () => expect200(await api.get(`/syncs?account_id=${id}`)).length === 2, 15_000, 'the scheduled sync');
+    await h.settle();
+    const [last] = expect200(await api.get(`/syncs?account_id=${id}`));
+    assert.equal(last.trigger, 'schedule');
+    assert.equal(last.status, 'ok');
+    assert.equal(plays(h, id, HADES).reduce((a, s) => a + s.minutes, 0), 90);
+    await waitFor(() => fake.count('summaries') > summaries, 3000, 'a presence poll');
+    assert.equal((await h.account(id)).next_sync_at, local(2026, 10, 26, 4, 0));
+  }));
+
   test('per-account overrides, the global schedule, "off", invalid schedules and disabled accounts', () => scenario(async ({ h, api, id, fake }) => {
     const set = async (schedule) => expect200(await api.patch(`/accounts/${id}`, { schedule }));
     let a = await set({ schedule_mode: 'hourly' });
@@ -1203,7 +1231,7 @@ describe('account lifecycle and joining existing data', () => {
       sessions: [{ date: '2026-08-01', minutes: 120 }],
     }] }));
     assert.equal(imp.games, 1);
-    const acc = await h.link();
+    await h.link();
     const found = expect200(await api.get('/games?q=Hades'));
     assert.equal(found.total, 1, 'one Hades, not two');
     const g = expect200(await api.get(`/games/${found.items[0].id}`));
@@ -1215,7 +1243,29 @@ describe('account lifecycle and joining existing data', () => {
     assert.ok(g.sessions.some((s) => s.minutes === 120 && s.started_at === local(2026, 8, 1, 12, 0)));
     assert.equal(expect200(await api.get('/stats/lifetime')).total_minutes, LIBRARY_TOTAL);
     assert.deepEqual(violations(h.db), []);
-    void acc;
+  }));
+});
+
+describe('importing after linking', () => {
+  test("an import adds dates and exact past sessions to a synced game without changing Steam's total; re-imports and later syncs never double count", () => scenario(async ({ h, api, id, fake }) => {
+    const file = { games: [{ title: 'Hades', platform: 'steam', playtime_minutes: 5400, status: 'beaten', rating: 8, sessions: [{ date: '2026-08-01', minutes: 120 }] }] };
+    expect200(await api.post('/import', file));
+    const e = h.entry(id, HADES);
+    assert.equal(e.playtime_min, 6000, "Steam's total stands");
+    assert.equal(kindSum(h, e.id, 'play'), 120, 'the exact past session is tracked play');
+    assert.equal(h.sum("SELECT COALESCE(SUM(minutes), 0) m FROM sessions WHERE entry_id = ? AND source = 'inferred'", e.id), 5880, 'and that much less is estimated');
+    const g = await gameOf(h, id, HADES);
+    assert.equal(g.status, 'beaten');
+    assert.equal(g.rating, 8);
+    assert.equal(expect200(await api.get('/games?q=Hades')).total, 1);
+    expect200(await api.post('/import', file));
+    assert.equal(kindSum(h, e.id, 'play'), 120, 're-importing the same file is idempotent');
+    fake.play(HADES, { start: local(2026, 10, 24, 20, 0), minutes: 90 });
+    await syncAt(h, id, local(2026, 10, 25, 4, 0));
+    assert.equal(kindSum(h, e.id, 'play'), 210);
+    assert.equal(h.entry(id, HADES).playtime_min, 6090);
+    assert.equal(expect200(await api.get('/stats/lifetime')).total_minutes, LIBRARY_TOTAL + 90);
+    assert.deepEqual(violations(h.db), []);
   }));
 });
 
@@ -1245,7 +1295,7 @@ describe('many syncs over simulated days keep totals exact', () => {
     return syncs;
   }
 
-  test('three weeks across the DST change with presence on most days: totals exact, nothing twice, nothing lost, presence sessions exact', () => scenario({ link: false, library: () => {} }, async ({ h, api, fake }) => {
+  test('three weeks across the DST change with presence on most days: totals exact, nothing twice, nothing lost, presence sessions exact', (t) => scenario({ link: false, library: () => {} }, async ({ h, api, fake }) => {
     const rng = mulberry32(20261024);
     const world = new SteamWorld(fake);
     const BAL = 2379780; const REF = 999001;
@@ -1325,6 +1375,7 @@ describe('many syncs over simulated days keep totals exact', () => {
     const heat = expect200(await api.get('/stats/heatmap?year=2026&estimates=exclude')).days;
     let wrong = 0;
     for (const d of new Set([...want.keys(), ...Object.keys(heat)])) wrong += Math.abs((want.get(d) || 0) - (heat[d] || 0));
+    t.diagnostic(`${syncs} syncs, ${pollList.length} presence polls, ${truth.length} sessions; ${(wrong / 2 / trackedTruth * 100).toFixed(2)}% of ${trackedTruth} tracked minutes on the wrong day`);
     assert.ok(wrong / 2 <= 0.1 * trackedTruth, `${Math.round(wrong / 2)} of ${trackedTruth} tracked minutes on the wrong day`);
     // purchases, refunds, calibration
     assert.ok(h.entry(id, REF).missing_since, 'the refunded game is marked as no longer in the library');
@@ -1355,7 +1406,7 @@ describe('many syncs over simulated days keep totals exact', () => {
     for (const appid of [HADES, ELDEN, CELESTE]) assert.equal(h.entry(acc.id, appid).playtime_min, world.totalAt(appid, end));
   }));
 
-  test('a week of hourly syncs without presence: exact totals, every session fits where it is placed, near-exact days', () => scenario({ link: false, library: () => {} }, async ({ h, api, fake }) => {
+  test('a week of hourly syncs without presence: exact totals, every session fits where it is placed, near-exact days', (t) => scenario({ link: false, library: () => {} }, async ({ h, api, fake }) => {
     const rng = mulberry32(99);
     const world = new SteamWorld(fake);
     world.addGame(HADES, { name: 'Hades', initial: 6000, initialLast: T0 - 20 * DAY });
@@ -1376,6 +1427,7 @@ describe('many syncs over simulated days keep totals exact', () => {
     const heat = expect200(await api.get('/stats/heatmap?year=2026&estimates=exclude')).days;
     let wrong = 0;
     for (const d of new Set([...want.keys(), ...Object.keys(heat)])) wrong += Math.abs((want.get(d) || 0) - (heat[d] || 0));
+    t.diagnostic(`${syncs} syncs, ${truth.length} sessions; ${(wrong / 2 / total * 100).toFixed(2)}% of ${total} minutes on the wrong day`);
     assert.ok(wrong / 2 <= 0.02 * total, `${Math.round(wrong / 2)} of ${total} minutes on the wrong day with hourly syncs`);
   }));
 });

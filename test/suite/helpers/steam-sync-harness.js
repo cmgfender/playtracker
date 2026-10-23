@@ -219,11 +219,11 @@ export function expect200(res, what = 'request') {
   return res.body;
 }
 
-export async function startApp({ backgroundEnrichment = false } = {}) {
+export async function startApp({ backgroundEnrichment = false, scheduler = false } = {}) {
   const logs = [];
   const rec = (level) => (m, d) => logs.push({ level, message: String(m), details: d });
   const log = { info: rec('info'), warn: rec('warn'), error: rec('error'), debug() {} };
-  const inst = createApp({ dbFile: ':memory:', password: '', log, scheduler: false });
+  const inst = createApp({ dbFile: ':memory:', password: '', log, scheduler });
   await new Promise((r) => inst.server.listen(0, '127.0.0.1', r));
   const port = inst.server.address().port;
   const sync = inst.app.sync;
@@ -247,6 +247,9 @@ export async function startApp({ backgroundEnrichment = false } = {}) {
     async close() {
       try { await h.settle(); } catch { /* closing anyway */ }
       inst.close();
+      // sync.start() leaves a one-off 20 s cover-lookup timer that close() does not cancel; if this
+      // process is still running then, it must not throw on the closed database
+      if (scheduler) sync.db = { prepare: () => ({ all: () => [], get: () => undefined, run: () => ({ changes: 0 }) }) };
     },
     /** POST /accounts and wait for the initial import it starts. */
     async link(config = {}, extra = {}) {
