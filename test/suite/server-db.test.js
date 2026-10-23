@@ -138,7 +138,7 @@ describe('SPA and static files (real server process)', () => {
     assert.notEqual((await H.rawRequest(srv.port, '/app.js')).headers.etag, (await H.rawRequest(srv.port, '/app.css')).headers.etag, 'different files, different ETags');
   });
 
-  test('If-None-Match follows HTTP semantics: a list of ETags, a weak validator, or *', { todo: 'APP BUG server-db-1: If-None-Match is compared as one exact string - lists ("a", "b"), W/ validators and * get 200 instead of 304' }, async () => {
+  test('If-None-Match follows HTTP semantics: a list of ETags, a weak validator, or *', async () => {
     const etag = (await H.rawRequest(srv.port, '/app.js')).headers.etag;
     for (const v of [`"older", ${etag}`, `W/${etag}`, '*']) {
       const r = await H.rawRequest(srv.port, '/app.js', { headers: { 'if-none-match': v } });
@@ -179,7 +179,7 @@ describe('SPA and static files (real server process)', () => {
     }
   });
 
-  test('a coding refused with q=0 is never used', { todo: 'APP BUG server-db-2: Accept-Encoding q-values are ignored - "br;q=0, gzip" still gets br and "gzip;q=0" still gets gzip' }, async () => {
+  test('a coding refused with q=0 is never used', async () => {
     const a = await H.rawRequest(srv.port, '/app.js', { headers: { 'accept-encoding': 'br;q=0, gzip' } });
     assert.notEqual(a.headers['content-encoding'], 'br', 'br;q=0 means "not br"');
     const b = await H.rawRequest(srv.port, '/app.js', { headers: { 'accept-encoding': 'gzip;q=0' } });
@@ -207,7 +207,7 @@ describe('SPA and static files (real server process)', () => {
     }
   });
 
-  test('405 responses name the allowed methods (Allow header, RFC 9110)', { todo: 'APP BUG server-db-3: 405 responses carry no Allow header' }, async () => {
+  test('405 responses name the allowed methods (Allow header, RFC 9110)', async () => {
     const r = await H.rawRequest(srv.port, '/', { method: 'POST' });
     assert.equal(r.status, 405);
     assert.match(String(r.headers.allow || ''), /GET/);
@@ -1415,7 +1415,7 @@ describe('scale: 20k games and 200k sessions seeded directly', () => {
   const finish = (res) => new Promise((resolve) => { const c = []; res.on('data', (x) => c.push(x)); res.on('end', () => resolve(Buffer.concat(c))); res.resume(); });
   const isSqlite = (r) => r.status === 200 && r.text.startsWith('SQLite format 3');
 
-  test('a backup requested while an export is still downloading succeeds', { todo: 'APP BUG server-db-5: GET /backup answers 500 "cannot VACUUM - SQL statements in progress" while any export download is in progress' }, async () => {
+  test('a backup requested while an export is still downloading succeeds', async () => {
     const { res } = await slowExport();
     await H.sleep(200);
     const b = await app.api('/api/v1/backup');
@@ -1472,7 +1472,7 @@ describe('scale: 20k games and 200k sessions seeded directly', () => {
   });
 
   // must stay last in this block: the bug it checks leaves this app instance broken
-  test('a cancelled export download releases the database (backups keep working, the WAL stays bounded)', { todo: 'APP BUG server-db-4: when an export download is cancelled, the handler waits forever for "drain" and keeps its SQLite statement open - backups fail with 500 and the WAL grows without bound until restart' }, async () => {
+  test('a cancelled export download releases the database (backups keep working, the WAL stays bounded)', async () => {
     const { req } = await slowExport();
     await H.sleep(300);
     req.destroy(); // the user cancels the download

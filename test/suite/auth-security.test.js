@@ -127,7 +127,7 @@ describe('open mode (no password configured)', () => {
     assert.equal(r2.status, 200, r2.text);
   });
 
-  test('an unrelated cookie with a malformed %-escape does not break the API', { todo: 'APP BUG auth-security-1: malformed cookie value makes every request 500' }, async () => {
+  test('an unrelated cookie with a malformed %-escape does not break the API', async () => {
     const r = await call(`${s.api}/games`, { cookie: 'tracking=50%off; theme=%E0%A4%A' });
     assert.equal(r.status, 200, `got ${r.status}`);
     const m = await call(`${s.origin}/metrics`, { cookie: 'x=%' });
@@ -310,7 +310,7 @@ describe('settings-stored password lifecycle', () => {
     } finally { t.close(); }
   });
 
-  test('a non-string password value is rejected instead of being coerced', { todo: 'APP BUG auth-security-2: {password:{...}} silently becomes the password "[object Object]"' }, async () => {
+  test('a non-string password value is rejected instead of being coerced', async () => {
     const t = await startApp({ password: '' });
     try {
       const r = await setPassword(t, { secret: 'hunter22' });
@@ -775,7 +775,7 @@ describe('request body size limits', () => {
     }
   });
 
-  test('an oversized body gets a prompt, readable 413 from fetch() clients too (not a stalled connection reset)', { todo: 'APP BUG auth-security-3: the 413 is sent with Connection: keep-alive while the upload is left unread; fetch/undici clients often stall ~6 s and then fail with ECONNRESET instead of seeing the 413' }, async () => {
+  test('an oversized body gets a prompt, readable 413 from fetch() clients too (not a stalled connection reset)', async () => {
     const t = await startApp({ password: PASSWORD });
     try {
       const body = JSON.stringify({ password: 'a'.repeat(1024 * 1024) });
@@ -926,7 +926,7 @@ describe('malformed URLs and requests', () => {
     assert.equal(s.db.prepare("SELECT COUNT(*) n FROM games").get().n, 0, 'nothing was created by malformed requests');
   });
 
-  test('a valid session cookie still works next to an unrelated malformed cookie', { todo: 'APP BUG auth-security-1: malformed cookie value makes every request 500' }, async () => {
+  test('a valid session cookie still works next to an unrelated malformed cookie', async () => {
     const ck = cookiePair((await login(p, PASSWORD)).setCookie);
     const a = await call(`${p.api}/games`, { cookie: `${ck}; other=%E0%A4%A` });
     assert.equal(a.status, 200, `got ${a.status}`);

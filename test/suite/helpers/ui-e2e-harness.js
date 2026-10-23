@@ -1,11 +1,28 @@
 // Harness for test/suite/ui-e2e.test.js: in-process app, external-network guard, Playwright
 // pages that record page errors / console errors / failed requests, and small polling helpers.
+import fs from 'node:fs';
 import { createRequire } from 'node:module';
 import { execSync } from 'node:child_process';
 import { createApp } from '../../../src/server.js';
 
 const require = createRequire(import.meta.url);
-export const { chromium } = require(`${execSync('npm root -g').toString().trim()}/playwright`);
+
+/**
+ * Playwright's Chromium (a local or global `playwright` install), or `skipReason` saying why the
+ * browser tests cannot run here (e.g. CI, which runs plain Node with no browser).
+ */
+function loadChromium() {
+  let pw;
+  try { pw = require('playwright'); } catch {
+    try { pw = require(`${execSync('npm root -g', { stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim()}/playwright`); } catch { /* not installed */ }
+  }
+  if (!pw?.chromium) return { chromium: null, skipReason: 'Playwright is not installed (npm i -g playwright && npx playwright install chromium)' };
+  let exe = '';
+  try { exe = pw.chromium.executablePath(); } catch { /* no browser downloaded */ }
+  if (!exe || !fs.existsSync(exe)) return { chromium: null, skipReason: 'Playwright\'s Chromium is not installed (npx playwright install chromium)' };
+  return { chromium: pw.chromium, skipReason: null };
+}
+export const { chromium, skipReason } = loadChromium();
 
 export const QUIET = { info() {}, warn() {}, error() {}, debug() {} };
 export const MIN = 60_000;

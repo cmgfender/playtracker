@@ -249,7 +249,8 @@ On upgrade, or if the container's `TZ` changes, the rollups are rebuilt once at 
 ```bash
 npm start          # http://localhost:7720 (data in ./data)
 npm run dev        # restart on change
-npm test           # node:test suite: engine, platform simulations, 6-month long run, imports, API
+npm test           # node:test suite: engine, platform simulations, 6-month long run, imports, API, plus test/suite
+                   # (its browser UI tests need Playwright + Chromium and are skipped without them)
 LONGRUN_REPORT=1 LONGRUN_TZ=Europe/London node --test test/longrun.test.js   # print accuracy figures
 ```
 

@@ -4,6 +4,7 @@
 // Expectations come from README.md / docs/PLATFORMS.md / the API route summaries and from what
 // a correct playtime tracker must do (totals add up, nothing lost or counted twice, bad input
 // refused, layout usable on a phone). Known app bugs are `todo` tests named "APP BUG ui-e2e-<n>".
+// Without Playwright + Chromium (e.g. CI) every suite here is skipped, with the reason.
 import { describe, test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -11,8 +12,9 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   chromium, installFetchGuard, startApp, seed, openPage, waitView, overflow, waitUntil, toast, markToasts, modalReady, contrast,
-  invariantViolations, DESKTOP, PHONE, MIN, HOUR, DAY,
+  invariantViolations, DESKTOP, PHONE, MIN, HOUR, DAY, skipReason,
 } from './helpers/ui-e2e-harness.js';
+const UI = { skip: skipReason || false };
 
 const NOW = Date.now();
 const YEAR = new Date(NOW).getFullYear();
@@ -22,6 +24,7 @@ let browser;
 let guard;
 
 before(async () => {
+  if (skipReason) return;
   guard = installFetchGuard();
   browser = await chromium.launch();
 });
@@ -53,7 +56,7 @@ const waitH1 = (page, expected, timeout = 8000) => page.waitForFunction((e) => {
   return e.startsWith('re:') ? new RegExp(e.slice(3)).test(t) : t === e;
 }, expected instanceof RegExp ? `re:${expected.source}` : expected, { timeout });
 
-describe('PlayTracker web UI (no password)', () => {
+describe('PlayTracker web UI (no password)', UI, () => {
   let S; // started app
   let D; // seeded data
 
@@ -98,10 +101,7 @@ describe('PlayTracker web UI (no password)', () => {
     ['/duplicates', 'Duplicates'], ['/history', 'Improve history'], ['/accounts', 'Accounts'], ['/system', 'System'],
     ['/settings', 'Settings'], ['/api', 'API'], ['/more', null], ['/this-route-does-not-exist', null],
   ];
-  // phone-width overflow on these routes is a known app bug, asserted in the todo tests below
-  const PHONE_OVERFLOW_BUGS = new Set(['/system', '/api']);
-
-  async function checkRoutes(viewport, { skipOverflow = new Set() } = {}) {
+  async function checkRoutes(viewport) {
     const h = await openPage(browser, S.origin, { viewport });
     const problems = [];
     try {
@@ -115,10 +115,8 @@ describe('PlayTracker web UI (no password)', () => {
           if (!/Not found/.test(text)) problems.push('unknown route does not say Not found');
           if (await h.page.locator('#view a[href="/"]', { hasText: 'Go home' }).count() !== 1) problems.push('unknown route has no Go home link');
         }
-        if (!skipOverflow.has(path)) {
-          const o = await overflow(h.page, viewport.width);
-          if (o.doc > viewport.width + 1 || o.body > viewport.width + 1) problems.push(`${path}: horizontal overflow ${o.doc}px > ${viewport.width}px, widest: ${JSON.stringify(o.culprit)}`);
-        }
+        const o = await overflow(h.page, viewport.width);
+        if (o.doc > viewport.width + 1 || o.body > viewport.width + 1) problems.push(`${path}: horizontal overflow ${o.doc}px > ${viewport.width}px, widest: ${JSON.stringify(o.culprit)}`);
         if (nav && viewport === DESKTOP) {
           const active = (await h.page.locator('.side .nav-link.active').allInnerTexts()).map((x) => x.trim());
           if (!(active.length === 1 && active[0].startsWith(nav))) problems.push(`${path}: sidebar highlights ${JSON.stringify(active)}, expected ${nav}`);
@@ -143,10 +141,11 @@ describe('PlayTracker web UI (no password)', () => {
   }
 
   test('every route renders at desktop 1400x900 without page errors, console errors or horizontal overflow', () => checkRoutes(DESKTOP));
-  test('every route renders at phone 390x844 without page errors, console errors or horizontal overflow (except known bugs)', () => checkRoutes(PHONE, { skipOverflow: PHONE_OVERFLOW_BUGS }));
+  test('every route renders at phone 390x844 without page errors, console errors or horizontal overflow', () => checkRoutes(PHONE));
 
-  for (const [path, id, what] of [['/system', 1, 'System page error-log header (level switch + Clear) does not wrap'], ['/api', 2, 'API page endpoint table is wider than the screen']]) {
-    test(`${path} fits a 390px phone screen without horizontal scrolling`, { todo: `APP BUG ui-e2e-${id}: ${what}` }, async () => {
+  // the System error-log header and the API endpoint tables (ui-e2e-1, ui-e2e-2)
+  for (const path of ['/system', '/api']) {
+    test(`${path} fits a 390px phone screen without horizontal scrolling`, async () => {
       const h = await visit(path, { viewport: PHONE });
       try {
         const o = await overflow(h.page, PHONE.width);
@@ -1330,7 +1329,7 @@ describe('PlayTracker web UI (no password)', () => {
 });
 
 // ======================================================================== login
-describe('PlayTracker web UI with a password', () => {
+describe('PlayTracker web UI with a password', UI, () => {
   let S;
   before(async () => { S = await startApp(); await S.ok('/games', { method: 'POST', body: { title: 'Secret Game' } }); });
   after(() => S?.close());

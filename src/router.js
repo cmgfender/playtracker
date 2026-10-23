@@ -16,17 +16,18 @@ export class Router {
   delete(p, h, d) { this.add('DELETE', p, h, d); }
 
   match(method, pathname) {
-    let pathMatched = false;
+    const allow = new Set(); // methods of the routes on this path (for the 405 Allow header)
     for (const r of this.routes) {
       const m = r.re.exec(pathname);
       if (!m) continue;
-      pathMatched = true;
+      allow.add(r.method);
       if (r.method !== method && !(method === 'HEAD' && r.method === 'GET')) continue;
       const params = {};
       r.keys.forEach((k, i) => { params[k] = decodeURIComponent(m[i + 1]); });
       return { route: r, params };
     }
-    return pathMatched ? { methodNotAllowed: true } : null;
+    if (allow.has('GET')) allow.add('HEAD');
+    return allow.size ? { methodNotAllowed: true, allow: [...allow] } : null;
   }
 
   /** Minimal OpenAPI 3 document generated from the route table. */

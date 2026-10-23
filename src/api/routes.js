@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { tx } from '../db.js';
 import { providers, providerInfo } from '../providers/index.js';
 import { parseAccount } from '../services/sync.js';
@@ -182,6 +183,7 @@ export function registerRoutes(r, app) {
     return { ok: true };
   }, { summary: 'Log out', public: true });
   r.put('/api/v1/auth/password', (c) => {
+    for (const k of ['current', 'password']) if (c.body[k] != null && typeof c.body[k] !== 'string') throw new HttpError(400, `${k} must be a string`);
     if (auth.enabled() && !auth.checkPassword(String(c.body.current || ''))) throw new HttpError(401, 'Current password is wrong');
     auth.setPassword(c.body.password ? String(c.body.password) : '');
     if (c.body.password) {
@@ -816,16 +818,28 @@ export function registerRoutes(r, app) {
   r.get('/api/v1/export', async (c) => {
     const csv = c.query.format === 'csv';
     c.stream(200, csv ? 'text/csv; charset=utf-8' : 'application/json', { 'Content-Disposition': `attachment; filename="playtracker-export.${csv ? 'csv' : 'json'}"` });
+    // a cancelled download ends the loop, which closes the generator and releases its statement
+    // (left open, it blocks backups and WAL checkpoints on the shared connection)
     for (const chunk of exportChunks(db, csv ? 'csv' : 'json')) {
-      if (!c.res.write(chunk)) await new Promise((r) => c.res.once('drain', r));
+      if (c.res.destroyed) break;
+      if (!c.res.write(chunk) && !c.res.destroyed) {
+        await new Promise((r) => {
+          const done = () => { c.res.off('drain', done); c.res.off('close', done); r(); };
+          c.res.on('drain', done);
+          c.res.on('close', done);
+        });
+      }
     }
-    c.res.end();
+    if (!c.res.destroyed) c.res.end();
     return undefined;
   }, { summary: 'Export everything (streamed JSON, or ?format=csv)', query: { format: 'json|csv' } });
 
   r.get('/api/v1/backup', (c) => {
     const tmp = path.join(os.tmpdir(), `playtracker-backup-${Date.now()}.db`);
-    db.exec(`VACUUM INTO '${tmp.replace(/'/g, "''")}'`);
+    // a read-only connection of its own: SQLite refuses VACUUM while a statement is running on the
+    // app's connection (an export still downloading); either way it copies one consistent snapshot
+    const src = app.dbFile && app.dbFile !== ':memory:' ? new DatabaseSync(app.dbFile, { readOnly: true }) : db;
+    try { src.exec(`VACUUM INTO '${tmp.replace(/'/g, "''")}'`); } finally { if (src !== db) src.close(); }
     const buf = fs.readFileSync(tmp);
     fs.unlinkSync(tmp);
     c.sendRaw(200, buf, 'application/vnd.sqlite3', { 'Content-Disposition': `attachment; filename="playtracker-${new Date().toISOString().slice(0, 10)}.db"` });
@@ -943,8 +957,10 @@ export function registerRoutes(r, app) {
     if (q.since) { where.push('time >= ?'); args.push(toTime(q.since)); }
     if (q.before) { where.push('id < ?'); args.push(toInt(q.before)); }
     const w = where.length ? `WHERE ${where.join(' AND ')}` : '';
+    // (older versions stored oversized contexts cut off mid-JSON)
+    const context = (s) => { try { return s ? JSON.parse(s) : null; } catch { return { truncated: true, preview: s.slice(0, 2000) }; } };
     const items = db.prepare(`SELECT * FROM logs ${w} ORDER BY id DESC LIMIT ?`).all(...args, clamp(q.limit, 200, 1, 1000))
-      .map((l) => ({ ...l, context: l.context ? JSON.parse(l.context) : null }));
+      .map((l) => ({ ...l, context: context(l.context) }));
     const counts = db.prepare('SELECT level, COUNT(*) n FROM logs WHERE time > ? GROUP BY level').all(Date.now() - 86_400_000);
     return { items, counts_24h: Object.fromEntries(counts.map((x) => [x.level, x.n])), next: items.length ? items.at(-1).id : null };
   }, { summary: 'Persisted warnings and errors (30 days)', query: { level: 'warn,error', source: 'sync, presence, api, …', q: 'search', since: '', before: 'cursor (id)', limit: '' } });

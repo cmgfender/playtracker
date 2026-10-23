@@ -25,6 +25,22 @@ const MIME = {
   '.png': 'image/png', '.ico': 'image/x-icon', '.txt': 'text/plain; charset=utf-8',
 };
 
+/** Accept-Encoding allows `coding` (RFC 9110 §12.5.3: q=0 means "not acceptable"; a named coding overrides *). */
+function acceptsEncoding(header, coding) {
+  let any = false;
+  for (const part of String(header || '').toLowerCase().split(',')) {
+    const [name, ...params] = part.split(';').map((s) => s.trim());
+    const q = params.find((p) => p.startsWith('q='));
+    const ok = !q || Number(q.slice(2)) > 0;
+    if (name === coding) return ok;
+    if (name === '*') any = ok;
+  }
+  return any;
+}
+
+/** If-None-Match matches `etag`: "*" or any entry of the list, W/ ignored (weak comparison, RFC 9110 §13.1.2). */
+const etagMatches = (header, etag) => !!header && (header.trim() === '*' || header.split(',').some((t) => t.trim().replace(/^W\//, '') === etag));
+
 /** Static files are read once and kept pre-compressed in memory. */
 function staticServer(dir, { dev }) {
   const cache = new Map();
@@ -56,10 +72,10 @@ function staticServer(dir, { dev }) {
       // app code revalidates (ETag) so a container update reaches browsers immediately
       'Cache-Control': /\.(html|js|css|webmanifest)$/.test(rel) ? 'no-cache' : 'public, max-age=3600',
     };
-    if (req.headers['if-none-match'] === f.etag) { res.writeHead(304, headers); res.end(); return true; }
-    const ae = String(req.headers['accept-encoding'] || '');
+    if (etagMatches(req.headers['if-none-match'], f.etag)) { res.writeHead(304, headers); res.end(); return true; }
+    const ae = req.headers['accept-encoding'];
     let body = f.raw;
-    if (f.br && /\bbr\b/.test(ae)) { body = f.br; headers['Content-Encoding'] = 'br'; } else if (f.gz && /\bgzip\b/.test(ae)) { body = f.gz; headers['Content-Encoding'] = 'gzip'; }
+    if (f.br && acceptsEncoding(ae, 'br')) { body = f.br; headers['Content-Encoding'] = 'br'; } else if (f.gz && acceptsEncoding(ae, 'gzip')) { body = f.gz; headers['Content-Encoding'] = 'gzip'; }
     headers['Content-Length'] = body.length;
     res.writeHead(200, headers);
     res.end(req.method === 'HEAD' ? undefined : body);
@@ -81,7 +97,7 @@ async function readBody(req, limit = 256 * 1024 * 1024) {
 function sendJson(req, res, status, data) {
   let body = Buffer.from(JSON.stringify(data));
   const headers = { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' };
-  if (body.length > 1024 && /\bgzip\b/.test(String(req.headers['accept-encoding'] || ''))) {
+  if (body.length > 1024 && acceptsEncoding(req.headers['accept-encoding'], 'gzip')) {
     body = zlib.gzipSync(body, { level: 5 });
     headers['Content-Encoding'] = 'gzip';
   }
@@ -124,7 +140,7 @@ export function createApp({ dbFile = process.env.PLAYTRACKER_DB || path.join(dat
 
     if (pathname === '/metrics') return metrics(req, res, url);
     if (!pathname.startsWith('/api/')) {
-      if (req.method !== 'GET' && req.method !== 'HEAD') { res.writeHead(405); return res.end(); }
+      if (req.method !== 'GET' && req.method !== 'HEAD') { res.writeHead(405, { Allow: 'GET, HEAD' }); return res.end(); }
       if (!serveStatic(req, res, pathname)) { res.writeHead(404, { 'Content-Type': 'text/plain' }); res.end('Not found'); }
       return;
     }
@@ -138,7 +154,7 @@ export function createApp({ dbFile = process.env.PLAYTRACKER_DB || path.join(dat
     let m;
     try { m = router.match(req.method, pathname); } catch { return sendJson(req, res, 400, { error: 'Malformed URL' }); }
     if (!m) return sendJson(req, res, 404, { error: 'Not found' });
-    if (m.methodNotAllowed) return sendJson(req, res, 405, { error: 'Method not allowed' });
+    if (m.methodNotAllowed) { res.setHeader('Allow', m.allow.join(', ')); return sendJson(req, res, 405, { error: 'Method not allowed' }); }
     const cookies = parseCookies(req.headers.cookie);
     const who = auth.identify(req, cookies, url);
     if (!who.ok && !m.route.doc.public) return sendJson(req, res, 401, { error: 'Unauthorized' });
@@ -202,8 +218,11 @@ export function createApp({ dbFile = process.env.PLAYTRACKER_DB || path.join(dat
         // 502 = upstream platform failure (already logged by the sync service)
         if (status !== 502) apiLog.error(`${req.method} ${pathname} failed: ${err.message}`, err);
       } else http_.client_errors++;
-      if (!sent && !res.headersSent) sendJson(req, res, status, { error: err.message || 'Internal error', details: err.details });
-      else if (!res.writableEnded) res.end();
+      if (!sent && !res.headersSent) {
+        // the rest of an oversized upload is left unread: the connection cannot be reused
+        if (status === 413) res.setHeader('Connection', 'close');
+        sendJson(req, res, status, { error: err.message || 'Internal error', details: err.details });
+      } else if (!res.writableEnded) res.end();
     }
   };
 

@@ -1367,7 +1367,7 @@ async function apidocs(view, stale) {
           suffix: h</pre></div>
     </div>
     <div class="card" style="margin-top:16px">${Object.entries(groups).map(([tag, ops]) => `<h2 style="margin:18px 0 8px;text-transform:capitalize">${esc(tag)}</h2>
-      <table class="tbl">${ops.map(({ p, m, op }) => `<tr><td style="width:70px"><span class="method m-${m}">${m.toUpperCase()}</span></td><td><span class="mono">${esc(p)}</span><div class="small muted">${esc(op.summary)}</div>
+      <table class="tbl api-table">${ops.map(({ p, m, op }) => `<tr><td style="width:70px"><span class="method m-${m}">${m.toUpperCase()}</span></td><td><span class="mono">${esc(p)}</span><div class="small muted">${esc(op.summary)}</div>
         ${op.parameters.filter((x) => x.in === 'query').length ? `<div class="tiny dim">query: ${op.parameters.filter((x) => x.in === 'query').map((x) => `<code>${esc(x.name)}</code>${x.description ? ` ${esc(x.description)}` : ''}`).join(' · ')}</div>` : ''}
         ${op.requestBody ? `<div class="tiny dim">body: <code>${esc(op.requestBody.content['application/json'].schema.description)}</code></div>` : ''}</td></tr>`).join('')}</table>`).join('')}</div>`;
 }
@@ -1407,7 +1407,7 @@ async function system(view, stale) {
       </tbody></table></div>
       <div class="row wrap" style="margin-top:12px"><button class="btn sm" id="sys-reinfer">Re-date all history</button><a class="btn sm ghost" href="/history" data-link>Improve history →</a>${sys.accounts.filter((a) => a.enrichment_pending && a.can_enrich).map((a) => `<button class="btn sm ghost" data-enrich="${a.id}">Fetch history dates for ${esc(a.name)}</button>`).join('')}</div>
     </div>
-    <div class="card" style="margin-top:16px"><div class="card-h"><h2>Error log</h2><div class="row">
+    <div class="card" style="margin-top:16px"><div class="card-h"><h2>Error log</h2><div class="row wrap">
         <div class="seg" id="log-lvl"><button data-l="error,warn" class="on">Errors &amp; warnings</button><button data-l="error">Errors</button><button data-l="warn">Warnings</button></div>
         <button class="btn sm ghost" id="log-clear">${icon('trash')}Clear</button></div></div>
       <div class="search" style="margin-bottom:10px">${icon('search')}<input class="input" id="log-q" placeholder="Filter messages (account, game, error…)"></div>
