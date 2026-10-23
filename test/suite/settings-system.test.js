@@ -373,7 +373,7 @@ describe('settings: persistence and effects', () => {
     } finally { S.close(); }
   });
 
-  test('after lowering the caps no day holds more estimated history than they allow', { todo: 'APP BUG settings-system-10: re-dated history exceeds history_max_game_day_minutes and history_max_day_minutes (e.g. 65 min/game and 95 min/day with caps 60/90)' }, async () => {
+  test('after lowering the caps no day holds more estimated history than they allow', async () => {
     const S = await startApp();
     try {
       assert.equal((await S.call('POST', '/api/v1/import', HISTORY_CSV, { type: 'text/csv' })).status, 200);
@@ -389,7 +389,7 @@ describe('settings: persistence and effects', () => {
     } finally { S.close(); }
   });
 
-  test('history stays inside the window the file gives (first..last played), also under tight caps', { todo: 'APP BUG settings-system-17: history that does not fit under the caps is dated before first_played (Gamma Run, first played 2025-04-20, is dated 2023-12-16..2024-07-04 with caps 60/90 and from 2025-04-05 with the defaults) instead of staying undated' }, async () => {
+  test('history stays inside the window the file gives (first..last played), also under tight caps', async () => {
     const S = await startApp();
     try {
       assert.equal((await S.call('POST', '/api/v1/import', HISTORY_CSV, { type: 'text/csv' })).status, 200);
