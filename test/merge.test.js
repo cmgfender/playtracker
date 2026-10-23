@@ -291,3 +291,76 @@ test('your history choices travel with an export: Don\'t chart, a window, a conf
   assert.deepEqual(JSON.parse(b.db.prepare('SELECT hist FROM entries WHERE id = ?').get(e.id).hist).manual, h.manual);
   assert.deepEqual(consistent(b.db), []);
 });
+
+test('joining hand-logged play: earlier play stays apart, a join is remembered, sessions are compared by how much they overlap', () => {
+  const { db, settings } = setup();
+  const celeste = handLogged(db, 'Celeste', [90, 30]);
+  // the file's play ended long before the first session you logged: that is other play, kept
+  handLogged(db, 'Hades', [100]);
+  importRows(db, [{ title: 'Hades', playtime_hours: 1, last_played: new Date(NOW - 300 * D).toISOString() }], { settings: settings.all() });
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM entries WHERE title = 'Hades'").get().n, 2);
+  assert.equal(lifetime(db).total_minutes, 120 + 160);
+  // joined once, then a logged session deleted and the entry excluded: the same file still joins it
+  importRows(db, [{ title: 'Celeste', playtime_minutes: 150 }], { settings: settings.all() });
+  assert.equal(db.prepare('SELECT playtime_min FROM entries WHERE id = ?').get(celeste).playtime_min, 150);
+  const s90 = db.prepare("SELECT id FROM sessions WHERE entry_id = ? AND minutes = 90").get(celeste).id;
+  db.prepare('DELETE FROM sessions WHERE id = ?').run(s90);
+  db.prepare('UPDATE entries SET playtime_min = playtime_min - 90 WHERE id = ?').run(celeste);
+  importRows(db, [{ title: 'Celeste', playtime_minutes: 150 }], { settings: settings.all() });
+  db.prepare('UPDATE entries SET excluded = 1 WHERE id = ?').run(celeste);
+  const life = lifetime(db).total_minutes;
+  importRows(db, [{ title: 'Celeste', playtime_minutes: 150 }], { settings: settings.all() });
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM entries WHERE title = 'Celeste'").get().n, 1, 'never a second copy');
+  assert.equal(lifetime(db).total_minutes, life, 'your exclusion stands');
+  assert.deepEqual(consistent(db), []);
+
+  // a row with sessions and no total: a session that only touches one you logged is new play
+  const { db: db2, settings: s2 } = setup();
+  const ori = handLogged(db2, 'Ori', [60], 5);
+  const logged = db2.prepare('SELECT started_at FROM sessions WHERE entry_id = ?').get(ori).started_at;
+  importRows(db2, [{ title: 'Ori', sessions: [
+    { started_at: new Date(logged + 5 * 60_000).toISOString(), minutes: 55 },   // the one you logged
+    { started_at: new Date(logged + 50 * 60_000).toISOString(), minutes: 120 }, // starts as it ends: new
+  ] }], { settings: s2.all() });
+  assert.equal(db2.prepare("SELECT COUNT(*) n FROM entries WHERE title = 'Ori'").get().n, 1);
+  assert.equal(db2.prepare('SELECT playtime_min FROM entries WHERE id = ?').get(ori).playtime_min, 180, '60 logged + 120 new');
+  assert.deepEqual(consistent(db2), []);
+});
+
+test("a history choice made here - chart again, reset, a cleared window - is never replaced by an older export", () => {
+  const { db, settings } = setup();
+  importRows(db, [{ title: 'Celeste', platform: 'switch', playtime_hours: 10, history: { mode: 'undated', start: new Date(NOW - 90 * D).toISOString(), end: new Date(NOW - 60 * D).toISOString() } }], { settings: settings.all() });
+  const e = db.prepare("SELECT id, hist FROM entries WHERE title = 'Celeste'").get();
+  const h = JSON.parse(e.hist);
+  assert.equal(h.mode, 'undated');
+  assert.ok(h.manual.start && h.manual.end, "Don't chart keeps its window");
+  const file = JSON.parse([...exportChunks(db, 'json')].join('')).games;
+  assert.equal(file[0].history.mode, 'undated');
+  assert.ok(file[0].history.start, 'the window is exported with it');
+  for (const [label, set] of [['chart again', (x) => { x.mode = 'auto'; }], ['reset', (x) => { delete x.manual; x.mode = 'auto'; }], ['cleared window', (x) => { delete x.mode; x.manual = null; }]]) {
+    const cur = JSON.parse(db.prepare('SELECT hist FROM entries WHERE id = ?').get(e.id).hist);
+    set(cur);
+    db.prepare('UPDATE entries SET hist = ? WHERE id = ?').run(JSON.stringify(cur), e.id);
+    importRows(db, file, { settings: settings.all() });
+    const after = JSON.parse(db.prepare('SELECT hist FROM entries WHERE id = ?').get(e.id).hist);
+    assert.equal(after.mode, cur.mode, label);
+    assert.deepEqual(after.manual, cur.manual, label);
+  }
+});
+
+test('timestamps no date can hold, and confirmed days that make no sense, are refused without breaking import or export', () => {
+  const { db, settings } = setup();
+  const r = importRows(db, [
+    { title: 'Far', platform: 'switch', playtime_hours: 5, first_played: -1e20, history_start: '100000000000000000000' },
+    { title: 'Nano', platform: 'switch', playtime_hours: 5, history: { start: 1700000000000000000, end: 1800000000000000000 } },
+    { title: 'Bad days', platform: 'switch', playtime_minutes: 600, history: { start: '2020-01-01', end: '2020-02-01', confirmed: true, chunks: [['2020-01-01', '2020-01-02', 'Infinity'], ['2020-01-03', '2020-01-04', 600]] } },
+    { title: 'Long day', platform: 'switch', playtime_minutes: 600, history: { start: '1970-01-02', end: '2020-02-01', confirmed: true, chunks: [['1970-01-02', '2020-02-01', 600], ['2027-01-01', '2027-01-02', 1]] } },
+  ], { settings: settings.all() });
+  assert.equal(r.entries_created, 4);
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM sessions WHERE window_end > ?").get(NOW + D).n, 0, 'nothing dated in the future');
+  for (const t of ['Bad days', 'Long day']) assert.ok(!JSON.parse(db.prepare('SELECT hist FROM entries WHERE title = ?').get(t).hist).manual?.confirmed, `${t}: just the window`);
+  const csv = [...exportChunks(db, 'csv')].join('');
+  assert.equal(parseCsv(csv).length, 4, 'every row exported');
+  assert.equal(JSON.parse([...exportChunks(db, 'json')].join('')).games.length, 4);
+  assert.deepEqual(consistent(db), []);
+});

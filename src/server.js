@@ -222,7 +222,7 @@ export function createApp({ dbFile = process.env.PLAYTRACKER_DB || path.join(dat
         // the rest of an oversized upload is left unread: the connection cannot be reused
         if (status === 413) res.setHeader('Connection', 'close');
         sendJson(req, res, status, { error: err.message || 'Internal error', details: err.details });
-      } else if (!res.writableEnded) res.end();
+      } else if (!res.writableEnded) res.destroy(); // a stream cut short must not look complete
     }
   };
 

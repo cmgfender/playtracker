@@ -1101,7 +1101,7 @@ describe('PlayTracker web UI (no password)', UI, () => {
     const h = await visit('/settings');
     try {
       await h.page.locator('#import details summary').click();
-      await h.page.locator('#imp-text').fill('title,platform,playtime_hours,last_played\nCeleste,,1,2026-01-01\n');
+      await h.page.locator('#imp-text').fill('title,platform,playtime_hours\nCeleste,,1\n');
       await h.page.locator('#imp-go').click();
       await h.page.locator('#imp-r b', { hasText: 'Preview' }).waitFor();
       const preview = await h.page.locator('#imp-r').innerText();

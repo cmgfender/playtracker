@@ -85,6 +85,7 @@ export function importRows(db, rows, { settings, now = Date.now() } = {}) {
     // same key the export writes (start, else the window), so re-imports are recognised
     existing: db.prepare("SELECT COALESCE(started_at, window_start, window_end) started_at, minutes FROM sessions WHERE entry_id = ? AND kind = 'play'"),
     overlaps: db.prepare("SELECT 1 FROM sessions WHERE entry_id = ? AND kind = 'play' AND COALESCE(started_at, window_start) < ? AND COALESCE(ended_at, window_end) > ? LIMIT 1"),
+    overlapping: db.prepare("SELECT COALESCE(started_at, window_start) s, COALESCE(ended_at, window_end) e FROM sessions WHERE entry_id = ? AND kind = 'play' AND COALESCE(started_at, window_start) < ? AND COALESCE(ended_at, window_end) > ?"),
     insPlay: db.prepare("INSERT INTO sessions(entry_id, source, kind, minutes, window_start, window_end, started_at, ended_at, note, created_at) VALUES (?, 'import', 'play', ?, ?, ?, ?, ?, ?, ?)"),
     addHistory: db.prepare('UPDATE entries SET baseline_min = baseline_min + ? WHERE id = ?'),
     updEntry: db.prepare('UPDATE entries SET playtime_min = ?, last_played_at = MAX(COALESCE(last_played_at, 0), COALESCE(?, 0)) WHERE id = ?'),
@@ -102,11 +103,13 @@ export function importRows(db, rows, { settings, now = Date.now() } = {}) {
   let index = null; let synced = null; let byHand = null;
   const build = () => {
     index = new Map(); synced = new Map(); byHand = new Map();
-    for (const e of db.prepare('SELECT e.id, e.platform, e.title, e.account_id, e.ext_id, e.playtime_min, e.excluded, lower(a.name) acc FROM entries e LEFT JOIN accounts a ON a.id = e.account_id').iterate()) {
+    for (const e of db.prepare("SELECT e.id, e.platform, e.title, e.account_id, e.ext_id, e.playtime_min, e.excluded, CASE WHEN e.platform = 'manual' THEN e.hist END hist, lower(a.name) acc FROM entries e LEFT JOIN accounts a ON a.id = e.account_id").iterate()) {
       const norm = normalizeTitle(e.title);
-      if (e.account_id == null && e.platform === 'manual' && !e.excluded) {
+      if (e.account_id == null && e.platform === 'manual') {
         if (!byHand.has(norm)) byHand.set(norm, []);
         byHand.get(norm).push(e);
+        // a row joined before keeps joining, whatever was logged or excluded since
+        for (const k of JSON.parse(e.hist || '{}').joined || []) if (!byHand.has(`joined|${k}`)) byHand.set(`joined|${k}`, [e]);
       }
       const keys = [`${e.platform}|${e.acc || ''}|${norm}`];
       if (e.account_id == null && e.ext_id?.startsWith('import:')) keys.push(`${e.platform}|${importedAccount(e.ext_id, e.title)}|${norm}`);
@@ -133,18 +136,38 @@ export function importRows(db, rows, { settings, now = Date.now() } = {}) {
   // A row that names no platform at all, nor an account, for a game you only log by hand, joins it
   // when its hours fit what you logged (an older count of the same play) - the same rule as for
   // synced games. More hours stay a copy of their own: a spreadsheet can't say whether its hours
-  // include yours, so nothing you logged is ever absorbed. A file that lists hand-logged rows
-  // itself (an export) keeps its entries apart, as it recorded them.
-  const handLoggedFor = (platform, acc, norm, minutes, fileHasHand) => {
+  // include yours, so nothing you logged is ever absorbed; so does play the file dates before the
+  // first session you logged. A row listing a session you logged is your play whatever its hours.
+  // A file that lists hand-logged rows itself (an export) keeps its entries apart, as it recorded
+  // them. A join is remembered, so the same row keeps joining.
+  const firstLogged = db.prepare("SELECT MIN(COALESCE(started_at, window_start, window_end)) t FROM sessions WHERE entry_id = ? AND kind = 'play'");
+  const handLoggedFor = (platform, acc, norm, minutes, lastPlayed, fileHasHand, spans) => {
     if (!UNNAMED.has(platform) || acc || fileHasHand) return null;
     if (!byHand) build();
-    const m = byHand.get(norm) || [];
-    return m.length === 1 && (!minutes || minutes <= m[0].playtime_min * 1.05 + 60) ? m[0] : null;
+    const before = byHand.get(`joined|${norm}`)?.[0];
+    if (before) return before;
+    const m = (byHand.get(norm) || []).filter((e) => !e.excluded);
+    if (m.length !== 1) return null;
+    if (spans.some(([start, end]) => sameAsLogged(m[0].id, start, end))) return m[0];
+    if (minutes && minutes > m[0].playtime_min * 1.05 + 60) return null;
+    const first = firstLogged.get(m[0].id)?.t;
+    return lastPlayed && first && lastPlayed < first - DAY ? null : m[0];
+  };
+  /** Remember that rows for this title join this hand-logged entry. */
+  const rememberJoin = (entryId, norm) => {
+    const h = JSON.parse(st.getEntry.get(entryId)?.hist || '{}');
+    if ((h.joined || []).includes(norm)) return;
+    h.joined = [...(h.joined || []), norm];
+    st.setHist.run(JSON.stringify(h), entryId);
+    byHand.set(`joined|${norm}`, [st.getEntry.get(entryId)]);
   };
   const str = (v) => (v == null ? '' : typeof v === 'string' ? v : typeof v === 'object' ? '' : String(v));
   const flag = (v) => v === true || v === 'true' || v === '1' || v === 1;
   // a session's end as given when it is after its start, else start + its minutes
   const endOf = (s, start, minutes) => { const end = toTime(s.ended_at); return end > start ? end : start + minutes * MIN; };
+  // the same session as one already here: they overlap by at least half of the shorter one
+  const sameAsLogged = (entryId, start, end) => st.overlapping.all(entryId, end, start)
+    .some((o) => Math.min(end, o.e) - Math.max(start, o.s) >= Math.min(end - start, o.e - o.s) / 2);
 
   /** Status / rating / notes / favourite: only where the library has nothing yet. True if any was filled. */
   const fillGame = (gameId, row) => {
@@ -181,8 +204,9 @@ export function importRows(db, rows, { settings, now = Date.now() } = {}) {
     return Object.keys(patch).length > 0;
   };
 
-  // dates as evidence never lie in the future: a date-only "today" is noon, which can still be ahead
-  const past = (v) => { const t = toTime(v); return t && t <= now + DAY ? Math.min(t, now) : undefined; };
+  // dates as evidence lie after 1970 and never in the future: a date-only "today" is noon, which can
+  // still be ahead
+  const past = (v) => { const t = toTime(v); return t > 0 && t <= now + DAY ? Math.min(t, now) : undefined; };
   const evidenceOf = (row) => ({
     first_played_at: past(row.first_played || row.first_played_at || row.started),
     date_added: past(row.date_added || row.added || row.purchased || row.acquired || row.date_acquired),
@@ -196,20 +220,22 @@ export function importRows(db, rows, { settings, now = Date.now() } = {}) {
   const fillChoice = (entryId, row) => {
     const x = row.history && typeof row.history === 'object' && !Array.isArray(row.history) ? row.history : {};
     const mode = str(x.mode ?? row.history_mode).toLowerCase();
-    const start = toTime(x.start ?? row.history_start) ?? undefined;
-    const end = toTime(x.end ?? row.history_end) ?? undefined;
+    const start = past(x.start ?? row.history_start);
+    const end = past(x.end ?? row.history_end);
     if (mode !== 'undated' && !start && !end) return false;
+    if (start && end && end < start) return false;
     const e = st.getEntry.get(entryId);
     const h = JSON.parse(e?.hist || '{}');
-    if (!e?.baseline_min || h.mode === 'undated' || h.manual) return false;
+    // any choice made here (Don't chart, chart again, a window, reset) stands
+    if (!e?.baseline_min || h.mode || 'manual' in h) return false;
     if (mode === 'undated') h.mode = 'undated';
-    else if (start && end && end < start) return false;
-    else {
-      // a confirmed estimate's exact days come back while they still add up to the history
-      const chunks = Array.isArray(x.chunks) ? x.chunks.map((c) => (Array.isArray(c) ? [toTime(c[0]), toTime(c[1]), Math.round(Number(c[2])), c[3] === 'recent' ? 'recent' : 'history'] : null)) : [];
-      const exact = x.confirmed === true && chunks.length && chunks.every((c) => c && c[0] && c[1] >= c[0] && c[2] > 0);
-      h.manual = { start, end, ...(exact ? { confirmed: true, chunks, undated: Math.max(0, Math.round(Number(x.undated) || 0)) } : {}) };
-    }
+    // a confirmed estimate's exact days come back while they still add up to the history; a day
+    // that doesn't make sense (outside the window, in the future, more minutes than it holds)
+    // leaves just the window
+    const chunks = Array.isArray(x.chunks) ? x.chunks.map((c) => (Array.isArray(c) ? [past(c[0]), past(c[1]), Number(c[2]), c[3] === 'recent' ? 'recent' : 'history'] : null)) : [];
+    const exact = mode !== 'undated' && x.confirmed === true && chunks.length > 0 && chunks.every((c) => c && c[0] && c[1] >= c[0]
+      && Number.isSafeInteger(c[2]) && c[2] > 0 && c[2] <= (c[1] - c[0]) / MIN + 1 && (!start || c[0] >= start) && (!end || c[1] <= end));
+    if (start || end) h.manual = { start, end, ...(exact ? { confirmed: true, chunks, undated: Math.max(0, Math.round(Number(x.undated) || 0)) } : {}) };
     st.setHist.run(JSON.stringify(h), entryId);
     toInfer.add(entryId);
     res.history_choices = (res.history_choices || 0) + 1;
@@ -233,7 +259,7 @@ export function importRows(db, rows, { settings, now = Date.now() } = {}) {
       // never in the future (a date-only "today" is noon; a later date is no evidence)
       const lp = toTime(row.last_played || row.last_played_at);
       const lastPlayed = lp && lp <= now + DAY ? Math.min(lp, now) : null;
-      const sessions = Array.isArray(row.sessions) ? row.sessions : [];
+      const sessions = Array.isArray(row.sessions) ? row.sessions.filter((x) => x && typeof x === 'object') : [];
       res.games++;
 
       // 1) one of your synced accounts already tracks this game: the platform's total stands; the
@@ -271,8 +297,12 @@ export function importRows(db, rows, { settings, now = Date.now() } = {}) {
       }
 
       // 2) a manual / imported entry for this game is already here: join it
-      const hand = !entry && !same ? handLoggedFor(platform, acc, norm, reported, fileHand.has(norm)) : null;
-      if (hand) entry = st.getEntry.get(hand.id);
+      let hand = null;
+      if (!entry && !same) {
+        const spans = sessions.map((s) => { const m = Math.round(Number(s?.minutes)) || 0; const t = toTime(s?.started_at || s?.date || s?.start); return m > 0 && t ? [t, endOf(s, t, m), m] : null; }).filter(Boolean);
+        hand = handLoggedFor(platform, acc, norm, reported || spans.reduce((a, x) => a + x[2], 0), lastPlayed, fileHand.has(norm), spans);
+      }
+      if (hand) { entry = st.getEntry.get(hand.id); rememberJoin(hand.id, norm); }
       let gameId = entry?.game_id ?? same?.game_id ?? (same ? st.getEntry.get(same.id).game_id : null);
       if (gameId == null) {
         gameId = findOrCreateGame(db, { title, coverUrl: str(row.cover_url) || null }, { autoMerge: settings?.auto_merge_titles !== false, now });
@@ -306,8 +336,8 @@ export function importRows(db, rows, { settings, now = Date.now() } = {}) {
         // tracked play never lies in the future: its minutes stay in the file's total, as history
         if (end > now + 5 * MIN) { res.skipped_sessions = (res.skipped_sessions || 0) + 1; continue; }
         const k = `${start}:${minutes}`;
-        // joined to hand-logged play: a session overlapping one you logged is that one
-        if (have.has(k) || (hand && st.overlaps.get(entry.id, end, start))) continue;
+        // joined to hand-logged play: a session mostly covering one you logged is that one
+        if (have.has(k) || (hand && sameAsLogged(entry.id, start, end))) continue;
         have.add(k);
         st.insPlay.run(entry.id, minutes, start, end, start, end, str(s.note) || null, now);
         sessionMinutes += minutes;
@@ -364,7 +394,7 @@ const csvEsc = (v) => {
   const s = v == null ? '' : String(v);
   return /[",\n\r\t;]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 };
-const iso = (t) => (t ? new Date(t).toISOString() : null);
+const iso = (t) => (Number.isFinite(t) && t && Math.abs(t) <= 8.64e15 ? new Date(t).toISOString() : null);
 
 /**
  * Stream the whole library as JSON or CSV, one entry at a time, so exports of huge
@@ -381,8 +411,9 @@ export function* exportChunks(db, format = 'json') {
   const historyOf = (r) => {
     const h = JSON.parse(r.hist || '{}');
     const m = h.manual;
-    const choice = h.mode === 'undated' ? { mode: 'undated' }
-      : m && (m.start || m.end) ? { mode: 'auto', start: iso(m.start), end: iso(m.end), confirmed: !!m.confirmed, ...(m.confirmed && m.chunks?.length ? { chunks: m.chunks.map(([a, b, n, why]) => [iso(a), iso(b), n, why]), undated: m.undated || 0 } : {}) }
+    const win = m && (m.start || m.end) ? { start: iso(m.start), end: iso(m.end) } : {};
+    const choice = h.mode === 'undated' ? { mode: 'undated', ...win }
+      : win.start || win.end ? { mode: 'auto', ...win, confirmed: !!m.confirmed, ...(m.confirmed && m.chunks?.length ? { chunks: m.chunks.map(([a, b, n, why]) => [iso(a), iso(b), n, why]), undated: m.undated || 0 } : {}) }
         : null;
     return { first_played: iso(h.first_played_at), date_added: iso(h.date_added), history: choice };
   };
