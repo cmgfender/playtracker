@@ -1,7 +1,10 @@
 import { ProviderError, spacer } from './http.js';
 
 const API = 'https://xbl.io/api/v2';
-const HOME_TITLE_IDS = new Set(['750323071', '1022622766', '714681658']); // Xbox Home / dashboard / app shells
+// Xbox Home / dashboard / app shells; 704208617 is the Xbox app on Windows (reported as "Online")
+const HOME_TITLE_IDS = new Set(['750323071', '1022622766', '714681658', '704208617']);
+// presence words some shells report as their title; never a game unless the library has it
+const SHELL_NAMES = /^(home|online|away|busy|offline|xbox( app)?)$/i;
 
 /** Walk an arbitrary stats payload and return the MinutesPlayed value, if any. */
 export function findMinutesPlayed(obj) {
@@ -254,7 +257,7 @@ export const xbox = {
         const id = String(t.id ?? t.titleId ?? '');
         const row = { id, name: t.name || null, device: d.type || null, placement: t.placement || null, state: t.state || null };
         seen.push(row);
-        if (!id || HOME_TITLE_IDS.has(id)) { row.skipped = 'home'; continue; }
+        if (!id || HOME_TITLE_IDS.has(id) || (SHELL_NAMES.test(String(t.name || '').trim()) && !ctx.getEntry?.(id))) { row.skipped = 'home'; continue; }
         if (t.state && t.state !== 'Active') { row.skipped = 'inactive'; continue; }
         if (t.placement && !['Full', 'Fill', 'Snapped'].includes(t.placement) && !(pc && ctx.getEntry?.(id))) { row.skipped = 'background'; continue; }
         playing.push({ extId: id, title: t.name || null, device: d.type || null });

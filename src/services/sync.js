@@ -544,11 +544,24 @@ export class SyncService {
       const backfill = account.last_sync_at + HOUR + 2 * MIN;
       if (scheduled == null || backfill < scheduled) scheduled = backfill;
     }
-    const soon = this.soon.get(account.id);
+    const soon = this.soonFor(account);
     const next = soon && (scheduled == null || soon < scheduled) ? soon : scheduled;
     // never before an exhausted API quota resets
     const blocked = this.blockedUntil(account.id);
     return next != null && blocked > next ? blocked : next;
+  }
+
+  /**
+   * When the sync after a session is due, unless a game is being played on the account right now:
+   * syncing mid-game reads a total that is still catching up and splits the session. It is armed
+   * again when that game ends; a game no longer seen by presence never holds it back.
+   */
+  soonFor(account, now = Date.now()) {
+    const soon = this.soon.get(account.id);
+    if (soon == null) return null;
+    const interval = (providers[account.platform]?.profile?.presence?.interval_sec || 120) * 1000;
+    const playing = this.db.prepare('SELECT 1 FROM presence WHERE account_id = ? AND ended_at IS NULL AND last_seen_at > ? LIMIT 1').get(account.id, now - 3 * interval);
+    return playing ? null : soon;
   }
 
   refreshNext(accountId) {
@@ -1001,7 +1014,8 @@ export class SyncService {
           // back off 30 minutes after a failed attempt
           const last = this.db.prepare('SELECT started_at, status FROM syncs WHERE account_id = ? ORDER BY id DESC LIMIT 1').get(a.id);
           if (!(last?.status === 'error' && now - last.started_at < 30 * MIN)) {
-            const trigger = this.soon.has(a.id) && this.soon.get(a.id) <= now ? 'session-end' : a.state?.deferred_titles?.length ? 'backfill' : 'schedule';
+            const soon = this.soonFor(a, now);
+            const trigger = soon != null && soon <= now ? 'session-end' : a.state?.deferred_titles?.length ? 'backfill' : 'schedule';
             this.sync(a.id, trigger).catch(() => {});
           }
         }

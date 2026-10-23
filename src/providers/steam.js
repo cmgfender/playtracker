@@ -1,5 +1,8 @@
 import { ProviderError, spacer } from './http.js';
 
+// GetPlayerSummaries personastate
+const PERSONA = ['Offline', 'Online', 'Busy', 'Away', 'Snooze', 'Looking to trade', 'Looking to play'];
+
 const API = 'https://api.steampowered.com';
 const STORE = 'https://store.steampowered.com/api';
 
@@ -123,7 +126,8 @@ export const steam = {
     const p = await this.summary(account, ctx, id);
     if (!p) return null;
     if (p.communityvisibilitystate !== 3) return { playing: [], unavailable: 'Profile is private - presence unavailable' };
-    return { playing: p.gameid ? [{ extId: String(p.gameid), title: p.gameextrainfo || null }] : [] };
+    const playing = p.gameid ? [{ extId: String(p.gameid), title: p.gameextrainfo || null }] : [];
+    return { playing, online: PERSONA[p.personastate] ?? null, seen: playing.map((g) => ({ id: g.extId, name: g.title })) };
   },
 
   /**
