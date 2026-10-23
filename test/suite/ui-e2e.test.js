@@ -1079,7 +1079,7 @@ describe('PlayTracker web UI (no password)', UI, () => {
     assertInvariant('after re-import');
   });
 
-  test('import preview of an already-imported file says "Nothing new"', { todo: 'APP BUG ui-e2e-4: re-import preview claims entries are "joined" / synced games gain "dates and details" although nothing changes' }, async () => {
+  test('import preview of an already-imported file says "Nothing new"', async () => {
     const csv = 'title,platform,playtime_hours,last_played,status,rating\nRepeat Me,import,3,2026-02-01,beaten,7\n';
     await S.ok('/import', { method: 'POST', body: csv });
     const h = await visit('/settings');

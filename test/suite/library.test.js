@@ -1291,7 +1291,7 @@ describe('duplicates: merge suggestions', () => {
     assertConsistent(t);
   });
 
-  test('publisher-prefixed store titles are suggested ("Sid Meier\'s …", "Tom Clancy\'s …")', { todo: 'APP BUG library-2: titles that differ only by a leading publisher prefix score ~0.73 and are never suggested' }, async () => {
+  test('publisher-prefixed store titles are suggested ("Sid Meier\'s …", "Tom Clancy\'s …")', async () => {
     const civ = await t.createGame("Sid Meier's Civilization V");
     const r6a = await t.createGame("Tom Clancy's Rainbow Six Siege");
     const r6b = await t.createGame('Rainbow Six Siege');
