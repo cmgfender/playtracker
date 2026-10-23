@@ -116,7 +116,7 @@ describe('manual games: create', () => {
     if (r.status === 200) assert.ok(r.data.title.length > 0);
   });
 
-  test('a non-string title (object) is rejected instead of being stored as text', { todo: 'APP BUG library-6: POST /games stores an object title as "[object Object]"' }, async () => {
+  test('a non-string title (object) is rejected instead of being stored as text', async () => {
     const r = await t.post('/games', { title: { name: 'Hades' } });
     assert.equal(r.status, 400);
     assert.equal((await t.list(`q=${encodeURIComponent('[object')}`)).total, 0);
@@ -424,7 +424,7 @@ describe('search edge cases', () => {
     assert.deepEqual(await t.titles('q=xyz'), []);
   });
 
-  test('"%" and "_" in a search are literal characters, not wildcards', { todo: 'APP BUG library-3: search passes q into LIKE unescaped, so "%" or "_" match every game' }, async () => {
+  test('"%" and "_" in a search are literal characters, not wildcards', async () => {
     assert.deepEqual(await t.titles(`q=${encodeURIComponent('%')}`), ['100% Orange Juice']);
     assert.deepEqual(await t.titles(`q=${encodeURIComponent('_')}`), []);
   });
@@ -479,7 +479,7 @@ describe('updating a game', () => {
     }
   });
 
-  test('a non-numeric rating never wipes the existing rating', { todo: 'APP BUG library-4: PATCH rating "abc" turns into NaN and silently clears the stored rating' }, async () => {
+  test('a non-numeric rating never wipes the existing rating', async () => {
     await t.patch(`/games/${id}`, { rating: 8 });
     const r = await t.patch(`/games/${id}`, { rating: 'abc' });
     assert.ok(r.status === 400 || r.status === 200);
@@ -539,7 +539,7 @@ describe('updating a game', () => {
     assert.equal((await t.patch('/games/abc', { status: 'playing' })).status, 404);
   });
 
-  test('renaming to an empty title is rejected and keeps the old title', { todo: 'APP BUG library-5: PATCH title "" (or null) silently renames the game to "Untitled"' }, async () => {
+  test('renaming to an empty title is rejected and keeps the old title', async () => {
     for (const title of ['', '   ', null]) {
       const r = await t.patch(`/games/${id}`, { title });
       assert.ok(r.status === 400 || r.status === 200);
@@ -651,7 +651,7 @@ describe('excluding entries and its effect on totals', () => {
     assert.equal((await t.patch('/entries/abc', { excluded: true })).status, 404);
   });
 
-  test('the string "false" never excludes an entry or hides a game', { todo: 'APP BUG library-7: boolean fields use JS truthiness, so "false" (or "0") excludes the entry / hides the game' }, async () => {
+  test('the string "false" never excludes an entry or hides a game', async () => {
     const lifetime0 = (await t.lifetime()).total_minutes;
     const r = await t.patch(`/entries/${manual.id}`, { excluded: 'false' });
     assert.ok(r.status === 400 || r.status === 200);
@@ -803,7 +803,7 @@ describe('merging games', () => {
     assertConsistent(t);
   });
 
-  test('merging never changes what is counted, even when one game has an excluded manual entry', { todo: 'APP BUG library-1: mergeGames folds all manual entries into the lowest-id one and ignores its excluded flag, so counted minutes become excluded (or vice versa)' }, async () => {
+  test('merging never changes what is counted, even when one game has an excluded manual entry', async () => {
     const a = await t.createGame('Alpha Protocol');
     await t.logSession(a.id, 60, NOW - 3 * DAY);
     await t.patch(`/entries/${a.entries[0].id}`, { excluded: true }); // e.g. it duplicated another source
@@ -818,7 +818,7 @@ describe('merging games', () => {
     assert.equal(r.data.minutes, 30, 'the target still counts its own 30 minutes and not the excluded 60');
   });
 
-  test('minutes you excluded stay excluded after merging that game into another', { todo: 'APP BUG library-1: the reverse direction - an excluded manual entry is folded into a counted one, so excluded (double-counted) minutes are counted again' }, async () => {
+  test('minutes you excluded stay excluded after merging that game into another', async () => {
     const a = await t.createGame('Counted Game');
     await t.logSession(a.id, 30, NOW - DAY);
     const b = await t.createGame('Excluded Copy');
@@ -1442,7 +1442,7 @@ describe('entries: pushing a new lifetime total', () => {
     assertConsistent(t);
   });
 
-  test('a lower total keeps the game total and its sessions in agreement', { todo: 'APP BUG library-8: a lower total on a local entry lowers playtime_min but keeps the sessions, so tracked minutes exceed the game total' }, async () => {
+  test('a lower total keeps the game total and its sessions in agreement', async () => {
     const r = await t.post(`/entries/${entry.id}/playtime`, { playtime_minutes: 60 });
     assert.ok(r.status === 200 || r.status === 400);
     const d = await t.game(g.id);

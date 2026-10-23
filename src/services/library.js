@@ -23,7 +23,8 @@ export function cleanTitle(title) {
 /** The local "manual" entry of a game, used for hand-logged sessions. */
 export function manualEntry(db, gameId, now = Date.now()) {
   const extId = `game:${gameId}`;
-  let e = db.prepare("SELECT * FROM entries WHERE account_id IS NULL AND platform = 'manual' AND game_id = ? LIMIT 1").get(gameId);
+  // a counted one first: new play must not land in an entry excluded as a double count
+  let e = db.prepare("SELECT * FROM entries WHERE account_id IS NULL AND platform = 'manual' AND game_id = ? ORDER BY excluded, id LIMIT 1").get(gameId);
   if (e) return e;
   const g = db.prepare('SELECT title FROM games WHERE id = ?').get(gameId);
   const r = db.prepare("INSERT INTO entries(account_id, game_id, platform, ext_id, title, first_seen_at) VALUES (NULL, ?, 'manual', ?, ?, ?)")
@@ -54,15 +55,16 @@ export function mergeGames(db, targetId, sourceIds) {
       WHERE id = ?`).run(src.cover_url, src.rating, src.notes, src.notes, src.notes, src.favorite, src.status, now, targetId);
     db.prepare('DELETE FROM games WHERE id = ?').run(sid);
   }
-  // consolidate multiple manual entries
+  // consolidate multiple manual entries: one counted and one excluded at most, so a merge
+  // never changes what is counted
   const manuals = db.prepare("SELECT * FROM entries WHERE account_id IS NULL AND platform = 'manual' AND game_id = ? ORDER BY id").all(targetId);
-  if (manuals.length > 1) {
-    const keep = manuals[0];
-    for (const m of manuals.slice(1)) {
-      db.prepare('UPDATE sessions SET entry_id = ? WHERE entry_id = ?').run(keep.id, m.id);
-      db.prepare('UPDATE entries SET playtime_min = playtime_min + ? WHERE id = ?').run(m.playtime_min, keep.id);
-      db.prepare('DELETE FROM entries WHERE id = ?').run(m.id);
-    }
+  const keep = {};
+  for (const m of manuals) {
+    const k = keep[m.excluded];
+    if (!k) { keep[m.excluded] = m; continue; }
+    db.prepare('UPDATE sessions SET entry_id = ? WHERE entry_id = ?').run(k.id, m.id);
+    db.prepare('UPDATE entries SET playtime_min = playtime_min + ? WHERE id = ?').run(m.playtime_min, k.id);
+    db.prepare('DELETE FROM entries WHERE id = ?').run(m.id);
   }
 }
 

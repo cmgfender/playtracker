@@ -944,8 +944,7 @@ describe('Improve history: review list and meter', () => {
     checkInvariants(h.db, { label: 'review' });
   });
 
-  test('pending enrichment counts only titles that can still be enriched (custom accounts and imports never are)',
-    { todo: 'APP BUG history-7: /history/summary pending_enrichment counts custom-account titles that are never enriched, disagreeing with /system' }, async () => {
+  test('pending enrichment counts only titles that can still be enriched (custom accounts and imports never are)', async () => {
       const s = await h.get('/history/summary');
       const sys = await h.get('/system');
       assert.equal(s.pending_enrichment, sum(sys.accounts, (a) => a.enrichment_pending));
@@ -1078,8 +1077,7 @@ describe('answering a window, "looks right", "don\'t chart" and reset (PATCH /en
     checkTotals(h.db, { label: 'invalid' });
   });
 
-  test('unparseable dates are rejected instead of silently clearing the window',
-    { todo: 'APP BUG history-5: first_played_at/last_played_at that are not dates are accepted (200) and clear the manual window' }, async () => {
+  test('unparseable dates are rejected instead of silently clearing the window', async () => {
       await patch('Garbage Dates', { first_played_at: iso(local(2025, 2, 1, 12)), last_played_at: iso(local(2025, 3, 1, 20)) });
       const set = fingerprint(h.db, id['Garbage Dates']);
       const r1 = await h.call('PATCH', `/entries/${id['Garbage Dates']}/history`, { first_played_at: 'next tuesday' });

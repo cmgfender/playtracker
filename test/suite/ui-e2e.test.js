@@ -643,7 +643,7 @@ describe('PlayTracker web UI (no password)', () => {
     assertInvariant('after bulk delete');
   });
 
-  test('editing a manual session\'s minutes keeps its start/end times consistent with the new duration', { todo: 'APP BUG ui-e2e-5: minutes change but exact start/end stay, so "2:00 – 2:45 PM" is shown next to "1h"' }, async () => {
+  test('editing a manual session\'s minutes keeps its start/end times consistent with the new duration', async () => {
     const g0 = await S.ok('/games', { method: 'POST', body: { title: 'Span Lab' } });
     const s0 = await S.ok('/sessions', { method: 'POST', body: { game_id: g0.id, minutes: 45, ended_at: NOW - 6 * HOUR } });
     const h = await visit(`/game/${g0.id}`);
@@ -693,6 +693,39 @@ describe('PlayTracker web UI (no password)', () => {
       await S.ok(`/sessions/${sid}`, { method: 'PATCH', body: { kind: 'play' } }); // restore for later tests
     }
     assertInvariant('after removing a synced session from stats');
+  });
+
+  test('history from before tracking: no minutes field or count-in-stats switch, a note edit keeps it history', async () => {
+    const acc = await S.ok('/accounts', { method: 'POST', body: { platform: 'custom', name: 'Pre-tracking', config: {} } });
+    try {
+      await S.ok(`/accounts/${acc.id}/report`, { method: 'POST', body: { games: [{ id: 'ul', title: 'Undated Lab', playtime_minutes: 300 }] } });
+      const hist = (await S.ok(`/sessions?account_id=${acc.id}&kind=baseline`)).items.find((s) => s.source === 'inferred');
+      assert.ok(hist, 'precondition: the undated history is listed under History');
+      const ltBefore = await S.ok('/stats/lifetime');
+      const h = await visit('/sessions');
+      const { page } = h;
+      try {
+        await page.locator('#s-chips [data-kind="baseline"]').click();
+        await page.locator('#s-q').fill('Undated Lab');
+        await waitUntil(async () => (await page.locator('#s-list .item').count()) === 1, { message: 'history filtered to one session' });
+        await page.locator(`[data-edit-session="${hist.id}"]`).click();
+        const m = page.locator('.modal', { hasText: 'Undated Lab' });
+        await m.waitFor();
+        await modalReady(page);
+        assert.equal(await m.locator('[name=minutes]').count(), 0, 'its minutes are part of the platform total');
+        assert.equal(await m.locator('[name=play]').count(), 0, 'history can never be counted as tracked play');
+        assert.match(await m.locator('#s-del').innerText(), /Remove from stats/);
+        await m.locator('[name=note]').fill('from the old console');
+        await m.locator('#s-save').click();
+        await toast(page, 'Session updated');
+        const s = await S.ok(`/sessions/${hist.id}`);
+        assert.deepEqual([s.note, s.kind, s.source, s.minutes], ['from the old console', 'baseline', 'inferred', hist.minutes]);
+        const lt = await S.ok('/stats/lifetime');
+        assert.deepEqual([lt.total_minutes, lt.tracked_minutes, lt.baseline_minutes], [ltBefore.total_minutes, ltBefore.tracked_minutes, ltBefore.baseline_minutes]);
+        clean(h);
+      } finally { await h.close(); }
+    } finally { await S.ok(`/accounts/${acc.id}`, { method: 'DELETE' }); }
+    assertInvariant('after editing pre-tracking history');
   });
 
   // ------------------------------------------------------------------ customize home
