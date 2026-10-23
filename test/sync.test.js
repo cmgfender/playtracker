@@ -137,8 +137,18 @@ test('auto-merge groups same game across platforms; duplicates flagged', () => {
   assert.match(dup.suggestions[0].games[0].title, /Hollow Knight/);
   assert.equal(dup.cross_platform.length, 1);
 
-  // An import of the same game on the same platform is flagged as double counted
-  importRows(db, [{ title: 'DOOM Eternal', platform: 'steam', playtime_hours: 10 }], { settings: settings.all() });
+  // An import of a game a synced account already tracks joins it (assists, never adds hours)
+  const before_ = lifetime(db).total_minutes;
+  const r = importRows(db, [{ title: 'DOOM Eternal', platform: 'steam', playtime_hours: 10, status: 'beaten' }], { settings: settings.all() });
+  assert.equal(r.merged_synced, 1);
+  assert.equal(r.entries_created, 0);
+  assert.equal(lifetime(db).total_minutes, before_);
+  assert.equal(findDuplicates(db).double_counted.length, 0);
+  assert.equal(db.prepare("SELECT status FROM games WHERE title = 'DOOM Eternal'").get().status, 'beaten', 'empty status filled');
+
+  // a second copy on the same platform that already exists (older data) is still flagged
+  const g = db.prepare("SELECT id FROM games WHERE title = 'DOOM Eternal'").get().id;
+  db.prepare("INSERT INTO entries(account_id, game_id, platform, ext_id, title, playtime_min, first_seen_at, last_synced_at) VALUES (NULL, ?, 'steam', 'import:old:doom', 'DOOM Eternal', 600, 0, 0)").run(g);
   const dup2 = findDuplicates(db);
   assert.equal(dup2.double_counted.length, 1);
   assert.match(dup2.double_counted[0].reason, /twice on steam/);
@@ -201,4 +211,62 @@ test('provider parsers', () => {
   assert.equal(parseDuration('PT45S'), 0);
   assert.equal(findMinutesPlayed({ statlistscollection: [{ stats: [{ name: 'MinutesPlayed', value: '1234' }] }] }), 1234);
   assert.equal(findMinutesPlayed({ foo: 1 }), null);
+});
+
+// ---- regressions from the bug scan: every entry's sessions add up to its total ----
+const consistent = (db) => db.prepare('SELECT e.id FROM entries e LEFT JOIN sessions s ON s.entry_id = e.id GROUP BY e.id HAVING COALESCE(SUM(s.minutes), 0) != e.playtime_min').all();
+
+test('a temporary drop in reported playtime is not counted again when it comes back', () => {
+  const { db, settings } = setup();
+  const acc = addAccount(db, 'xbox');
+  const t0 = new Date('2026-03-10T10:00:00').getTime();
+  runSync(db, settings, acc, [{ extId: 1, title: 'G', playtimeMin: 1000, lastPlayedAt: t0 - 5 * D }], t0);
+  runSync(db, settings, acc, [{ extId: 1, title: 'G', playtimeMin: 0, lastPlayedAt: t0 - 5 * D }], t0 + H);
+  runSync(db, settings, acc, [{ extId: 1, title: 'G', playtimeMin: 1000, lastPlayedAt: t0 - 5 * D }], t0 + 2 * H);
+  assert.equal(db.prepare('SELECT playtime_min FROM entries').get().playtime_min, 1000);
+  assert.equal(sessions(db, 'play').length, 0, 'no play invented');
+  assert.deepEqual(consistent(db), []);
+  // real play above the old peak still counts
+  runSync(db, settings, acc, [{ extId: 1, title: 'G', playtimeMin: 1060, lastPlayedAt: t0 + 2.5 * H }], t0 + 3 * H);
+  assert.equal(sessions(db, 'play').reduce((a, s) => a + s.minutes, 0), 60);
+});
+
+test('a total that only now became available is history, not play today', () => {
+  const { db, settings } = setup();
+  const acc = addAccount(db, 'xbox');
+  const t0 = new Date('2026-03-10T10:00:00').getTime();
+  runSync(db, settings, acc, [{ extId: 1, title: 'PC', playtimeMin: 0, lastPlayedAt: t0 - 5 * D }], t0);
+  db.prepare(`UPDATE accounts SET state = '{"unmetered":{"1":1}}' WHERE id = ?`).run(acc);
+  const e = db.prepare('SELECT id FROM entries').get().id;
+  db.prepare("INSERT INTO sessions(entry_id, source, kind, minutes, window_start, window_end, started_at, ended_at, confidence, created_at) VALUES (?, 'presence', 'play', 45, ?, ?, ?, ?, 'exact', ?)")
+    .run(e, t0 + 10 * 60_000, t0 + 55 * 60_000, t0 + 10 * 60_000, t0 + 55 * 60_000, t0);
+  db.prepare('UPDATE entries SET playtime_min = 45 WHERE id = ?').run(e);
+  runSync(db, settings, acc, [{ extId: 1, title: 'PC', playtimeMin: 600, lastPlayedAt: t0 + 55 * 60_000, backfill: true }], t0 + H);
+  const play = sessions(db, 'play');
+  assert.equal(play.length, 1);
+  assert.equal(play[0].minutes, 45, 'tracked session untouched');
+  assert.equal(db.prepare('SELECT baseline_min FROM entries').get().baseline_min, 555);
+  assert.deepEqual(consistent(db), []);
+});
+
+test('large deltas whose last-played is exactly local midnight keep every minute', () => {
+  for (const plat of ['psn', 'xbox', 'steam']) {
+    const { db, settings } = setup();
+    const acc = addAccount(db, plat);
+    const t0 = new Date('2026-03-05T10:00:00').getTime();
+    runSync(db, settings, acc, [{ extId: 1, title: 'G', playtimeMin: 1000, lastPlayedAt: t0 - 5 * D, recentMin: 0 }], t0);
+    runSync(db, settings, acc, [{ extId: 1, title: 'G', playtimeMin: 2200, lastPlayedAt: new Date('2026-03-10T00:00:00').getTime(), recentMin: 1200 }], t0 + 6 * D);
+    assert.deepEqual(consistent(db), [], plat);
+  }
+});
+
+test('a minute or two beyond what presence saw stays part of that session', () => {
+  const { db, settings } = setup();
+  const acc = addAccount(db, 'steam');
+  const t0 = new Date('2026-03-10T10:00:00').getTime();
+  runSync(db, settings, acc, [{ extId: 1, title: 'G', playtimeMin: 100, lastPlayedAt: t0 - 5 * D, recentMin: 0 }], t0);
+  db.prepare('INSERT INTO presence(account_id, ext_id, title, started_at, last_seen_at, ended_at) VALUES (?, ?, ?, ?, ?, ?)').run(acc, '1', 'G', t0 + H, t0 + H + 20 * 60_000, t0 + H + 20 * 60_000);
+  runSync(db, settings, acc, [{ extId: 1, title: 'G', playtimeMin: 131, lastPlayedAt: t0 + H, recentMin: 31 }], t0 + 3 * H);
+  assert.deepEqual(consistent(db), []);
+  assert.equal(sessions(db, 'play').reduce((a, s) => a + s.minutes, 0), 31);
 });

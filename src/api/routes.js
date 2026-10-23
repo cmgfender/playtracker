@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { tx } from '../db.js';
 import { providers, providerInfo } from '../providers/index.js';
 import { parseAccount } from '../services/sync.js';
@@ -14,9 +15,11 @@ import { normalizeTitle } from '../services/titles.js';
 import { reinferMany, reinferPending, relearnStyle, styleOf, INFER_VERSION } from '../services/inference.js';
 import { flushRollups } from '../services/rollup.js';
 import { applyLicenses } from '../services/licenses.js';
+import { readZip, isZip } from '../services/zip.js';
+import { gameTrackTables, importGameTrack } from '../services/gametrack.js';
 import { modelFor } from '../services/model.js';
 import fsp from 'node:fs';
-import { httpJson } from '../providers/http.js';
+import { httpJson, ProviderError } from '../providers/http.js';
 import { HttpError, toInt, toTime } from '../util.js';
 
 const MIN = 60_000;
@@ -114,7 +117,36 @@ function sessionRow(s) {
 const SESSION_SELECT = `SELECT s.*, e.game_id, e.platform, e.account_id, a.name account_name, g.title, g.cover_url
   FROM sessions s JOIN entries e ON e.id = s.entry_id JOIN games g ON g.id = e.game_id LEFT JOIN accounts a ON a.id = e.account_id`;
 
+// strict booleans (as in settings and imports): "false" or "0" must never read as true
+const flag = (v) => (v === true || v === 'true' || v === 1 || v === '1' ? 1 : 0);
+// search text for `LIKE ? ESCAPE '\'`: % and _ are literal characters, not wildcards
+const likeText = (s) => `%${String(s).replace(/[\\%_]/g, '\\$&')}%`;
+/** toTime() of a body field; a value that is given but is not a time is a 400, never "no time". */
+function timeField(b, k) {
+  const t = toTime(b[k]);
+  if (t == null && b[k] != null && b[k] !== '') throw new HttpError(400, `${k} is not a valid time`);
+  return t;
+}
+/** A from/to query bound: a date (YYYY-MM-DD) covers that whole local day. */
+function dayBound(v, end) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(v);
+  return m ? new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]) + (end ? 1 : 0)).getTime() - (end ? 1 : 0) : toTime(v);
+}
+
 export function registerRoutes(r, app) {
+  // query numbers within sane bounds (SQLite treats LIMIT -1 as "no limit")
+  const clamp = (v, def, min, max) => Math.min(max, Math.max(min, toInt(v, def)));
+  // ?dry_run=true: run an import for real inside a transaction, report, then roll it all back
+  const preview = (c, fn) => {
+    if (c.query.dry_run !== 'true' && c.query.dry_run !== '1') return fn();
+    db.exec('BEGIN IMMEDIATE');
+    try { return { ...fn(), dry_run: true }; } finally { db.exec('ROLLBACK'); }
+  };
+  const arr = (v, name) => {
+    if (v == null) return [];
+    if (!Array.isArray(v)) throw new HttpError(400, `${name} must be an array`);
+    return v;
+  };
   const { db, settings, sync, auth, version } = app;
 
   // ---------- meta ----------
@@ -123,9 +155,24 @@ export function registerRoutes(r, app) {
 
   // ---------- auth ----------
   r.get('/api/v1/auth/status', (c) => ({ auth_enabled: auth.enabled(), authenticated: c.auth.ok, via: c.auth.via, password_source: auth.passwordSource() }), { summary: 'Auth status', public: true });
+  // failed logins per client address: after 5 within 15 minutes, wait (grows up to 15 minutes)
+  const failures = new Map();
   r.post('/api/v1/auth/login', (c) => {
     if (!auth.enabled()) return { ok: true };
-    if (!auth.checkPassword(String(c.body.password || ''))) throw new HttpError(401, 'Wrong password');
+    const ip = c.req.socket.remoteAddress || '?';
+    const now = Date.now();
+    const f = failures.get(ip);
+    if (f && f.blockedUntil > now) throw new HttpError(429, `Too many attempts - try again in ${Math.ceil((f.blockedUntil - now) / 1000)}s`);
+    const pw = typeof c.body.password === 'string' ? c.body.password : '';
+    if (pw.length > 1024 || !auth.checkPassword(pw)) {
+      const rec = f && now - f.first < 15 * 60_000 ? f : { first: now, count: 0, blockedUntil: 0 };
+      rec.count++;
+      if (rec.count >= 5) rec.blockedUntil = now + Math.min(15 * 60_000, 30_000 * 2 ** (rec.count - 5));
+      failures.set(ip, rec);
+      if (failures.size > 10_000) failures.clear();
+      throw new HttpError(401, 'Wrong password');
+    }
+    failures.delete(ip);
     const s = auth.createLoginSession();
     c.setCookie('pt_session', s.token, s.maxAge);
     return { ok: true };
@@ -136,6 +183,7 @@ export function registerRoutes(r, app) {
     return { ok: true };
   }, { summary: 'Log out', public: true });
   r.put('/api/v1/auth/password', (c) => {
+    for (const k of ['current', 'password']) if (c.body[k] != null && typeof c.body[k] !== 'string') throw new HttpError(400, `${k} must be a string`);
     if (auth.enabled() && !auth.checkPassword(String(c.body.current || ''))) throw new HttpError(401, 'Current password is wrong');
     auth.setPassword(c.body.password ? String(c.body.password) : '');
     if (c.body.password) {
@@ -166,7 +214,7 @@ export function registerRoutes(r, app) {
     const q = c.query;
     const where = [];
     const args = [recentFromDay()];
-    if (q.q) { where.push('(g.title LIKE ? OR g.norm_title LIKE ?)'); args.push(`%${q.q}%`, `%${normalizeTitle(q.q)}%`); }
+    if (q.q) { where.push("(g.title LIKE ? ESCAPE '\\' OR g.norm_title LIKE ? ESCAPE '\\')"); args.push(likeText(q.q), likeText(normalizeTitle(q.q))); }
     if (q.status) { where.push(`g.status IN (${q.status.split(',').map(() => '?').join(',')})`); args.push(...q.status.split(',')); }
     if (q.favorite === 'true' || q.favorite === '1') where.push('g.favorite = 1');
     if (q.hidden === 'only') where.push('g.hidden = 1');
@@ -187,7 +235,7 @@ export function registerRoutes(r, app) {
   }, { summary: 'List / search the library (paginated)', query: { q: 'search', platform: 'steam,xbox,psn,…', status: 'comma list', sort: 'recent|playtime|title|added|rating|trending', played: 'true|false', favorite: 'true', hidden: 'true|only', multi: 'true = only games with several entries', recent: 'true = played in the last 14 days', limit: 'max 5000 (default 100)', offset: '' } });
 
   r.post('/api/v1/games', (c) => {
-    const title = String(c.body.title || '').trim();
+    const title = typeof c.body.title === 'string' ? c.body.title.trim() : '';
     if (!title) throw new HttpError(400, 'title is required');
     const now = Date.now();
     const id = tx(db, () => {
@@ -258,7 +306,7 @@ export function registerRoutes(r, app) {
   }, { summary: 'Game detail with entries, latest 300 sessions, monthly history' });
 
   r.get('/api/v1/entries/:id/snapshots', (c) => {
-    const limit = Math.min(10000, toInt(c.query.limit, 1000));
+    const limit = clamp(c.query.limit, 1000, 1, 10000);
     return db.prepare('SELECT taken_at, playtime_min, sync_id FROM snapshots WHERE entry_id = ? ORDER BY taken_at DESC LIMIT ?').all(toInt(c.params.id), limit);
   }, { summary: 'Raw playtime snapshots for an entry (newest first)', query: { limit: 'max 10000' } });
 
@@ -267,12 +315,23 @@ export function registerRoutes(r, app) {
     if (!db.prepare('SELECT id FROM games WHERE id = ?').get(id)) throw new HttpError(404, 'Game not found');
     const b = c.body;
     const sets = []; const args = [];
-    if ('title' in b) { const t = cleanTitle(b.title); sets.push('title = ?', 'norm_title = ?'); args.push(t, normalizeTitle(t)); }
+    if ('title' in b) {
+      const t = typeof b.title === 'string' && b.title.trim() ? cleanTitle(b.title) : '';
+      if (!t) throw new HttpError(400, 'title must be a non-empty string');
+      sets.push('title = ?', 'norm_title = ?'); args.push(t, normalizeTitle(t));
+    }
     if ('cover_url' in b) { sets.push('cover_url = ?'); args.push(b.cover_url || null); }
     if ('status' in b) { if (!STATUSES.includes(b.status)) throw new HttpError(400, `status must be one of ${STATUSES.join(', ')}`); sets.push('status = ?'); args.push(b.status); }
-    if ('rating' in b) { sets.push('rating = ?'); args.push(b.rating == null || b.rating === '' ? null : Math.max(0, Math.min(10, Number(b.rating)))); }
-    if ('notes' in b) { sets.push('notes = ?'); args.push(b.notes ? String(b.notes).slice(0, 10000) : null); }
-    for (const f of ['favorite', 'hidden', 'merge_locked']) if (f in b) { sets.push(`${f} = ?`); args.push(b[f] ? 1 : 0); }
+    if ('rating' in b) {
+      const n = b.rating == null || b.rating === '' ? null : Number(b.rating);
+      if (n !== null && !Number.isFinite(n)) throw new HttpError(400, 'rating must be a number from 0 to 10');
+      sets.push('rating = ?'); args.push(n === null ? null : Math.max(0, Math.min(10, n)));
+    }
+    if ('notes' in b) {
+      if (b.notes != null && typeof b.notes !== 'string') throw new HttpError(400, 'notes must be a string');
+      sets.push('notes = ?'); args.push(b.notes ? b.notes.slice(0, 10000) : null);
+    }
+    for (const f of ['favorite', 'hidden', 'merge_locked']) if (f in b) { sets.push(`${f} = ?`); args.push(flag(b[f])); }
     if (sets.length) db.prepare(`UPDATE games SET ${sets.join(', ')}, updated_at = ? WHERE id = ?`).run(...args, Date.now(), id);
     return getGame(id);
   }, { summary: 'Update status, rating, notes, favorite, hidden, title, cover', body: '{ status?, rating?, notes?, favorite?, hidden?, title?, cover_url?, merge_locked? }' });
@@ -290,7 +349,7 @@ export function registerRoutes(r, app) {
 
   r.post('/api/v1/games/:id/merge', (c) => {
     const target = toInt(c.params.id);
-    const ids = (c.body.source_ids || c.body.ids || []).map(Number).filter(Boolean);
+    const ids = arr(c.body.source_ids || c.body.ids, 'source_ids').map(Number).filter(Boolean);
     if (!ids.length) throw new HttpError(400, 'source_ids is required');
     tx(db, () => mergeGames(db, target, ids));
     return getGame(target);
@@ -301,7 +360,7 @@ export function registerRoutes(r, app) {
     const id = toInt(c.params.id);
     const e = db.prepare('SELECT * FROM entries WHERE id = ?').get(id);
     if (!e) throw new HttpError(404, 'Entry not found');
-    if ('excluded' in c.body) db.prepare('UPDATE entries SET excluded = ? WHERE id = ?').run(c.body.excluded ? 1 : 0, id);
+    if ('excluded' in c.body) db.prepare('UPDATE entries SET excluded = ? WHERE id = ?').run(flag(c.body.excluded), id);
     return getGame(e.game_id);
   }, { summary: 'Exclude/include an entry from totals (mirrored duplicates)', body: '{ excluded: boolean }' });
 
@@ -333,6 +392,12 @@ export function registerRoutes(r, app) {
     // local entry: record the delta directly
     const now = Date.now();
     const delta = total - e.playtime_min;
+    if (delta < 0) {
+      // like a synced total (sync.report): a lower total keeps the high-water mark, so the
+      // total and the entry's sessions keep adding up and nothing is counted twice later
+      db.prepare('UPDATE entries SET last_played_at = COALESCE(?, last_played_at) WHERE id = ?').run(toTime(c.body.last_played_at), id);
+      return { ok: true, delta: 0, ignored: 'lower than the current total' };
+    }
     tx(db, () => {
       if (delta > 0) {
         db.prepare("INSERT INTO sessions(entry_id, source, kind, minutes, window_start, window_end, note, created_at) VALUES (?, 'api', 'play', ?, ?, ?, ?, ?)")
@@ -356,9 +421,9 @@ export function registerRoutes(r, app) {
     if (q.account_id) { where.push('s.entry_id IN (SELECT id FROM entries WHERE account_id = ?)'); args.push(toInt(q.account_id)); }
     if (q.source) { where.push('s.source = ?'); args.push(q.source); }
     if (q.sync_id) { where.push('s.sync_id = ?'); args.push(toInt(q.sync_id)); }
-    if (q.from) { where.push('s.sort_time >= ?'); args.push(toTime(q.from)); }
-    if (q.to) { where.push('COALESCE(s.started_at, s.window_start, s.window_end) <= ?'); args.push(toTime(q.to)); }
-    if (q.q) { where.push('s.entry_id IN (SELECT e2.id FROM entries e2 JOIN games g2 ON g2.id = e2.game_id WHERE g2.title LIKE ?)'); args.push(`%${q.q}%`); }
+    if (q.from) { where.push('s.sort_time >= ?'); args.push(dayBound(q.from, false)); }
+    if (q.to) { where.push('COALESCE(s.started_at, s.window_start, s.window_end) <= ?'); args.push(dayBound(q.to, true)); }
+    if (q.q) { where.push("s.entry_id IN (SELECT e2.id FROM entries e2 JOIN games g2 ON g2.id = e2.game_id WHERE g2.title LIKE ? ESCAPE '\\')"); args.push(likeText(q.q)); }
     const w = where.length ? `WHERE ${where.join(' AND ')}` : '';
     const limit = Math.min(1000, Math.max(1, toInt(q.limit, 100)));
     const offset = Math.max(0, toInt(q.offset, 0));
@@ -387,12 +452,24 @@ export function registerRoutes(r, app) {
     if (!gameId || !db.prepare('SELECT id FROM games WHERE id = ?').get(gameId)) throw new HttpError(400, 'Valid game_id is required');
     if (!minutes || minutes <= 0 || minutes > 7 * 1440) throw new HttpError(400, 'minutes must be between 1 and 10080');
     const now = Date.now();
-    let started = toTime(b.started_at);
-    let ended = toTime(b.ended_at);
-    if (!started && !ended && b.date) { started = toTime(b.date); ended = started + minutes * MIN; }
+    let started = timeField(b, 'started_at');
+    let ended = timeField(b, 'ended_at');
+    const date = timeField(b, 'date');
+    if (!started && !ended && date) {
+      started = date;
+      // a date-only session belongs to that local day: around noon, but it never spills into
+      // the next day (or past now) while it fits
+      if (/^\d{4}-\d{2}-\d{2}$/.test(b.date)) {
+        const dayEnd = dayBound(b.date, true) + 1;
+        started = Math.max(dayBound(b.date, false), Math.min(started, dayEnd - minutes * MIN, now - minutes * MIN));
+      }
+      ended = started + minutes * MIN;
+    }
     if (started && !ended) ended = started + minutes * MIN;
     if (!started && ended) started = ended - minutes * MIN;
     if (!started) { ended = now; started = now - minutes * MIN; }
+    if (ended <= started) throw new HttpError(400, 'ended_at must be after started_at');
+    if (ended > now + 5 * MIN) throw new HttpError(400, 'A session cannot end in the future');
     const id = tx(db, () => {
       const e = manualEntry(db, gameId, now);
       const r2 = db.prepare("INSERT INTO sessions(entry_id, source, kind, minutes, window_start, window_end, started_at, ended_at, note, created_at, confidence) VALUES (?, 'manual', 'play', ?, ?, ?, ?, ?, ?, ?, 'exact')")
@@ -412,31 +489,41 @@ export function registerRoutes(r, app) {
     if ('note' in patch) { sets.push('note = ?'); args.push(patch.note || null); }
     if ('kind' in patch) {
       if (!['play', 'baseline'].includes(patch.kind)) throw new HttpError(400, 'kind must be play or baseline');
+      // history is never recorded as play: it can only leave the stats
+      if (patch.kind === 'play' && s.source === 'inferred') throw new HttpError(400, 'pre-tracking history cannot be counted as tracked play');
       sets.push('kind = ?'); args.push(patch.kind);
     }
-    if ('started_at' in patch || 'ended_at' in patch) {
-      const st = 'started_at' in patch ? toTime(patch.started_at) : s.started_at;
-      const en = 'ended_at' in patch ? toTime(patch.ended_at) : s.ended_at;
-      if (st && en && en <= st) throw new HttpError(400, 'ended_at must be after started_at');
-      sets.push('started_at = ?', 'ended_at = ?'); args.push(st, en);
-      if (local) { sets.push('window_start = ?', 'window_end = ?'); args.push(st, en); }
-    }
+    let st = 'started_at' in patch ? timeField(patch, 'started_at') : s.started_at;
+    const en = 'ended_at' in patch ? timeField(patch, 'ended_at') : s.ended_at;
+    // times sent back as they are (a client echoing the session) are no change
+    let times = st !== s.started_at || en !== s.ended_at;
+    if (times && st && en && en <= st) throw new HttpError(400, 'ended_at must be after started_at');
     if ('minutes' in patch) {
       const m = toInt(patch.minutes);
-      if (!m || m <= 0) throw new HttpError(400, 'minutes must be positive');
+      if (!m || m <= 0 || m > 7 * 1440) throw new HttpError(400, 'minutes must be between 1 and 10080');
       if (!local) throw new HttpError(400, 'Minutes of synced sessions come from the platform; change kind to "baseline" to drop it from stats instead');
+      // an exact session spans its minutes: new minutes alone keep the end and move the start
+      // (a wider span, e.g. from an import, is kept while they fit in it); times changed with
+      // them must leave room for them
+      if (st && en && !times && m !== s.minutes && (en - st === s.minutes * MIN || m * MIN > en - st)) { st = en - m * MIN; times = true; }
+      else if (st && en && times && m * MIN > en - st) throw new HttpError(400, 'minutes do not fit between started_at and ended_at');
       sets.push('minutes = ?'); args.push(m);
       db.prepare('UPDATE entries SET playtime_min = MAX(0, playtime_min + ?) WHERE id = ?').run(m - s.minutes, s.entry_id);
+    }
+    if (times) {
+      sets.push('started_at = ?', 'ended_at = ?'); args.push(st, en);
+      if (local) { sets.push('window_start = ?', 'window_end = ?'); args.push(st, en); }
     }
     if (sets.length) db.prepare(`UPDATE sessions SET ${sets.join(', ')} WHERE id = ?`).run(...args, id);
   }
 
   function removeSession(id) {
-    const s = db.prepare('SELECT * FROM sessions WHERE id = ?').get(id);
+    const s = db.prepare('SELECT s.*, e.account_id FROM sessions s JOIN entries e ON e.id = s.entry_id WHERE s.id = ?').get(id);
     if (!s) throw new HttpError(404, 'Session not found');
-    if (s.source === 'sync') {
-      // Lifetime playtime comes from the platform, so a synced session can only be
-      // dropped from period stats (converted to baseline), not truly deleted.
+    if (s.source === 'sync' || (s.source === 'inferred' && s.account_id != null)) {
+      // Lifetime playtime comes from the platform, so a synced session (or the dated history
+      // of a synced game) can only be dropped from period stats (converted to baseline), not
+      // truly deleted: a lower total would come back as new play on the next sync.
       db.prepare("UPDATE sessions SET kind = 'baseline', note = COALESCE(note, 'Removed from stats') WHERE id = ?").run(id);
       return 'baseline';
     }
@@ -455,7 +542,7 @@ export function registerRoutes(r, app) {
     { summary: 'Delete a manual session, or drop a synced one from stats (becomes baseline)' });
 
   r.post('/api/v1/sessions/bulk', (c) => {
-    const ids = (c.body.ids || []).map(Number).filter(Boolean);
+    const ids = [...new Set(arr(c.body.ids, 'ids').map(Number).filter(Boolean))]; // a repeated id acts once
     const action = c.body.action;
     if (!['baseline', 'play', 'delete'].includes(action)) throw new HttpError(400, 'action must be baseline, play or delete');
     tx(db, () => { for (const id of ids) action === 'delete' ? removeSession(id) : changeSession(id, { kind: action }); });
@@ -468,7 +555,10 @@ export function registerRoutes(r, app) {
   }), { summary: 'Aggregated stats for a range. Inferred pre-tracking history is included (and reported separately) unless estimates=exclude', query: { range: '7d|30d|90d|365d|week|month|year|all|year:2026|month:2026-05', group: 'day|week|month|year', game_id: '', platform: '', estimates: 'include|exclude|only' } });
   r.get('/api/v1/stats/lifetime', () => lifetime(db), { summary: 'Lifetime totals (including imported history)' });
   r.get('/api/v1/stats/heatmap', (c) => heatmap(db, { year: c.query.year, gameId: toInt(c.query.game_id), estimates: estimatesParam(c.query, settings) }), { summary: 'Minutes per day for a year', query: { year: '', game_id: '', estimates: 'include|exclude|only' } });
-  r.get('/api/v1/stats/year/:year', (c) => yearInReview(db, toInt(c.params.year), { weekStartsOn: settings.get('week_starts_on'), estimates: estimatesParam(c.query, settings) }), { summary: 'Year in review', query: { estimates: 'include|exclude' } });
+  r.get('/api/v1/stats/year/:year', (c) => {
+    if (!/^\d{4}$/.test(c.params.year)) throw new HttpError(400, 'year must be YYYY');
+    return yearInReview(db, toInt(c.params.year), { weekStartsOn: settings.get('week_starts_on'), estimates: estimatesParam(c.query, settings) });
+  }, { summary: 'Year in review', query: { estimates: 'include|exclude' } });
   r.get('/api/v1/stats/years', () => {
     const first = db.prepare('SELECT MIN(day) d FROM play_days').get().d;
     const ys = [];
@@ -480,7 +570,7 @@ export function registerRoutes(r, app) {
 
   // ---------- duplicates ----------
   r.get('/api/v1/duplicates', (c) => {
-    const d = findDuplicates(db, { threshold: Number(c.query.threshold) || 0.8, limit: Math.min(5000, toInt(c.query.limit, 300)) });
+    const d = findDuplicates(db, { threshold: Number(c.query.threshold) || 0.8, limit: clamp(c.query.limit, 300, 1, 5000) });
     return c.query.summary === 'true' ? { counts: d.counts } : d;
   }, { summary: 'Merge suggestions, double-counted entries, cross-platform games (each list capped; see counts)', query: { threshold: '0..1 (default 0.8)', limit: 'per list, default 300', summary: 'true = counts only' } });
   r.post('/api/v1/duplicates/dismiss', (c) => {
@@ -509,7 +599,15 @@ export function registerRoutes(r, app) {
       getEntry: () => null, warn: (m) => warnings.push(m), remainingBudget: (limit) => Math.ceil(limit * 0.15) + 3, stopped: () => false,
     };
     const fake = { id: 0, platform, config, state: {} };
-    const res = await p.fetchLibrary(fake, ctx);
+    let res;
+    try {
+      res = await p.fetchLibrary(fake, ctx);
+    } catch (err) {
+      // the platform said no: never relay its status (its 401 is not a PlayTracker login, a
+      // missing one is not an internal error) - rejected credentials 422, anything else 502
+      if (!(err instanceof ProviderError)) throw err;
+      throw new HttpError(err.auth ? 422 : 502, err.message);
+    }
     let presence = null;
     if (p.presence) {
       try { const pr = await p.presence({ ...fake, state: res.state || {} }, ctx); presence = pr ? (pr.unavailable || `ok (${pr.playing.length ? `playing ${pr.playing.map((x) => x.title || x.extId).join(', ')}` : 'not playing'})`) : 'skipped'; } catch (err) { presence = `unavailable: ${err.message}`; }
@@ -528,7 +626,12 @@ export function registerRoutes(r, app) {
     const config = c.body.config || {};
     requireFields(platform, config);
     const name = String(c.body.name || providers[platform].label).slice(0, 80);
-    const schedule = c.body.schedule ? JSON.stringify(validateSettings(c.body.schedule).values) : null;
+    let schedule = null;
+    if (c.body.schedule) {
+      const v = validateSettings(c.body.schedule);
+      if (v.errors.length) throw new HttpError(400, v.errors.join('; '));
+      schedule = JSON.stringify(v.values);
+    }
     const id = Number(db.prepare('INSERT INTO accounts(platform, name, config, enabled, schedule, created_at) VALUES (?, ?, ?, ?, ?, ?)')
       .run(platform, name, JSON.stringify(config), c.body.enabled === false ? 0 : 1, schedule, Date.now()).lastInsertRowid);
     if (!providers[platform].push && c.body.sync !== false) sync.sync(id, 'initial').catch(() => {});
@@ -545,7 +648,11 @@ export function registerRoutes(r, app) {
       config[k] = v;
     }
     let state = a.state;
-    if (b.config && JSON.stringify(config) !== JSON.stringify(a.config)) state = {}; // credentials changed -> drop cached tokens
+    // credentials changed -> drop cached tokens (other settings, e.g. presence, keep what the account learned)
+    const creds = (cfg) => JSON.stringify((providers[a.platform]?.fields || []).filter((f) => f.required || f.type === 'password').map((f) => cfg[f.key] ?? null));
+    if (b.config && creds(config) !== creds(a.config)) state = {};
+    // a newly declared last-played meaning starts its calibration over (learned votes would override it)
+    else if (b.config && (config.last_played_meaning || null) !== (a.config.last_played_meaning || null)) { const { calibration, ...rest } = state || {}; state = rest; }
     let schedule = a.schedule;
     if ('schedule' in b) {
       if (b.schedule) {
@@ -565,8 +672,11 @@ export function registerRoutes(r, app) {
     if (!sync.account(id)) throw new HttpError(404, 'Account not found');
     tx(db, () => {
       db.prepare('DELETE FROM accounts WHERE id = ?').run(id);
+      // ids are reused: an account linked later must not inherit this one's API usage
+      db.prepare('DELETE FROM api_usage WHERE account_id = ?').run(id);
       pruneEmptyGames(db);
     });
+    sync.forget(id);
     return { ok: true };
   }, { summary: 'Unlink an account and delete its data' });
 
@@ -583,28 +693,39 @@ export function registerRoutes(r, app) {
     if (!sync.account(id)) throw new HttpError(404, 'Account not found');
     const games = c.body.games || c.body.items;
     if (!Array.isArray(games)) throw new HttpError(400, 'games must be an array');
-    const items = games.map((g) => ({
-      extId: String(g.id ?? g.ext_id ?? g.title),
-      title: g.title || g.name || String(g.id),
-      playtimeMin: g.playtime_minutes ?? (g.playtime_hours != null ? Math.round(g.playtime_hours * 60) : 0),
-      lastPlayedAt: toTime(g.last_played_at),
-      firstPlayedAt: toTime(g.first_played_at),
-      dateAdded: toTime(g.date_added),
-      playCount: g.play_count != null ? toInt(g.play_count) : null,
-      recentMin: g.recent_minutes != null ? toInt(g.recent_minutes) : null, // absent = unknown, not zero
-      recentWindowDays: g.recent_days != null ? toInt(g.recent_days) : 14,
-      devices: g.device ? { [String(g.device)]: g.playtime_minutes ?? 0 } : undefined,
-      coverUrl: g.cover_url || null,
-      iconUrl: g.icon_url || null,
-      backfill: !!g.backfill,
-    }));
+    const items = [];
+    games.forEach((g, i) => {
+      // entries that are not objects or name no game are skipped (never a game called "undefined")
+      if (!g || typeof g !== 'object' || Array.isArray(g)) return;
+      const ext = g.id ?? g.ext_id ?? g.title ?? g.name;
+      if (ext == null || ext === '') return;
+      for (const k of ['playtime_minutes', 'playtime_hours']) {
+        if (g[k] != null && !(Number.isFinite(Number(g[k])) && Number(g[k]) >= 0)) throw new HttpError(400, `games[${i}].${k} must be a non-negative number`);
+      }
+      const playtimeMin = g.playtime_minutes != null ? Number(g.playtime_minutes) : g.playtime_hours != null ? Math.round(Number(g.playtime_hours) * 60) : 0;
+      items.push({
+        extId: String(ext),
+        title: g.title || g.name || String(ext),
+        playtimeMin,
+        lastPlayedAt: toTime(g.last_played_at),
+        firstPlayedAt: toTime(g.first_played_at),
+        dateAdded: toTime(g.date_added),
+        playCount: g.play_count != null ? toInt(g.play_count) : null,
+        recentMin: g.recent_minutes != null ? toInt(g.recent_minutes) : null, // absent = unknown, not zero
+        recentWindowDays: clamp(g.recent_days, 14, 1, 365),
+        devices: g.device ? { [String(g.device)]: playtimeMin } : undefined,
+        coverUrl: g.cover_url || null,
+        iconUrl: g.icon_url || null,
+        backfill: !!g.backfill,
+      });
+    });
     return sync.report(id, items);
-  }, { summary: 'Push lifetime totals for an account; deltas become sessions. Optional dates/play counts are used to date history on the first report.', body: '{ games: [{ id, title, playtime_minutes, last_played_at?, first_played_at?, date_added?, play_count?, recent_minutes?, recent_days?, device?, cover_url?, backfill? }] }' });
+  }, { summary: 'Push lifetime totals for an account; deltas become sessions. Optional dates/play counts are used to date history on the first report.', body: '{ games: [{ id, title, playtime_minutes, last_played_at?, first_played_at?, date_added?, play_count?, recent_minutes?, recent_days?, device?, cover_url?, backfill? }] }', bigBody: true });
 
   r.post('/api/v1/accounts/:id/presence', (c) => {
     const a = sync.account(toInt(c.params.id));
     if (!a) throw new HttpError(404, 'Account not found');
-    const playing = (c.body.playing || []).map((p) => ({ extId: String(p.id ?? p.ext_id ?? p.title), title: p.title || null, device: p.device || null }));
+    const playing = arr(c.body.playing, 'playing').filter((p) => p && typeof p === 'object').map((p) => ({ extId: String(p.id ?? p.ext_id ?? p.title), title: p.title || null, device: p.device || null }));
     return sync.applyPresence(a, playing, { intervalSec: toInt(c.body.interval_sec, 120) });
   }, { summary: 'Push "currently playing" for an account (e.g. from Home Assistant); used to pin sessions to exact times', body: '{ playing: [{ id, title? }], interval_sec? }' });
 
@@ -623,10 +744,12 @@ export function registerRoutes(r, app) {
     if (!a) throw new HttpError(404, 'Account not found');
     const text = typeof c.body === 'string' ? c.body : c.body.text;
     if (!text || typeof text !== 'string') throw new HttpError(400, 'Send { text } with the table copied from store.steampowered.com/account/licenses');
-    const res = applyLicenses(db, a.id, text, { settings: settings.all() });
-    relearnStyle(db, { settings: settings.all() });
-    return res;
-  }, { summary: 'Paste Steam\'s licenses page (date added per product) to bound pre-tracking history', body: '{ text }' });
+    return preview(c, () => {
+      const res = applyLicenses(db, a.id, text, { settings: settings.all() });
+      relearnStyle(db, { settings: settings.all() });
+      return res;
+    });
+  }, { query: { dry_run: 'true = preview only' }, summary: 'Paste Steam\'s licenses page (date added per product) to bound pre-tracking history', body: '{ text }', bigBody: true });
 
   r.get('/api/v1/now-playing', () => sync.nowPlaying(), { summary: 'Games currently being played (from presence)' });
 
@@ -640,7 +763,7 @@ export function registerRoutes(r, app) {
     const where = []; const args = [];
     if (c.query.account_id) { where.push('s.account_id = ?'); args.push(toInt(c.query.account_id)); }
     return db.prepare(`SELECT s.*, a.name account_name, a.platform FROM syncs s LEFT JOIN accounts a ON a.id = s.account_id ${where.length ? `WHERE ${where.join(' AND ')}` : ''} ORDER BY s.id DESC LIMIT ?`)
-      .all(...args, Math.min(500, toInt(c.query.limit, 50))).map((r) => ({ ...r, details: r.details ? JSON.parse(r.details) : null }));
+      .all(...args, clamp(c.query.limit, 50, 1, 500)).map((r) => ({ ...r, details: r.details ? JSON.parse(r.details) : null }));
   }, { summary: 'Sync history', query: { account_id: '', limit: '' } });
 
   // ---------- settings & tokens ----------
@@ -678,24 +801,45 @@ export function registerRoutes(r, app) {
     else if (Array.isArray(c.body.games)) rows = c.body.games;
     else if (typeof c.body.csv === 'string') rows = parseCsv(c.body.csv);
     else throw new HttpError(400, 'Send a CSV body, a JSON array, or { games: [...] }');
-    const res = importRows(db, rows, { settings: settings.all() });
-    res.style_relearned = relearnStyle(db, { settings: settings.all(), log: app.log?.scoped?.('inference') });
-    return res;
-  }, { summary: 'Import games/history (CSV or JSON). Totals without sessions become baseline history.', body: 'CSV text or { games: [{ title, platform?, playtime_minutes|playtime_hours, last_played?, status?, rating?, notes?, sessions?: [{ date|started_at, minutes }] }] }' });
+    return preview(c, () => {
+      const res = importRows(db, rows, { settings: settings.all() });
+      res.style_relearned = relearnStyle(db, { settings: settings.all(), log: app.log?.scoped?.('inference') });
+      return res;
+    });
+  }, { query: { dry_run: 'true = report what would happen without changing anything' }, summary: 'Import games/history (CSV or JSON). Joins what is here: synced games keep their platform totals and gain dates / exact past sessions; manual and imported games are updated; empty details are filled, never overwritten.', body: 'CSV text or { games: [{ title, platform?, playtime_minutes|playtime_hours, last_played?, status?, rating?, notes?, sessions?: [{ date|started_at, minutes }] }] }', bigBody: true });
+
+  r.post('/api/v1/import/gametrack', (c) => {
+    const buf = c.rawBuffer;
+    if (!isZip(buf)) throw new HttpError(400, 'Upload the GameTrack export .zip (Settings → Export in GameTrack)');
+    const tables = gameTrackTables(readZip(buf));
+    return preview(c, () => importGameTrack(db, tables, { settings: settings.all() }));
+  }, { query: { dry_run: 'true = preview only' }, summary: 'Import a GameTrack export ZIP: unlock times date synced history, untracked hours become history, statuses/ratings/covers fill gaps', body: 'the .zip file (Content-Type: application/zip)', bigBody: true, binary: true });
 
   r.get('/api/v1/export', async (c) => {
     const csv = c.query.format === 'csv';
     c.stream(200, csv ? 'text/csv; charset=utf-8' : 'application/json', { 'Content-Disposition': `attachment; filename="playtracker-export.${csv ? 'csv' : 'json'}"` });
+    // a cancelled download ends the loop, which closes the generator and releases its statement
+    // (left open, it blocks backups and WAL checkpoints on the shared connection)
     for (const chunk of exportChunks(db, csv ? 'csv' : 'json')) {
-      if (!c.res.write(chunk)) await new Promise((r) => c.res.once('drain', r));
+      if (c.res.destroyed) break;
+      if (!c.res.write(chunk) && !c.res.destroyed) {
+        await new Promise((r) => {
+          const done = () => { c.res.off('drain', done); c.res.off('close', done); r(); };
+          c.res.on('drain', done);
+          c.res.on('close', done);
+        });
+      }
     }
-    c.res.end();
+    if (!c.res.destroyed) c.res.end();
     return undefined;
   }, { summary: 'Export everything (streamed JSON, or ?format=csv)', query: { format: 'json|csv' } });
 
   r.get('/api/v1/backup', (c) => {
     const tmp = path.join(os.tmpdir(), `playtracker-backup-${Date.now()}.db`);
-    db.exec(`VACUUM INTO '${tmp.replace(/'/g, "''")}'`);
+    // a read-only connection of its own: SQLite refuses VACUUM while a statement is running on the
+    // app's connection (an export still downloading); either way it copies one consistent snapshot
+    const src = app.dbFile && app.dbFile !== ':memory:' ? new DatabaseSync(app.dbFile, { readOnly: true }) : db;
+    try { src.exec(`VACUUM INTO '${tmp.replace(/'/g, "''")}'`); } finally { if (src !== db) src.close(); }
     const buf = fs.readFileSync(tmp);
     fs.unlinkSync(tmp);
     c.sendRaw(200, buf, 'application/vnd.sqlite3', { 'Content-Disposition': `attachment; filename="playtracker-${new Date().toISOString().slice(0, 10)}.db"` });
@@ -713,8 +857,9 @@ export function registerRoutes(r, app) {
     const h = JSON.parse(e.hist || '{}');
     if ('mode' in b) { if (!['auto', 'undated'].includes(b.mode)) throw new HttpError(400, 'mode must be auto or undated'); h.mode = b.mode; }
     if ('first_played_at' in b || 'last_played_at' in b) {
-      const start = toTime(b.first_played_at);
-      const end = toTime(b.last_played_at);
+      // empty / null clears the window; text that is not a date is refused (and changes nothing)
+      const start = timeField(b, 'first_played_at');
+      const end = timeField(b, 'last_played_at');
       if (start && end && end < start) throw new HttpError(400, 'last_played_at must be after first_played_at');
       h.manual = start || end ? { start: start || undefined, end: end || undefined } : null;
     }
@@ -754,8 +899,8 @@ export function registerRoutes(r, app) {
   // Games whose pre-tracking history is least certain first (low-confidence + undated minutes),
   // for the "Improve history" page: one quick answer per game re-dates it.
   r.get('/api/v1/history/review', (c) => {
-    const limit = Math.min(200, toInt(c.query.limit, 30));
-    const offset = toInt(c.query.offset, 0);
+    const limit = clamp(c.query.limit, 30, 1, 200);
+    const offset = clamp(c.query.offset, 0, 0, 1e9);
     const platform = c.query.platform || null;
     return memo(db, `hist-review:${limit}:${offset}:${platform}`, () => {
       const where = `e.baseline_min > 0 AND e.excluded = 0 AND json_extract(e.hist, '$.manual') IS NULL
@@ -792,7 +937,10 @@ export function registerRoutes(r, app) {
     const rows = db.prepare(`SELECT s.kind, s.confidence, COUNT(DISTINCT s.entry_id) entries, SUM(s.minutes) minutes FROM sessions s JOIN entries e ON e.id = s.entry_id
       WHERE s.source = 'inferred' AND e.excluded = 0 GROUP BY s.kind, s.confidence`).all();
     const style = styleOf(db);
-    return { rows, pending_enrichment: db.prepare('SELECT COUNT(*) n FROM entries WHERE baseline_min > 0 AND enriched_at IS NULL AND account_id IS NOT NULL').get().n, version: INFER_VERSION,
+    // only titles that can still be enriched (as on /system): custom accounts never are
+    const enrichable = db.prepare('SELECT id, platform FROM accounts').all().filter((a) => providers[a.platform]?.enrich).map((a) => a.id);
+    const pending = enrichable.length ? db.prepare(`SELECT COUNT(*) n FROM entries WHERE baseline_min > 0 AND enriched_at IS NULL AND account_id IN (${enrichable.map(() => '?').join(',')})`).get(...enrichable).n : 0;
+    return { rows, pending_enrichment: pending, version: INFER_VERSION,
       style: style ? { games: style.games, learned_at: style.learned_at } : null };
   }), { summary: 'How much pre-tracking history is dated, by confidence' });
 
@@ -802,12 +950,17 @@ export function registerRoutes(r, app) {
     const where = []; const args = [];
     if (q.level) { const lv = q.level.split(','); where.push(`level IN (${lv.map(() => '?').join(',')})`); args.push(...lv); }
     if (q.source) { where.push('source LIKE ?'); args.push(`${q.source}%`); }
-    if (q.q) { where.push('(message LIKE ? OR context LIKE ?)'); args.push(`%${q.q}%`, `%${q.q}%`); }
+    if (q.q) { // literal text: % and _ are not wildcards
+      const like = `%${q.q.replace(/[\\%_]/g, '\\$&')}%`;
+      where.push("(message LIKE ? ESCAPE '\\' OR context LIKE ? ESCAPE '\\')"); args.push(like, like);
+    }
     if (q.since) { where.push('time >= ?'); args.push(toTime(q.since)); }
     if (q.before) { where.push('id < ?'); args.push(toInt(q.before)); }
     const w = where.length ? `WHERE ${where.join(' AND ')}` : '';
-    const items = db.prepare(`SELECT * FROM logs ${w} ORDER BY id DESC LIMIT ?`).all(...args, Math.min(1000, toInt(q.limit, 200)))
-      .map((l) => ({ ...l, context: l.context ? JSON.parse(l.context) : null }));
+    // (older versions stored oversized contexts cut off mid-JSON)
+    const context = (s) => { try { return s ? JSON.parse(s) : null; } catch { return { truncated: true, preview: s.slice(0, 2000) }; } };
+    const items = db.prepare(`SELECT * FROM logs ${w} ORDER BY id DESC LIMIT ?`).all(...args, clamp(q.limit, 200, 1, 1000))
+      .map((l) => ({ ...l, context: context(l.context) }));
     const counts = db.prepare('SELECT level, COUNT(*) n FROM logs WHERE time > ? GROUP BY level').all(Date.now() - 86_400_000);
     return { items, counts_24h: Object.fromEntries(counts.map((x) => [x.level, x.n])), next: items.length ? items.at(-1).id : null };
   }, { summary: 'Persisted warnings and errors (30 days)', query: { level: 'warn,error', source: 'sync, presence, api, …', q: 'search', since: '', before: 'cursor (id)', limit: '' } });
@@ -855,8 +1008,9 @@ export function registerRoutes(r, app) {
 
   r.get('/api/v1/widget', () => {
     const l = lifetime(db);
-    const w = computeStats(db, { range: 'week', weekStartsOn: settings.get('week_starts_on') });
-    const t = computeStats(db, { range: '1d' });
+    // today / this week use tracked play only, like the dashboard KPIs
+    const w = computeStats(db, { range: 'week', weekStartsOn: settings.get('week_starts_on'), estimates: 'exclude' });
+    const t = computeStats(db, { range: '1d', estimates: 'exclude' });
     const last = db.prepare(`${SESSION_SELECT} WHERE s.kind = 'play' AND e.excluded = 0 ORDER BY s.sort_time DESC LIMIT 1`).get();
     return {
       today_hours: +(t.total_minutes / 60).toFixed(1), week_hours: +(w.total_minutes / 60).toFixed(1), lifetime_hours: Math.round(l.total_minutes / 60),

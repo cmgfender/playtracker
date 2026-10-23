@@ -20,12 +20,15 @@ export const toInt = (v, def = null) => {
   return Number.isFinite(n) ? n : def;
 };
 
+const MAX_TIME = 8.64e15; // the largest time a Date can hold
+
 /** Accepts epoch ms/seconds, ISO strings or YYYY-MM-DD and returns epoch ms (or null). */
 export function toTime(v) {
   if (v === undefined || v === null || v === '') return null;
   if (typeof v === 'number' || /^\d+$/.test(String(v))) {
     const n = Number(v);
-    return n < 1e11 ? n * 1000 : n;
+    const t = n < 1e11 ? n * 1000 : n;
+    return Math.abs(t) <= MAX_TIME ? t : null;
   }
   const s = String(v);
   const t = /^\d{4}-\d{2}-\d{2}$/.test(s) ? new Date(`${s}T12:00:00`).getTime() : Date.parse(s);

@@ -5,6 +5,8 @@ import {
 import { barChart, sparkline, donut, heatmap, topList, platformLegend, bindTips } from './charts.js';
 
 const WD = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+// a URL safe inside CSS url('...'): quotes, parentheses, backslashes and newlines percent-encoded
+const cssUrl = (u) => String(u).replace(/['"()\\\s]/g, (c) => `%${c.charCodeAt(0).toString(16).padStart(2, '0')}`);
 
 function seriesLabel(key, group) {
   if (group === 'month') return new Date(`${key}-01T12:00`).toLocaleDateString(undefined, { month: 'short' });
@@ -179,29 +181,37 @@ export function logSessionModal(game = null, onDone = rerender) {
 async function editSessionModal(id, onDone = rerender) {
   let s;
   try { s = await api(`/sessions/${id}`); } catch (e) { return fail(e); }
-  const local = s.source !== 'sync';
+  // the history of a synced game is like a synced session: it can only leave the stats
+  const local = s.source !== 'sync' && !(s.source === 'inferred' && s.account_id);
+  // pre-tracking history keeps its minutes and is never counted as tracked play
+  const inferred = s.source === 'inferred';
   modal({
     title: esc(s.title),
     body: `<div class="stack">
       <div class="row wrap">${platTag(s.platform)} ${sourceBadge(s)} <span class="muted small">${esc(sessionWhen(s))}</span></div>
-      ${!local ? `<div class="card small muted" style="padding:12px">${icon('info', '')} Synced from ${esc(plat(s.platform).label)}. The platform only reported <b>${fmtMin(s.minutes)}</b> played between ${fmtDate(s.window_start)} ${fmtTime(s.window_start)} and ${fmtDate(s.window_end)} ${fmtTime(s.window_end)}. You can pin the exact time below.</div>` : ''}
-      ${local ? `<div class="field"><label>Minutes</label><input class="input" type="number" name="minutes" value="${s.minutes}" min="1"></div>` : ''}
+      ${!local ? `<div class="card small muted" style="padding:12px">${icon('info', '')} Synced from ${esc(plat(s.platform).label)}. ${s.source === 'inferred'
+        ? `This is history from before tracking started: its <b>${fmtMin(s.minutes)}</b> are part of the platform's total, so it can only leave the stats.`
+        : `The platform only reported <b>${fmtMin(s.minutes)}</b> played between ${fmtDate(s.window_start)} ${fmtTime(s.window_start)} and ${fmtDate(s.window_end)} ${fmtTime(s.window_end)}. You can pin the exact time below.`}</div>` : ''}
+      ${local && !inferred ? `<div class="field"><label>Minutes</label><input class="input" type="number" name="minutes" value="${s.minutes}" min="1"></div>` : ''}
       <div class="grid grid-2">
         <div class="field"><label>Started</label><input class="input" type="datetime-local" name="started" value="${s.started_at ? localInput(s.started_at) : ''}"></div>
         <div class="field"><label>Ended</label><input class="input" type="datetime-local" name="ended" value="${s.ended_at ? localInput(s.ended_at) : ''}"></div>
       </div>
       <div class="field"><label>Note</label><input class="input" name="note" value="${esc(s.note || '')}"></div>
-      <div class="setting" style="border:0;padding:0"><div><div class="t">Count in stats</div><div class="d">Off = treat as pre-tracking history (still counts toward lifetime)</div></div>
-        <label class="switch"><input type="checkbox" name="play" ${s.kind === 'play' ? 'checked' : ''}><span></span></label></div>
+      ${!inferred ? `<div class="setting" style="border:0;padding:0"><div><div class="t">Count in stats</div><div class="d">Off = treat as pre-tracking history (still counts toward lifetime)</div></div>
+        <label class="switch"><input type="checkbox" name="play" ${s.kind === 'play' ? 'checked' : ''}><span></span></label></div>` : ''}
     </div>`,
     foot: `<button class="btn danger" id="s-del">${icon('trash')}${local ? 'Delete' : 'Remove from stats'}</button><span class="grow"></span><button class="btn" data-close>Cancel</button><button class="btn primary" id="s-save">Save</button>`,
     onMount(el, close) {
       const v = (n) => el.querySelector(`[name=${n}]`);
       el.querySelector('#s-save').addEventListener('click', async () => {
-        const body = { note: v('note').value, kind: v('play').checked ? 'play' : 'baseline' };
-        if (v('started').value) body.started_at = new Date(v('started').value).getTime();
-        if (v('ended').value) body.ended_at = new Date(v('ended').value).getTime();
-        if (local) body.minutes = Number(v('minutes').value);
+        const body = { note: v('note').value };
+        // kind only when the switch changed (history has none)
+        if (v('play') && v('play').checked !== v('play').defaultChecked) body.kind = v('play').checked ? 'play' : 'baseline';
+        // only times you changed: unchanged ones let new minutes move the start
+        if (v('started').value && v('started').value !== v('started').defaultValue) body.started_at = new Date(v('started').value).getTime();
+        if (v('ended').value && v('ended').value !== v('ended').defaultValue) body.ended_at = new Date(v('ended').value).getTime();
+        if (local && !inferred) body.minutes = Number(v('minutes').value);
         try { await api(`/sessions/${s.id}`, { method: 'PATCH', body }); close(); toast('Session updated'); onDone(); } catch (e) { fail(e); }
       });
       el.querySelector('#s-del').addEventListener('click', async () => {
@@ -399,11 +409,9 @@ function layoutModal() {
 // =====================================================================
 function libState() {
   const q = new URLSearchParams(location.search);
-  let saved = {};
-  try { saved = JSON.parse(localStorage.getItem('pt-lib') || '{}'); } catch { /* ignore */ }
   return {
     q: q.get('q') || '', platform: q.get('platform') || '', status: q.get('status') || '',
-    sort: q.get('sort') || saved.sort || state.settings?.default_library_sort || 'recent',
+    sort: q.get('sort') || state.settings?.default_library_sort || 'recent', // the URL keeps any other sort
     view: state.settings?.library_view || 'grid',
     // "hide never-played" setting: show played games unless a filter in the URL says otherwise
     played: q.get('played') ?? (state.settings?.library_hide_unplayed ? 'true' : ''), hidden: q.get('hidden') || '',
@@ -502,7 +510,6 @@ async function library(view, stale) {
     if (st.played !== (state.settings?.library_hide_unplayed ? 'true' : '')) p.set('played', st.played);
     if (st.sort !== (state.settings?.default_library_sort || 'recent')) p.set('sort', st.sort);
     history.replaceState({}, '', `/library${p.toString() ? `?${p}` : ''}`);
-    try { localStorage.setItem('pt-lib', JSON.stringify({ sort: st.sort })); } catch { /* ignore */ }
     load();
   };
   let t;
@@ -560,7 +567,7 @@ async function game(view, id, stale) {
   view.innerHTML = `
     <a href="/library" data-link class="btn ghost sm" style="margin:-4px 0 10px -6px" onclick="if(history.length>1){event.preventDefault();event.stopPropagation();history.back()}">${icon('back')}Back</a>
     <div class="hero fade-in">
-      ${g.cover_url ? `<div class="bg" style="background-image:url('${esc(g.cover_url)}')"></div>` : ''}
+      ${g.cover_url ? `<div class="bg" style="background-image:url('${esc(cssUrl(g.cover_url))}')"></div>` : ''}
       <div class="in">
         ${cover(g)}
         <div class="grow">
@@ -794,16 +801,19 @@ async function sessions(view, stale) {
     $('#s-count').innerHTML = `${total.toLocaleString()} session${total === 1 ? '' : 's'} · ${fmtMin(totalMin, { short: true })}${f.game_id && all[0] ? ` · ${esc(all[0].title)} <a href="/sessions" data-link style="color:var(--accent)">show all games</a>` : ''}`;
     $('#s-bulk-n').textContent = `${sel.size} selected`;
   };
+  let seq = 0;
   const load = async (reset = true) => {
-    if (reset) { cursor = null; all = []; }
+    // only the latest request may draw (fast filter clicks / typing overlap)
+    const my = ++seq;
     const p = new URLSearchParams({ limit: '150', kind: f.kind });
-    if (cursor) p.set('before', cursor);
+    if (!reset && cursor) p.set('before', cursor);
     if (f.platform) p.set('platform', f.platform);
     if (f.source) p.set('source', f.source);
     if (f.q) p.set('q', f.q);
     if (f.game_id) p.set('game_id', f.game_id);
     const r = await api(`/sessions?${p}`);
-    all = all.concat(r.items); total = r.total; totalMin = r.total_minutes; cursor = r.next;
+    if (my !== seq || stale()) return;
+    all = (reset ? [] : all).concat(r.items); total = r.total; totalMin = r.total_minutes; cursor = r.next;
     draw();
   };
   let t;
@@ -1186,7 +1196,8 @@ async function settings(view, stale) {
       <div class="stack">
         <div class="card" id="import"><div class="card-h"><h2>Import</h2></div>
           <p class="small muted" style="margin-top:-6px">Bring history from spreadsheets, other trackers, Switch, etc. CSV columns: <code>title</code>, <code>platform</code>, <code>playtime_hours</code> or <code>playtime_minutes</code>, <code>last_played</code>, <code>status</code>, <code>rating</code>, <code>notes</code>. JSON may include per-game <code>sessions</code>. Totals without sessions become <b>history</b> — counted in lifetime, never as a burst in your charts.</p>
-          <label class="btn" style="cursor:pointer">${icon('upload')}Choose CSV / JSON<input type="file" id="imp-file" accept=".csv,.json,.txt,text/csv,application/json" hidden></label>
+          <label class="btn" style="cursor:pointer">${icon('upload')}Choose CSV / JSON / GameTrack .zip<input type="file" id="imp-file" accept=".csv,.json,.txt,.zip,text/csv,application/json,application/zip" hidden></label>
+          <p class="tiny muted" style="margin:8px 0 0">GameTrack: in GameTrack choose Settings → Export, then pick the .zip here. Unlock times date your synced games' history; hours no account here tracks are added as history; nothing is counted twice.</p>
           <details style="margin-top:12px"><summary class="small muted" style="cursor:pointer">…or paste</summary><textarea class="input mono" id="imp-text" placeholder="title,platform,playtime_hours,status&#10;Hades,switch,42,completed" style="margin-top:8px"></textarea><button class="btn sm" id="imp-go" style="margin-top:8px">Import pasted data</button></details>
           <div id="imp-r" class="small" style="margin-top:10px"></div>
         </div>
@@ -1235,16 +1246,65 @@ async function settings(view, stale) {
   $('#accent-custom').addEventListener('change', (e) => setAccent(e.target.value));
   let layoutTimer;
   layoutEditor($('#set-layout'), parseLayout(s.dashboard_layout), (v) => { clearTimeout(layoutTimer); layoutTimer = setTimeout(() => save({ dashboard_layout: v }, 'Home layout saved'), 400); });
-  const doImport = async (text, name = '') => {
+  // Imports preview first (dry run: nothing changes), then apply on confirm.
+  const li = (cond, html) => (cond ? `<li>${html}</li>` : '');
+  const fileSummary = (r) => `<ul class="small" style="margin:6px 0 0;padding-left:18px">
+      ${li(r.merged_synced, `${r.merged_synced} game${r.merged_synced === 1 ? '' : 's'} your synced accounts already track: their totals stay${r.synced_updated ? `, the file adds dates and details${r.sessions_restored ? ` and ${r.sessions_restored} exact past sessions (replacing estimates)` : ''}` : ''}`)}
+      ${li(r.entries_created, `${r.entries_created} new game${r.entries_created === 1 ? '' : 's'} / entries`)}
+      ${li(r.entries_updated, `${r.entries_updated} existing manual or imported entr${r.entries_updated === 1 ? 'y' : 'ies'} joined (totals only grow, never shrink)`)}
+      ${li(r.sessions, `${r.sessions} sessions (${fmtMin(r.tracked_minutes)})`)}
+      ${li(r.baseline_minutes, `${fmtHours(r.baseline_minutes)}h added as history, dated from the file`)}
+      ${li(r.details_filled, `${r.details_filled} games get a status, rating or notes they did not have (yours are never replaced)`)}
+      ${li(r.skipped, `<span class="muted">${r.skipped} rows skipped (no title or unreadable)</span>`)}
+      ${r.unchanged && !r.entries_created && !r.entries_updated && !r.synced_updated ? '<li>Nothing new - everything in this file is already here.</li>' : ''}
+    </ul>`;
+  const gameTrackSummary = (r) => {
+    const i = r.import || {};
+    return `<ul class="small" style="margin:6px 0 0;padding-left:18px">
+      ${li(true, `${r.gametrack_games.toLocaleString()} GameTrack games read`)}
+      ${li(r.anchors, `${r.anchors.toLocaleString()} achievement / trophy times date history${r.anchored_entries ? ` of ${r.anchored_entries} synced games` : ''}`)}
+      ${li(r.imported_titles, `${r.imported_titles} games with playtime no account here tracks: ${fmtHours(i.baseline_minutes || 0)}h added as history`)}
+      ${li(r.skipped_synced, `${r.skipped_synced} games skipped: already counted by your synced accounts`)}
+      ${li(r.statuses || r.ratings || r.covers, `${r.statuses} statuses, ${r.ratings} ratings, ${r.covers} covers filled in where empty`)}
+      ${li(r.wishlist_added, `${r.wishlist_added} wish-listed games added`)}
+      ${li(r.skipped_no_playtime, `<span class="muted">${r.skipped_no_playtime} collection games without playtime left out</span>`)}
+    </ul>`;
+  };
+  const previewThenApply = async ({ label, send, summary }) => {
     const out = $('#imp-r');
-    out.innerHTML = '<span class="pulse muted">Importing…</span>';
+    out.innerHTML = `<span class="pulse muted">Checking ${esc(label)}…</span>`;
     try {
-      const isJson = name.endsWith('.json') || /^\s*[[{]/.test(text);
-      const r = await api('/import', { method: 'POST', body: isJson ? JSON.parse(text) : text, headers: isJson ? {} : { 'Content-Type': 'text/csv' } });
-      out.innerHTML = `<div class="card" style="padding:12px;border-color:var(--good)"><b style="color:var(--good)">✓ Imported ${r.games} games</b> — ${r.entries_created} new, ${r.entries_updated} updated, ${r.sessions} sessions (${fmtMin(r.tracked_minutes)}), ${fmtHours(r.baseline_minutes)}h added as history${r.skipped ? `, ${r.skipped} rows skipped` : ''}.<div class="muted">Check <a href="/duplicates" data-link style="color:var(--accent)">Duplicates</a> if these games are also on a synced account.</div></div>`;
+      const p = await send(true);
+      out.innerHTML = `<div class="card" style="padding:12px"><b>Preview: ${esc(label)}</b>${summary(p)}
+        <div class="small muted" style="margin-top:6px">Nothing has changed yet. Imports join your library: they fill gaps and add history, never replace what you set.</div>
+        <div class="row" style="margin-top:10px"><button class="btn primary sm" id="imp-apply">${icon('check')}Import</button><button class="btn sm ghost" id="imp-cancel">Cancel</button></div></div>`;
+      $('#imp-cancel').addEventListener('click', () => { out.innerHTML = ''; });
+      $('#imp-apply').addEventListener('click', async () => {
+        out.innerHTML = '<span class="pulse muted">Importing…</span>';
+        try {
+          const r = await send(false);
+          out.innerHTML = `<div class="card" style="padding:12px;border-color:var(--good)"><b style="color:var(--good)">✓ Imported ${esc(label)}</b>${summary(r)}<div class="muted small" style="margin-top:6px">Importing the same file again changes nothing.</div></div>`;
+        } catch (e) { out.innerHTML = `<div class="card" style="padding:12px;border-color:var(--bad);color:var(--bad)">${esc(e.message)}</div>`; }
+      });
     } catch (e) { out.innerHTML = `<div class="card" style="padding:12px;border-color:var(--bad);color:var(--bad)">${esc(e.message)}</div>`; }
   };
-  $('#imp-file').addEventListener('change', async (e) => { const f = e.target.files[0]; if (f) doImport(await f.text(), f.name.toLowerCase()); e.target.value = ''; });
+  const doImport = (text, name = '') => {
+    let body; let headers = {};
+    const isJson = name.endsWith('.json') || /^\s*[[{]/.test(text);
+    try { body = isJson ? JSON.parse(text) : text; } catch { $('#imp-r').innerHTML = '<div class="card" style="padding:12px;border-color:var(--bad);color:var(--bad)">That file is not valid JSON</div>'; return; }
+    if (!isJson) headers = { 'Content-Type': 'text/csv' };
+    return previewThenApply({ label: name || 'pasted data', send: (dry) => api(`/import${dry ? '?dry_run=true' : ''}`, { method: 'POST', body, headers }), summary: fileSummary });
+  };
+  const doGameTrack = (file) => previewThenApply({
+    label: file.name, summary: gameTrackSummary,
+    send: (dry) => api(`/import/gametrack${dry ? '?dry_run=true' : ''}`, { method: 'POST', body: file, headers: { 'Content-Type': 'application/zip' } }),
+  });
+  $('#imp-file').addEventListener('change', async (e) => {
+    const f = e.target.files[0];
+    if (f && /\.zip$/i.test(f.name)) doGameTrack(f);
+    else if (f) doImport(await f.text(), f.name.toLowerCase());
+    e.target.value = '';
+  });
   $('#imp-go').addEventListener('click', () => { const t = $('#imp-text').value; if (t.trim()) doImport(t); });
   $('#pw-f')?.addEventListener('submit', async (e) => {
     e.preventDefault();
@@ -1307,7 +1367,7 @@ async function apidocs(view, stale) {
           suffix: h</pre></div>
     </div>
     <div class="card" style="margin-top:16px">${Object.entries(groups).map(([tag, ops]) => `<h2 style="margin:18px 0 8px;text-transform:capitalize">${esc(tag)}</h2>
-      <table class="tbl">${ops.map(({ p, m, op }) => `<tr><td style="width:70px"><span class="method m-${m}">${m.toUpperCase()}</span></td><td><span class="mono">${esc(p)}</span><div class="small muted">${esc(op.summary)}</div>
+      <table class="tbl api-table">${ops.map(({ p, m, op }) => `<tr><td style="width:70px"><span class="method m-${m}">${m.toUpperCase()}</span></td><td><span class="mono">${esc(p)}</span><div class="small muted">${esc(op.summary)}</div>
         ${op.parameters.filter((x) => x.in === 'query').length ? `<div class="tiny dim">query: ${op.parameters.filter((x) => x.in === 'query').map((x) => `<code>${esc(x.name)}</code>${x.description ? ` ${esc(x.description)}` : ''}`).join(' · ')}</div>` : ''}
         ${op.requestBody ? `<div class="tiny dim">body: <code>${esc(op.requestBody.content['application/json'].schema.description)}</code></div>` : ''}</td></tr>`).join('')}</table>`).join('')}</div>`;
 }
@@ -1347,7 +1407,7 @@ async function system(view, stale) {
       </tbody></table></div>
       <div class="row wrap" style="margin-top:12px"><button class="btn sm" id="sys-reinfer">Re-date all history</button><a class="btn sm ghost" href="/history" data-link>Improve history →</a>${sys.accounts.filter((a) => a.enrichment_pending && a.can_enrich).map((a) => `<button class="btn sm ghost" data-enrich="${a.id}">Fetch history dates for ${esc(a.name)}</button>`).join('')}</div>
     </div>
-    <div class="card" style="margin-top:16px"><div class="card-h"><h2>Error log</h2><div class="row">
+    <div class="card" style="margin-top:16px"><div class="card-h"><h2>Error log</h2><div class="row wrap">
         <div class="seg" id="log-lvl"><button data-l="error,warn" class="on">Errors &amp; warnings</button><button data-l="error">Errors</button><button data-l="warn">Warnings</button></div>
         <button class="btn sm ghost" id="log-clear">${icon('trash')}Clear</button></div></div>
       <div class="search" style="margin-bottom:10px">${icon('search')}<input class="input" id="log-q" placeholder="Filter messages (account, game, error…)"></div>
@@ -1475,10 +1535,17 @@ async function historyPage(view, stale) {
     if (e.target.closest('#lic-go')) {
       const text = $('#lic-text').value.trim();
       if (!text) return toast('Paste the licenses table first', { bad: true });
+      const url = (dry) => `/accounts/${$('#lic-acc').value}/licenses${dry ? '?dry_run=true' : ''}`;
       try {
-        const r = await api(`/accounts/${$('#lic-acc').value}/licenses`, { method: 'POST', body: { text } });
-        $('#lic-res').textContent = `${r.licenses} licenses read · ${r.matched} games matched · ${r.history_redated} re-dated${r.unmatched ? ` · ${r.unmatched} not in library (bundles, DLC, removed games)` : ''}`;
-        toast(`Purchase dates added to ${r.matched} games`);
+        const p = await api(url(true), { method: 'POST', body: { text } });
+        $('#lic-res').innerHTML = `Preview: ${p.licenses} licenses · ${p.matched} games matched · ${p.history_redated} would be re-dated${p.unmatched ? ` · ${p.unmatched} not in library (bundles, DLC, removed)` : ''} <button class="btn sm primary" id="lic-apply">Apply</button>`;
+        $('#lic-apply').addEventListener('click', async () => {
+          try {
+            const r = await api(url(false), { method: 'POST', body: { text } });
+            $('#lic-res').textContent = `${r.licenses} licenses read · ${r.matched} games matched · ${r.history_redated} re-dated`;
+            toast(`Purchase dates added to ${r.matched} games`);
+          } catch (err) { fail(err); }
+        });
       } catch (err) { fail(err); }
     }
   });

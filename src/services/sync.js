@@ -2,6 +2,7 @@ import { tx } from '../db.js';
 import { providers } from '../providers/index.js';
 import { httpJson } from '../providers/http.js';
 import { findOrCreateGame } from './library.js';
+import { normalizeTitle, importedAccount } from './titles.js';
 import { nextRun } from './schedule.js';
 import { sendWebhook } from './webhook.js';
 import { flushRollups } from './rollup.js';
@@ -14,6 +15,14 @@ const MIN = 60_000;
 const HOUR = 60 * MIN;
 const DAY = 24 * HOUR;
 const PIN_MAX = 360; // a single delta up to 6h is treated as one continuous session
+const TYPICAL_SESSION = { median: 120, long: 240 }; // until learned from exactly observed sessions
+
+/** Apply the keys that changed between `before` and `after` to the current stored state. */
+export function mergeState(current, before, after) {
+  const out = { ...current };
+  for (const [k, v] of Object.entries(after)) if (JSON.stringify(v) !== JSON.stringify(before?.[k])) out[k] = v;
+  return out;
+}
 
 export function parseAccount(row) {
   if (!row) return null;
@@ -73,6 +82,60 @@ export function applyItems(db, account, items, { settings, now = Date.now(), syn
   const touchEntry = db.prepare(`UPDATE entries SET title = ?, icon_url = COALESCE(?, icon_url), cover_url = COALESCE(?, cover_url),
     last_played_at = COALESCE(?, last_played_at), first_played_at = COALESCE(first_played_at, ?), missing_since = NULL WHERE id = ?`);
   const insSnap = db.prepare('INSERT INTO snapshots(entry_id, sync_id, taken_at, playtime_min) VALUES (?, ?, ?, ?)');
+  // Imported copies of this platform's games (a restored export, a spreadsheet, GameTrack) that
+  // a newly synced entry takes over, so linking an account joins your data instead of doubling it.
+  // A copy your export filed under an account (import:<account>:<title>) belongs to that account:
+  // only it takes the copy - or this one, when every named copy names one other account (renamed
+  // since). Of several other accounts, none: which one this is cannot be told.
+  let importedCopies = null;
+  let renamed = false;
+  const me = String(account.name || '').trim().toLowerCase();
+  const importedCopy = (title) => {
+    if (!importedCopies) {
+      importedCopies = new Map();
+      const names = new Set();
+      for (const e of db.prepare("SELECT * FROM entries WHERE account_id IS NULL AND platform = ? AND ext_id LIKE 'import:%'").all(account.platform)) {
+        const named = importedAccount(e.ext_id, e.title);
+        const acc = named === 'gametrack' ? '' : named; // GameTrack names no account of yours
+        if (acc) names.add(acc);
+        const k = normalizeTitle(e.title);
+        if (!importedCopies.has(k)) importedCopies.set(k, []);
+        importedCopies.get(k).push({ e, acc });
+      }
+      renamed = names.size === 1 && !names.has(me);
+    }
+    const copies = importedCopies.get(normalizeTitle(title)) || [];
+    const rank = (c) => (c.acc && c.acc === me ? 0 : !c.acc ? 1 : renamed ? 2 : Infinity);
+    let best = -1;
+    for (let i = 0; i < copies.length; i++) if (rank(copies[i]) < (best < 0 ? Infinity : rank(copies[best]))) best = i;
+    return best < 0 ? null : copies.splice(best, 1)[0].e;
+  };
+  /** Move an imported copy's real sessions, evidence and your decisions onto the synced entry. */
+  const adopt = (entry, old, playtime) => {
+    const playMin = db.prepare("SELECT COALESCE(SUM(minutes), 0) m FROM sessions WHERE entry_id = ? AND kind = 'play'").get(old.id).m;
+    const firstPlay = db.prepare("SELECT MIN(COALESCE(started_at, window_start)) t FROM sessions WHERE entry_id = ? AND kind = 'play'").get(old.id).t;
+    db.prepare("UPDATE sessions SET entry_id = ? WHERE entry_id = ? AND kind = 'play'").run(entry.id, old.id);
+    db.prepare('DELETE FROM sessions WHERE entry_id = ?').run(old.id);
+    const h = safeJson(old.hist, {});
+    mergeEvidence(db, entry.id, {
+      anchors: h.anchors?.length ? h.anchors : undefined, first_played_at: h.first_played_at ?? undefined, date_added: h.date_added ?? undefined,
+      release_at: h.release_at ?? undefined, manual: h.manual ?? undefined, mode: h.mode ?? undefined,
+    });
+    if (old.excluded) db.prepare('UPDATE entries SET excluded = 1 WHERE id = ?').run(entry.id);
+    // keep the game you organised (status, rating, notes) when the titles grouped differently
+    if (old.game_id !== entry.game_id) {
+      const created = entry.game_id;
+      db.prepare('UPDATE entries SET game_id = ? WHERE id = ?').run(old.game_id, entry.id);
+      entry.game_id = old.game_id;
+      db.prepare('DELETE FROM games WHERE id = ? AND NOT EXISTS (SELECT 1 FROM entries WHERE game_id = ?) AND created_at = ?').run(created, created, now);
+    }
+    db.prepare('DELETE FROM entries WHERE id = ?').run(old.id);
+    // the platform's total stands; your recorded play is part of it, the rest is history
+    const total = Math.max(playtime, playMin);
+    if (total !== playtime) db.prepare('UPDATE entries SET playtime_min = ? WHERE id = ?').run(total, entry.id);
+    stats.adopted = (stats.adopted || 0) + 1;
+    return { playMin, rest: total - playMin, firstPlay };
+  };
   const fillCover = db.prepare('UPDATE games SET cover_url = ? WHERE id = ? AND cover_url IS NULL');
   const addHistory = db.prepare('UPDATE entries SET baseline_min = baseline_min + ? WHERE id = ?');
   const insSession = db.prepare(`INSERT INTO sessions(entry_id, sync_id, source, kind, minutes, window_start, window_end, started_at, ended_at, confidence, device, note, created_at)
@@ -98,13 +161,17 @@ export function applyItems(db, account, items, { settings, now = Date.now(), syn
     WHERE e.account_id = ? AND s.kind = 'play' AND s.confidence = 'exact' ORDER BY s.id DESC LIMIT 300`).all(account.id).map((r) => r.minutes).sort((a, b) => a - b);
   const typical = observed.length >= 5
     ? { median: observed[Math.floor(observed.length / 2)], long: observed[Math.floor(observed.length * 0.9)] }
-    : { median: 120, long: 240 };
+    : TYPICAL_SESSION;
 
   const play = (entry, title, { minutes, windowStart, windowEnd, started = null, ended = null, confidence, device = null, note = null }) => {
     minutes = Math.round(minutes);
     if (minutes <= 0) return null;
-    // window barely longer than the session: we know exactly when it happened
-    if (!ended && windowEnd - windowStart <= (minutes + 10) * MIN) { started = windowStart; ended = windowEnd; confidence = 'pinned'; }
+    // window barely longer than the session: we know exactly when it happened (one too short
+    // to hold it is widened back instead - the session began before it)
+    if (!ended && windowEnd - windowStart <= (minutes + 10) * MIN) {
+      if (windowEnd - windowStart >= (minutes - 1) * MIN) { started = windowStart; ended = windowEnd; confidence = 'pinned'; }
+      else windowStart = windowEnd - (minutes + 10) * MIN;
+    }
     const r = insSession.run(entry.id, syncId, source, 'play', minutes, Math.min(windowStart, started ?? windowStart), Math.max(windowEnd, ended ?? windowEnd), started, ended, confidence, device, note, now);
     const id = Number(r.lastInsertRowid);
     if (started && ended && claimSpans.run(id, account.id, entry.ext_id ?? String(curExt), ended - 5 * MIN, started + 5 * MIN).changes && confidence === 'pinned') {
@@ -128,14 +195,14 @@ export function applyItems(db, account, items, { settings, now = Date.now(), syn
     let remaining = delta;
 
     // 1) live presence spans -> exact sessions (a session reported over several syncs stays one session)
+    const spanLen = (sp) => Math.max(1, ((sp.ended_at ?? sp.last_seen_at) - sp.started_at) / MIN);
+    const spanUsed = (sp) => (sp.session_id ? (sessionMinutes.get(sp.session_id)?.minutes || 0) : 0);
     const spans = spansFor.all(account.id, String(it.extId), we + 15 * MIN, ws - model.max_session_min * MIN)
-      .filter((sp) => model.spanReported(sp, ws, we) && (!sp.session_id || model.countsInProgress()));
+      .filter((sp) => model.spanReported(sp, ws, we) && (!sp.session_id || model.countsInProgress())
+        // a finished span its session already fully credited is used up
+        && !(sp.session_id && sp.ended_at != null && spanLen(sp) - spanUsed(sp) <= 0));
     if (spans.length) {
-      const caps = spans.map((sp) => {
-        const len = Math.max(1, ((sp.ended_at ?? sp.last_seen_at) - sp.started_at) / MIN);
-        const used = sp.session_id ? (sessionMinutes.get(sp.session_id)?.minutes || 0) : 0;
-        return Math.max(1, len - used);
-      });
+      const caps = spans.map((sp) => Math.max(1, spanLen(sp) - spanUsed(sp)));
       const total = caps.reduce((a, x) => a + x, 0);
       const covered = Math.min(remaining, Math.round(total * 1.25 + 5));
       const parts = intSplit(covered, caps);
@@ -162,11 +229,17 @@ export function applyItems(db, account, items, { settings, now = Date.now(), syn
         if (v) stats.calibration[v]++;
       }
       remaining -= covered;
-      if (remaining < Math.max(1, minSession)) return;
+      if (remaining <= 0) return;
+      if (remaining < Math.max(1, minSession)) {
+        // a few minutes beyond what presence saw: part of the last observed session, not a new one
+        const last = lastPlay.get(entry.id);
+        if (last) { extendSession.run(Math.round(remaining), last.ended_at ?? last.window_end ?? now, last.window_end ?? now, last.id); return; }
+      }
     }
 
     const pcDelta = model.play_count && it.playCount != null && entry.play_count != null ? it.playCount - entry.play_count : 0;
     const k = Math.max(1, Math.min(30, pcDelta));
+    const oneLaunch = pcDelta === 1; // the launch counter proves one sitting: never split it
     const spanDays = (we - ws) / DAY;
 
     // 2) several launches in the window (launch counter): k sessions, the last one pinned
@@ -211,7 +284,7 @@ export function applyItems(db, account, items, { settings, now = Date.now(), syn
     if (remaining <= PIN_MAX) {
       const pin = model.pin(remaining, ws, we, it.lastPlayedAt);
       const lp = it.lastPlayedAt;
-      if (model.lastPlayed === 'start' && lp && lp > ws && lp < we + 2 * MIN && (!pin || remaining > typical.long)) {
+      if (model.lastPlayed === 'start' && lp && lp > ws && lp < we + 2 * MIN && (!pin || (remaining > typical.long && !oneLaunch))) {
         // A launch time only proves the LAST session started then. When the delta doesn't fit
         // after it, or is longer than this player's long sessions: a typical session at the
         // launch, the rest earlier in the same sitting. (If that launch was really a session
@@ -224,7 +297,7 @@ export function applyItems(db, account, items, { settings, now = Date.now(), syn
         play(entry, title, { minutes: before, windowStart: Math.max(ws, end - (before + 120) * MIN), windowEnd: end, confidence: 'window', device, note: baseNote ?? 'Earlier session before the last launch' });
         return;
       }
-      if (pin && model.lastPlayed === 'end' && remaining > typical.long) {
+      if (pin && model.lastPlayed === 'end' && remaining > typical.long && !oneLaunch) {
         // mirror case for 'end' platforms: last played only proves when the LAST session ended
         const lastPart = Math.min(Math.round(remaining) - 1, typical.median);
         const before = Math.round(remaining) - lastPart;
@@ -239,7 +312,9 @@ export function applyItems(db, account, items, { settings, now = Date.now(), syn
     // 4) big delta over a multi-day window: spread over days, weighted to the last activity
     if (remaining > PIN_MAX && spanDays > 1.2) {
       const anchor = model.lastActivity(it.lastPlayedAt, remaining, ws, we);
-      const end = anchor || we;
+      let end = anchor || we;
+      // an end at exactly local midnight leaves no time on that day (date-only timestamps)
+      if (end === startOfDay(end) && end > ws) end -= 1;
       const d0 = startOfDay(ws);
       const n = Math.max(1, Math.round((startOfDay(end) - d0) / DAY) + 1);
       const weights = Array.from({ length: n }, (_, i) => 1 + (anchor ? 3 * Math.exp(-((n - 1 - i) ** 2) / 2) : 0));
@@ -252,6 +327,14 @@ export function applyItems(db, account, items, { settings, now = Date.now(), syn
         play(entry, title, { minutes: m, windowStart: ds, windowEnd: de, confidence: 'window', device, note: baseNote ?? 'Spread over the sync window' });
       });
       return;
+    }
+    // 5) more minutes than the window is long (on-exit platforms: the session began before the
+    //    window): placed by last played when that fits; otherwise it ended inside the window,
+    //    so it began at most its own length before it
+    if (remaining > (we - ws) / MIN) {
+      const pin = model.pin(remaining, ws, we, it.lastPlayedAt);
+      if (pin) { play(entry, title, { minutes: remaining, windowStart: ws, windowEnd: we, ...pin, confidence: 'pinned', device, note: baseNote }); return; }
+      ws -= Math.min(remaining, model.max_session_min) * MIN;
     }
     play(entry, title, { minutes: remaining, windowStart: ws, windowEnd: we, confidence: 'window', device, note: baseNote });
   };
@@ -266,16 +349,16 @@ export function applyItems(db, account, items, { settings, now = Date.now(), syn
       play_count: model.play_count ? (it.playCount ?? undefined) : undefined,
       date_added: it.dateAdded ?? undefined,
       recent_min: useRecent && it.recentMin ? Math.min(it.recentMin, minutes) : undefined,
-      recent_days: model.recent?.days ?? undefined,
+      recent_days: it.recentWindowDays ?? model.recent?.days ?? undefined,
       ...extra,
     });
     stats.history_minutes += minutes;
     toInfer.add(entry.id);
   };
 
-  const recentDays = model.recent?.days || 14;
   for (const it of items) {
     if (!it || it.extId == null) continue;
+    const recentDays = it.recentWindowDays || model.recent?.days || 14;
     stats.games_seen++;
     const extId = String(it.extId);
     let playtime = Math.max(0, Math.floor(Number(it.playtimeMin) || 0));
@@ -296,11 +379,19 @@ export function applyItems(db, account, items, { settings, now = Date.now(), syn
       seen.push(entry.id);
       fillCover.run(it.coverUrl || null, gameId);
       insSnap.run(entry.id, syncId, now, playtime);
+      const copy = importedCopy(it.title || extId);
+      if (copy) {
+        const a = adopt(entry, copy, playtime);
+        history(entry, a.rest, { ...it, lastPlayedAt: a.firstPlay ? Math.min(it.lastPlayedAt ?? a.firstPlay, a.firstPlay) : it.lastPlayedAt }, a.firstPlay ? { tracking_start: a.firstPlay } : {});
+        continue;
+      }
       if (playtime <= 0) continue;
 
-      const [ws, we] = model.window(prevSync ?? now, now);
-      const playedBeforeWindow = prevSync && lastPlayedAt && lastPlayedAt < ws - 2 * MIN;
-      const startedBeforeWindow = prevSync && it.firstPlayedAt && it.firstPlayedAt < ws - 2 * MIN;
+      // (a title whose lookup was deferred is judged from the sync before the deferral)
+      const from = it.windowFrom ?? prevSync;
+      const [ws, we] = model.window(from ?? now, now);
+      const playedBeforeWindow = from && lastPlayedAt && lastPlayedAt < ws - 2 * MIN;
+      const startedBeforeWindow = from && it.firstPlayedAt && it.firstPlayedAt < ws - 2 * MIN;
       const isImport = initial || !prevSync || it.backfill || playedBeforeWindow;
       if (isImport) {
         // first sight of existing playtime -> history (dated by inference, never a burst today)
@@ -309,8 +400,10 @@ export function applyItems(db, account, items, { settings, now = Date.now(), syn
       }
       const elapsed = (we - ws) / MIN;
       if (!startedBeforeWindow && playtime <= model.capacityMin(ws, we) + overage) {
-        // brand-new game, all of it played since the last report
-        recordDelta(entry, it, playtime, it.firstPlayedAt && it.firstPlayedAt > ws ? Math.max(ws, it.firstPlayedAt - 2 * MIN) : ws, we, null);
+        // brand-new game, all of it played since the last report: its launch and per-device
+        // counters started at zero
+        recordDelta(model.play_count && it.playCount != null ? { ...entry, play_count: 0 } : entry, it, playtime,
+          it.firstPlayedAt && it.firstPlayedAt > ws ? Math.max(ws, it.firstPlayedAt - 2 * MIN) : ws, we, { devices: {} });
         stats.games_changed++;
         continue;
       }
@@ -334,10 +427,26 @@ export function applyItems(db, account, items, { settings, now = Date.now(), syn
       continue;
     }
 
+    if (delta < 0) {
+      // A lower total than before is almost always a glitch (an empty stat, a bad report) that
+      // comes back later; following it would count the time again on recovery. The total stays
+      // at its high-water mark and only play above it is new.
+      touchEntry.run(String(it.title || entry.title), it.iconUrl || null, it.coverUrl || null, lastPlayedAt, it.firstPlayedAt || null, entry.id);
+      stats.decreases = (stats.decreases || 0) + 1;
+      continue;
+    }
+
     const prevMeta = safeJson(entry.meta, {});
     updEntry.run(String(it.title || entry.title), it.iconUrl || null, it.coverUrl || null, playtime, lastPlayedAt, it.firstPlayedAt || null, it.playCount ?? null, now, metaJson, entry.id);
     insSnap.run(entry.id, syncId, now, playtime);
-    if (delta < 0) continue; // playtime went down (refund/reset); totals follow the platform
+    if (it.backfill) {
+      // a total that only now became available (a title tracked by presence whose platform starts
+      // reporting playtime): what we tracked is part of it, the rest is history from before
+      // tracking - never new play today
+      const firstTracked = db.prepare("SELECT MIN(COALESCE(started_at, window_start)) t FROM sessions WHERE entry_id = ? AND kind = 'play'").get(entry.id).t;
+      history(entry, delta, { ...it, lastPlayedAt: firstTracked ? Math.min(it.lastPlayedAt ?? firstTracked, firstTracked) : it.lastPlayedAt }, { tracking_start: firstTracked || now });
+      continue;
+    }
 
     stats.games_changed++;
     let [ws, we] = model.window(entry.last_synced_at || prevSync || entry.first_seen_at, now);
@@ -406,6 +515,8 @@ export class SyncService {
     this.plog = asLogger(log).scoped('presence');
     this.running = new Map();
     this.enriching = new Map(); // accountId -> in-flight promise
+    this.generation = new Map(); // accountId -> bumped when it is deleted (ids are reused): work begun before is stale
+    this.enrichTries = new Map(); // entryId -> failed enrichment attempts
     this.soon = new Map();
     this.quota = new Map(); // accountId -> { limit, remaining, resetAt, blockedUntil } from API headers
     for (const a of db.prepare("SELECT id, json_extract(state, '$.rate_limited_until') u FROM accounts").all()) {
@@ -447,6 +558,21 @@ export class SyncService {
 
   isRunning(id) {
     return this.running.has(id);
+  }
+
+  /** Drop what is kept in memory for a deleted account (its id may be reused by the next one). */
+  forget(id) {
+    this.quota.delete(id);
+    this.presenceState.delete(id);
+    this.soon.delete(id);
+    this.generation.set(id, (this.generation.get(id) || 0) + 1); // its work still in flight is stale
+  }
+
+  /** True until the account is deleted: a sync, enrichment or presence check still running then
+   *  stops calling the API and writes nothing (not even API usage) under the id. */
+  lease(id) {
+    const gen = this.generation.get(id) || 0;
+    return () => (this.generation.get(id) || 0) === gen;
   }
 
   // ---------- API usage accounting ----------
@@ -491,8 +617,9 @@ export class SyncService {
 
   ctxFor(account, { counters, warnings } = {}) {
     const getEntry = this.db.prepare('SELECT * FROM entries WHERE account_id = ? AND ext_id = ?');
+    const live = this.lease(account.id);
     return {
-      http: (url, opts, cfg = {}) => httpJson(url, opts, { ...cfg, onResult: (r) => this.recordCall(account.id, r, counters) }),
+      http: (url, opts, cfg = {}) => httpJson(url, opts, { ...cfg, onResult: (r) => { if (live()) this.recordCall(account.id, r, counters); } }),
       getEntry: (ext) => getEntry.get(account.id, String(ext)),
       // our own count for this hour, tightened by what the API itself reports (it also counts
       // calls made elsewhere with the same key)
@@ -500,12 +627,13 @@ export class SyncService {
         if (this.blockedUntil(account.id) > Date.now()) return 0;
         const own = limit - this.usage(account.id).calls;
         const q = this.quota.get(account.id);
-        // a reported count is trusted until its reset (or for an hour when the API names none)
-        const fresh = q && q.remaining != null && (q.resetAt ? q.resetAt > Date.now() : q.at > Date.now() - HOUR);
+        // a reported count is trusted until its reset (or, when the API names none, for the clock
+        // hour it was seen in - quotas are counted per clock hour, like our own count)
+        const fresh = q && q.remaining != null && (q.resetAt ? q.resetAt > Date.now() : Math.floor(q.at / HOUR) === Math.floor(Date.now() / HOUR));
         return fresh ? Math.min(own, q.remaining) : own;
       },
       warn: (m) => { warnings?.push(m); this.log.warn(m, { account: `${account.platform}/${account.name}` }); },
-      stopped: () => this.stopping,
+      stopped: () => this.stopping || !live(),
     };
   }
 
@@ -530,6 +658,7 @@ export class SyncService {
     const warnings = [];
     const syncId = Number(db.prepare('INSERT INTO syncs(account_id, trigger, started_at, initial) VALUES (?, ?, ?, ?)').run(account.id, trigger, startedAt, initial ? 1 : 0).lastInsertRowid);
     const label = `${account.platform}/${account.name}`;
+    const live = this.lease(account.id);
     try {
       let items = pushedItems;
       let state = account.state;
@@ -547,7 +676,9 @@ export class SyncService {
       const now = Date.now();
       const warning = warnings.length ? warnings.join('; ').slice(0, 1000) : null;
       const stats = tx(db, () => {
-        const s = applyItems(db, account, items, { settings: this.settings.all(), now, syncId, initial, source: 'sync', complete });
+        if (!live()) throw new Error('Account not found');
+        // with the state fetched in this sync (e.g. the account creation date that bounds history)
+        const s = applyItems(db, { ...account, state: { ...account.state, ...(state || {}) } }, items, { settings: this.settings.all(), now, syncId, initial, source: 'sync', complete });
         // learned last-played semantics (from presence) accumulate per account
         if (s.calibration.start || s.calibration.end) {
           const prevCal = state?.calibration?.last_played || account.state?.calibration?.last_played || { start: 0, end: 0 };
@@ -556,8 +687,10 @@ export class SyncService {
         const details = { api: counters, warnings, info, history_minutes: s.history_minutes, estimated_minutes: s.estimated_minutes, exact_sessions: s.exact_sessions, late_minutes: s.late_minutes, removed: s.removed, calibration: s.calibration };
         db.prepare(`UPDATE syncs SET finished_at = ?, status = ?, games_seen = ?, games_changed = ?, games_new = ?, sessions_created = ?, minutes_added = ?, baseline_minutes = ?, error = ?, duration_ms = ?, details = ? WHERE id = ?`)
           .run(now, warning ? 'warning' : 'ok', s.games_seen, s.games_changed, s.games_new, s.sessions_created, s.minutes_added, s.history_minutes + s.baseline_minutes, warning, Date.now() - startedAt, JSON.stringify(details), syncId);
+        // only what this sync changed, onto the latest stored state (presence polls, quota pauses,
+        // cover lookups may have written to it while the sync was running)
         db.prepare('UPDATE accounts SET state = ?, last_sync_at = ?, last_status = ?, last_error = ? WHERE id = ?')
-          .run(JSON.stringify(state || {}), now, warning ? 'warning' : 'ok', warning, account.id);
+          .run(JSON.stringify(mergeState(this.account(account.id).state, account.state, state || {})), now, warning ? 'warning' : 'ok', warning, account.id);
         return s;
       });
       this.refreshNext(account.id);
@@ -570,6 +703,9 @@ export class SyncService {
       if (provider.resolveCovers) this.resolveCovers(account.id).catch((e) => this.log.warn(`Cover lookup failed for ${label}: ${e.message}`));
       return result;
     } catch (err) {
+      // the account was deleted while this sync ran: nothing of it is recorded (its ids may be
+      // in use again)
+      if (!live()) throw Object.assign(new Error('Account not found'), { status: 404 });
       const msg = String(err?.message || err);
       if (err?.rateLimited) {
         // quota used up: not a failure of the account; it resumes when the quota resets
@@ -617,16 +753,22 @@ export class SyncService {
     if (!entries.length) return { updated: 0, anchored: 0, remaining: 0 };
     const counters = { calls: 0, errors: 0, rate_limited: 0, ms: 0, hosts: {} };
     const t0 = Date.now();
+    const live = this.lease(accountId);
     try {
       const { updates, state } = await provider.enrich(account, entries, this.ctxFor(account, { counters }));
+      if (!live()) return null; // the account was deleted meanwhile
       let anchored = 0;
+      let progressed = 0;
       tx(this.db, () => {
         // refreshed tokens (PSN) are kept
         if (state) this.db.prepare('UPDATE accounts SET state = ? WHERE id = ?').run(JSON.stringify({ ...this.account(accountId).state, ...state }), accountId);
         for (const u of updates) {
           mergeEvidence(this.db, u.entryId, { anchors: u.anchors?.length ? u.anchors : undefined, release_at: u.release_at });
           if (u.anchors?.length) anchored++;
-          if (u.done) this.db.prepare('UPDATE entries SET enriched_at = ? WHERE id = ?').run(Date.now(), u.entryId);
+          // a title that keeps failing is given up after 3 attempts (no endless retry loop)
+          const tries = u.done ? 0 : (this.enrichTries.get(u.entryId) || 0) + 1;
+          if (u.done || tries >= 3) { this.db.prepare('UPDATE entries SET enriched_at = ? WHERE id = ?').run(Date.now(), u.entryId); this.enrichTries.delete(u.entryId); } else this.enrichTries.set(u.entryId, tries);
+          if (u.done || tries >= 3) progressed++;
         }
         flushRollups(this.db);
         reinferMany(this.db, updates.map((u) => u.entryId), { account, settings: this.settings.all() });
@@ -636,7 +778,7 @@ export class SyncService {
       this.log.info(`Enriched ${updates.length} ${account.platform} titles (${anchored} with activity timestamps) in ${Math.round((Date.now() - t0) / 1000)}s, ${counters.calls} API calls`);
       // more to do? continue later within rate limits
       const left = this.db.prepare('SELECT COUNT(*) n FROM entries WHERE account_id = ? AND baseline_min > 0 AND enriched_at IS NULL').get(accountId).n;
-      if (left && updates.length && !this.stopping) setTimeout(() => this.enrich(accountId).catch((e) => this.log.error('Enrichment failed', e)), account.platform === 'xbox' ? HOUR / 2 : account.platform === 'psn' ? 15 * MIN : 5000).unref?.();
+      if (left && progressed && !this.stopping) setTimeout(() => this.enrich(accountId).catch((e) => this.log.error('Enrichment failed', e)), account.platform === 'xbox' ? HOUR / 2 : account.platform === 'psn' ? 15 * MIN : 5000).unref?.();
       return { updated: updates.length, anchored, remaining: left };
     } catch (err) {
       this.log.error(`Enrichment of ${account.platform}/${account.name} failed: ${err.message}`, err);
@@ -653,7 +795,9 @@ export class SyncService {
     const todo = this.db.prepare('SELECT ext_id FROM entries WHERE account_id = ?').all(accountId).map((r) => r.ext_id).filter((id) => !done.has(Number(id)));
     if (!todo.length) return { updated: 0 };
     const counters = { calls: 0, errors: 0, rate_limited: 0, ms: 0, hosts: {} };
+    const live = this.lease(accountId);
     const { covers, checked } = await provider.resolveCovers(account, todo, this.ctxFor(account, { counters }));
+    if (!live()) return null; // the account was deleted meanwhile
     let updated = 0;
     tx(this.db, () => {
       const fresh = this.account(accountId).state;
@@ -750,7 +894,7 @@ export class SyncService {
       if (missed.length) {
         const lens = db.prepare(`SELECT s.minutes FROM sessions s JOIN entries e ON e.id = s.entry_id
           WHERE e.account_id = ? AND s.kind = 'play' AND s.confidence = 'exact' ORDER BY s.id DESC LIMIT 200`).all(accountId).map((r) => r.minutes).sort((a, b) => a - b);
-        const typical = lens.length >= 5 ? lens[lens.length >> 1] : 60;
+        const typical = lens.length >= 5 ? lens[lens.length >> 1] : TYPICAL_SESSION.median;
         for (const f of missed) {
           const entry = db.prepare('SELECT * FROM entries WHERE account_id = ? AND ext_id = ?').get(accountId, f.extId);
           if (!entry) continue;
@@ -758,8 +902,9 @@ export class SyncService {
           // existing session ending near it, already explains this play
           const seen = db.prepare(`SELECT 1 FROM presence WHERE account_id = ? AND ext_id = ? AND started_at <= ? AND COALESCE(ended_at, ?) >= ? LIMIT 1`)
             .get(accountId, f.extId, f.at + 30 * MIN, now, f.at - 30 * MIN);
+          // (one that ended by the previous last-played time belongs to that earlier play)
           const covered = db.prepare(`SELECT 1 FROM sessions WHERE entry_id = ? AND kind = 'play' AND COALESCE(ended_at, window_end) BETWEEN ? AND ? LIMIT 1`)
-            .get(entry.id, f.at - 30 * MIN, f.at + 30 * MIN);
+            .get(entry.id, Math.max(f.at - 30 * MIN, (f.prev ?? -Infinity) + 1), f.at + 30 * MIN);
           if (seen || covered) continue;
           const gap = f.prev ? Math.floor((f.at - f.prev) / MIN) : Infinity;
           const minutes = Math.max(minMin, Math.min(typical, gap, 360));
@@ -783,13 +928,16 @@ export class SyncService {
     const st = this.presenceState.get(account.id) || { failures: 0 };
     const now = Date.now();
     const ctx = this.ctxFor(account);
+    const live = this.lease(account.id);
     try {
       const res = await provider.presence(account, ctx);
       if (res === null) return; // provider declined (no budget / not configured yet)
-      if (res.state) this.db.prepare('UPDATE accounts SET state = ? WHERE id = ?').run(JSON.stringify({ ...account.state, ...res.state }), account.id);
+      if (!live()) return; // the account was deleted meanwhile
+      if (res.state) this.db.prepare('UPDATE accounts SET state = ? WHERE id = ?').run(JSON.stringify({ ...this.account(account.id).state, ...res.state }), account.id);
       st.error = res.unavailable || null;
       // the last non-empty raw report, for diagnostics
       if (res.seen?.length) st.seen = { at: now, online: res.online || null, titles: res.seen.slice(0, 10) };
+      if (res.shape) st.shape = { at: now, ...res.shape };
       else if (res.online) st.online = res.online;
       this.applyPresence(account, res.playing || [], { intervalSec: provider.profile.presence.interval_sec, now });
       if (st.failures >= 3) this.plog.info(`${account.platform}/${account.name}: presence recovered`);
@@ -801,7 +949,7 @@ export class SyncService {
       if (st.failures === 1 || st.failures % 10 === 0) this.plog.warn(`${account.platform}/${account.name}: presence check failed (${st.failures}x): ${err.message}`, { account_id: account.id });
     } finally {
       st.lastPoll = now;
-      this.presenceState.set(account.id, st);
+      if (live()) this.presenceState.set(account.id, st);
     }
   }
 
@@ -816,7 +964,7 @@ export class SyncService {
 
   presenceInfo(accountId) {
     const st = this.presenceState.get(accountId);
-    return st ? { last_poll: st.lastPoll || null, failures: st.failures, error: st.error || null, online: st.online || st.seen?.online || null, last_seen: st.seen || null } : null;
+    return st ? { last_poll: st.lastPoll || null, failures: st.failures, error: st.error || null, online: st.online || st.seen?.online || null, last_seen: st.seen || null, reply_shape: st.shape || undefined } : null;
   }
 
   notify(account, result, error) {
@@ -865,19 +1013,23 @@ export class SyncService {
       }
     };
     // cover art for titles imported before cover lookup existed (or added since)
-    setTimeout(() => {
+    this.coverTimer = setTimeout(() => {
       for (const a of this.db.prepare('SELECT id, platform FROM accounts WHERE enabled = 1 AND last_sync_at IS NOT NULL').all()) {
         if (providers[a.platform]?.resolveCovers) this.resolveCovers(a.id).catch((e) => this.log.warn(`Cover lookup failed: ${e.message}`));
       }
-    }, 20_000).unref?.();
+    }, 20_000);
+    this.coverTimer.unref?.();
     const run = () => tick().catch((e) => this.log.error('Scheduler tick failed', e));
     this.timer = setInterval(run, 30_000);
     this.timer.unref?.();
-    setTimeout(run, 5_000).unref?.();
+    this.firstTick = setTimeout(run, 5_000);
+    this.firstTick.unref?.();
   }
 
   stop() {
     this.stopping = true;
     clearInterval(this.timer);
+    clearTimeout(this.firstTick);
+    clearTimeout(this.coverTimer);
   }
 }

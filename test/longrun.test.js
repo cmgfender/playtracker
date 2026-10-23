@@ -336,19 +336,18 @@ test('imports: CSV + JSON (re-imported) + manual sessions are counted once, with
   assert.equal(manual, 40 + 50 + 60 + 70 + 80);
 });
 
-test('duplicates: the CSV copy of a Steam game is flagged; excluding it fixes the totals', async () => {
+test('imports assist: the spreadsheet row of a game Steam syncs joins it (nothing counted twice)', async () => {
   const d = await call('/duplicates');
-  const flag = d.double_counted.find((x) => x.game.title === `Steam Game ${DUP_GAME}`);
-  assert.ok(flag, 'flagged as double counted');
-  const before_ = (await call('/stats/lifetime')).total_minutes;
-  await call(`/entries/${flag.suggest_exclude}`, { method: 'PATCH', body: { excluded: true } });
-  const after_ = (await call('/stats/lifetime')).total_minutes;
-  const dupMin = db.prepare('SELECT playtime_min FROM entries WHERE id = ?').get(flag.suggest_exclude).playtime_min;
-  assert.equal(before_ - after_, dupMin);
-  assert.equal(db.prepare('SELECT account_id FROM entries WHERE id = ?').get(flag.suggest_exclude).account_id, null, 'the import copy is the one excluded');
-  // lifetime now equals everything that was really played
+  assert.ok(!d.double_counted.some((x) => x.game.title === `Steam Game ${DUP_GAME}`), 'no double counting to fix');
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM entries WHERE account_id IS NULL AND platform = 'steam'").get().n, 0, 'no second copy');
+  // lifetime equals everything that was really played, with nothing excluded
   const truthTotal = [steamTruth, psnTruth, xboxTruth, switchTruth].flat().reduce((a, s) => a + s.minutes, 0) + 1500 + 300;
-  assert.ok(Math.abs(after_ - truthTotal) <= 10, `lifetime ${after_} vs truth ${truthTotal}`);
+  const life = (await call('/stats/lifetime')).total_minutes;
+  assert.ok(Math.abs(life - truthTotal) <= 10, `lifetime ${life} vs truth ${truthTotal}`);
+  // excluding a game takes exactly its minutes out (and is kept by export / import below)
+  const retro = db.prepare("SELECT id, playtime_min FROM entries WHERE title = 'Retro Game'").get();
+  await call(`/entries/${retro.id}`, { method: 'PATCH', body: { excluded: true } });
+  assert.equal(life - (await call('/stats/lifetime')).total_minutes, retro.playtime_min);
 });
 
 test('stats API, year in review, heatmap and lifetime agree with the database', async () => {
@@ -388,5 +387,20 @@ test('export -> import into a fresh instance preserves lifetime, tracked session
     assert.equal(fresh.app.db.prepare('SELECT COUNT(*) n FROM entries WHERE excluded = 1').get().n, 1, 'exclusion kept');
     const bad = fresh.app.db.prepare('SELECT e.id FROM entries e LEFT JOIN sessions s ON s.entry_id = e.id GROUP BY e.id HAVING COALESCE(SUM(s.minutes),0) != e.playtime_min').all();
     assert.deepEqual(bad, []);
+
+    // restore, then link Steam again: the synced entries adopt the imported copies - no game twice,
+    // the exact sessions from the export survive, totals still match
+    const fdb = fresh.app.db;
+    const steamPlayBefore = fdb.prepare("SELECT SUM(s.minutes) m FROM sessions s JOIN entries e ON e.id = s.entry_id WHERE s.kind = 'play' AND e.platform = 'steam'").get().m;
+    const lifeBefore = life(fdb);
+    fdb.prepare("INSERT INTO accounts(platform, name, config, enabled, created_at) VALUES ('steam', 'Steam relinked', '{}', 1, ?)").run(END);
+    const acc = parseAccount(fdb.prepare("SELECT * FROM accounts WHERE name = 'Steam relinked'").get());
+    const items = platforms.steam.report(steamTruth, END, STEAM_GAMES, { refunded: new Set([REFUNDED]) });
+    tx(fdb, () => applyItems(fdb, acc, items, { settings: fresh.app.settings.all(), now: END, initial: true }));
+    // every imported Steam copy is adopted except the refunded game Steam no longer lists (its play stays)
+    assert.deepEqual(fdb.prepare("SELECT title FROM entries WHERE account_id IS NULL AND platform = 'steam'").all().map((r) => r.title), [platforms.steam.title(REFUNDED)]);
+    assert.equal(fdb.prepare("SELECT SUM(s.minutes) m FROM sessions s JOIN entries e ON e.id = s.entry_id WHERE s.kind = 'play' AND e.platform = 'steam'").get().m, steamPlayBefore, 'exact sessions kept');
+    assert.ok(Math.abs(life(fdb) - lifeBefore) <= 5, `lifetime ${lifeBefore} -> ${life(fdb)}`);
+    assert.deepEqual(fdb.prepare('SELECT e.id FROM entries e LEFT JOIN sessions s ON s.entry_id = e.id GROUP BY e.id HAVING COALESCE(SUM(s.minutes),0) != e.playtime_min').all(), []);
   } finally { fresh.close(); }
 });

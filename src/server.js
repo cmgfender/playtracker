@@ -25,6 +25,22 @@ const MIME = {
   '.png': 'image/png', '.ico': 'image/x-icon', '.txt': 'text/plain; charset=utf-8',
 };
 
+/** Accept-Encoding allows `coding` (RFC 9110 §12.5.3: q=0 means "not acceptable"; a named coding overrides *). */
+function acceptsEncoding(header, coding) {
+  let any = false;
+  for (const part of String(header || '').toLowerCase().split(',')) {
+    const [name, ...params] = part.split(';').map((s) => s.trim());
+    const q = params.find((p) => p.startsWith('q='));
+    const ok = !q || Number(q.slice(2)) > 0;
+    if (name === coding) return ok;
+    if (name === '*') any = ok;
+  }
+  return any;
+}
+
+/** If-None-Match matches `etag`: "*" or any entry of the list, W/ ignored (weak comparison, RFC 9110 §13.1.2). */
+const etagMatches = (header, etag) => !!header && (header.trim() === '*' || header.split(',').some((t) => t.trim().replace(/^W\//, '') === etag));
+
 /** Static files are read once and kept pre-compressed in memory. */
 function staticServer(dir, { dev }) {
   const cache = new Map();
@@ -44,20 +60,22 @@ function staticServer(dir, { dev }) {
     return entry;
   };
   return (req, res, pathname) => {
-    let rel = decodeURIComponent(pathname);
+    let rel;
+    try { rel = decodeURIComponent(pathname); } catch { return false; } // malformed %-escapes
     if (rel === '/' || !path.extname(rel)) rel = '/index.html'; // SPA fallback
     const file = path.normalize(path.join(dir, rel));
-    if (!file.startsWith(dir)) return false;
+    if (file !== dir && !file.startsWith(dir.endsWith(path.sep) ? dir : dir + path.sep)) return false;
     const f = load(file);
     if (!f) return false;
     const headers = {
       'Content-Type': f.type, ETag: f.etag, Vary: 'Accept-Encoding',
-      'Cache-Control': rel === '/index.html' || rel === '/sw.js' ? 'no-cache' : 'public, max-age=3600',
+      // app code revalidates (ETag) so a container update reaches browsers immediately
+      'Cache-Control': /\.(html|js|css|webmanifest)$/.test(rel) ? 'no-cache' : 'public, max-age=3600',
     };
-    if (req.headers['if-none-match'] === f.etag) { res.writeHead(304, headers); res.end(); return true; }
-    const ae = String(req.headers['accept-encoding'] || '');
+    if (etagMatches(req.headers['if-none-match'], f.etag)) { res.writeHead(304, headers); res.end(); return true; }
+    const ae = req.headers['accept-encoding'];
     let body = f.raw;
-    if (f.br && /\bbr\b/.test(ae)) { body = f.br; headers['Content-Encoding'] = 'br'; } else if (f.gz && /\bgzip\b/.test(ae)) { body = f.gz; headers['Content-Encoding'] = 'gzip'; }
+    if (f.br && acceptsEncoding(ae, 'br')) { body = f.br; headers['Content-Encoding'] = 'br'; } else if (f.gz && acceptsEncoding(ae, 'gzip')) { body = f.gz; headers['Content-Encoding'] = 'gzip'; }
     headers['Content-Length'] = body.length;
     res.writeHead(200, headers);
     res.end(req.method === 'HEAD' ? undefined : body);
@@ -73,13 +91,13 @@ async function readBody(req, limit = 256 * 1024 * 1024) {
     if (size > limit) throw new HttpError(413, 'Request body too large');
     chunks.push(c);
   }
-  return Buffer.concat(chunks).toString('utf8');
+  return Buffer.concat(chunks);
 }
 
 function sendJson(req, res, status, data) {
   let body = Buffer.from(JSON.stringify(data));
   const headers = { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' };
-  if (body.length > 1024 && /\bgzip\b/.test(String(req.headers['accept-encoding'] || ''))) {
+  if (body.length > 1024 && acceptsEncoding(req.headers['accept-encoding'], 'gzip')) {
     body = zlib.gzipSync(body, { level: 5 });
     headers['Content-Encoding'] = 'gzip';
   }
@@ -122,7 +140,7 @@ export function createApp({ dbFile = process.env.PLAYTRACKER_DB || path.join(dat
 
     if (pathname === '/metrics') return metrics(req, res, url);
     if (!pathname.startsWith('/api/')) {
-      if (req.method !== 'GET' && req.method !== 'HEAD') { res.writeHead(405); return res.end(); }
+      if (req.method !== 'GET' && req.method !== 'HEAD') { res.writeHead(405, { Allow: 'GET, HEAD' }); return res.end(); }
       if (!serveStatic(req, res, pathname)) { res.writeHead(404, { 'Content-Type': 'text/plain' }); res.end('Not found'); }
       return;
     }
@@ -133,16 +151,21 @@ export function createApp({ dbFile = process.env.PLAYTRACKER_DB || path.join(dat
     }
     for (const [k, v] of Object.entries(corsHeaders())) res.setHeader(k, v);
 
-    const m = router.match(req.method, pathname);
+    let m;
+    try { m = router.match(req.method, pathname); } catch { return sendJson(req, res, 400, { error: 'Malformed URL' }); }
     if (!m) return sendJson(req, res, 404, { error: 'Not found' });
-    if (m.methodNotAllowed) return sendJson(req, res, 405, { error: 'Method not allowed' });
+    if (m.methodNotAllowed) { res.setHeader('Allow', m.allow.join(', ')); return sendJson(req, res, 405, { error: 'Method not allowed' }); }
     const cookies = parseCookies(req.headers.cookie);
     const who = auth.identify(req, cookies, url);
     if (!who.ok && !m.route.doc.public) return sendJson(req, res, 401, { error: 'Unauthorized' });
-    // CSRF: cookie-authenticated writes must come from our own origin
-    if (who.via === 'cookie' && req.method !== 'GET' && req.headers.origin) {
+    // CSRF: browser writes (cookie login, or an instance without a password) must come from our
+    // own origin or the configured CORS origin. Token requests are not sent by browsers on their own.
+    if (who.via !== 'token' && !['GET', 'HEAD'].includes(req.method) && req.headers.origin) {
       const host = req.headers['x-forwarded-host'] || req.headers.host;
-      if (new URL(req.headers.origin).host !== host) return sendJson(req, res, 403, { error: 'Cross-origin request blocked' });
+      let originHost = null;
+      try { originHost = new URL(req.headers.origin).host; } catch { /* "null" or garbage */ }
+      const allowed = process.env.PLAYTRACKER_CORS_ORIGIN && req.headers.origin === process.env.PLAYTRACKER_CORS_ORIGIN;
+      if (originHost !== host && !allowed) return sendJson(req, res, 403, { error: 'Cross-origin request blocked' });
     }
 
     flushRollups(db); // no-op unless sessions changed outside a request (cheap queue check)
@@ -164,7 +187,10 @@ export function createApp({ dbFile = process.env.PLAYTRACKER_DB || path.join(dat
     };
     try {
       if (req.method !== 'GET' && req.method !== 'HEAD' && req.method !== 'DELETE') {
-        const raw = await readBody(req);
+        // big bodies only where they belong (imports), and never before authentication
+        const buf = await readBody(req, m.route.doc.bigBody ? 256 * 1024 * 1024 : m.route.doc.public ? 64 * 1024 : 4 * 1024 * 1024);
+        ctx.rawBuffer = buf; // binary uploads (ZIP exports)
+        const raw = m.route.doc.binary ? '' : buf.toString('utf8');
         ctx.rawBody = raw;
         const type = String(req.headers['content-type'] || '');
         if (/csv|text\/plain/.test(type)) { ctx.rawType = 'csv'; ctx.body = raw; } else if (raw.trim()) {
@@ -178,7 +204,12 @@ export function createApp({ dbFile = process.env.PLAYTRACKER_DB || path.join(dat
       if (req.method !== 'GET') flushRollups(db);
       if (!sent) sendJson(req, res, 200, out ?? { ok: true });
       const ms = Date.now() - t;
-      if (ms > 3000) { http_.slow++; apiLog.warn(`Slow request ${req.method} ${pathname} took ${ms}ms`, { query: url.search || undefined }); }
+      if (ms > 3000) {
+        http_.slow++;
+        const q = new URLSearchParams(url.search);
+        q.delete('api_key'); // never log credentials
+        apiLog.warn(`Slow request ${req.method} ${pathname} took ${ms}ms`, { query: q.toString() || undefined });
+      }
       else if (process.env.LOG_REQUESTS === 'true') apiLog.info(`${req.method} ${pathname} ${ms}ms`);
     } catch (err) {
       const status = err.status && err.status >= 400 && err.status < 600 ? err.status : 500;
@@ -187,8 +218,11 @@ export function createApp({ dbFile = process.env.PLAYTRACKER_DB || path.join(dat
         // 502 = upstream platform failure (already logged by the sync service)
         if (status !== 502) apiLog.error(`${req.method} ${pathname} failed: ${err.message}`, err);
       } else http_.client_errors++;
-      if (!sent && !res.headersSent) sendJson(req, res, status, { error: err.message || 'Internal error', details: err.details });
-      else if (!res.writableEnded) res.end();
+      if (!sent && !res.headersSent) {
+        // the rest of an oversized upload is left unread: the connection cannot be reused
+        if (status === 413) res.setHeader('Connection', 'close');
+        sendJson(req, res, status, { error: err.message || 'Internal error', details: err.details });
+      } else if (!res.writableEnded) res.destroy(); // a stream cut short must not look complete
     }
   };
 

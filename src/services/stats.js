@@ -4,6 +4,8 @@
 // The spreading happens once at write time (see rollup.js -> play_days / play_hours); every
 // query here is an indexed SQL aggregate, so stats stay fast with millions of sessions.
 
+import { HttpError } from '../util.js';
+
 const MIN = 60_000;
 const DAY = 86_400_000;
 
@@ -67,24 +69,32 @@ export function memo(db, key, fn) {
   return v;
 }
 
-export function resolveRange(range, now = Date.now()) {
+export function resolveRange(range, now = Date.now(), weekStartsOn = 1) {
   const r = String(range || '30d');
   let m;
-  if ((m = /^(\d+)d$/.exec(r))) return { from: startOfDay(now - (Number(m[1]) - 1) * DAY), to: now, label: `Last ${m[1]} days` };
+  if ((m = /^(\d+)d$/.exec(r))) {
+    // capped at 100 years: the empty series walks every day of the range
+    const n = Math.min(Number(m[1]), 36500);
+    return { from: startOfDay(now - (n - 1) * DAY), to: now, label: `Last ${n} days` };
+  }
   if ((m = /^year:(\d{4})$/.exec(r))) {
     const y = Number(m[1]);
     return { from: new Date(y, 0, 1).getTime(), to: Math.min(now, new Date(y + 1, 0, 1).getTime() - 1), label: String(y) };
   }
-  if ((m = /^month:(\d{4})-(\d{2})$/.exec(r))) {
+  if ((m = /^month:(\d{4})-(0[1-9]|1[0-2])$/.exec(r))) {
     const y = Number(m[1]); const mo = Number(m[2]) - 1;
     return { from: new Date(y, mo, 1).getTime(), to: Math.min(now, new Date(y, mo + 1, 1).getTime() - 1), label: `${y}-${m[2]}` };
   }
-  if (r === 'week') { const d = new Date(now); d.setHours(0, 0, 0, 0); d.setDate(d.getDate() - ((d.getDay() + 6) % 7)); return { from: d.getTime(), to: now, label: 'This week' }; }
+  // a malformed year/month must not be answered with the 30-day fallback under its own label
+  if (/^(year|month):/.test(r)) throw new HttpError(400, `Invalid range "${r}" - use year:YYYY or month:YYYY-MM`);
+  if (r === 'week') { const d = new Date(now); d.setHours(0, 0, 0, 0); d.setDate(d.getDate() - ((d.getDay() - weekStartsOn + 7) % 7)); return { from: d.getTime(), to: now, label: 'This week' }; }
   if (r === 'month') { const d = new Date(now); return { from: new Date(d.getFullYear(), d.getMonth(), 1).getTime(), to: now, label: 'This month' }; }
   if (r === 'year') { const d = new Date(now); return { from: new Date(d.getFullYear(), 0, 1).getTime(), to: now, label: 'This year' }; }
   if (r === 'all') return { from: 0, to: now, label: 'All time' };
   return resolveRange('30d', now);
 }
+
+const GROUPS = ['day', 'week', 'month', 'year'];
 
 function groupKey(dayStart, group, weekStartsOn) {
   const d = new Date(dayStart);
@@ -154,7 +164,7 @@ export function firstPlayDay(db, estimates = 'include') {
 export function computeStats(db, opts = {}) {
   const { range = '30d', group, gameId, platform, weekStartsOn = 1, now = Date.now(), topLimit = 25, estimates = 'include' } = opts;
   return memo(db, `stats:${range}:${group}:${gameId}:${platform}:${weekStartsOn}:${topLimit}:${estimates}`, () => {
-    let { from, to, label } = resolveRange(range, now);
+    let { from, to, label } = resolveRange(range, now, weekStartsOn);
     if (from === 0) {
       const first = gameId
         ? db.prepare(`SELECT MIN(day) d FROM play_days WHERE game_id = ? AND estimated ${estimates === 'exclude' ? '= 0' : 'IN (0, 1)'}`).get(gameId).d
@@ -162,7 +172,7 @@ export function computeStats(db, opts = {}) {
       from = first ? parseDay(first) - 12 * 3600_000 : startOfDay(now);
     }
     const span = Math.max(1, (to - from) / DAY);
-    const g = group || (span <= 45 ? 'day' : span <= 200 ? 'week' : span <= 1100 ? 'month' : 'year');
+    const g = GROUPS.includes(group) ? group : (span <= 45 ? 'day' : span <= 200 ? 'week' : span <= 1100 ? 'month' : 'year');
     const range_ = { fromDay: dayKey(from), toDay: dayKey(to), gameId, platform, estimates };
     const f = filter('p', range_);
 
@@ -200,7 +210,7 @@ export function computeStats(db, opts = {}) {
 
     // longest session: walk sessions by minutes (index) for long ranges, by time for short ones
     const lwhere = ["s.kind = 'play'", 'e.excluded = 0', 's.sort_time >= ?', 's.sort_time <= ?'];
-    const largs = [from, to + DAY];
+    const largs = [from, to]; // `to` already ends the period (or is now)
     if (gameId) { lwhere.push('s.entry_id IN (SELECT id FROM entries WHERE game_id = ?)'); largs.push(gameId); }
     if (platform) { lwhere.push('e.platform = ?'); largs.push(platform); }
     const idx = gameId ? '' : span > 120 ? 'INDEXED BY sessions_kind_minutes' : 'INDEXED BY sessions_kind_time';

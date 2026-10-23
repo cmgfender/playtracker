@@ -22,13 +22,14 @@ function rng(seed) {
   return () => { s = (s * 1664525 + 1013904223) >>> 0; return s / 4294967296; };
 }
 
-/** True sessions: evenings, some crossing midnight, some long, never overlapping. */
+/** True sessions: local evenings, some crossing midnight, some long, never overlapping. */
 function makeTruth({ seed, start, days, games, longSessions = false }) {
   const r = rng(seed);
   const sessions = [];
   for (let d = 0; d < days; d++) {
     if (r() < 0.25) continue;
-    let t = start + d * DAY + (17 + r() * 5) * HOUR;
+    const midnight = new Date(start); midnight.setDate(midnight.getDate() + d);
+    let t = midnight.getTime() + (17 + r() * 5) * HOUR;
     const n = 1 + (r() < 0.35 ? 1 : 0);
     for (let i = 0; i < n; i++) {
       const dur = Math.round(longSessions ? 60 + r() * 300 : 20 + r() * 220);
@@ -139,7 +140,8 @@ function simulate({ platform, truth, games, start, days, schedule, presence }) {
   return { db, acct };
 }
 
-const dayKey = (t) => new Date(t).toISOString().slice(0, 10);
+// the player's own (local) days, as the app counts them
+const dayKey = (t) => { const d = new Date(t); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
 function trueDays(truth) {
   const m = new Map();
   for (const s of truth) {
@@ -159,7 +161,7 @@ function misplaced(truth, db) {
   return err / 2 / truth.reduce((x, s) => x + s.minutes, 0);
 }
 
-const START = Date.UTC(2026, 0, 5, 0, 0);
+const START = new Date(2026, 0, 5).getTime(); // local midnight: the test holds in any time zone
 const DAILY = { schedule_mode: 'daily', schedule_time: '04:00' };
 const scenarios = [
   { platform: 'steam', schedule: DAILY, presence: true },

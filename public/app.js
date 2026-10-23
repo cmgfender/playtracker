@@ -140,7 +140,7 @@ export function icon(name, cls = '') {
 export async function api(path, { method = 'GET', body, raw = false, headers = {} } = {}) {
   const opts = { method, headers: { ...headers }, credentials: 'same-origin' };
   if (body !== undefined) {
-    if (typeof body === 'string') { opts.body = body; opts.headers['Content-Type'] ||= 'text/csv'; } else { opts.body = JSON.stringify(body); opts.headers['Content-Type'] = 'application/json'; }
+    if (typeof body === 'string') { opts.body = body; opts.headers['Content-Type'] ||= 'text/csv'; } else if (body instanceof Blob || body instanceof ArrayBuffer) { opts.body = body; } else { opts.body = JSON.stringify(body); opts.headers['Content-Type'] = 'application/json'; }
   }
   const res = await fetch(`/api/v1${path}`, opts);
   if (res.status === 401 && !path.startsWith('/auth')) { state.needLogin = true; render(); throw new Error('Login required'); }

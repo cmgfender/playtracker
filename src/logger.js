@@ -35,6 +35,12 @@ export function createLogger({
     } catch { /* never let logging crash the app */ }
   }
 
+  // the stored context must stay valid JSON: an oversized one is kept as a truncated preview
+  function contextJson(ctx) {
+    const s = JSON.stringify(ctx);
+    return s.length > 20000 ? JSON.stringify({ truncated: true, preview: s.slice(0, 10000) }) : s;
+  }
+
   function serializeError(err) {
     if (!(err instanceof Error)) return err;
     return { name: err.name, message: err.message, stack: err.stack, status: err.status, code: err.code };
@@ -63,7 +69,7 @@ export function createLogger({
     if (recent.length > 300) recent.shift();
     if (db && LEVELS[lvl] >= LEVELS.warn) {
       try {
-        insert.run(time.getTime(), lvl, source, entry.message.slice(0, 2000), ctx ? JSON.stringify(ctx).slice(0, 20000) : null, err?.stack ? String(err.stack).slice(0, 20000) : null);
+        insert.run(time.getTime(), lvl, source, entry.message.slice(0, 2000), ctx ? contextJson(ctx) : null, err?.stack ? String(err.stack).slice(0, 20000) : null);
         if (++persisted % 200 === 0) prune();
       } catch { /* db may be closing */ }
     }

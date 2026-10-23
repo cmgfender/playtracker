@@ -6,7 +6,7 @@ import { createApp } from '../src/server.js';
 import { allocate, inferHistory, learnStyle, styleOf, STYLE_BINS } from '../src/services/inference.js';
 import { parseLicenses } from '../src/services/licenses.js';
 import { earnedTimes } from '../src/providers/psn.js';
-import { captureTimes, outline, xbox } from '../src/providers/xbox.js';
+import { captureTimes, outline, xbox, unwrap } from '../src/providers/xbox.js';
 
 const DAY = 86_400_000;
 const NOW = Date.now();
@@ -171,4 +171,28 @@ test('xbox presence: a library game running on a PC counts even when not reporte
   assert.deepEqual(r.playing.map((p) => p.extId), ['42'], 'PC library game in; unknown PC app, console background and inactive titles out');
   assert.equal(r.online, 'Online');
   assert.deepEqual(r.seen.map((x) => x.skipped || 'kept'), ['home', 'kept', 'background', 'background', 'inactive']);
+});
+
+test('xbox: OpenXBL {content, code} envelopes are unwrapped (presence, title history, xuid)', async () => {
+  // presence wrapped like the real install's replies
+  const wrapped = { content: [{ xuid: '2533', state: 'Online', devices: [{ type: 'Scarlett', titles: [{ id: '55', name: 'Halo', placement: 'Full', state: 'Active' }] }] }], code: 200 };
+  const ctx = { http: async () => wrapped, remainingBudget: () => 100, getEntry: () => null };
+  const r = await xbox.presence({ config: { api_key: 'k' }, state: {} }, ctx);
+  assert.deepEqual(r.playing.map((p) => p.extId), ['55']);
+  assert.equal(r.online, 'Online');
+  assert.deepEqual(r.state, { xuid: '2533' }, 'learns the xuid from presence when missing');
+  // nothing usable: the reply's outline is kept for diagnostics
+  const empty = await xbox.presence({ config: { api_key: 'k' }, state: { xuid: '2533' } }, { ...ctx, http: async () => ({ content: { foo: 1 }, code: 200 }) });
+  assert.deepEqual(empty.shape.keys, ['content', 'code']);
+  assert.deepEqual(empty.shape.content_keys, ['foo']);
+  // title history wrapped: titles and xuid both found
+  const lib = await xbox.fetchLibrary({ config: { api_key: 'k', hourly_limit: '20' }, state: {} }, {
+    http: async (url) => (url.includes('titleHistory') ? { content: { xuid: '2533', titles: [] }, code: 200 } : null), remainingBudget: () => 0, getEntry: () => null,
+  });
+  assert.equal(lib.state.xuid, '2533');
+  assert.equal(unwrap([1]).length, 1, 'arrays are left alone');
+  // the playtime stat's own fields are outlined (value included: just a minute count)
+  const o = outline({ content: { groups: [{ name: 'Hero', statlistscollection: [{ stats: [{ name: 'MinutesPlayed', type: 'Integer' }] }] }] }, code: 200 });
+  assert.deepEqual(o.minutes_stat, { keys: ['name', 'type'], value: null });
+  assert.equal(o.code, 200);
 });

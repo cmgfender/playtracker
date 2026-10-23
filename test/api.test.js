@@ -119,3 +119,52 @@ test('pushed reports without recent minutes are not treated as "nothing recent" 
   assert.equal(r.data.minutes_added, 60);
   assert.equal(r.data.late_minutes, 0);
 });
+
+test('re-importing an export into the same instance changes nothing; bad rows are skipped', async () => {
+  const before_ = (await call('/stats/lifetime')).data.total_minutes;
+  const exp = await (await fetch(`${base}/export`)).json();
+  const r = await call('/import', { method: 'POST', body: exp });
+  assert.equal(r.status, 200, JSON.stringify(r.data));
+  assert.equal(r.data.entries_created, 0, JSON.stringify(r.data));
+  assert.equal((await call('/stats/lifetime')).data.total_minutes, before_, 'lifetime unchanged');
+  // CSV round trip too
+  const csv = await (await fetch(`${base}/export?format=csv`)).text();
+  const r2 = await call('/import', { method: 'POST', body: csv, headers: { 'Content-Type': 'text/csv' } });
+  assert.equal(r2.data.entries_created, 0, JSON.stringify(r2.data));
+  assert.equal((await call('/stats/lifetime')).data.total_minutes, before_);
+  // malformed rows: skipped, never a 500
+  const bad = await call('/import', { method: 'POST', body: [null, 5, [], { title: 'Odd Notes', notes: { a: 1 }, playtime_minutes: 10 }] });
+  assert.equal(bad.status, 200, JSON.stringify(bad.data));
+  assert.equal(bad.data.skipped, 3);
+});
+
+test('hardening: bad input gets 4xx, never 500; limits are clamped', async () => {
+  assert.equal((await call('/sessions/bulk', { method: 'POST', body: { ids: 'abc', action: 'delete' } })).status, 400);
+  assert.equal((await call('/games/1/merge', { method: 'POST', body: { source_ids: 'x' } })).status, 400);
+  assert.equal((await call('/accounts', { method: 'POST', body: { platform: 'custom', name: 'S', schedule: { schedule_mode: 'bogus' } } })).status, 400);
+  assert.equal((await fetch(`${base}/games/%E0`)).status, 400);
+  assert.equal((await call('/logs?limit=-1')).status, 200);
+  assert.ok((await call('/logs?limit=-1')).data.items.length <= 1);
+  // writes from another site are blocked even without a password; same-origin ones work
+  const evil = await fetch(`${base}/games`, { method: 'POST', headers: { Origin: 'http://evil.example', 'Content-Type': 'application/x-www-form-urlencoded' }, body: '{"title":"Planted"}' });
+  assert.equal(evil.status, 403);
+  const nul = await fetch(`${base}/games`, { method: 'POST', headers: { Origin: 'null', 'Content-Type': 'application/json' }, body: '{"title":"Planted"}' });
+  assert.equal(nul.status, 403);
+  const own = await fetch(`${base}/games`, { method: 'POST', headers: { Origin: new URL(base).origin, 'Content-Type': 'application/json' }, body: '{"title":"Mine"}' });
+  assert.equal(own.status, 200);
+});
+
+test('import preview (dry_run) reports what would happen and changes nothing', async () => {
+  const count = async () => (await call('/stats/lifetime')).data.total_minutes;
+  const before_ = await count();
+  const body = [{ title: 'Preview Only Game', platform: 'switch', playtime_hours: 7 }];
+  const p = await call('/import?dry_run=true', { method: 'POST', body });
+  assert.equal(p.status, 200);
+  assert.equal(p.data.dry_run, true);
+  assert.equal(p.data.entries_created, 1);
+  assert.equal(await count(), before_, 'nothing changed');
+  assert.equal((await call('/games?q=Preview%20Only')).data.items.length, 0);
+  const r = await call('/import', { method: 'POST', body });
+  assert.equal(r.data.entries_created, 1);
+  assert.equal(await count(), before_ + 420);
+});
