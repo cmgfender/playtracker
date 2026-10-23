@@ -165,7 +165,7 @@ describe('title history import', () => {
     } finally { await h.close(); }
   });
 
-  test('a title with MinutesPlayed 0 and an unchanged last-played time is not looked up again on every sync', { todo: 'APP BUG xbox-sync-1: titles whose stat is 0 are re-queried on every sync (budget waste)' }, async () => {
+  test('a title with MinutesPlayed 0 and an unchanged last-played time is not looked up again on every sync', async () => {
     const h = await setup();
     try {
       const x = new FakeXbl();
@@ -383,7 +383,7 @@ describe('hourly budget, deferred titles and hourly back-fill', () => {
     } finally { await h.close(); }
   });
 
-  test('a library with more never-played (0-minute) titles than one hour\'s budget still finishes its back-fill', { todo: 'APP BUG xbox-sync-1 (consequence): 0-minute titles are looked up again every hour and starve the deferred ones forever' }, async () => {
+  test('a library with more never-played (0-minute) titles than one hour\'s budget still finishes its back-fill', async () => {
     const h = await setup();
     try {
       const x = new FakeXbl({ limit: 20 });
@@ -426,7 +426,7 @@ describe('hourly budget, deferred titles and hourly back-fill', () => {
     } finally { await h.close(); }
   });
 
-  test('play after tracking started stays play even when its lookup had to wait for the next hour', { todo: 'APP BUG xbox-sync-2: a new title whose stats lookup was deferred on a later sync is filed as history, not play' }, async () => {
+  test('play after tracking started stays play even when its lookup had to wait for the next hour', async () => {
     const h = await setup();
     try {
       const x = new FakeXbl();
@@ -539,7 +539,7 @@ describe('quota exhausted (429): pause until the reset, no retry storm', () => {
     } finally { await h.close(); }
   });
 
-  test('while the account is paused, background enrichment sends nothing either', { todo: 'APP BUG xbox-sync-3: enrichment sends dvr/screenshots into a paused (429) quota' }, async () => {
+  test('while the account is paused, background enrichment sends nothing either', async () => {
     const h = await setup();
     try {
       const x = new FakeXbl();
@@ -931,7 +931,7 @@ describe('titles without a MinutesPlayed stat (PC / Game Pass): presence-tracked
     } finally { await h.close(); }
   });
 
-  test('a short replay presence missed (last played moved 20 min after the previous session) is still recorded, capped by that gap', { todo: 'APP BUG xbox-sync-5: fallback skipped when a session ended within 30 min before the new last-played time' }, async () => {
+  test('a short replay presence missed (last played moved 20 min after the previous session) is still recorded, capped by that gap', async () => {
     const h = await setup();
     try {
       const { x, acc, entry } = await unmetered(h, 'absent', { presence: 'off' });
@@ -968,7 +968,7 @@ describe('titles without a MinutesPlayed stat (PC / Game Pass): presence-tracked
     } finally { await h.close(); }
   });
 
-  test('with no learned sessions yet, the estimated length is the documented default typical session (120 min)', { todo: 'APP BUG xbox-sync-4: fallback default length is 60 min, docs define the default typical session as 120 min' }, async () => {
+  test('with no learned sessions yet, the estimated length is the documented default typical session (120 min)', async () => {
     const h = await setup();
     try {
       const { x, acc, entry } = await unmetered(h, 'absent', { presence: 'off' });
@@ -1243,7 +1243,7 @@ describe('enrichment: achievements, screenshots and clips date history once the 
     } finally { await h.close(); }
   });
 
-  test('enrichment never spends the last 30% of the hourly budget (screenshots / clips included)', { todo: 'APP BUG xbox-sync-3: dvr/screenshots + dvr/gameclips are requested without checking the budget' }, async () => {
+  test('enrichment never spends the last 30% of the hourly budget (screenshots / clips included)', async () => {
     const h = await setup();
     try {
       const x = new FakeXbl({ limit: 20 });
@@ -1345,7 +1345,7 @@ describe('credential test endpoint (POST /accounts/test) only samples', () => {
     } finally { await h.close(); }
   });
 
-  test('an invalid key is reported as bad credentials - not as a PlayTracker 401 (which the UI treats as "log in again")', { todo: 'APP BUG xbox-sync-6: POST /accounts/test relays OpenXBL\'s 401 as its own 401' }, async () => {
+  test('an invalid key is reported as bad credentials - not as a PlayTracker 401 (which the UI treats as "log in again")', async () => {
     const h = await setup();
     try {
       const x = new FakeXbl({ key: 'the-real-key' });

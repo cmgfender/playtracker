@@ -131,7 +131,7 @@ The platforms don't just expose different fields. They **report history in funct
 
 ### Rules derived from the models
 
-Steps 1–7 are tried in order; steps 8–10 are checks that apply throughout.
+Steps 1–7 are tried in order; steps 8–11 are checks that apply throughout.
 
 1. **Window:** a report at time *t* describes play up to *t − lag*. A delta between reports at *t₁* and *t₂* therefore covers *(t₁ − lag, t₂ − lag]*.
 2. **Capacity:** on-exit and delayed platforms deliver a whole session at once, even if it started before the window. A delta may therefore exceed the time since the last sync by up to one maximum-length session without being called "late".
@@ -150,6 +150,7 @@ Steps 1–7 are tried in order; steps 8–10 are checks that apply throughout.
 8. **Self-repair:** if a new delta pins to a launch time that was already used, the earlier pin was a session still running at that report. It is moved to before the launch.
 9. **Strict recent counter** (Steam): minutes beyond `playtime_2weeks` are offline play uploaded late. They become undated history instead of being crammed into the window.
 10. **Calibration:** whenever presence shows exactly when a session ran, the account checks whether the platform's last-played timestamp sat at that session's start or end. After 3+ observations agreeing ≥75%, the learned meaning overrides the declared one for that account. If a platform changes its behaviour, PlayTracker follows it.
+11. **Totals never go down:** a total lower than before is ignored. It is almost always a glitch (an empty stat, a bad report) that comes back later, so the total keeps its high-water mark and only play above it is new. Nothing is counted twice when it recovers.
 
 ### Measured accuracy (ground-truth simulation)
 

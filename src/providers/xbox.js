@@ -147,6 +147,9 @@ export const xbox = {
     const deferredIds = [];
     let missing = 0;
     const zeroChecked = { ...(account.state.zero_checked || {}) };
+    // when each deferred title was first deferred: null = during the first import (its playtime
+    // is history), else the sync before the deferral (its new play is counted from there)
+    const deferredSince = Object.fromEntries((account.state.deferred_titles || []).map((id) => [id, account.state.deferred_since?.[id] ?? null]));
     const unmetered = { ...(account.state.unmetered || {}) };
     const samples = [];
     // most recently played first so active games are always fresh
@@ -177,8 +180,10 @@ export const xbox = {
         items.push({ ...base, playtimeMin: existing.playtime_min, ...fallback });
         continue;
       }
-      // unchanged since last time: reuse the stored minutes (titles stuck at 0 are rechecked)
-      if (existing && !changed && !(!existing.playtime_min && recheckDue)) {
+      // unchanged since last time: reuse the stored minutes (titles stuck at 0 are rechecked
+      // weekly, or on the next sync when the 0 was read right after a session: the stat lags it)
+      const zeroLag = zeroChecked[extId] && lastPlayedAt && zeroChecked[extId] - lastPlayedAt < 3_600_000;
+      if (existing && !changed && !(!existing.playtime_min && (recheckDue || zeroLag))) {
         items.push({ ...base, playtimeMin: existing.playtime_min });
         continue;
       }
@@ -205,20 +210,27 @@ export const xbox = {
         if (!failure) unmetered[extId] = 1;
         // keep a few response outlines (shape and stat names, no values) for diagnostics
         if (samples.length < 6) samples.push({ title_id: extId, title: t.name, at: new Date().toISOString(), ...(failure ? { error: failure.slice(0, 200) } : outline(stats)) });
-      } else { delete zeroChecked[extId]; delete unmetered[extId]; }
-      // a title seen for the first time on a later sync while being deferred earlier is history, not new play
+      } else {
+        if (minutes === 0) zeroChecked[extId] = Date.now(); else delete zeroChecked[extId];
+        delete unmetered[extId];
+      }
+      // a title first seen after being deferred during the first import is history, not new play;
+      // one deferred on a later sync is judged from the sync before the deferral
+      const since = !existing && extId in deferredSince ? deferredSince[extId] : undefined;
       items.push({
         ...base,
         playtimeMin: minutes ?? existing?.playtime_min ?? 0,
         // the first real total of a title so far tracked by presence includes what presence
         // already recorded; the rest is history, never new play
-        backfill: (!existing && account.state.deferred_titles?.includes(extId)) || (minutes != null && wasUnmetered),
+        backfill: since === null || (minutes != null && wasUnmetered),
+        ...(since != null ? { windowFrom: since } : {}),
         ...(minutes == null && !failure ? fallback : {}),
       });
     }
     const state = { ...account.state, xuid: xuidOf(hist) || account.state.xuid };
     // only titles actually waiting for budget (not skipped apps) - they are fetched by hourly back-fill syncs
     state.deferred_titles = deferredIds.slice(0, 5000);
+    state.deferred_since = Object.fromEntries(state.deferred_titles.map((id) => [id, id in deferredSince ? deferredSince[id] : (account.last_sync_at ?? null)]));
     state.zero_checked = zeroChecked;
     state.unmetered = unmetered;
     if (samples.length) state.missing_minutes_samples = samples;
@@ -260,7 +272,9 @@ export const xbox = {
     const updates = [];
     // screenshots + game clips: two requests for the whole library, moments of real play
     const captures = new Map();
+    const reserve = Math.ceil(this.hourlyLimit(account) * 0.3);
     for (const kind of ['screenshots', 'gameclips']) {
+      if ((ctx.remainingBudget?.(this.hourlyLimit(account)) ?? 0) <= reserve) return { updates };
       try {
         await gap();
         captureTimes(await ctx.http(`${API}/dvr/${kind}`, { headers }, { retries: 0 }), captures);
@@ -271,7 +285,7 @@ export const xbox = {
     }
     for (const e of entries) {
       if (ctx.stopped?.()) break;
-      if ((ctx.remainingBudget?.(this.hourlyLimit(account)) ?? 0) <= Math.ceil(this.hourlyLimit(account) * 0.3)) break;
+      if ((ctx.remainingBudget?.(this.hourlyLimit(account)) ?? 0) <= reserve) break;
       await gap();
       try {
         const r = await ctx.http(`${API}/achievements/player/${encodeURIComponent(xuid)}/${encodeURIComponent(e.ext_id)}`, { headers }, { retries: 0 });

@@ -299,7 +299,7 @@ describe('PSN credentials test (POST /accounts/test)', () => {
     assert.equal(t.db.prepare('SELECT COUNT(*) n FROM presence').get().n, 0);
   });
 
-  test('a rejected NPSSO answers a clear client or upstream error, not an internal server error', { todo: 'APP BUG psn-custom-1: POST /accounts/test with a rejected NPSSO answers HTTP 500 (and logs a server error)' }, async (tc) => {
+  test('a rejected NPSSO answers a clear client or upstream error, not an internal server error', async (tc) => {
     const t = await fresh(tc);
     fakePsn(psnTitle({ id: 'PPSA10004_00', name: 'X', minutes: 10 }));
     const r = await t.api('POST', '/accounts/test', { platform: 'psn', config: { npsso: 'not-a-valid-npsso' } });
@@ -308,7 +308,7 @@ describe('PSN credentials test (POST /accounts/test)', () => {
     assert.deepEqual(t.logs.error, [], 'a user typing a wrong token is not a server error');
   });
 
-  test('Sony answering 401 must not surface as HTTP 401 (which the web UI treats as "PlayTracker login required")', { todo: 'APP BUG psn-custom-2: POST /accounts/test passes the platform\'s 401 through as our own 401 - the SPA then shows its login screen' }, async (tc) => {
+  test('Sony answering 401 must not surface as HTTP 401 (which the web UI treats as "PlayTracker login required")', async (tc) => {
     const t = await fresh(tc);
     const psn = fakePsn(psnTitle({ id: 'PPSA10005_00', name: 'X', minutes: 10 }));
     psn.failNext('token', { status: 401, body: { error: 'invalid_client' } });
@@ -625,7 +625,7 @@ describe('PSN deltas become sessions', () => {
     assertHealthy(t);
   });
 
-  test('a brand-new title first played since the last sync: its launch count becomes that many sessions', { todo: 'APP BUG psn-custom-3: a new PSN title first seen after the import ignores its launch count (3 launches -> 1 session)' }, async (tc) => {
+  test('a brand-new title first played since the last sync: its launch count becomes that many sessions', async (tc) => {
     const { t, psn, acc } = await imported(tc, base());
     clock.set(T0 + DAY);
     const end = T0 + DAY - HOUR;
@@ -711,7 +711,7 @@ describe('PSN deltas become sessions', () => {
     assertHealthy(t);
   });
 
-  test('one launch of five hours stays one session (the launch counter says one sitting)', { todo: 'APP BUG psn-custom-4: a single PSN launch longer than 4 h is split into two sessions (120 min pinned + 180 min "earlier session")' }, async (tc) => {
+  test('one launch of five hours stays one session (the launch counter says one sitting)', async (tc) => {
     const { t, psn, acc } = await imported(tc, base());
     clock.set(T0 + DAY);
     const end = T0 + DAY - HOUR;
@@ -1353,7 +1353,7 @@ describe('Custom accounts: pushed reports', () => {
     assert.equal(inRecent, 120);
   });
 
-  test('recent_days sets the length of the recent window', { todo: 'APP BUG psn-custom-7: recent_days is accepted but ignored - recent_minutes are always dated over 14 days' }, async (tc) => {
+  test('recent_days sets the length of the recent window', async (tc) => {
     const t = await fresh(tc);
     const acc = await linkCustom(t);
     const r = await t.report(acc.id, [{ id: 'a', title: 'Last Three Days', playtime_minutes: 1000, recent_minutes: 120, recent_days: 3, last_played_at: iso(T0 - DAY), first_played_at: iso(T0 - 120 * DAY) }]);
@@ -1446,7 +1446,7 @@ describe('Custom accounts: pushed reports', () => {
     assert.equal(t.db.prepare('SELECT COUNT(*) n FROM entries').get().n, 1);
   });
 
-  test('a report entry with neither id nor title is skipped instead of creating a game called "undefined"', { todo: 'APP BUG psn-custom-11: entries without id/title (or an empty array) in games[] create a game titled "undefined"' }, async (tc) => {
+  test('a report entry with neither id nor title is skipped instead of creating a game called "undefined"', async (tc) => {
     const t = await fresh(tc);
     const acc = await linkCustom(t);
     const r = await t.api('POST', `/accounts/${acc.id}/report`, { games: [[], { playtime_minutes: 10 }, { id: 'ok', title: 'Valid One', playtime_minutes: 10 }] });
@@ -1457,7 +1457,7 @@ describe('Custom accounts: pushed reports', () => {
     assert.ok(t.db.prepare("SELECT COUNT(*) n FROM entries WHERE ext_id = 'undefined'").get().n === 0);
   });
 
-  test('negative or non-numeric playtime is rejected with 400', { todo: 'APP BUG psn-custom-8: POST /accounts/:id/report accepts negative / non-numeric playtime with 200 and silently stores 0' }, async (tc) => {
+  test('negative or non-numeric playtime is rejected with 400', async (tc) => {
     const t = await fresh(tc);
     const acc = await linkCustom(t);
     for (const g of [{ id: 'neg', title: 'Negative', playtime_minutes: -50 }, { id: 'nan', title: 'Words', playtime_minutes: 'lots' }, { id: 'nanh', title: 'Hours', playtime_hours: 'a few' }]) {
@@ -1590,7 +1590,7 @@ describe('Custom accounts: presence pushes', () => {
     assertHealthy(t);
   });
 
-  test('a presence span that was already fully credited is not used again by the next report', { todo: 'APP BUG psn-custom-9: a report right after a presence session lets the next day\'s report pull 6 minutes back into the old session (span reused)' }, async (tc) => {
+  test('a presence span that was already fully credited is not used again by the next report', async (tc) => {
     const { t, acc, push } = await setup(tc);
     await push(P0, A); await push(P0 + 89 * MIN, A); await push(P0 + 90 * MIN, []);
     clock.set(P0 + 91 * MIN); // e.g. a Home Assistant automation reports as soon as the game closes
@@ -1778,7 +1778,7 @@ describe('Account management: CRUD, schedules, enable/disable, delete', () => {
     assertHealthy(t);
   });
 
-  test('a re-linked account starts with clean API usage and no inherited rate-limit pause', { todo: 'APP BUG psn-custom-12: account ids are reused after a delete, and the new account inherits the old one\'s API usage counters and rate-limit pause' }, async (tc) => {
+  test('a re-linked account starts with clean API usage and no inherited rate-limit pause', async (tc) => {
     const t = await fresh(tc);
     const psn = fakePsn(psnTitle({ id: 'PPSA93001_00', name: 'Relinked', minutes: 100, first: T0 - 9 * DAY, last: T0 - DAY, count: 2 }));
     const old = await linkPsn(t);

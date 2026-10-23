@@ -281,8 +281,7 @@ describe('evidence: what each date tells (custom account, first report)', () => 
     assert.equal((await historyOf(h, 'Recent Fortnight')).evidence.recent_min, 600);
   });
 
-  test('recent_days narrows the recent period: "600 min in the last 7 days" lands in the last 7 days',
-    { todo: 'APP BUG history-9: a custom report\'s recent_days is ignored for history; the minutes are spread over the last 14 days' }, async () => {
+  test('recent_days narrows the recent period: "600 min in the last 7 days" lands in the last 7 days', async () => {
       const id = entryIdByTitle(h.db, 'Recent Week');
       const ts = trackingStartOf(h.db, id);
       const ss = estimates(h.db, id);

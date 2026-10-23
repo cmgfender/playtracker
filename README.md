@@ -131,7 +131,7 @@ sync N-1: Hades = 6 000 min      sync N: Hades = 6 090 min
    - **Steam:** the session is tagged with the device (Deck, Windows…).
 4. **Deltas smaller than "minimum session" (default 2 min)** are held back and build up until they're big enough.
 5. **Deltas larger than the elapsed time** (offline play or platform back-fill) are capped at the elapsed time. The excess goes to undated history.
-6. **Playtime that goes down** (refunds, resets) updates the total but creates no session.
+6. **Playtime that goes down** is ignored: the total keeps its highest value and no session is created. A lower total is almost always a glitch (an empty stat, a bad report) that comes back later, and following it would count that time again on recovery. Only play above the highest total is new. (A refunded game drops out of the library instead and is marked "no longer in library".)
 
 Synced sessions can be moved to history: delete them, or untick "count in stats". Lifetime totals always come from the platform, so they never change. Manual and imported sessions can be fully edited or deleted.
 
