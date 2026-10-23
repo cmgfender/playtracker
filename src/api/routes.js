@@ -18,7 +18,7 @@ import { readZip, isZip } from '../services/zip.js';
 import { gameTrackTables, importGameTrack } from '../services/gametrack.js';
 import { modelFor } from '../services/model.js';
 import fsp from 'node:fs';
-import { httpJson } from '../providers/http.js';
+import { httpJson, ProviderError } from '../providers/http.js';
 import { HttpError, toInt, toTime } from '../util.js';
 
 const MIN = 60_000;
@@ -597,7 +597,15 @@ export function registerRoutes(r, app) {
       getEntry: () => null, warn: (m) => warnings.push(m), remainingBudget: (limit) => Math.ceil(limit * 0.15) + 3, stopped: () => false,
     };
     const fake = { id: 0, platform, config, state: {} };
-    const res = await p.fetchLibrary(fake, ctx);
+    let res;
+    try {
+      res = await p.fetchLibrary(fake, ctx);
+    } catch (err) {
+      // the platform said no: never relay its status (its 401 is not a PlayTracker login, a
+      // missing one is not an internal error) - rejected credentials 422, anything else 502
+      if (!(err instanceof ProviderError)) throw err;
+      throw new HttpError(err.auth ? 422 : 502, err.message);
+    }
     let presence = null;
     if (p.presence) {
       try { const pr = await p.presence({ ...fake, state: res.state || {} }, ctx); presence = pr ? (pr.unavailable || `ok (${pr.playing.length ? `playing ${pr.playing.map((x) => x.title || x.extId).join(', ')}` : 'not playing'})`) : 'skipped'; } catch (err) { presence = `unavailable: ${err.message}`; }
@@ -638,7 +646,11 @@ export function registerRoutes(r, app) {
       config[k] = v;
     }
     let state = a.state;
-    if (b.config && JSON.stringify(config) !== JSON.stringify(a.config)) state = {}; // credentials changed -> drop cached tokens
+    // credentials changed -> drop cached tokens (other settings, e.g. presence, keep what the account learned)
+    const creds = (cfg) => JSON.stringify((providers[a.platform]?.fields || []).filter((f) => f.required || f.type === 'password').map((f) => cfg[f.key] ?? null));
+    if (b.config && creds(config) !== creds(a.config)) state = {};
+    // a newly declared last-played meaning starts its calibration over (learned votes would override it)
+    else if (b.config && (config.last_played_meaning || null) !== (a.config.last_played_meaning || null)) { const { calibration, ...rest } = state || {}; state = rest; }
     let schedule = a.schedule;
     if ('schedule' in b) {
       if (b.schedule) {
@@ -658,8 +670,11 @@ export function registerRoutes(r, app) {
     if (!sync.account(id)) throw new HttpError(404, 'Account not found');
     tx(db, () => {
       db.prepare('DELETE FROM accounts WHERE id = ?').run(id);
+      // ids are reused: an account linked later must not inherit this one's API usage
+      db.prepare('DELETE FROM api_usage WHERE account_id = ?').run(id);
       pruneEmptyGames(db);
     });
+    sync.forget(id);
     return { ok: true };
   }, { summary: 'Unlink an account and delete its data' });
 
@@ -676,21 +691,32 @@ export function registerRoutes(r, app) {
     if (!sync.account(id)) throw new HttpError(404, 'Account not found');
     const games = c.body.games || c.body.items;
     if (!Array.isArray(games)) throw new HttpError(400, 'games must be an array');
-    const items = games.filter((g) => g && typeof g === 'object').map((g) => ({
-      extId: String(g.id ?? g.ext_id ?? g.title),
-      title: g.title || g.name || String(g.id),
-      playtimeMin: g.playtime_minutes ?? (g.playtime_hours != null ? Math.round(g.playtime_hours * 60) : 0),
-      lastPlayedAt: toTime(g.last_played_at),
-      firstPlayedAt: toTime(g.first_played_at),
-      dateAdded: toTime(g.date_added),
-      playCount: g.play_count != null ? toInt(g.play_count) : null,
-      recentMin: g.recent_minutes != null ? toInt(g.recent_minutes) : null, // absent = unknown, not zero
-      recentWindowDays: g.recent_days != null ? toInt(g.recent_days) : 14,
-      devices: g.device ? { [String(g.device)]: g.playtime_minutes ?? 0 } : undefined,
-      coverUrl: g.cover_url || null,
-      iconUrl: g.icon_url || null,
-      backfill: !!g.backfill,
-    }));
+    const items = [];
+    games.forEach((g, i) => {
+      // entries that are not objects or name no game are skipped (never a game called "undefined")
+      if (!g || typeof g !== 'object' || Array.isArray(g)) return;
+      const ext = g.id ?? g.ext_id ?? g.title ?? g.name;
+      if (ext == null || ext === '') return;
+      for (const k of ['playtime_minutes', 'playtime_hours']) {
+        if (g[k] != null && !(Number.isFinite(Number(g[k])) && Number(g[k]) >= 0)) throw new HttpError(400, `games[${i}].${k} must be a non-negative number`);
+      }
+      const playtimeMin = g.playtime_minutes != null ? Number(g.playtime_minutes) : g.playtime_hours != null ? Math.round(Number(g.playtime_hours) * 60) : 0;
+      items.push({
+        extId: String(ext),
+        title: g.title || g.name || String(ext),
+        playtimeMin,
+        lastPlayedAt: toTime(g.last_played_at),
+        firstPlayedAt: toTime(g.first_played_at),
+        dateAdded: toTime(g.date_added),
+        playCount: g.play_count != null ? toInt(g.play_count) : null,
+        recentMin: g.recent_minutes != null ? toInt(g.recent_minutes) : null, // absent = unknown, not zero
+        recentWindowDays: clamp(g.recent_days, 14, 1, 365),
+        devices: g.device ? { [String(g.device)]: playtimeMin } : undefined,
+        coverUrl: g.cover_url || null,
+        iconUrl: g.icon_url || null,
+        backfill: !!g.backfill,
+      });
+    });
     return sync.report(id, items);
   }, { summary: 'Push lifetime totals for an account; deltas become sessions. Optional dates/play counts are used to date history on the first report.', body: '{ games: [{ id, title, playtime_minutes, last_played_at?, first_played_at?, date_added?, play_count?, recent_minutes?, recent_days?, device?, cover_url?, backfill? }] }', bigBody: true });
 

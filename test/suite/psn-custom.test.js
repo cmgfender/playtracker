@@ -299,7 +299,7 @@ describe('PSN credentials test (POST /accounts/test)', () => {
     assert.equal(t.db.prepare('SELECT COUNT(*) n FROM presence').get().n, 0);
   });
 
-  test('a rejected NPSSO answers a clear client or upstream error, not an internal server error', { todo: 'APP BUG psn-custom-1: POST /accounts/test with a rejected NPSSO answers HTTP 500 (and logs a server error)' }, async (tc) => {
+  test('a rejected NPSSO answers a clear client or upstream error, not an internal server error', async (tc) => {
     const t = await fresh(tc);
     fakePsn(psnTitle({ id: 'PPSA10004_00', name: 'X', minutes: 10 }));
     const r = await t.api('POST', '/accounts/test', { platform: 'psn', config: { npsso: 'not-a-valid-npsso' } });
@@ -308,7 +308,7 @@ describe('PSN credentials test (POST /accounts/test)', () => {
     assert.deepEqual(t.logs.error, [], 'a user typing a wrong token is not a server error');
   });
 
-  test('Sony answering 401 must not surface as HTTP 401 (which the web UI treats as "PlayTracker login required")', { todo: 'APP BUG psn-custom-2: POST /accounts/test passes the platform\'s 401 through as our own 401 - the SPA then shows its login screen' }, async (tc) => {
+  test('Sony answering 401 must not surface as HTTP 401 (which the web UI treats as "PlayTracker login required")', async (tc) => {
     const t = await fresh(tc);
     const psn = fakePsn(psnTitle({ id: 'PPSA10005_00', name: 'X', minutes: 10 }));
     psn.failNext('token', { status: 401, body: { error: 'invalid_client' } });
@@ -625,7 +625,7 @@ describe('PSN deltas become sessions', () => {
     assertHealthy(t);
   });
 
-  test('a brand-new title first played since the last sync: its launch count becomes that many sessions', { todo: 'APP BUG psn-custom-3: a new PSN title first seen after the import ignores its launch count (3 launches -> 1 session)' }, async (tc) => {
+  test('a brand-new title first played since the last sync: its launch count becomes that many sessions', async (tc) => {
     const { t, psn, acc } = await imported(tc, base());
     clock.set(T0 + DAY);
     const end = T0 + DAY - HOUR;
@@ -711,7 +711,7 @@ describe('PSN deltas become sessions', () => {
     assertHealthy(t);
   });
 
-  test('one launch of five hours stays one session (the launch counter says one sitting)', { todo: 'APP BUG psn-custom-4: a single PSN launch longer than 4 h is split into two sessions (120 min pinned + 180 min "earlier session")' }, async (tc) => {
+  test('one launch of five hours stays one session (the launch counter says one sitting)', async (tc) => {
     const { t, psn, acc } = await imported(tc, base());
     clock.set(T0 + DAY);
     const end = T0 + DAY - HOUR;
@@ -1353,7 +1353,7 @@ describe('Custom accounts: pushed reports', () => {
     assert.equal(inRecent, 120);
   });
 
-  test('recent_days sets the length of the recent window', { todo: 'APP BUG psn-custom-7: recent_days is accepted but ignored - recent_minutes are always dated over 14 days' }, async (tc) => {
+  test('recent_days sets the length of the recent window', async (tc) => {
     const t = await fresh(tc);
     const acc = await linkCustom(t);
     const r = await t.report(acc.id, [{ id: 'a', title: 'Last Three Days', playtime_minutes: 1000, recent_minutes: 120, recent_days: 3, last_played_at: iso(T0 - DAY), first_played_at: iso(T0 - 120 * DAY) }]);
@@ -1446,7 +1446,7 @@ describe('Custom accounts: pushed reports', () => {
     assert.equal(t.db.prepare('SELECT COUNT(*) n FROM entries').get().n, 1);
   });
 
-  test('a report entry with neither id nor title is skipped instead of creating a game called "undefined"', { todo: 'APP BUG psn-custom-11: entries without id/title (or an empty array) in games[] create a game titled "undefined"' }, async (tc) => {
+  test('a report entry with neither id nor title is skipped instead of creating a game called "undefined"', async (tc) => {
     const t = await fresh(tc);
     const acc = await linkCustom(t);
     const r = await t.api('POST', `/accounts/${acc.id}/report`, { games: [[], { playtime_minutes: 10 }, { id: 'ok', title: 'Valid One', playtime_minutes: 10 }] });
@@ -1457,7 +1457,7 @@ describe('Custom accounts: pushed reports', () => {
     assert.ok(t.db.prepare("SELECT COUNT(*) n FROM entries WHERE ext_id = 'undefined'").get().n === 0);
   });
 
-  test('negative or non-numeric playtime is rejected with 400', { todo: 'APP BUG psn-custom-8: POST /accounts/:id/report accepts negative / non-numeric playtime with 200 and silently stores 0' }, async (tc) => {
+  test('negative or non-numeric playtime is rejected with 400', async (tc) => {
     const t = await fresh(tc);
     const acc = await linkCustom(t);
     for (const g of [{ id: 'neg', title: 'Negative', playtime_minutes: -50 }, { id: 'nan', title: 'Words', playtime_minutes: 'lots' }, { id: 'nanh', title: 'Hours', playtime_hours: 'a few' }]) {
@@ -1590,7 +1590,7 @@ describe('Custom accounts: presence pushes', () => {
     assertHealthy(t);
   });
 
-  test('a presence span that was already fully credited is not used again by the next report', { todo: 'APP BUG psn-custom-9: a report right after a presence session lets the next day\'s report pull 6 minutes back into the old session (span reused)' }, async (tc) => {
+  test('a presence span that was already fully credited is not used again by the next report', async (tc) => {
     const { t, acc, push } = await setup(tc);
     await push(P0, A); await push(P0 + 89 * MIN, A); await push(P0 + 90 * MIN, []);
     clock.set(P0 + 91 * MIN); // e.g. a Home Assistant automation reports as soon as the game closes
@@ -1601,6 +1601,26 @@ describe('Custom accounts: presence pushes', () => {
     const plays = playRows(t, t.entry(acc.id, 'a').id);
     assert.deepEqual(plays.map((s) => s.minutes), [90, 60], 'yesterday stays 90 minutes, today is 60');
     assert.equal(plays[1].ended_at, lp);
+  });
+
+  test('a newly declared last_played_at meaning takes effect even after presence calibrated the old one', async (tc) => {
+    const { t, acc, push } = await setup(tc);
+    let total = 100;
+    for (let i = 0; i < 3; i++) {
+      const s = P0 + i * DAY;
+      await push(s, A); await push(s + 59 * MIN, A); await push(s + 60 * MIN, []);
+      clock.set(s + 70 * MIN);
+      total += 60;
+      const r = await t.report(acc.id, [{ id: 'a', title: 'Presence Push', playtime_minutes: total, last_played_at: iso(s + 60 * MIN) }]);
+      assert.equal(r.status, 200, r.text);
+    }
+    assert.match((await accountRow(t, acc.id)).history_model.last_played, /session end — calibrated from 3 observed sessions/);
+    let r = await t.api('PATCH', `/accounts/${acc.id}`, { config: { platform_label: 'Switch 2' } });
+    assert.equal(r.status, 200, r.text);
+    assert.match((await accountRow(t, acc.id)).history_model.last_played, /calibrated/, 'a new label keeps what the account learned');
+    r = await t.api('PATCH', `/accounts/${acc.id}`, { config: { last_played_meaning: 'start' } });
+    assert.equal(r.status, 200, r.text);
+    assert.equal((await accountRow(t, acc.id)).history_model.last_played, 'session start (launch) (declared)');
   });
 
   test('presence push validation: playing must be an array, junk items are skipped, unknown accounts are 404', async (tc) => {
@@ -1778,7 +1798,7 @@ describe('Account management: CRUD, schedules, enable/disable, delete', () => {
     assertHealthy(t);
   });
 
-  test('a re-linked account starts with clean API usage and no inherited rate-limit pause', { todo: 'APP BUG psn-custom-12: account ids are reused after a delete, and the new account inherits the old one\'s API usage counters and rate-limit pause' }, async (tc) => {
+  test('a re-linked account starts with clean API usage and no inherited rate-limit pause', async (tc) => {
     const t = await fresh(tc);
     const psn = fakePsn(psnTitle({ id: 'PPSA93001_00', name: 'Relinked', minutes: 100, first: T0 - 9 * DAY, last: T0 - DAY, count: 2 }));
     const old = await linkPsn(t);
@@ -1793,6 +1813,71 @@ describe('Account management: CRUD, schedules, enable/disable, delete', () => {
     const a = await accountRow(t, fresh2.id);
     assert.equal(a.api_usage_hour.calls, 0, `account ${fresh2.id} (old id ${old.id}) shows calls it never made`);
     assert.equal(a.api_quota, null, 'and a rate-limit pause it never hit');
+  });
+
+  test('an account deleted while its sync is running: the sync records nothing, also when the next account already has its id', async (tc) => {
+    const t = await fresh(tc);
+    const psn = fakePsn(psnTitle({ id: 'PPSA93002_00', name: 'In Flight', minutes: 100, first: T0 - 9 * DAY, last: T0 - DAY, count: 2 }));
+    const old = await linkPsn(t);
+    let release;
+    psn.gate = { gamelist: new Promise((r) => { release = r; }) };
+    psn.failNext('gamelist', { status: 429, body: { error: { message: 'Too Many Requests' } } });
+    const s = t.api('POST', `/accounts/${old.id}/sync?wait=true`);
+    while (psn.count('gamelist') < 1) await realSleep(5);
+    assert.equal((await t.api('DELETE', `/accounts/${old.id}`)).status, 200, 'the delete does not wait for Sony');
+    const next = await linkPsn(t, { name: 'Next PS5' });
+    release();
+    psn.gate = null;
+    assert.equal((await s).status, 404, 'the sync of the deleted account is dropped');
+    await t.settle();
+    const a = await accountRow(t, next.id);
+    assert.equal(a.api_usage_hour.calls, 0, `account ${next.id} (old id ${old.id}) shows calls it never made`);
+    assert.equal(a.api_quota, null, 'and a rate-limit pause it never hit');
+    assert.equal(a.last_error, null);
+    assert.equal(t.db.prepare('SELECT COUNT(*) n FROM syncs').get().n, 0);
+  });
+
+  test('an account deleted while its enrichment is running: the enrichment stops and writes nothing', async (tc) => {
+    const t = await fresh(tc);
+    const psn = fakePsn(...[1, 2, 3, 4, 5, 6, 7].map((i) => psnTitle({ id: `PPSA9310${i}_00`, name: `Enriched ${i}`, minutes: 600, first: T0 - 100 * DAY, last: T0 - 5 * DAY, count: 10, concept: 931000 + i })));
+    for (let i = 1; i <= 7; i++) {
+      psn.trophyTitles.set(`PPSA9310${i}_00`, [{ npCommunicationId: `NPWR9310${i}_00`, npServiceName: 'trophy2' }]);
+      psn.trophySets.set(`NPWR9310${i}_00`, { service: 'trophy2', trophies: [trophy(1, T0 - 50 * DAY)] });
+    }
+    const old = await linkPsn(t);
+    let release;
+    psn.gate = { trophies: new Promise((r) => { release = r; }) };
+    assert.equal((await t.api('POST', `/accounts/${old.id}/sync?wait=true`)).status, 200);
+    while (psn.count('trophies') < 1) await realSleep(5);
+    assert.equal((await t.api('DELETE', `/accounts/${old.id}`)).status, 200);
+    const next = await linkPsn(t, { name: 'Next PS5' });
+    release();
+    psn.gate = null;
+    await t.settle();
+    assert.equal(psn.count('trophies'), 1, 'the enrichment stopped instead of reading every trophy set');
+    assert.equal((await accountRow(t, next.id)).api_usage_hour.calls, 0, `account ${next.id} (old id ${old.id}) shows calls it never made`);
+    assert.deepEqual(t.sync.account(next.id).state, {}, 'and holds no tokens of the old account');
+  });
+
+  test('a presence check answered after its account was deleted is not charged to the next account', async (tc) => {
+    const t = await fresh(tc);
+    const psn = fakePsn(psnTitle({ id: 'PPSA93003_00', name: 'Polled', minutes: 100, first: T0 - 9 * DAY, last: T0 - DAY, count: 2 }));
+    const old = await linkPsn(t);
+    assert.equal((await t.syncNow(old.id)).status, 200);
+    let release;
+    psn.gate = { presence: new Promise((r) => { release = r; }) };
+    const poll = t.sync.pollPresence(t.sync.account(old.id));
+    while (psn.count('presence') < 1) await realSleep(5);
+    assert.equal((await t.api('DELETE', `/accounts/${old.id}`)).status, 200);
+    const next = await linkPsn(t, { name: 'Next PS5' });
+    psn.failNext('presence', { status: 429, body: { error: { message: 'Too Many Requests' } } });
+    release();
+    psn.gate = null;
+    await poll;
+    const a = await accountRow(t, next.id);
+    assert.equal(a.api_usage_hour.calls, 0, `account ${next.id} (old id ${old.id}) shows calls it never made`);
+    assert.equal(a.api_quota, null, 'and a rate-limit pause it never hit');
+    assert.equal(t.sync.presenceInfo(next.id), null, 'nor its presence status');
   });
 });
 

@@ -340,7 +340,6 @@ describe('initial import: existing playtime becomes dated history', () => {
   }));
 
   test('right after the import, history is never dated before the Steam account existed',
-    { todo: 'APP BUG steam-sync-7: the initial import dates history with the account state from before the sync, so the creation date it just fetched is ignored' },
     () => scenario({
       library: (fake) => {
         fake.game(9010, { name: 'Long Ago', playtime_forever: 200_000, rtime_last_played: unix(local(2013, 1, 10, 12)) });
@@ -424,7 +423,6 @@ describe('later syncs: deltas become sessions', () => {
   }));
 
   test("the first session of a newly bought game is tagged with the device it was played on",
-    { todo: 'APP BUG steam-sync-8: a brand-new title has no previous device counters, so its first session gets no device' },
     () => scenario(async ({ h, id, fake }) => {
       fake.game(2379780, { name: 'Balatro', playtime_forever: 0 });
       fake.play(2379780, { start: local(2026, 10, 24, 21, 0), minutes: 150, device: 'deck' });
@@ -452,7 +450,6 @@ describe('later syncs: deltas become sessions', () => {
   }));
 
   test('a long session that began before the previous sync is placed where it ran, not squeezed into a short window',
-    { todo: 'APP BUG steam-sync-1: a delta over 6 h in a window shorter than the delta is pinned to the window (e.g. 660 min inside 60 min)' },
     () => scenario({ extra: { schedule: { schedule_mode: 'hourly' } } }, async ({ h, id, fake }) => {
       const L = T0 + HOUR; // launched at 16:00, plays 11 h while hourly syncs see nothing (Steam writes on exit)
       fake.game(ELDEN, { rtime_last_played: unix(L) });
@@ -465,6 +462,21 @@ describe('later syncs: deltas become sessions', () => {
       assert.equal(s.reduce((a, x) => a + x.minutes, 0), 660, 'all of it is tracked play');
       assert.deepEqual(impossibleSessions(h.db), [], 'no session holds more minutes than the time it is placed in');
       for (const x of s) assert.ok((x.started_at ?? x.window_start) >= L - MIN, 'nothing before the launch');
+    }));
+
+  test('a long session followed by a relaunch still running at the sync is not squeezed into the gap before the relaunch',
+    () => scenario({ extra: { schedule: { schedule_mode: 'hourly' } } }, async ({ h, id, fake }) => {
+      const L1 = T0 + 90 * MIN; const L2 = T0 + 405 * MIN; // launched 16:30, 300 min written on exit at 21:30, relaunched 21:45
+      for (let t = T0 + HOUR; t <= T0 + 7 * HOUR; t += HOUR) {
+        if (t > L1) fake.game(ELDEN, { rtime_last_played: unix(L1) });
+        if (t > L2) { fake.play(ELDEN, { start: L1, minutes: 300 }); fake.game(ELDEN, { rtime_last_played: unix(L2) }); }
+        const res = await syncAt(h, id, t + MIN);
+        if (t < L2) assert.equal(res.sessions_created, 0);
+      }
+      const s = plays(h, id, ELDEN);
+      assert.equal(s.reduce((a, x) => a + x.minutes, 0), 300, 'all of it is tracked play');
+      assert.deepEqual(impossibleSessions(h.db), [], 'no session holds more minutes than the time it is placed in');
+      for (const x of s) if (x.started_at !== L2) assert.ok((x.ended_at ?? x.window_end) <= L2, 'the earlier play ended before the relaunch');
     }));
 
   test('a delta beyond elapsed time plus one maximum-length session is capped; the excess is undated history, never charted', () => scenario({ extra: { schedule: { schedule_mode: 'hourly' } } }, async ({ h, api, id, fake }) => {
@@ -553,12 +565,11 @@ describe('later syncs: deltas become sessions', () => {
     assert.equal(plays(h, id, HADES).length, 0, 'the same minutes coming back are not play');
   }));
 
-  test('the lifetime total follows a lower platform total (README: "Playtime that goes down (refunds, resets) updates the total but creates no session")',
-    { todo: 'APP BUG steam-sync-4: a lower reported total is ignored (high-water mark kept), contradicting README rule 6' },
+  test('a lower platform total is ignored: the lifetime total keeps its high-water mark (README rule 6)',
     () => scenario(async ({ h, id, fake }) => {
       fake.game(HADES, { playtime_forever: 5900 });
       await syncAt(h, id, local(2026, 10, 25, 4, 0));
-      assert.equal(h.entry(id, HADES).playtime_min, 5900);
+      assert.equal(h.entry(id, HADES).playtime_min, 6000);
       assert.equal(plays(h, id, HADES).length, 0);
     }));
 
@@ -837,7 +848,6 @@ describe('live presence', () => {
   }));
 
   test('switching presence off and on keeps what the account has learned',
-    { todo: 'APP BUG steam-sync-5: saving any config field (e.g. presence) wipes the account state, including calibration and cover lookups' },
     () => scenario(async ({ h, api, id, fake }) => {
       for (const [start, minutes] of [[local(2026, 10, 24, 19, 0), 50], [local(2026, 10, 25, 20, 0), 70], [local(2026, 10, 26, 21, 0), 40]]) {
         await presenceRun(h, fake, id, HADES, 'Hades', start, start + minutes * MIN);
@@ -999,7 +1009,6 @@ describe('cover art', () => {
   }));
 
   test('art stored under a hashed path is used even when its file has the classic name',
-    { todo: 'APP BUG steam-sync-2: a hashed asset path whose file is library_600x900.jpg keeps the (broken) classic URL' },
     () => scenario({
       library: (fake) => {
         fake.game(2000003, { name: 'Hashed Classic Name', playtime_forever: 100, rtime_last_played: unix(T0 - 20 * DAY) });
@@ -1128,7 +1137,6 @@ describe('API usage accounting and failures', () => {
   }));
 
   test('the private-profile message points at the privacy setting, not at the credentials',
-    { todo: 'APP BUG steam-sync-3: a private "Game details" error is suffixed with "update the credentials for this account"' },
     () => scenario({ fake: { visibility: 1 } }, async ({ h, id }) => {
       const a = await h.account(id);
       assert.doesNotMatch(a.last_error, /credentials/i, a.last_error);

@@ -91,7 +91,8 @@ export const steam = {
     const data = await ctx.http(url);
     const games = data?.response?.games;
     if (!Array.isArray(games)) {
-      throw new ProviderError('Steam returned no games. Make sure your profile and "Game details" privacy are set to Public.', { auth: true });
+      // a privacy setting, not a credentials problem (the key and id were accepted)
+      throw new ProviderError('Steam returned no games. Make sure your profile and "Game details" privacy are set to Public.');
     }
     const items = games.map((g) => ({
       extId: String(g.appid),
@@ -150,7 +151,10 @@ export const steam = {
         const file = a.library_capsule || a.header;
         if (!file) continue;
         const url = `https://shared.cloudflare.steamstatic.com/store_item_assets/${a.asset_url_format.replace('${FILENAME}', file)}`;
-        if (file !== 'library_600x900.jpg') out[it.appid ?? it.id] = url;
+        // classic = the classic file in the classic directory (a hashed directory is not, whatever the file is called)
+        const appid = it.appid ?? it.id;
+        const classicPath = a.asset_url_format.replace(/\?.*$/, '') === `steam/apps/${appid}/\${FILENAME}`;
+        if (!(classicPath && file === 'library_600x900.jpg')) out[appid] = url;
       }
       checked.push(...ids);
     }

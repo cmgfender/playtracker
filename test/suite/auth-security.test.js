@@ -1138,7 +1138,7 @@ describe('platform credentials are never disclosed', () => {
     assert.equal(typeof bad.json.error, 'string');
   });
 
-  test('a platform rejecting credentials is never reported as a PlayTracker 401 or a 500', { todo: 'APP BUG auth-security-4: /accounts/test relays the platform\'s HTTP status (Xbox 401 -> PlayTracker 401, which the web UI treats as "login required"; PSN NPSSO rejection -> 500)' }, async () => {
+  test('a platform rejecting credentials is never reported as a PlayTracker 401 or a 500', async () => {
     const results = [];
     for (const [platform, config] of [['xbox', { api_key: 'rejected-by-openxbl-000' }], ['psn', { npsso: 'rejected-npsso' }], ['steam', { api_key: 'rejected-steam-key', steam_id: '76561197960287930' }]]) {
       const r = await call(`${s.api}/accounts/test`, { body: { platform, config } });
