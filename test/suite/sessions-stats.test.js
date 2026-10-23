@@ -316,6 +316,44 @@ describe('editing sessions', () => {
     assertInvariants(h);
   });
 
+  test('pre-tracking history is never counted as tracked play (edit or bulk); a note edit keeps it charted', async () => {
+    const acc = await h.post('/accounts', { platform: 'custom', name: 'history edits', config: {} });
+    await report(h, acc.id, [
+      { id: 'ow', title: 'Outer Wilds', playtime_minutes: 1200, first_played_at: '2025-09-01', last_played_at: '2025-10-15' },
+      { id: 'cl', title: 'Civ Legacy', playtime_minutes: 600 },
+    ]);
+    const est = (await h.get(`/sessions?account_id=${acc.id}&kind=estimate&limit=1000`)).items[0];
+    const undated = (await h.get(`/sessions?account_id=${acc.id}&kind=baseline`)).items.find((s) => s.source === 'inferred');
+    assert.ok(est && undated, 'precondition: dated (estimate) and undated (baseline) history');
+    const s = await h.patch(`/sessions/${est.id}`, { note: 'hello' });
+    assert.deepEqual([s.note, s.kind], ['hello', 'estimate'], 'a note edit leaves the estimate charted');
+    const l0 = await h.get('/stats/lifetime');
+    const s0 = await h.get('/stats?range=all');
+    for (const id of [est.id, undated.id]) {
+      const r = await h.call('PATCH', `/sessions/${id}`, { note: 'x', kind: 'play' });
+      assert.equal(r.status, 400, `got ${r.status} ${JSON.stringify(r.body)}`);
+    }
+    assert.equal((await h.call('POST', '/sessions/bulk', { ids: [m.id, undated.id], action: 'play' })).status, 400);
+    assert.deepEqual(await h.get(`/sessions/${est.id}`), s, 'nothing changed');
+    assert.equal((await h.get(`/sessions/${undated.id}`)).kind, 'baseline');
+    assert.deepEqual(await h.get('/stats/lifetime'), l0);
+    assert.deepEqual(await h.get('/stats?range=all'), s0);
+    assertInvariants(h);
+  });
+
+  test('new minutes keep a wider recorded span (e.g. imported) while they fit in it', async () => {
+    const st = local(2026, 3, 14, 10); const en = local(2026, 3, 14, 14);
+    await h.post('/import', { games: [{ title: 'Span Import', platform: 'switch', playtime_minutes: 60, sessions: [{ started_at: iso(st), ended_at: iso(en), minutes: 60 }] }] });
+    const imp = (await h.get('/sessions?source=import&q=Span%20Import')).items[0];
+    assert.deepEqual([imp.started_at, imp.ended_at, imp.minutes], [st, en, 60], 'precondition: 60 minutes within a 4 h span');
+    let s = await h.patch(`/sessions/${imp.id}`, { minutes: 90 });
+    assert.deepEqual([s.started_at, s.ended_at, s.minutes], [st, en, 90], '90 minutes still fit: the recorded times stay');
+    s = await h.patch(`/sessions/${imp.id}`, { minutes: 300 });
+    assert.deepEqual([s.started_at, s.ended_at, s.minutes], [en - 300 * MIN, en, 300], '300 minutes do not: the end stays, the start moves');
+    assert.equal((await h.get(`/games/${imp.game_id}`)).minutes, 300);
+    assertInvariants(h);
+  });
+
   test('an empty edit changes nothing', async () => {
     const before_ = await h.get(`/sessions/${m.id}`);
     assert.deepEqual(await h.patch(`/sessions/${m.id}`, {}), before_);

@@ -487,6 +487,8 @@ export function registerRoutes(r, app) {
     if ('note' in patch) { sets.push('note = ?'); args.push(patch.note || null); }
     if ('kind' in patch) {
       if (!['play', 'baseline'].includes(patch.kind)) throw new HttpError(400, 'kind must be play or baseline');
+      // history is never recorded as play: it can only leave the stats
+      if (patch.kind === 'play' && s.source === 'inferred') throw new HttpError(400, 'pre-tracking history cannot be counted as tracked play');
       sets.push('kind = ?'); args.push(patch.kind);
     }
     let st = 'started_at' in patch ? timeField(patch, 'started_at') : s.started_at;
@@ -498,9 +500,10 @@ export function registerRoutes(r, app) {
       const m = toInt(patch.minutes);
       if (!m || m <= 0 || m > 7 * 1440) throw new HttpError(400, 'minutes must be between 1 and 10080');
       if (!local) throw new HttpError(400, 'Minutes of synced sessions come from the platform; change kind to "baseline" to drop it from stats instead');
-      // an exact session spans its minutes: new minutes alone keep the end and move the start;
-      // times changed with them must leave room for them
-      if (st && en && !times && m !== s.minutes) { st = en - m * MIN; times = true; }
+      // an exact session spans its minutes: new minutes alone keep the end and move the start
+      // (a wider span, e.g. from an import, is kept while they fit in it); times changed with
+      // them must leave room for them
+      if (st && en && !times && m !== s.minutes && (en - st === s.minutes * MIN || m * MIN > en - st)) { st = en - m * MIN; times = true; }
       else if (st && en && times && m * MIN > en - st) throw new HttpError(400, 'minutes do not fit between started_at and ended_at');
       sets.push('minutes = ?'); args.push(m);
       db.prepare('UPDATE entries SET playtime_min = MAX(0, playtime_min + ?) WHERE id = ?').run(m - s.minutes, s.entry_id);
