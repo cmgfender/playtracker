@@ -1336,7 +1336,7 @@ describe('week start setting', () => {
     assert.equal((await h.get('/stats?range=week')).total_minutes, 180);
   });
 
-  test('out-of-range week start values are rejected', { todo: 'APP BUG sessions-stats-17: week_starts_on accepts 7, -1, 3.5, 100 (week buckets in the future / not 7 days apart)' }, async () => {
+  test('out-of-range week start values are rejected', async () => {
     try {
       for (const v of ['abc', 7, -1, 3.5, 100]) {
         const r = await h.call('PUT', '/settings', { week_starts_on: v });

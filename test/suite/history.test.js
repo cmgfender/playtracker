@@ -788,8 +788,7 @@ describe('per-day caps: 10 h per game, 12 h per day across the library', () => {
     assert.deepEqual(fingerprint(h.db, entryIdByTitle(h.db, 'Whale')), fp);
   });
 
-  test('a negative or zero cap is rejected instead of silently un-dating all history',
-    { todo: 'APP BUG history-6: PUT /settings accepts history_max_day_minutes=-100 (and game cap <= 0); all charted history silently becomes undated' }, async () => {
+  test('a negative or zero cap is rejected instead of silently un-dating all history', async () => {
       const charted = (await h.get('/stats/lifetime')).estimated_minutes;
       const r1 = await h.call('PUT', '/settings', { history_max_day_minutes: -100 });
       const r2 = await h.call('PUT', '/settings', { history_max_game_day_minutes: 0 });

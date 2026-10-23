@@ -25,33 +25,33 @@ export function nextRun(s, lastRun, now = Date.now()) {
   if (mode === 'hourly') return lastRun + HOUR;
   if (mode === 'hours') return lastRun + every * HOUR;
 
+  // Move `day` by whole days/months first and set the time last (atTime): on a spring-forward
+  // day a missing 02:30 becomes 03:30, and moving that slot would keep the shifted hour.
+  const day = new Date(lastRun);
   if (mode === 'daily' || mode === 'days') {
     const step = mode === 'daily' ? 1 : every;
     // Next slot strictly after lastRun, then (step-1) more days.
-    let slot = atTime(lastRun, time);
-    if (slot.getTime() <= lastRun) slot.setDate(slot.getDate() + 1);
-    slot.setDate(slot.getDate() + (step - 1));
-    return slot.getTime();
+    if (atTime(day, time).getTime() <= lastRun) day.setDate(day.getDate() + 1);
+    day.setDate(day.getDate() + (step - 1));
+    return atTime(day, time).getTime();
   }
 
   if (mode === 'weekly') {
     const wd = Number(s.schedule_weekday ?? 1);
-    const slot = atTime(lastRun, time);
-    let diff = (wd - slot.getDay() + 7) % 7;
-    if (diff === 0 && slot.getTime() <= lastRun) diff = 7;
-    slot.setDate(slot.getDate() + diff);
+    let diff = (wd - day.getDay() + 7) % 7;
+    if (diff === 0 && atTime(day, time).getTime() <= lastRun) diff = 7;
+    day.setDate(day.getDate() + diff);
     // Guard against very short gaps (e.g. manual sync an hour before the slot).
-    if (slot.getTime() - lastRun < 12 * HOUR) slot.setDate(slot.getDate() + 7);
-    return slot.getTime();
+    if (atTime(day, time).getTime() - lastRun < 12 * HOUR) day.setDate(day.getDate() + 7);
+    return atTime(day, time).getTime();
   }
 
   if (mode === 'monthly') {
     const md = Math.min(28, Math.max(1, Number(s.schedule_monthday ?? 1)));
-    const slot = atTime(lastRun, time);
-    slot.setDate(md);
-    if (slot.getTime() <= lastRun) slot.setMonth(slot.getMonth() + 1);
-    if (slot.getTime() - lastRun < 2 * DAY) slot.setMonth(slot.getMonth() + 1);
-    return slot.getTime();
+    day.setDate(md);
+    if (atTime(day, time).getTime() <= lastRun) day.setMonth(day.getMonth() + 1);
+    if (atTime(day, time).getTime() - lastRun < 2 * DAY) day.setMonth(day.getMonth() + 1);
+    return atTime(day, time).getTime();
   }
 
   return lastRun + DAY;

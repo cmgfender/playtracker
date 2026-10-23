@@ -848,7 +848,10 @@ export function registerRoutes(r, app) {
     const where = []; const args = [];
     if (q.level) { const lv = q.level.split(','); where.push(`level IN (${lv.map(() => '?').join(',')})`); args.push(...lv); }
     if (q.source) { where.push('source LIKE ?'); args.push(`${q.source}%`); }
-    if (q.q) { where.push('(message LIKE ? OR context LIKE ?)'); args.push(`%${q.q}%`, `%${q.q}%`); }
+    if (q.q) { // literal text: % and _ are not wildcards
+      const like = `%${q.q.replace(/[\\%_]/g, '\\$&')}%`;
+      where.push("(message LIKE ? ESCAPE '\\' OR context LIKE ? ESCAPE '\\')"); args.push(like, like);
+    }
     if (q.since) { where.push('time >= ?'); args.push(toTime(q.since)); }
     if (q.before) { where.push('id < ?'); args.push(toInt(q.before)); }
     const w = where.length ? `WHERE ${where.join(' AND ')}` : '';

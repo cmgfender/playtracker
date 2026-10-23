@@ -114,7 +114,7 @@ describe('settings: GET/PUT /api/v1/settings validation', () => {
     assert.deepEqual(strip(await get()), before_, 'no partial write');
   });
 
-  test('webhook_on only accepts sessions, always or errors', { todo: 'APP BUG settings-system-1: webhook_on is not validated, any value is stored' }, async () => {
+  test('webhook_on only accepts sessions, always or errors', async () => {
     try {
       await expectRejected([{ webhook_on: 'banana' }, { webhook_on: 'ERRORS' }, { webhook_on: 1 }]);
     } finally { await restore(); }
@@ -183,13 +183,13 @@ describe('settings: GET/PUT /api/v1/settings validation', () => {
     await restore();
   });
 
-  test('an empty or null schedule mode, sync time or estimates mode is refused', { todo: 'APP BUG settings-system-2: "" / null skip validation for schedule_mode, schedule_time and stats_estimates (stored, label becomes empty)' }, async () => {
+  test('an empty or null schedule mode, sync time or estimates mode is refused', async () => {
     try {
       await expectRejected([{ schedule_mode: '' }, { schedule_mode: null }, { schedule_time: '' }, { stats_estimates: '' }]);
     } finally { await restore(); }
   });
 
-  test('fractional schedule numbers are refused', { todo: 'APP BUG settings-system-3: schedule_every / schedule_weekday / schedule_monthday accept fractions (1.5 h runs hourly, weekday 2.5 runs Tuesday)' }, async () => {
+  test('fractional schedule numbers are refused', async () => {
     try {
       await expectRejected([{ schedule_every: 1.5 }, { schedule_weekday: 2.5 }, { schedule_monthday: 10.5 }]);
     } finally { await restore(); }
@@ -204,27 +204,27 @@ describe('settings: GET/PUT /api/v1/settings validation', () => {
     await restore();
   });
 
-  test('numeric settings refuse null, booleans, arrays and empty strings', { todo: 'APP BUG settings-system-4: Number() coercion turns null/""/[] into 0 and true into 1 instead of rejecting them' }, async () => {
+  test('numeric settings refuse null, booleans, arrays and empty strings', async () => {
     try {
       await expectRejected([{ min_session_minutes: null }, { max_overage_minutes: '' }, { schedule_every: [3] }, { history_max_day_minutes: true }]);
     } finally { await restore(); }
   });
 
-  test('week_starts_on only takes a weekday number 0..6', { todo: 'APP BUG settings-system-5: week_starts_on accepts 9, -1, 7 and 0.5' }, async () => {
+  test('week_starts_on only takes a weekday number 0..6', async () => {
     try {
       for (const ok of [0, 1]) assert.equal((await put({ week_starts_on: ok })).status, 200);
       await expectRejected([{ week_starts_on: 9 }, { week_starts_on: 7 }, { week_starts_on: -1 }, { week_starts_on: 0.5 }]);
     } finally { await restore(); }
   });
 
-  test('session detection thresholds cannot be negative', { todo: 'APP BUG settings-system-6: min_session_minutes and max_overage_minutes accept negative values' }, async () => {
+  test('session detection thresholds cannot be negative', async () => {
     try {
       for (const ok of [{ min_session_minutes: 0 }, { max_overage_minutes: 0 }]) assert.equal((await put(ok)).status, 200);
       await expectRejected([{ min_session_minutes: -5 }, { max_overage_minutes: -1 }]);
     } finally { await restore(); }
   });
 
-  test('history caps must fit in a day (1..1440 minutes)', { todo: 'APP BUG settings-system-7: history caps accept 0 (silently means the default), negatives (all history becomes undated) and >1440' }, async () => {
+  test('history caps must fit in a day (1..1440 minutes)', async () => {
     try {
       for (const ok of [{ history_max_day_minutes: 1 }, { history_max_day_minutes: 1440 }, { history_max_game_day_minutes: 1 }, { history_max_game_day_minutes: 1440 }]) {
         assert.equal((await put(ok)).status, 200, JSON.stringify(ok));
@@ -250,7 +250,7 @@ describe('settings: GET/PUT /api/v1/settings validation', () => {
     }
   });
 
-  test('boolean settings refuse values that are not booleans', { todo: 'APP BUG settings-system-8: any unrecognised value ("banana", "ture", "yes") silently becomes false' }, async () => {
+  test('boolean settings refuse values that are not booleans', async () => {
     const original = await get();
     try {
       await expectRejected([{ auto_merge_titles: 'banana' }, { history_learn: 'ture' }, { use_recent_on_import: 'yes please' }, { library_hide_unplayed: { on: true } }]);
@@ -272,7 +272,7 @@ describe('settings: GET/PUT /api/v1/settings validation', () => {
     await put({ theme: before_.theme });
   });
 
-  test('Object.prototype names are not settings and are not stored', { todo: 'APP BUG settings-system-9: "toString", "constructor", "hasOwnProperty", "valueOf" pass the known-key check (`in` sees the prototype) and are persisted and served' }, async () => {
+  test('Object.prototype names are not settings and are not stored', async () => {
     const T = await startApp();
     try {
       const r = await T.put('/api/v1/settings', { toString: 'x', constructor: 'y', hasOwnProperty: 'z', valueOf: 'w' });
@@ -577,7 +577,7 @@ describe('schedule: next-run computation', () => {
     for (const t of simulate({ schedule_mode: 'days', schedule_every: 2, schedule_time: '04:00' }, local(2026, 3, 6, 4), 140)) assert.equal(hhmm(t), '04:00', fmt(t));
   });
 
-  test('DST gap: a time that does not exist on the change day runs once that day, then returns to its time', { todo: 'APP BUG settings-system-12: after the spring-forward run at 03:30 the next daily/weekly/monthly slot inherits 03:30 instead of 02:30' }, () => {
+  test('DST gap: a time that does not exist on the change day runs once that day, then returns to its time', () => {
     // daily 02:30 (does not exist on 2026-03-08 in New York)
     const d = simulate({ schedule_mode: 'daily', schedule_time: '02:30' }, local(2026, 3, 5, 2, 30), 8);
     for (let i = 1; i < d.length; i++) assert.equal(dayKey(d[i]), nextDayKey(dayKey(d[i - 1])), 'one run per day');
@@ -1020,7 +1020,7 @@ describe('error log: /api/v1/logs', () => {
     assert.deepEqual(seen, all.map((x) => x.id));
   });
 
-  test('search treats % and _ literally', { todo: 'APP BUG settings-system-13: /logs?q= is passed into LIKE unescaped, so % and _ act as wildcards' }, async () => {
+  test('search treats % and _ literally', async () => {
     await clear();
     const t = log.scoped('test');
     t.warn('progress 50 items done'); t.warn('quota at 50% now'); t.warn('file_name missing'); t.warn('filename missing');
