@@ -1907,7 +1907,7 @@ describe('Webhooks', () => {
     assert.equal((await t.api('GET', '/settings')).body.webhook_url, '');
   });
 
-  test('webhook_on only accepts sessions, always or errors', { todo: 'APP BUG psn-custom-13: PUT /settings accepts any webhook_on value (e.g. "sometimes"), which then posts on every sync' }, async (tc) => {
+  test('webhook_on only accepts sessions, always or errors', async (tc) => {
     const t = await fresh(tc);
     const r = await t.api('PUT', '/settings', { webhook_on: 'sometimes' });
     assert.equal(r.status, 400);

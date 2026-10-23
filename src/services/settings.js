@@ -46,7 +46,10 @@ const ENUMS = {
   time_format: ['hm', 'decimal'],
   start_page: ['home', 'library', 'sessions', 'stats'],
   default_library_sort: ['recent', 'trending', 'playtime', 'title', 'added', 'rating'],
+  stats_estimates: ['include', 'exclude'],
+  webhook_on: ['sessions', 'always', 'errors'],
 };
+const BOOLS = new Map([[true, true], ['true', true], [1, true], ['1', true], [false, false], ['false', false], [0, false], ['0', false]]);
 
 export class Settings {
   constructor(db) {
@@ -91,25 +94,31 @@ export function validateSettings(patch) {
   const out = {};
   const errors = [];
   for (const [k, v] of Object.entries(patch)) {
-    if (!(k in DEFAULT_SETTINGS)) continue;
+    if (!Object.hasOwn(DEFAULT_SETTINGS, k)) continue; // not `in`: that also sees toString, constructor, ...
     const def = DEFAULT_SETTINGS[k];
     if (typeof def === 'number') {
-      const n = Number(v);
+      // numbers and numeric strings only (Number() would turn null, '', true and [3] into numbers)
+      const n = typeof v === 'number' ? v : typeof v === 'string' && v.trim() ? Number(v) : NaN;
       if (!Number.isFinite(n)) { errors.push(`${k} must be a number`); continue; }
       out[k] = n;
     } else if (typeof def === 'boolean') {
-      out[k] = v === true || v === 'true' || v === 1 || v === '1';
+      if (!BOOLS.has(v)) { errors.push(`${k} must be true or false`); continue; }
+      out[k] = BOOLS.get(v);
     } else {
       out[k] = String(v ?? '');
     }
   }
-  if (out.schedule_mode && !VALID_MODES.includes(out.schedule_mode)) errors.push(`schedule_mode must be one of ${VALID_MODES.join(', ')}`);
-  if (out.schedule_time && !/^([01]\d|2[0-3]):[0-5]\d$/.test(out.schedule_time)) errors.push('schedule_time must be HH:MM');
-  if ('schedule_every' in out && (out.schedule_every < 1 || out.schedule_every > 365)) errors.push('schedule_every must be 1..365');
-  if ('schedule_weekday' in out && (out.schedule_weekday < 0 || out.schedule_weekday > 6)) errors.push('schedule_weekday must be 0..6');
-  if ('schedule_monthday' in out && (out.schedule_monthday < 1 || out.schedule_monthday > 28)) errors.push('schedule_monthday must be 1..28');
+  const badInt = (k, min, max) => k in out && !(Number.isInteger(out[k]) && out[k] >= min && out[k] <= max);
+  if ('schedule_mode' in out && !VALID_MODES.includes(out.schedule_mode)) errors.push(`schedule_mode must be one of ${VALID_MODES.join(', ')}`);
+  if ('schedule_time' in out && !/^([01]\d|2[0-3]):[0-5]\d$/.test(out.schedule_time)) errors.push('schedule_time must be HH:MM');
+  if (badInt('schedule_every', 1, 365)) errors.push('schedule_every must be 1..365');
+  if (badInt('schedule_weekday', 0, 6)) errors.push('schedule_weekday must be 0..6');
+  if (badInt('schedule_monthday', 1, 28)) errors.push('schedule_monthday must be 1..28');
+  if (badInt('week_starts_on', 0, 6)) errors.push('week_starts_on must be 0..6 (0 = Sunday)');
+  for (const k of ['min_session_minutes', 'max_overage_minutes']) if (k in out && out[k] < 0) errors.push(`${k} cannot be negative`);
+  // per-day caps for dated history: a day has 1440 minutes, and 0 or less would leave no room at all
+  for (const k of ['history_max_day_minutes', 'history_max_game_day_minutes']) if (k in out && (out[k] < 1 || out[k] > 1440)) errors.push(`${k} must be 1..1440`);
   if (out.webhook_url && !/^https?:\/\//.test(out.webhook_url)) errors.push('webhook_url must be http(s)');
-  if (out.stats_estimates && !['include', 'exclude'].includes(out.stats_estimates)) errors.push('stats_estimates must be include or exclude');
   for (const [k, allowed] of Object.entries(ENUMS)) if (k in out && !allowed.includes(out[k])) errors.push(`${k} must be one of ${allowed.join(', ')}`);
   if ('accent' in out && !/^#[0-9a-f]{6}$/i.test(out.accent)) errors.push('accent must be a #rrggbb color');
   if ('dashboard_layout' in out) {
