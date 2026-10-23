@@ -643,7 +643,7 @@ describe('PlayTracker web UI (no password)', () => {
     assertInvariant('after bulk delete');
   });
 
-  test('editing a manual session\'s minutes keeps its start/end times consistent with the new duration', { todo: 'APP BUG ui-e2e-5: minutes change but exact start/end stay, so "2:00 – 2:45 PM" is shown next to "1h"' }, async () => {
+  test('editing a manual session\'s minutes keeps its start/end times consistent with the new duration', async () => {
     const g0 = await S.ok('/games', { method: 'POST', body: { title: 'Span Lab' } });
     const s0 = await S.ok('/sessions', { method: 'POST', body: { game_id: g0.id, minutes: 45, ended_at: NOW - 6 * HOUR } });
     const h = await visit(`/game/${g0.id}`);

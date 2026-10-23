@@ -181,12 +181,15 @@ export function logSessionModal(game = null, onDone = rerender) {
 async function editSessionModal(id, onDone = rerender) {
   let s;
   try { s = await api(`/sessions/${id}`); } catch (e) { return fail(e); }
-  const local = s.source !== 'sync';
+  // the history of a synced game is like a synced session: it can only leave the stats
+  const local = s.source !== 'sync' && !(s.source === 'inferred' && s.account_id);
   modal({
     title: esc(s.title),
     body: `<div class="stack">
       <div class="row wrap">${platTag(s.platform)} ${sourceBadge(s)} <span class="muted small">${esc(sessionWhen(s))}</span></div>
-      ${!local ? `<div class="card small muted" style="padding:12px">${icon('info', '')} Synced from ${esc(plat(s.platform).label)}. The platform only reported <b>${fmtMin(s.minutes)}</b> played between ${fmtDate(s.window_start)} ${fmtTime(s.window_start)} and ${fmtDate(s.window_end)} ${fmtTime(s.window_end)}. You can pin the exact time below.</div>` : ''}
+      ${!local ? `<div class="card small muted" style="padding:12px">${icon('info', '')} Synced from ${esc(plat(s.platform).label)}. ${s.source === 'inferred'
+        ? `This is history from before tracking started: its <b>${fmtMin(s.minutes)}</b> are part of the platform's total, so it can only leave the stats.`
+        : `The platform only reported <b>${fmtMin(s.minutes)}</b> played between ${fmtDate(s.window_start)} ${fmtTime(s.window_start)} and ${fmtDate(s.window_end)} ${fmtTime(s.window_end)}. You can pin the exact time below.`}</div>` : ''}
       ${local ? `<div class="field"><label>Minutes</label><input class="input" type="number" name="minutes" value="${s.minutes}" min="1"></div>` : ''}
       <div class="grid grid-2">
         <div class="field"><label>Started</label><input class="input" type="datetime-local" name="started" value="${s.started_at ? localInput(s.started_at) : ''}"></div>
@@ -201,8 +204,9 @@ async function editSessionModal(id, onDone = rerender) {
       const v = (n) => el.querySelector(`[name=${n}]`);
       el.querySelector('#s-save').addEventListener('click', async () => {
         const body = { note: v('note').value, kind: v('play').checked ? 'play' : 'baseline' };
-        if (v('started').value) body.started_at = new Date(v('started').value).getTime();
-        if (v('ended').value) body.ended_at = new Date(v('ended').value).getTime();
+        // only times you changed: unchanged ones let new minutes move the start
+        if (v('started').value && v('started').value !== v('started').defaultValue) body.started_at = new Date(v('started').value).getTime();
+        if (v('ended').value && v('ended').value !== v('ended').defaultValue) body.ended_at = new Date(v('ended').value).getTime();
         if (local) body.minutes = Number(v('minutes').value);
         try { await api(`/sessions/${s.id}`, { method: 'PATCH', body }); close(); toast('Session updated'); onDone(); } catch (e) { fail(e); }
       });

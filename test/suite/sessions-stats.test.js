@@ -155,28 +155,28 @@ describe('logging manual sessions', () => {
     assert.equal((await life()).sessions, l0.sessions);
   });
 
-  test('ended_at before started_at is rejected', { todo: 'APP BUG sessions-stats-1: POST /sessions stores a session whose ended_at is before started_at' }, async () => {
+  test('ended_at before started_at is rejected', async () => {
     const l0 = await life();
     const r = await h.call('POST', '/sessions', { game_id: g, minutes: 60, started_at: local(2026, 2, 3, 11), ended_at: local(2026, 2, 3, 10) });
     assert.equal(r.status, 400, `got ${r.status} ${JSON.stringify(r.body)}`);
     assert.equal((await life()).sessions, l0.sessions);
   });
 
-  test('an unparseable started_at is rejected instead of being logged at the current time', { todo: 'APP BUG sessions-stats-2: POST /sessions silently logs an unparseable started_at as ending now' }, async () => {
+  test('an unparseable started_at is rejected instead of being logged at the current time', async () => {
     const l0 = await life();
     const r = await h.call('POST', '/sessions', { game_id: g, minutes: 60, started_at: 'last tuesday-ish' });
     assert.equal(r.status, 400, `got ${r.status} ${JSON.stringify(r.body)}`);
     assert.equal((await life()).sessions, l0.sessions);
   });
 
-  test('a session that would end in the future is rejected', { todo: 'APP BUG sessions-stats-4: POST /sessions accepts sessions in the future' }, async () => {
+  test('a session that would end in the future is rejected', async () => {
     const l0 = await life();
     const r = await h.call('POST', '/sessions', { game_id: g, minutes: 60, started_at: NOW + 2 * DAY });
     assert.equal(r.status, 400, `got ${r.status} ${JSON.stringify(r.body)}`);
     assert.equal((await life()).sessions, l0.sessions);
   });
 
-  test('a date-only session (up to 24 h) stays on the day it was logged for', { todo: 'APP BUG sessions-stats-5: date-only sessions start at noon, so >12 h spills into the next day' }, async () => {
+  test('a date-only session (up to 24 h) stays on the day it was logged for', async () => {
     const g2 = await addGame(h, 'Long Day Game');
     await h.post('/sessions', { game_id: g2, minutes: 900, date: '2026-02-20' });
     const heat = (await h.get(`/stats/heatmap?year=2026&game_id=${g2}`)).days;
@@ -234,7 +234,7 @@ describe('editing sessions', () => {
     assertInvariants(h);
   });
 
-  test('editing minutes is held to the same 10080-minute limit as logging', { todo: 'APP BUG sessions-stats-6: PATCH /sessions/:id accepts minutes above the 10080 limit' }, async () => {
+  test('editing minutes is held to the same 10080-minute limit as logging', async () => {
     try {
       const r = await h.call('PATCH', `/sessions/${m.id}`, { minutes: 50_000 });
       assert.equal(r.status, 400, `got ${r.status}`);
@@ -264,7 +264,7 @@ describe('editing sessions', () => {
     assert.deepEqual(await h.get(`/sessions/${m.id}`), before_);
   });
 
-  test('an unparseable timestamp on edit is rejected (the session keeps its times)', { todo: "APP BUG sessions-stats-3: PATCH /sessions/:id with an unparseable timestamp wipes the session's start time" }, async () => {
+  test('an unparseable timestamp on edit is rejected (the session keeps its times)', async () => {
     const before_ = await h.get(`/sessions/${m.id}`);
     try {
       const r = await h.call('PATCH', `/sessions/${m.id}`, { started_at: 'not a date' });
@@ -386,7 +386,7 @@ describe('deleting sessions', () => {
     assertInvariants(h);
   });
 
-  test('deleting the undated history of a synced game keeps the platform total and is never re-counted as play', { todo: "APP BUG sessions-stats-7: deleting a synced game's history lowers the platform total; the next sync re-counts it as new play" }, async () => {
+  test('deleting the undated history of a synced game keeps the platform total and is never re-counted as play', async () => {
     clock.set(NOW - DAY);
     const acc = await h.post('/accounts', { platform: 'custom', name: 'undated', config: {} });
     await report(h, acc.id, [{ id: 'cl', title: 'Civ Legacy', playtime_minutes: 600 }]);
@@ -394,17 +394,19 @@ describe('deleting sessions', () => {
     assert.equal(hist.length, 1);
     assert.equal(hist[0].minutes, 600);
     const gid = hist[0].game_id;
-    const today0 = (await h.get('/summary')).today.total_minutes;
     await h.call('DELETE', `/sessions/${hist[0].id}`);
     assert.equal((await h.get(`/games/${gid}`)).minutes, 600, 'lifetime total still comes from the platform');
     clock.set(NOW);
+    // "today" is measured on the day of the next report: at NOW - DAY it is another day (the
+    // previous test played 30 minutes on it)
+    const today0 = (await h.get('/summary')).today.total_minutes;
     const r = await report(h, acc.id, [{ id: 'cl', title: 'Civ Legacy', playtime_minutes: 600 }]);
     assert.equal(r.sessions_created, 0, 'an unchanged platform total must not create play');
     assert.equal((await h.get('/summary')).today.total_minutes, today0, 'pre-tracking time never shows up as today\'s play');
     assertInvariants(h);
   });
 
-  test('deleting estimated history of a synced game keeps the platform total and is never re-counted as play', { todo: "APP BUG sessions-stats-7: deleting a synced game's history lowers the platform total; the next sync re-counts it as new play" }, async () => {
+  test('deleting estimated history of a synced game keeps the platform total and is never re-counted as play', async () => {
     clock.set(NOW - DAY);
     const acc = await h.post('/accounts', { platform: 'custom', name: 'hist', config: {} });
     await report(h, acc.id, [{ id: 'ow', title: 'Outer Wilds', playtime_minutes: 1200, first_played_at: '2025-09-01', last_played_at: '2025-10-15' }]);
@@ -601,7 +603,7 @@ describe('session listing filters', () => {
     assert.equal((await list('q=nothing-matches')).total, 0);
   });
 
-  test('title search treats _ and % literally', { todo: 'APP BUG sessions-stats-9: session title search passes _ and % to LIKE as wildcards' }, async () => {
+  test('title search treats _ and % literally', async () => {
     assert.deepEqual((await list(`q=${encodeURIComponent('Half_')}`)).items.map((s) => s.title), ['Half_Life']);
     assert.deepEqual((await list(`q=${encodeURIComponent('100%')}`)).items.map((s) => s.title), ['100% Orange Juice']);
   });
@@ -623,7 +625,7 @@ describe('session listing filters', () => {
     assert.deepEqual(c.items.map((s) => s.title).sort(), ['Celeste', 'HalfXLife', 'Half_Life'].sort());
   });
 
-  test('date-only from/to cover the whole local day', { todo: 'APP BUG sessions-stats-10: date-only from/to filters are read as 12:00 noon, dropping half the day' }, async () => {
+  test('date-only from/to cover the whole local day', async () => {
     const r = await list('from=2026-03-12&to=2026-03-12');
     assert.deepEqual(r.items.map((s) => s.title), ['Celeste'], 'Celeste was played 09:00-09:45 on 2026-03-12');
     const r2 = await list('to=2026-03-11');
