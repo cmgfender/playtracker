@@ -952,19 +952,23 @@ export class SyncService {
       }
     };
     // cover art for titles imported before cover lookup existed (or added since)
-    setTimeout(() => {
+    this.coverTimer = setTimeout(() => {
       for (const a of this.db.prepare('SELECT id, platform FROM accounts WHERE enabled = 1 AND last_sync_at IS NOT NULL').all()) {
         if (providers[a.platform]?.resolveCovers) this.resolveCovers(a.id).catch((e) => this.log.warn(`Cover lookup failed: ${e.message}`));
       }
-    }, 20_000).unref?.();
+    }, 20_000);
+    this.coverTimer.unref?.();
     const run = () => tick().catch((e) => this.log.error('Scheduler tick failed', e));
     this.timer = setInterval(run, 30_000);
     this.timer.unref?.();
-    setTimeout(run, 5_000).unref?.();
+    this.firstTick = setTimeout(run, 5_000);
+    this.firstTick.unref?.();
   }
 
   stop() {
     this.stopping = true;
     clearInterval(this.timer);
+    clearTimeout(this.firstTick);
+    clearTimeout(this.coverTimer);
   }
 }

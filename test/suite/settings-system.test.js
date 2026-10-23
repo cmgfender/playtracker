@@ -1037,7 +1037,7 @@ describe('error log: /api/v1/logs', () => {
     assert.ok(m.length >= 100 && m.length <= 5000 && /^x+$/.test(m), `stored (${m.length} chars)`);
   });
 
-  test('a warning with a very large context does not break the error log', { todo: 'APP BUG settings-system-14: the logger cuts context JSON at 20000 chars, GET /logs then JSON.parses it and answers 500 for the whole log' }, async () => {
+  test('a warning with a very large context does not break the error log', async () => {
     await clear();
     log.scoped('test').warn('big context', { blob: 'y'.repeat(30000) });
     const r = await S.get('/api/v1/logs');
@@ -1595,7 +1595,7 @@ describe('scheduler: background sync timer', { concurrency: true }, () => {
     }
   });
 
-  test('close() cancels the scheduler: nothing runs against the closed database', { todo: 'APP BUG settings-system-16: SyncService.stop() does not clear the 5 s first-tick and 20 s cover-lookup timers; after close() the tick logs "database is not open" and the cover lookup throws an uncaught exception' }, async () => {
+  test('close() cancels the scheduler: nothing runs against the closed database', async () => {
     const errors = [];
     const inst = createApp({ dbFile: ':memory:', password: '', scheduler: true, log: { ...SILENT, error: (m) => errors.push(String(m)) } });
     inst.close();
