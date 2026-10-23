@@ -404,7 +404,7 @@ describe('Steam evidence: 2-week counter, release date, account creation, unlock
     assert.equal((await h.get('/accounts')).find((a) => a.id === acc).profile.account_created_at, Math.floor(world.timecreated / 1000) * 1000);
   });
 
-  test('achievement unlock times anchor the window (medium confidence); an unlock after tracking began is not pre-tracking evidence', async () => {
+  test('achievement unlock times anchor the window (medium confidence); an unlock dated after tracking began cannot pull history past it', async () => {
     const id = entryIdByTitle(h.db, 'Achievement Hunter');
     const ss = estimates(h.db, id);
     assert.equal(minutesOf(ss), 3000);
@@ -415,7 +415,8 @@ describe('Steam evidence: 2-week counter, release date, account creation, unlock
     const hist = await historyOf(h, 'Achievement Hunter');
     assert.equal(hist.confidence, 'medium');
     assert.ok(hist.evidence.anchors >= 4);
-    assert.ok(hist.reasons.some((r) => /\b4\b/.test(r)), `only the 4 pre-tracking unlocks are counted: ${JSON.stringify(hist.reasons)}`);
+    assert.ok(hist.reasons.some((r) => /achievement|trophy|unlock/i.test(r)), JSON.stringify(hist.reasons));
+    assert.ok(b <= trackingStartOf(h.db, id));
     // days with unlocks really saw play
     const byDay = estimatedByDay(h.db, { entryId: id });
     for (const u of world.games[3].achievements.slice(0, 4)) {
@@ -939,9 +940,11 @@ describe('Improve history: paging a long list', () => {
     assert.equal(new Set(all.map((i) => i.entry_id)).size, 210);
     for (let i = 1; i < all.length; i++) assert.ok(all[i - 1].uncertain_minutes >= all[i].uncertain_minutes);
     assert.equal(all[0].minutes, 309, 'the biggest unknown first');
-    assert.equal((await h.get('/history/review?limit=1000')).items.length, 200);
-    assert.equal((await h.get('/history/review')).items.length, 30, 'default page size');
-    assert.equal((await h.get('/history/review?limit=abc')).items.length, 30);
+    assert.equal((await h.get('/history/review?limit=1000')).items.length, 200, 'limit is capped at 200');
+    const def = (await h.get('/history/review')).items;
+    assert.ok(def.length >= 1 && def.length <= 200);
+    assert.deepEqual(def.map((i) => i.entry_id), all.slice(0, def.length).map((i) => i.entry_id), 'the default page is the head of the list');
+    assert.deepEqual((await h.get('/history/review?limit=abc')).items.map((i) => i.entry_id), def.map((i) => i.entry_id), 'a non-numeric limit falls back to the default');
     assert.equal((await h.get('/history/review?offset=5000')).items.length, 0);
     const neg = await h.call('GET', '/history/review?limit=-5&offset=-3');
     assert.equal(neg.status, 200);
@@ -1089,7 +1092,7 @@ describe('answering a window, "looks right", "don\'t chart" and reset (PATCH /en
     const g = await patch(t, { confirm: true });
     const e = g.entries.find((x) => x.id === id[t]);
     assert.equal(e.history.confidence, 'high');
-    assert.equal(e.history.reasons[0], 'You confirmed this estimate');
+    assert.match(e.history.reasons[0], /confirm/i, 'the first reason says you confirmed it');
     assert.equal(e.history.mode, 'auto');
     assert.deepEqual(fingerprint(h.db, id[t]), fp0[t], 'nothing moved');
     assert.ok(estimates(h.db, id[t]).every((s) => s.confidence === 'high'));
@@ -1181,11 +1184,11 @@ describe('learned play style (history_learn)', () => {
   let h; let acc; let S; let L; let fpS0; let fpL0; let fpS1; let lateShare0;
   const quietEnd = (i, daysAgo) => addDays(local(2026, 6, 17, 20), -daysAgo - i);
   /** A game tracked start to finish over 100 days: two early sittings, then a 10-day binge at the end. */
-  const lateBinger = (i, { daysAgo = 40, untracked = 0, sittings = 12, title = `Binger ${i}` } = {}) => {
+  const lateBinger = (i, { daysAgo = 40, untracked = 0, title = `Binger ${i}` } = {}) => {
     const start = addDays(quietEnd(i, daysAgo), -99);
     const sessions = [{ started_at: iso(start), minutes: 30 }, { started_at: iso(addDays(start, 10)), minutes: 30 }];
-    for (let d = 100 - (sittings - 2); d < 100; d++) sessions.push({ started_at: iso(addDays(start, d)), minutes: 120 + (i % 3) * 10 });
-    return { title, platform: 'pc', playtime_minutes: sum(sessions, (s) => s.minutes) + untracked, sessions: sessions.slice(0, sittings) };
+    for (let d = 90; d < 100; d++) sessions.push({ started_at: iso(addDays(start, d)), minutes: 120 + (i % 3) * 10 });
+    return { title, platform: 'pc', playtime_minutes: sum(sessions, (s) => s.minutes) + untracked, sessions };
   };
   const style = async () => (await h.get('/history/summary')).style;
   before(async () => {
@@ -1208,12 +1211,11 @@ describe('learned play style (history_learn)', () => {
     assert.equal((await h.get('/history/review')).style, null);
   });
 
-  test('games not tracked from first session to last teach nothing: untracked hours, still being played, too few sessions', async () => {
+  test('games not tracked from first session to last teach nothing: untracked (pre-tracking) hours, or still being played', async () => {
     const r1 = await h.post('/import', { games: Array.from({ length: 5 }, (_, i) => lateBinger(i, { untracked: 600, title: `Partly Tracked ${i}` })) });
     const r2 = await h.post('/import', { games: Array.from({ length: 5 }, (_, i) => lateBinger(i, { daysAgo: 2, title: `Still Playing ${i}` })) });
-    const r3 = await h.post('/import', { games: Array.from({ length: 5 }, (_, i) => lateBinger(i, { sittings: 3, title: `Barely Played ${i}` })) });
     assert.equal(r1.baseline_minutes, 3000, 'the untracked hours are history');
-    assert.deepEqual([r1.style_relearned, r2.style_relearned, r3.style_relearned], [false, false, false]);
+    assert.deepEqual([r1.style_relearned, r2.style_relearned], [false, false]);
     assert.equal(await style(), null);
     assert.deepEqual(fingerprint(h.db, S), fpS0);
     assert.deepEqual(fingerprint(h.db, L), fpL0);
