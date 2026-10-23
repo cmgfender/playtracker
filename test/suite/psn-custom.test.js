@@ -549,7 +549,7 @@ describe('PSN first import: existing hours become dated history', () => {
     assertHealthy(t);
   });
 
-  test('a heavy library: history is never dated before the PSN first-played date; what cannot fit stays undated', { todo: 'APP BUG psn-custom-5: when the shared 12 h/day budget is full, history is moved to before the first-played date (still labelled high confidence) instead of being left undated' }, async (tc) => {
+  test('a heavy library: history is never dated before the PSN first-played date; what cannot fit stays undated', async (tc) => {
     const { t, acc, first } = await heavyLibrary(tc);
     for (const i of [0, 1, 2]) {
       const e = t.entry(acc.id, `PPSA4110${i}_00`);
@@ -559,7 +559,7 @@ describe('PSN first import: existing hours become dated history', () => {
     assert.ok(undated > 0, 'the overflow is kept as undated history');
   });
 
-  test('a heavy library: all games together get at most 12 h of history on any day', { todo: 'APP BUG psn-custom-6: the library-wide 12 h/day history cap is exceeded (740 min on a day) when history chunks end mid-day' }, async (tc) => {
+  test('a heavy library: all games together get at most 12 h of history on any day', async (tc) => {
     const { t } = await heavyLibrary(tc);
     const perDay = t.db.prepare('SELECT day, SUM(minutes) m FROM play_days WHERE estimated = 1 GROUP BY day ORDER BY m DESC LIMIT 1').get();
     assert.ok(perDay.m <= 720 + 1, `the library got ${perDay.m.toFixed(1)} min on ${perDay.day}`);
@@ -1521,7 +1521,7 @@ describe('Custom accounts: pushed reports', () => {
     assertHealthy(t);
   });
 
-  test('a huge lifetime total: no day gets more than 10 h of that game\'s history, including 25-hour DST days', { todo: 'APP BUG psn-custom-6: daily history caps are exceeded on 25-hour DST fall-back days (621 min) and on the partial last day (654 min)' }, async (tc) => {
+  test('a huge lifetime total: no day gets more than 10 h of that game\'s history, including 25-hour DST days', async (tc) => {
     const t = await fresh(tc);
     const acc = await linkCustom(t);
     await t.report(acc.id, [{ id: 'mmo', title: 'Forever MMO', playtime_minutes: 10_000_000, first_played_at: iso(T0 - 6000 * DAY), last_played_at: iso(T0 - DAY) }]);

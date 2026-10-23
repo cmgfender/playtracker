@@ -125,8 +125,7 @@ describe('first import of a large library (Steam, 603 games)', () => {
     assert.equal((await h.get('/summary')).today.total_minutes, 0, 'and none of it is today\'s play');
   });
 
-  test('no day of the whole library holds more than 12 h of history, no game more than 10 h',
-    { todo: 'APP BUG history-2: the shared 12 h/day budget is exceeded (multi-day chunks average away per-day room; also inflated by history-1)' }, async () => {
+  test('no day of the whole library holds more than 12 h of history, no game more than 10 h', async () => {
       checkCaps(h.db, { label: 'big import' });
     });
 
@@ -658,8 +657,7 @@ describe('history lands before tracking began (boundary times)', () => {
 });
 
 describe('the last day of a history window', () => {
-  test('a game last played at 00:30 gets at most 30 min that day and no day above the 10 h cap',
-    { todo: 'APP BUG history-1: the final day chunk is cut at last played but keeps its full minutes (891 min/day on the two days before, an 1800-min estimate squeezed into 48.5 h)' }, async () => {
+  test('a game last played at 00:30 gets at most 30 min that day and no day above the 10 h cap', async () => {
       clock.set(NOW);
       const h = await startApp();
       try {
@@ -673,8 +671,7 @@ describe('the last day of a history window', () => {
       } finally { await h.close(); }
     });
 
-  test('import day: a game played until 01:00 today gets at most the hour before that on import day',
-    { todo: 'APP BUG history-1: the 2-week-counter minutes of the last day are cut at last played (01:00) but keep the day\'s share: 260 min placed between 00:00 and 01:00 on import day' }, async () => {
+  test('import day: a game played until 01:00 today gets at most the hour before that on import day', async () => {
       clock.set(NOW);
       const h = await startApp();
       try {
@@ -691,8 +688,7 @@ describe('the last day of a history window', () => {
       } finally { await h.close(); }
     });
 
-  test('an exact window ending in the evening (game page) keeps the 10 h/day cap on its days',
-    { todo: 'APP BUG history-1: a 2-day window ending 20:00 holds 1200 min in 44 h, so its first day gets 654 min' }, async () => {
+  test('an exact window ending in the evening (game page) keeps the 10 h/day cap on its days', async () => {
       clock.set(NOW);
       const h = await startApp();
       try {
@@ -706,8 +702,7 @@ describe('the last day of a history window', () => {
       } finally { await h.close(); }
     });
 
-  test('the 25-hour DST fall-back day (2025-11-02) still holds at most 10 h of one game',
-    { todo: 'APP BUG history-3: a multi-day estimate is spread by elapsed time, so the 25-hour fall-back day gets 25/24 of a capped day (621 min)' }, async () => {
+  test('the 25-hour DST fall-back day (2025-11-02) still holds at most 10 h of one game', async () => {
       clock.set(NOW);
       const h = await startApp();
       try {
@@ -802,8 +797,7 @@ describe('per-day caps: 10 h per game, 12 h per day across the library', () => {
 });
 
 describe('a library competing for the same weeks', () => {
-  test('60 games with first/last played in the same weeks never stack more than 12 h on a day',
-    { todo: 'APP BUG history-2: per-day allocation respects the shared room, but consecutive days are merged into averaged multi-day estimates, pushing busy days to ~773 min' }, async () => {
+  test('60 games with first/last played in the same weeks never stack more than 12 h on a day', async () => {
       clock.set(NOW);
       const h = await startApp();
       try {
@@ -1101,8 +1095,7 @@ describe('answering a window, "looks right", "don\'t chart" and reset (PATCH /en
     assert.deepEqual(fingerprint(h.db, id['No Dates Here']), fp0['No Dates Here']);
   });
 
-  test('a confirmed estimate survives re-dating (re-date all, new cap settings) exactly',
-    { todo: 'APP BUG history-4: confirm pins only the window; re-dating re-shapes the minutes inside it (a low-confidence guess changes on the next re-date)' }, async () => {
+  test('a confirmed estimate survives re-dating (re-date all, new cap settings) exactly', async () => {
       const t = 'Confirm Redate';
       await patch(t, { confirm: true });
       const kept = fingerprint(h.db, id[t]);

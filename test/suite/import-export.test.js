@@ -262,7 +262,7 @@ describe('CSV import: columns, delimiters, quoting, validation', () => {
     consistent(t);
   });
 
-  test('estimated history never puts more than 10 h of one game, or 12 h of all games, on one day', { todo: 'APP BUG import-export-3: multi-day history chunks cut at a mid-day last-played time are re-spread by the rollup, overfilling days' }, async () => {
+  test('estimated history never puts more than 10 h of one game, or 12 h of all games, on one day', async () => {
     // after the import above (900 h between 20 and 11 days ago, last played = a date -> local noon)
     const perGame = t.db.prepare('SELECT g.title, p.day, SUM(p.minutes) m FROM play_days p JOIN games g ON g.id = p.game_id WHERE p.estimated = 1 GROUP BY p.game_id, p.day HAVING m > 600.001').all();
     assert.deepEqual(perGame.map((x) => `${x.title} ${x.day} ${Math.round(x.m)}`), [], 'per game: at most 10 h a day');
@@ -272,7 +272,7 @@ describe('CSV import: columns, delimiters, quoting, validation', () => {
     assert.ok(Object.values(heat.days).every((m) => m <= 720), 'the heatmap shows no day above 12 h of estimated history');
   });
 
-  test('hours that cannot fit between first and last played stay undated instead of being dated before the game was first played', { todo: 'APP BUG import-export-2: history is dated before the known first-played date when the hours do not fit the window' }, async () => {
+  test('hours that cannot fit between first and last played stay undated instead of being dated before the game was first played', async () => {
     // 'Cap Game A/B/C' above: 300 h each between first played (20 days ago) and last played
     // (11 days ago) - at most 10 h/game/day and 12 h/day overall fit; the rest cannot be dated
     const first = ago(20);

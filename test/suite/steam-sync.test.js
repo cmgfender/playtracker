@@ -302,7 +302,6 @@ describe('initial import: existing playtime becomes dated history', () => {
   }));
 
   test('…and all games together never get more than 12 h of history on one day',
-    { todo: 'APP BUG steam-sync-6: multi-day history chunks are evened out after the shared daily budget was applied, pushing days past 720 min' },
     () => scenario({ library: bigLibrary }, async ({ api }) => {
       const over = [];
       for (const y of [2023, 2024, 2025, 2026]) {
