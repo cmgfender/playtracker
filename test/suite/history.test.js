@@ -715,6 +715,47 @@ describe('the last day of a history window', () => {
     });
 });
 
+describe('the first day of a history window', () => {
+  let h;
+  const FIRST_RECENT = local(2026, 6, 14, 15);
+  const FIRST_LATE = local(2026, 6, 10, 23);
+  before(async () => {
+    clock.set(NOW);
+    h = await startApp();
+    const acc = await h.customAccount();
+    await h.report(acc, [
+      { id: 'r', title: 'Started This Week', playtime_minutes: 1200, recent_minutes: 600, first_played_at: iso(FIRST_RECENT), last_played_at: iso(local(2026, 6, 16, 15)) },
+      { id: 'l', title: 'Late Start', playtime_minutes: 2000, first_played_at: iso(FIRST_LATE), last_played_at: iso(local(2026, 6, 12, 22)) },
+      { id: 'd', title: 'One Day Only', playtime_minutes: 120, first_played_at: '2026-05-20', last_played_at: '2026-05-20' },
+    ]);
+  });
+  after(() => h.close());
+
+  test('first played inside the 2-week window: the counter\'s minutes stay after it, the rest stays undated', () => {
+    const id = entryIdByTitle(h.db, 'Started This Week');
+    const ss = estimates(h.db, id);
+    assert.ok(ss.every((s) => s.window_start >= FIRST_RECENT), `dated from ${iso(spanOf(ss)[0])}, first played ${iso(FIRST_RECENT)}`);
+    assert.equal(minutesOf(ss), 600, 'the recent-play counter\'s minutes are dated inside its window');
+    assert.equal(undatedOf(h, id), 600, 'the minutes from before the window cannot be dated after first played');
+    checkInvariants(h.db, { label: 'first day' });
+  });
+
+  test('a first-played time late in the evening leaves that day only the hour after it', () => {
+    const id = entryIdByTitle(h.db, 'Late Start');
+    const ss = estimates(h.db, id);
+    assert.ok(ss.every((s) => s.window_start >= FIRST_LATE), `dated from ${iso(spanOf(ss)[0])}, first played ${iso(FIRST_LATE)}`);
+    const first = estimatedByDay(h.db, { entryId: id }).get(dayKey(FIRST_LATE)) || 0;
+    assert.ok(first <= 61, `${first.toFixed(0)} min on the first-played day, which has 60 min after 23:00`);
+    assert.equal(minutesOf(ss) + undatedOf(h, id), 2000);
+  });
+
+  test('first and last played given as the same date still date the history on that day', () => {
+    const id = entryIdByTitle(h.db, 'One Day Only');
+    assert.equal(estimatedByDay(h.db, { entryId: id }).get('2026-05-20') || 0, 120);
+    assert.equal(undatedOf(h, id), 0);
+  });
+});
+
 // ======================================================================================
 describe('per-day caps: 10 h per game, 12 h per day across the library', () => {
   let h; let acc;

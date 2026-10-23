@@ -91,11 +91,11 @@ export function allocate(minutes, weights, { cap = 600, minDay = 15 } = {}) {
   return alloc;
 }
 
-function chunkDays(dayStart, alloc, { maxRun = 7, hardEnd = Infinity, caps = null } = {}) {
+function chunkDays(dayStart, alloc, { maxRun = 7, hardStart = -Infinity, hardEnd = Infinity, caps = null } = {}) {
   // merge consecutive active days (similar volume) into chunks to keep row counts small.
   // A chunk's minutes are later spread evenly over its time (charts, shared day load), so only
-  // whole 24-hour days merge (not a DST day, not the last day cut at the hard end), and only
-  // while the even share stays within every merged day's cap.
+  // whole 24-hour days merge (not a DST day, not the first/last day cut at the hard start/end),
+  // and only while the even share stays within every merged day's cap.
   const chunks = [];
   let cur = null;
   for (let i = 0; i < alloc.length; i++) {
@@ -103,7 +103,7 @@ function chunkDays(dayStart, alloc, { maxRun = 7, hardEnd = Infinity, caps = nul
     if (m <= 0) { cur = null; continue; }
     const start = addDays(dayStart, i);
     const next = addDays(start, 1);
-    const whole = next - start === DAY && next - 1 <= hardEnd;
+    const whole = next - start === DAY && start >= hardStart && next - 1 <= hardEnd;
     const cap = caps ? caps[i] : Infinity;
     if (cur && whole && cur.days < maxRun && Math.abs(m - cur.minutes / cur.days) <= Math.max(10, 0.35 * (cur.minutes / cur.days))
       && (cur.minutes + m) / (cur.days + 1) <= Math.min(cur.cap, cap) + 1e-9) {
@@ -114,8 +114,9 @@ function chunkDays(dayStart, alloc, { maxRun = 7, hardEnd = Infinity, caps = nul
     }
     if (!whole) cur = null; // a short or long day stands alone
   }
-  // day granularity must never cross the hard end (last played / start of tracking)
+  // day granularity must never cross the hard start (first played) or end (last played / start of tracking)
   for (const c of chunks) {
+    if (c.start < hardStart) c.start = hardStart;
     if (c.end > hardEnd) c.end = hardEnd;
     if (c.start >= c.end) c.start = c.end - 60_000;
   }
@@ -162,12 +163,19 @@ const binOfBack = (d) => { for (let b = 0; b < BACK_BINS.length - 1; b++) if (d 
 export function inferHistory(e, { pacePerDay = 90, maxPerDay = 600, minDay = 15, dayRoom = null, shape = SHAPE, style = null } = {}) {
   // learned player style (see learnStyle): blended with the default shape by evidence size
   const lambda = style?.samples?.length >= 3 ? style.games / (style.games + STYLE_PRIOR_GAMES) : 0;
+  // a first played date (yours or the platform's) is a hard start: nothing is dated before it,
+  // and what does not fit after it stays undated instead of being moved earlier. Within its day
+  // it holds to the minute while it is before the end; a window with no length (first and last
+  // played given as the same date) keeps that day up to the end
+  const hardStart = e.manual?.start ?? e.firstPlayedAt ?? null;
+  const startIn = (hardEnd) => (hardStart != null && hardStart < hardEnd ? hardStart : -Infinity);
   // per-day capacity in whole minutes (rounding never tips a day over): this game's own cap,
-  // limited by what other games already use that day and by the time the day has before
-  // `hardEnd` (a last day that ends at last played / start of tracking)
+  // limited by what other games already use that day and by the time the day has after the
+  // hard start and before `hardEnd` (a first day that begins at first played, a last day that
+  // ends at last played / start of tracking)
   const capsFor = (d0, n, hardEnd) => Array.from({ length: n }, (_, i) => {
     const day = addDays(d0, i);
-    const time = (Math.min(addDays(day, 1), hardEnd) - day) / 60_000;
+    const time = (Math.min(addDays(day, 1), hardEnd) - Math.max(day, startIn(hardEnd))) / 60_000;
     return Math.max(0, Math.floor(Math.min(maxPerDay, dayRoom ? dayRoom(day) : Infinity, time) + 1e-6));
   });
   const total = Math.max(0, Math.round(e.minutes || 0));
@@ -181,11 +189,11 @@ export function inferHistory(e, { pacePerDay = 90, maxPerDay = 600, minDay = 15,
   const conf = [];
 
   // 1) Minutes known to be recent (Steam's 2-week counter): place them inside that window,
-  //    never after the last played time, with a bump on the last-played day.
+  //    never before the first or after the last played time, with a bump on the last-played day.
   let upper = Math.min(T, e.lastPlayedAt && e.lastPlayedAt <= T ? e.lastPlayedAt : T);
   if (e.recent?.minutes > 0) {
     const r = Math.min(e.recent.minutes, remaining);
-    const wStart = Math.max(lower, T - (e.recent.days || 14) * DAY);
+    const wStart = Math.max(lower, hardStart ?? -Infinity, T - (e.recent.days || 14) * DAY);
     // a last-played date older than the recent window contradicts the counter: trust the counter
     if (upper < wStart) upper = T;
     const wEnd = Math.max(wStart, upper);
@@ -198,7 +206,7 @@ export function inferHistory(e, { pacePerDay = 90, maxPerDay = 600, minDay = 15,
     const caps = capsFor(d0, n, hardEnd);
     const alloc = allocate(r, weights, { cap: caps, minDay });
     const placed = alloc.reduce((a, x) => a + x, 0);
-    result.chunks.push(...chunkDays(d0, alloc, { hardEnd, caps }).map((c) => ({ ...c, confidence: 'medium', why: 'recent' })));
+    result.chunks.push(...chunkDays(d0, alloc, { hardStart: startIn(hardEnd), hardEnd, caps }).map((c) => ({ ...c, confidence: 'medium', why: 'recent' })));
     remaining -= placed;
     conf.push('medium');
     result.reasons.push(`${Math.round(placed)} min placed in the last ${e.recent.days || 14} days (platform's recent-play counter)`);
@@ -218,12 +226,17 @@ export function inferHistory(e, { pacePerDay = 90, maxPerDay = 600, minDay = 15,
     const knownStart = start != null;
     const knownEnd = end != null;
     const burstDays = Math.max(1, Math.ceil(remaining / pacePerDay), e.playCount ? Math.ceil(e.playCount * shape.countTau) : 0);
+    if (!knownEnd && knownStart) end = Math.min(upper, addDays(start, burstDays));
 
     if (!knownEnd && !knownStart) {
       result.undated = Math.round(remaining);
       result.reasons.push('No dates available - kept as undated history (lifetime totals only)');
+    } else if (hardStart != null && Math.max(start, lower) > end) {
+      // nothing is left between the hard start and the end (first played inside the recent-play
+      // window, or after last played): the rest stays undated instead of being moved earlier
+      result.undated += Math.round(remaining);
+      result.reasons.push('The rest does not fit after the first played date - kept as undated history');
     } else {
-      if (!knownEnd) end = Math.min(upper, addDays(start, burstDays));
       // unknown start: games are played over a much longer span than their raw hours suggest
       // (this player's own pace - minutes per day of a game's life - when it has been learned)
       // learned: as far back as the player's most similar games reach before their last session
@@ -234,9 +247,6 @@ export function inferHistory(e, { pacePerDay = 90, maxPerDay = 600, minDay = 15,
       if (!knownStart) start = addDays(end, -Math.max(burstDays, span0));
       start = Math.max(start, lower);
       if (start > end) start = startOfDay(end);
-      // a first played date (yours or the platform's) is a hard start: what does not fit after
-      // it stays undated instead of being moved earlier
-      const hardStart = e.manual?.start ?? e.firstPlayedAt ?? null;
       const hardEnd = Math.min(T, end);
       // make room if even capped days cannot hold everything
       let d0 = startOfDay(start);
@@ -296,7 +306,7 @@ export function inferHistory(e, { pacePerDay = 90, maxPerDay = 600, minDay = 15,
         d0 = nd0; n = nn; alloc = a2;
         placed = alloc.reduce((a, x) => a + x, 0);
       }
-      result.chunks.push(...chunkDays(d0, alloc, { hardEnd, caps }).map((c) => ({ ...c, why: 'history' })));
+      result.chunks.push(...chunkDays(d0, alloc, { hardStart: startIn(hardEnd), hardEnd, caps }).map((c) => ({ ...c, why: 'history' })));
       if (remaining - placed > 0.5) result.undated += Math.round(remaining - placed);
       let c;
       if (e.manual?.start || e.manual?.end) { c = 'high'; result.reasons.push(e.manual.confirmed ? 'You confirmed this estimate' : 'Window set manually'); }
