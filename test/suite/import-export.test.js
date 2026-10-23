@@ -147,6 +147,14 @@ describe('CSV import: columns, delimiters, quoting, validation', () => {
     assert.equal(g?.notes, 'great; would replay');
   });
 
+  test('blank lines before the header (a paste that starts with Enter) do not hide a semicolon or tab file\'s delimiter', async () => {
+    await t.ok(t.importCsv('\r\ntitle\tplaytime_hours\nLeading Tab, Blank\t20\n'));
+    assert.equal((await t.gameByTitle('Leading Tab, Blank'))?.minutes, 1200, 'a blank line first');
+    await t.ok(t.importCsv('   \n;;\ntitle;playtime_hours\nLeading Semicolon, Blank;12,5\n'));
+    assert.equal((await t.gameByTitle('Leading Semicolon, Blank'))?.minutes, 750, 'whitespace and a row of bare delimiters first');
+    consistent(t);
+  });
+
   test('statuses are validated, case-insensitive; ratings stay within 0..10; zero-hour rows add a game without time', async () => {
     await t.ok(t.importCsv(toCsv([
       ['title', 'playtime_hours', 'status', 'rating'],
@@ -993,6 +1001,29 @@ describe('restoring an export with two accounts on the same platform', () => {
       assert.equal(owner, 'Alt', 'the 45-minute Alt session stays on the Alt account');
       assert.equal((await b.lifetime()).total_minutes, 1300);
     } finally { await b.close(); ma2.dispose(); mb2.dispose(); }
+
+    // Alt relinked under another name ("Steam"): the file names two accounts, so which one this is
+    // cannot be told - no copy is taken, the doubled 300 min are flagged, Main's 900 min stay
+    const c = await startApp();
+    const mb3 = new SteamMock({ games: libAlt, steamid: '76561198000000002' });
+    try {
+      await c.ok(c.importJson(exported));
+      await c.linkSteam(mb3, { name: 'Steam' });
+      const portal = c.entriesOf('Portal 2');
+      assert.deepEqual(portal.filter((e) => e.account_id == null).map((e) => e.playtime_min).sort((x, y) => x - y), [300, 900], 'both imported copies untouched');
+      assert.equal((await c.lifetime()).total_minutes, 1300 + 300);
+      assert.ok((await c.ok(c.get('/duplicates'))).double_counted.some((d) => d.game.title === 'Portal 2'), 'the doubled copy is flagged');
+    } finally { await c.close(); mb3.dispose(); }
+
+    // an export of one account, relinked under another name: its copies are still adopted
+    const d = await startApp();
+    const ma4 = new SteamMock({ games: libMain, steamid: '76561198000000001' });
+    try {
+      await d.ok(d.importJson({ ...exported, games: exported.games.filter((g) => g.account === 'Main') }));
+      await d.linkSteam(ma4, { name: 'Steam' });
+      assert.equal(d.db.prepare("SELECT COUNT(*) n FROM entries WHERE platform = 'steam' AND account_id IS NULL").get().n, 0, 'imported copies adopted');
+      assert.equal((await d.lifetime()).total_minutes, 1000);
+    } finally { await d.close(); ma4.dispose(); }
   });
 });
 

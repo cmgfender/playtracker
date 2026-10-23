@@ -2,7 +2,7 @@ import { tx } from '../db.js';
 import { providers } from '../providers/index.js';
 import { httpJson } from '../providers/http.js';
 import { findOrCreateGame } from './library.js';
-import { normalizeTitle } from './titles.js';
+import { normalizeTitle, importedAccount } from './titles.js';
 import { nextRun } from './schedule.js';
 import { sendWebhook } from './webhook.js';
 import { flushRollups } from './rollup.js';
@@ -84,24 +84,27 @@ export function applyItems(db, account, items, { settings, now = Date.now(), syn
   // Imported copies of this platform's games (a restored export, a spreadsheet, GameTrack) that
   // a newly synced entry takes over, so linking an account joins your data instead of doubling it.
   // A copy your export filed under an account (import:<account>:<title>) belongs to that account:
-  // only it takes the copy - or any account, when no copy names this one (renamed since).
+  // only it takes the copy - or this one, when every named copy names one other account (renamed
+  // since). Of several other accounts, none: which one this is cannot be told.
   let importedCopies = null;
-  let ownCopies = false;
+  let renamed = false;
   const me = String(account.name || '').trim().toLowerCase();
   const importedCopy = (title) => {
     if (!importedCopies) {
       importedCopies = new Map();
+      const names = new Set();
       for (const e of db.prepare("SELECT * FROM entries WHERE account_id IS NULL AND platform = ? AND ext_id LIKE 'import:%'").all(account.platform)) {
-        const named = /^import:(?:(.*):)?[^:]*$/.exec(e.ext_id)?.[1] || '';
+        const named = importedAccount(e.ext_id, e.title);
         const acc = named === 'gametrack' ? '' : named; // GameTrack names no account of yours
-        if (acc && acc === me) ownCopies = true;
+        if (acc) names.add(acc);
         const k = normalizeTitle(e.title);
         if (!importedCopies.has(k)) importedCopies.set(k, []);
         importedCopies.get(k).push({ e, acc });
       }
+      renamed = names.size === 1 && !names.has(me);
     }
     const copies = importedCopies.get(normalizeTitle(title)) || [];
-    const rank = (c) => (c.acc && c.acc === me ? 0 : !c.acc ? 1 : ownCopies ? Infinity : 2);
+    const rank = (c) => (c.acc && c.acc === me ? 0 : !c.acc ? 1 : renamed ? 2 : Infinity);
     let best = -1;
     for (let i = 0; i < copies.length; i++) if (rank(copies[i]) < (best < 0 ? Infinity : rank(copies[best]))) best = i;
     return best < 0 ? null : copies.splice(best, 1)[0].e;

@@ -1,6 +1,6 @@
 import { tx } from '../db.js';
 import { findOrCreateGame } from './library.js';
-import { normalizeTitle } from './titles.js';
+import { normalizeTitle, importedAccount } from './titles.js';
 import { toTime } from '../util.js';
 import { flushRollups } from './rollup.js';
 import { mergeEvidence, reinferMany } from './inference.js';
@@ -9,14 +9,20 @@ const MIN = 60_000;
 const DAY = 24 * 60 * MIN;
 const STATUSES = new Set(['unset', 'backlog', 'playing', 'paused', 'completed', 'beaten', 'dropped', 'wishlist']);
 
-/** A file's one delimiter: whichever of comma, semicolon or tab its header line uses most. */
+/**
+ * A file's one delimiter: whichever of comma, semicolon or tab its header line uses most. That is
+ * the first line with any text, as in parseCsv: blank lines before it (or bare delimiters) are skipped.
+ */
 function delimiterOf(src) {
-  const n = { ',': 0, ';': 0, '\t': 0 };
-  let q = false;
+  let n = { ',': 0, ';': 0, '\t': 0 };
+  let q = false; let text = false;
   for (const c of src) {
     if (c === '"') q = !q;
-    else if (!q && (c === '\n' || c === '\r')) break;
-    else if (!q && c in n) n[c]++;
+    else if (!q && (c === '\n' || c === '\r')) {
+      if (text) break;
+      n = { ',': 0, ';': 0, '\t': 0 };
+    } else if (!q && c in n) n[c]++;
+    else if (c.trim()) text = true;
   }
   return n[';'] > n[','] && n[';'] >= n['\t'] ? ';' : n['\t'] > n[','] ? '\t' : ',';
 }
@@ -83,23 +89,23 @@ export function importRows(db, rows, { settings, now = Date.now() } = {}) {
     addHistory: db.prepare('UPDATE entries SET baseline_min = baseline_min + ? WHERE id = ?'),
     updEntry: db.prepare('UPDATE entries SET playtime_min = ?, last_played_at = MAX(COALESCE(last_played_at, 0), COALESCE(?, 0)) WHERE id = ?'),
     exclude: db.prepare('UPDATE entries SET excluded = 1 WHERE id = ?'),
-    gameEntries: db.prepare('SELECT id, account_id, platform FROM entries WHERE game_id = ? ORDER BY id'),
+    hasEntries: db.prepare('SELECT 1 FROM entries WHERE game_id = ? LIMIT 1'),
     hide: db.prepare('UPDATE games SET hidden = 1 WHERE id = ?'),
     lock: db.prepare('UPDATE games SET merge_locked = 1 WHERE id = ?'),
   };
   const toInfer = new Set();
-  const used = new Set(); // entries this file created or joined
   const lock = new Set(); // games to lock against auto-merging once every row has joined them
   // Existing entries, so a file that overlaps what is already here joins it instead of adding a
-  // second copy: by platform + account name + title (our own exports), and synced entries by
-  // platform + title / title alone.
+  // second copy: by platform + account name + title (our own exports; an imported copy also by
+  // the account its ext_id names), and synced entries by platform + title / title alone.
   let index = null; let synced = null;
   const build = () => {
     index = new Map(); synced = new Map();
-    for (const e of db.prepare('SELECT e.id, e.platform, e.title, e.account_id, e.playtime_min, lower(a.name) acc FROM entries e LEFT JOIN accounts a ON a.id = e.account_id').iterate()) {
+    for (const e of db.prepare('SELECT e.id, e.platform, e.title, e.account_id, e.ext_id, e.playtime_min, lower(a.name) acc FROM entries e LEFT JOIN accounts a ON a.id = e.account_id').iterate()) {
       const norm = normalizeTitle(e.title);
-      const k = `${e.platform}|${e.acc || ''}|${norm}`;
-      if (!index.has(k)) index.set(k, e);
+      const keys = [`${e.platform}|${e.acc || ''}|${norm}`];
+      if (e.account_id == null && e.ext_id?.startsWith('import:')) keys.push(`${e.platform}|${importedAccount(e.ext_id, e.title)}|${norm}`);
+      for (const k of keys) if (!index.has(k)) index.set(k, e);
       if (e.account_id != null) for (const sk of [`${e.platform}|${norm}`, `*|${norm}`]) {
         if (!synced.has(sk)) synced.set(sk, []);
         synced.get(sk).push(e);
@@ -217,17 +223,10 @@ export function importRows(db, rows, { settings, now = Date.now() } = {}) {
       let gameId = entry?.game_id ?? same?.game_id ?? (same ? st.getEntry.get(same.id).game_id : null);
       if (gameId == null) {
         gameId = findOrCreateGame(db, { title, coverUrl: str(row.cover_url) || null }, { autoMerge: settings?.auto_merge_titles !== false, now });
-        const own = st.gameEntries.all(gameId);
-        if (!own.length) {
+        if (!st.hasEntries.get(gameId)) {
           // a game new to the library keeps the choices your export recorded
           if (flag(row.hidden)) st.hide.run(gameId);
           if (flag(row.merge_locked)) lock.add(gameId);
-        } else if (UNNAMED.has(platform) && !acc && own.every((e) => e.account_id == null && e.platform === 'manual') && !used.has(own[0].id)) {
-          // a game you only log by hand, and a row that names no platform: the file's total is
-          // that same play, so it joins your manual entry (totals only grow) instead of adding its
-          // hours on top - unless this file lists that entry itself (your own export)
-          entry = st.getEntry.get(own[0].id);
-          index.set(`${platform}|${acc}|${norm}`, { id: entry.id, game_id: gameId, account_id: null });
         }
       }
       if (!entry && same) entry = st.getEntry.get(same.id);
@@ -241,7 +240,6 @@ export function importRows(db, rows, { settings, now = Date.now() } = {}) {
         // your exclusions only apply to entries the file creates; existing ones keep yours
         if (flag(row.excluded)) { st.exclude.run(entry.id); res.excluded = (res.excluded || 0) + 1; }
       }
-      used.add(entry.id);
 
       let sessionMinutes = 0;
       let earliestSession = Infinity;
@@ -302,10 +300,9 @@ export function importRows(db, rows, { settings, now = Date.now() } = {}) {
 
 // platforms that say nothing about where a game was played
 const GENERIC = new Set(['import', 'imported', 'pc', 'other', 'unknown', '']);
-// rows without a platform at all
-const UNNAMED = new Set(['import', 'imported', 'unknown']);
 
-const CSV_COLS = ['title', 'platform', 'account', 'playtime_minutes', 'playtime_hours', 'last_played', 'status', 'rating', 'favorite', 'hidden', 'merge_locked', 'excluded', 'sessions', 'cover_url', 'notes'];
+// columns added later go at the end, so whatever reads the export by position keeps working
+const CSV_COLS = ['title', 'platform', 'account', 'playtime_minutes', 'playtime_hours', 'last_played', 'status', 'rating', 'favorite', 'excluded', 'sessions', 'notes', 'hidden', 'merge_locked', 'cover_url'];
 const csvEsc = (v) => {
   const s = v == null ? '' : String(v);
   return /[",\n\r\t;]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;

@@ -9,6 +9,8 @@ import { openDb, tx } from '../src/db.js';
 import { Settings } from '../src/services/settings.js';
 import { applyItems, parseAccount } from '../src/services/sync.js';
 import { importRows } from '../src/services/importer.js';
+import { importGameTrack } from '../src/services/gametrack.js';
+import { importedAccount } from '../src/services/titles.js';
 import { lifetime } from '../src/services/stats.js';
 
 const D = 86_400_000;
@@ -139,4 +141,64 @@ test('titles stored by an older version are normalised again when the database o
   assert.deepEqual(games, [['ELDEN RING', 1], ['ペルソナ5', 0], ['ドラゴンクエスト5', 1], ['Hades', 0]], 'each row joins its own game, none another');
   db.close();
   fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('a file imported by an older version, imported again after the upgrade, joins its copies: nothing counted twice', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pt-ext-'));
+  const file = path.join(dir, 'playtracker.db');
+  const rows = [
+    { title: 'ELDEN RING™', platform: 'steam', account: 'Main', playtime_minutes: 600 },
+    { title: 'ペルソナ5', platform: 'switch', account: 'Main', playtime_minutes: 300 },
+    { title: 'ペルソナ: 夜', platform: 'switch', account: 'Main', playtime_minutes: 60 },
+    { title: 'ペルソナ: 夜', platform: 'switch', playtime_minutes: 45 },
+    { title: 'Portal 2', platform: 'steam', account: 'Main', playtime_minutes: 120 },
+  ];
+  const gameTrack = { games: [{ uuid: 'S', title: "Marvel's Spider-Man™", owned_platform: 'PlayStation 5', hours_played: '12' }] };
+  let db = openDb(file);
+  importRows(db, rows, { settings: new Settings(db).all() });
+  importGameTrack(db, gameTrack, { settings: new Settings(db).all() });
+  // the ext_ids the old normalisation gave them: "™" spelled "tm"; a title without Latin letters
+  // reduced to its digits, or (none at all) lower-cased whole
+  const OLD = [
+    ['steam', 'import:main:elden ring', 'import:main:elden ringtm'],
+    ['switch', 'import:main:ペルソナ5', 'import:main:5'],
+    ['switch', 'import:main:ペルソナ 夜', 'import:main:ペルソナ: 夜'],
+    ['switch', 'import:ペルソナ 夜', 'import:ペルソナ: 夜'],
+    ['psn', 'import:gametrack:marvel s spider man', 'import:gametrack:marvel s spider mantm'],
+  ];
+  for (const [platform, ext, old] of OLD) assert.equal(db.prepare('UPDATE entries SET ext_id = ? WHERE platform = ? AND ext_id = ?').run(old, platform, ext).changes, 1, ext);
+  db.exec('PRAGMA user_version = 4');
+  const before = { total: lifetime(db).total_minutes, entries: db.prepare('SELECT COUNT(*) n FROM entries').get().n };
+  assert.equal(before.total, 600 + 300 + 60 + 45 + 120 + 720);
+  db.close();
+
+  db = openDb(file);
+  const exts = db.prepare('SELECT platform, ext_id FROM entries').all().map((e) => `${e.platform} ${e.ext_id}`);
+  for (const [platform, ext] of OLD) assert.ok(exts.includes(`${platform} ${ext}`), `${ext}: spelled as a re-import spells it`);
+  const settings = new Settings(db);
+  const r = importRows(db, rows, { settings: settings.all() });
+  importGameTrack(db, gameTrack, { settings: settings.all() });
+  assert.equal(r.entries_created, 0);
+  assert.deepEqual({ total: lifetime(db).total_minutes, entries: db.prepare('SELECT COUNT(*) n FROM entries').get().n }, before, 'the same file again changes nothing');
+  db.close();
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('the account an imported copy names, in ext_ids spelled now and by older versions', () => {
+  for (const [ext, title, acc] of [
+    ['import:portal 2', 'Portal 2', ''], ['import:main:portal 2', 'Portal 2', 'main'], ['import:gametrack:hades', 'Hades', 'gametrack'],
+    ['import:main:elden ringtm', 'ELDEN RING™', 'main'], ['import:ペルソナ: 夜', 'ペルソナ: 夜', ''], ['import:main:ペルソナ: 夜', 'ペルソナ: 夜', 'main'],
+    ['import:ペルソナ 夜', 'ペルソナ: 夜', ''], ['import:my: alt:ペルソナ 夜', 'ペルソナ: 夜', 'my: alt'],
+  ]) assert.equal(importedAccount(ext, title), acc, ext);
+});
+
+test('two wish-listed GameTrack games kept apart (title merging off) are both listed, and the import does not fail', () => {
+  const { db, settings } = setup();
+  const r = importGameTrack(db, { games: [
+    { uuid: 'A', title: 'Hollow Knight: Silksong', status: 'Wanted', hours_played: '0' },
+    { uuid: 'B', title: 'Hollow Knight Silksong', status: 'Wanted', hours_played: '0' },
+  ] }, { settings: { ...settings.all(), auto_merge_titles: false } });
+  assert.equal(r.wishlist_added, 2);
+  const games = db.prepare('SELECT g.title, g.status, COUNT(e.id) n FROM games g LEFT JOIN entries e ON e.game_id = g.id GROUP BY g.id ORDER BY g.id').all().map((g) => [g.title, g.status, g.n]);
+  assert.deepEqual(games, [['Hollow Knight: Silksong', 'wishlist', 1], ['Hollow Knight Silksong', 'wishlist', 1]]);
 });

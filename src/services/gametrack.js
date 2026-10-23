@@ -96,6 +96,7 @@ export function importGameTrack(db, tables, { settings = null, now = Date.now() 
   // a wish-listed game gets a 0-minute entry, so the library lists it and keeps it like any game
   const addWish = db.prepare(`INSERT INTO entries(account_id, game_id, platform, ext_id, title, playtime_min, first_seen_at, last_synced_at)
     SELECT NULL, ?, ?, ?, ?, 0, ?, ? WHERE NOT EXISTS (SELECT 1 FROM entries WHERE game_id = ?)`);
+  const localEntry = db.prepare('SELECT game_id FROM entries WHERE account_id IS NULL AND platform = ? AND ext_id = ?');
 
   const anchoredIds = new Set();
   const rows = [];
@@ -168,7 +169,10 @@ export function importGameTrack(db, tables, { settings = null, now = Date.now() 
         res.imported_titles++;
       } else if (!gameIds.size && (status === 'wishlist' || wished.has(g.uuid))) {
         const id = findOrCreateGame(db, { title, coverUrl: cover }, { autoMerge: settings?.auto_merge_titles !== false, now });
-        addWish.run(id, platform, `import:gametrack:${norm}`, title, now, now, id);
+        let ext = `import:gametrack:${norm}`;
+        // the same title wish-listed twice and kept apart (title merging off): each its own entry
+        if ((localEntry.get(platform, ext)?.game_id ?? id) !== id) ext += ` #${id}`;
+        addWish.run(id, platform, ext, title, now, now, id);
         gameIds.add(id);
         res.wishlist_added++;
       } else if (!gameIds.size) res.skipped_no_playtime++;

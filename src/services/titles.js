@@ -43,6 +43,21 @@ export function normalizeTitle(title) {
   return t || String(title || '').toLowerCase().trim();
 }
 
+/**
+ * The account an imported copy's ext_id names ('' for none): import:<account>:<title>, or
+ * import:<title>. The title part is the normalised title, or - written by an older version - the
+ * lower-cased title itself when it had no Latin letters (and so may hold a ':').
+ */
+export function importedAccount(extId, title) {
+  const rest = String(extId || '').replace(/^import:/, '');
+  for (const n of [String(title || '').toLowerCase().trim(), normalizeTitle(title)]) {
+    if (rest === n) return '';
+    if (n && rest.endsWith(`:${n}`)) return rest.slice(0, -n.length - 1);
+  }
+  const i = rest.lastIndexOf(':');
+  return i < 0 ? '' : rest.slice(0, i);
+}
+
 const bigramCache = new Map();
 function bigrams(s) {
   const hit = bigramCache.get(s);

@@ -1,7 +1,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import fs from 'node:fs';
 import path from 'node:path';
-import { normalizeTitle } from './services/titles.js';
+import { normalizeTitle, importedAccount } from './services/titles.js';
 
 const MIGRATIONS = [
   // 1: initial schema
@@ -271,12 +271,21 @@ const MIGRATIONS = [
   ALTER TABLE presence ADD COLUMN device TEXT;
   `,
   // 5: titles normalised again (trademark signs dropped, letters of every script kept), so
-  //    existing games are found by the titles that now group with them
+  //    existing games are found by the titles that now group with them, and imported copies by
+  //    the ext_ids a re-import of the same file now gives them (import:<account>:<title>)
   (db) => {
     const upd = db.prepare('UPDATE games SET norm_title = ? WHERE id = ?');
     for (const g of db.prepare('SELECT id, title, norm_title FROM games').all()) {
       const norm = normalizeTitle(g.title);
       if (norm !== g.norm_title) upd.run(norm, g.id);
+    }
+    const taken = db.prepare('SELECT 1 FROM entries WHERE account_id IS NULL AND platform = ? AND ext_id = ?');
+    const updExt = db.prepare('UPDATE entries SET ext_id = ? WHERE id = ?');
+    for (const e of db.prepare("SELECT id, platform, ext_id, title FROM entries WHERE account_id IS NULL AND ext_id LIKE 'import:%' ORDER BY id").all()) {
+      const acc = importedAccount(e.ext_id, e.title);
+      const ext = `import:${acc ? `${acc}:` : ''}${normalizeTitle(e.title)}`;
+      // two copies that now spell the same: the first keeps the key, the other its old one
+      if (ext !== e.ext_id && !taken.get(e.platform, ext)) updExt.run(ext, e.id);
     }
   },
 ];
