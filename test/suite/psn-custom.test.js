@@ -1603,6 +1603,26 @@ describe('Custom accounts: presence pushes', () => {
     assert.equal(plays[1].ended_at, lp);
   });
 
+  test('a newly declared last_played_at meaning takes effect even after presence calibrated the old one', async (tc) => {
+    const { t, acc, push } = await setup(tc);
+    let total = 100;
+    for (let i = 0; i < 3; i++) {
+      const s = P0 + i * DAY;
+      await push(s, A); await push(s + 59 * MIN, A); await push(s + 60 * MIN, []);
+      clock.set(s + 70 * MIN);
+      total += 60;
+      const r = await t.report(acc.id, [{ id: 'a', title: 'Presence Push', playtime_minutes: total, last_played_at: iso(s + 60 * MIN) }]);
+      assert.equal(r.status, 200, r.text);
+    }
+    assert.match((await accountRow(t, acc.id)).history_model.last_played, /session end — calibrated from 3 observed sessions/);
+    let r = await t.api('PATCH', `/accounts/${acc.id}`, { config: { platform_label: 'Switch 2' } });
+    assert.equal(r.status, 200, r.text);
+    assert.match((await accountRow(t, acc.id)).history_model.last_played, /calibrated/, 'a new label keeps what the account learned');
+    r = await t.api('PATCH', `/accounts/${acc.id}`, { config: { last_played_meaning: 'start' } });
+    assert.equal(r.status, 200, r.text);
+    assert.equal((await accountRow(t, acc.id)).history_model.last_played, 'session start (launch) (declared)');
+  });
+
   test('presence push validation: playing must be an array, junk items are skipped, unknown accounts are 404', async (tc) => {
     const { t, acc } = await setup(tc);
     assert.equal((await t.api('POST', '/accounts/999/presence', { playing: [] })).status, 404);
@@ -1793,6 +1813,71 @@ describe('Account management: CRUD, schedules, enable/disable, delete', () => {
     const a = await accountRow(t, fresh2.id);
     assert.equal(a.api_usage_hour.calls, 0, `account ${fresh2.id} (old id ${old.id}) shows calls it never made`);
     assert.equal(a.api_quota, null, 'and a rate-limit pause it never hit');
+  });
+
+  test('an account deleted while its sync is running: the sync records nothing, also when the next account already has its id', async (tc) => {
+    const t = await fresh(tc);
+    const psn = fakePsn(psnTitle({ id: 'PPSA93002_00', name: 'In Flight', minutes: 100, first: T0 - 9 * DAY, last: T0 - DAY, count: 2 }));
+    const old = await linkPsn(t);
+    let release;
+    psn.gate = { gamelist: new Promise((r) => { release = r; }) };
+    psn.failNext('gamelist', { status: 429, body: { error: { message: 'Too Many Requests' } } });
+    const s = t.api('POST', `/accounts/${old.id}/sync?wait=true`);
+    while (psn.count('gamelist') < 1) await realSleep(5);
+    assert.equal((await t.api('DELETE', `/accounts/${old.id}`)).status, 200, 'the delete does not wait for Sony');
+    const next = await linkPsn(t, { name: 'Next PS5' });
+    release();
+    psn.gate = null;
+    assert.equal((await s).status, 404, 'the sync of the deleted account is dropped');
+    await t.settle();
+    const a = await accountRow(t, next.id);
+    assert.equal(a.api_usage_hour.calls, 0, `account ${next.id} (old id ${old.id}) shows calls it never made`);
+    assert.equal(a.api_quota, null, 'and a rate-limit pause it never hit');
+    assert.equal(a.last_error, null);
+    assert.equal(t.db.prepare('SELECT COUNT(*) n FROM syncs').get().n, 0);
+  });
+
+  test('an account deleted while its enrichment is running: the enrichment stops and writes nothing', async (tc) => {
+    const t = await fresh(tc);
+    const psn = fakePsn(...[1, 2, 3, 4, 5, 6, 7].map((i) => psnTitle({ id: `PPSA9310${i}_00`, name: `Enriched ${i}`, minutes: 600, first: T0 - 100 * DAY, last: T0 - 5 * DAY, count: 10, concept: 931000 + i })));
+    for (let i = 1; i <= 7; i++) {
+      psn.trophyTitles.set(`PPSA9310${i}_00`, [{ npCommunicationId: `NPWR9310${i}_00`, npServiceName: 'trophy2' }]);
+      psn.trophySets.set(`NPWR9310${i}_00`, { service: 'trophy2', trophies: [trophy(1, T0 - 50 * DAY)] });
+    }
+    const old = await linkPsn(t);
+    let release;
+    psn.gate = { trophies: new Promise((r) => { release = r; }) };
+    assert.equal((await t.api('POST', `/accounts/${old.id}/sync?wait=true`)).status, 200);
+    while (psn.count('trophies') < 1) await realSleep(5);
+    assert.equal((await t.api('DELETE', `/accounts/${old.id}`)).status, 200);
+    const next = await linkPsn(t, { name: 'Next PS5' });
+    release();
+    psn.gate = null;
+    await t.settle();
+    assert.equal(psn.count('trophies'), 1, 'the enrichment stopped instead of reading every trophy set');
+    assert.equal((await accountRow(t, next.id)).api_usage_hour.calls, 0, `account ${next.id} (old id ${old.id}) shows calls it never made`);
+    assert.deepEqual(t.sync.account(next.id).state, {}, 'and holds no tokens of the old account');
+  });
+
+  test('a presence check answered after its account was deleted is not charged to the next account', async (tc) => {
+    const t = await fresh(tc);
+    const psn = fakePsn(psnTitle({ id: 'PPSA93003_00', name: 'Polled', minutes: 100, first: T0 - 9 * DAY, last: T0 - DAY, count: 2 }));
+    const old = await linkPsn(t);
+    assert.equal((await t.syncNow(old.id)).status, 200);
+    let release;
+    psn.gate = { presence: new Promise((r) => { release = r; }) };
+    const poll = t.sync.pollPresence(t.sync.account(old.id));
+    while (psn.count('presence') < 1) await realSleep(5);
+    assert.equal((await t.api('DELETE', `/accounts/${old.id}`)).status, 200);
+    const next = await linkPsn(t, { name: 'Next PS5' });
+    psn.failNext('presence', { status: 429, body: { error: { message: 'Too Many Requests' } } });
+    release();
+    psn.gate = null;
+    await poll;
+    const a = await accountRow(t, next.id);
+    assert.equal(a.api_usage_hour.calls, 0, `account ${next.id} (old id ${old.id}) shows calls it never made`);
+    assert.equal(a.api_quota, null, 'and a rate-limit pause it never hit');
+    assert.equal(t.sync.presenceInfo(next.id), null, 'nor its presence status');
   });
 });
 

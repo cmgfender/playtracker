@@ -465,6 +465,21 @@ describe('later syncs: deltas become sessions', () => {
       for (const x of s) assert.ok((x.started_at ?? x.window_start) >= L - MIN, 'nothing before the launch');
     }));
 
+  test('a long session followed by a relaunch still running at the sync is not squeezed into the gap before the relaunch',
+    () => scenario({ extra: { schedule: { schedule_mode: 'hourly' } } }, async ({ h, id, fake }) => {
+      const L1 = T0 + 90 * MIN; const L2 = T0 + 405 * MIN; // launched 16:30, 300 min written on exit at 21:30, relaunched 21:45
+      for (let t = T0 + HOUR; t <= T0 + 7 * HOUR; t += HOUR) {
+        if (t > L1) fake.game(ELDEN, { rtime_last_played: unix(L1) });
+        if (t > L2) { fake.play(ELDEN, { start: L1, minutes: 300 }); fake.game(ELDEN, { rtime_last_played: unix(L2) }); }
+        const res = await syncAt(h, id, t + MIN);
+        if (t < L2) assert.equal(res.sessions_created, 0);
+      }
+      const s = plays(h, id, ELDEN);
+      assert.equal(s.reduce((a, x) => a + x.minutes, 0), 300, 'all of it is tracked play');
+      assert.deepEqual(impossibleSessions(h.db), [], 'no session holds more minutes than the time it is placed in');
+      for (const x of s) if (x.started_at !== L2) assert.ok((x.ended_at ?? x.window_end) <= L2, 'the earlier play ended before the relaunch');
+    }));
+
   test('a delta beyond elapsed time plus one maximum-length session is capped; the excess is undated history, never charted', () => scenario({ extra: { schedule: { schedule_mode: 'hourly' } } }, async ({ h, api, id, fake }) => {
     const Ts = T0 + HOUR;
     await syncAt(h, id, Ts);

@@ -591,6 +591,8 @@ export function registerRoutes(r, app) {
     // credentials changed -> drop cached tokens (other settings, e.g. presence, keep what the account learned)
     const creds = (cfg) => JSON.stringify((providers[a.platform]?.fields || []).filter((f) => f.required || f.type === 'password').map((f) => cfg[f.key] ?? null));
     if (b.config && creds(config) !== creds(a.config)) state = {};
+    // a newly declared last-played meaning starts its calibration over (learned votes would override it)
+    else if (b.config && (config.last_played_meaning || null) !== (a.config.last_played_meaning || null)) { const { calibration, ...rest } = state || {}; state = rest; }
     let schedule = a.schedule;
     if ('schedule' in b) {
       if (b.schedule) {
