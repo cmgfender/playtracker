@@ -498,7 +498,10 @@ export function registerRoutes(r, app) {
   }), { summary: 'Aggregated stats for a range. Inferred pre-tracking history is included (and reported separately) unless estimates=exclude', query: { range: '7d|30d|90d|365d|week|month|year|all|year:2026|month:2026-05', group: 'day|week|month|year', game_id: '', platform: '', estimates: 'include|exclude|only' } });
   r.get('/api/v1/stats/lifetime', () => lifetime(db), { summary: 'Lifetime totals (including imported history)' });
   r.get('/api/v1/stats/heatmap', (c) => heatmap(db, { year: c.query.year, gameId: toInt(c.query.game_id), estimates: estimatesParam(c.query, settings) }), { summary: 'Minutes per day for a year', query: { year: '', game_id: '', estimates: 'include|exclude|only' } });
-  r.get('/api/v1/stats/year/:year', (c) => yearInReview(db, toInt(c.params.year), { weekStartsOn: settings.get('week_starts_on'), estimates: estimatesParam(c.query, settings) }), { summary: 'Year in review', query: { estimates: 'include|exclude' } });
+  r.get('/api/v1/stats/year/:year', (c) => {
+    if (!/^\d{4}$/.test(c.params.year)) throw new HttpError(400, 'year must be YYYY');
+    return yearInReview(db, toInt(c.params.year), { weekStartsOn: settings.get('week_starts_on'), estimates: estimatesParam(c.query, settings) });
+  }, { summary: 'Year in review', query: { estimates: 'include|exclude' } });
   r.get('/api/v1/stats/years', () => {
     const first = db.prepare('SELECT MIN(day) d FROM play_days').get().d;
     const ys = [];
@@ -904,8 +907,9 @@ export function registerRoutes(r, app) {
 
   r.get('/api/v1/widget', () => {
     const l = lifetime(db);
-    const w = computeStats(db, { range: 'week', weekStartsOn: settings.get('week_starts_on') });
-    const t = computeStats(db, { range: '1d' });
+    // today / this week use tracked play only, like the dashboard KPIs
+    const w = computeStats(db, { range: 'week', weekStartsOn: settings.get('week_starts_on'), estimates: 'exclude' });
+    const t = computeStats(db, { range: '1d', estimates: 'exclude' });
     const last = db.prepare(`${SESSION_SELECT} WHERE s.kind = 'play' AND e.excluded = 0 ORDER BY s.sort_time DESC LIMIT 1`).get();
     return {
       today_hours: +(t.total_minutes / 60).toFixed(1), week_hours: +(w.total_minutes / 60).toFixed(1), lifetime_hours: Math.round(l.total_minutes / 60),
