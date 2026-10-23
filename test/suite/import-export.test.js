@@ -94,7 +94,7 @@ describe('CSV import: columns, delimiters, quoting, validation', () => {
     consistent(t);
   });
 
-  test('spreadsheet durations written as h:mm:ss are read, not imported as zero', { todo: 'APP BUG import-export-11: "12:30:00" (h:mm:ss) in playtime_hours imports as 0 minutes' }, async () => {
+  test('spreadsheet durations written as h:mm:ss are read, not imported as zero', async () => {
     await t.ok(t.importCsv(toCsv([['title', 'playtime_hours'], ['Duration Game', '12:30:00'], ['Long Duration Game', '105:05:59']])));
     assert.equal((await t.gameByTitle('Duration Game'))?.minutes, 750);
     const long = (await t.gameByTitle('Long Duration Game'))?.minutes;
@@ -126,21 +126,21 @@ describe('CSV import: columns, delimiters, quoting, validation', () => {
     assert.equal((await t.gameByTitle('Plain After')).minutes, 60, 'the row after a multi-line field is read normally');
   });
 
-  test('semicolon file (European spreadsheet): decimal comma hours and a comma in the title', { todo: 'APP BUG import-export-1: CSV parser splits on , ; and tab at once' }, async () => {
+  test('semicolon file (European spreadsheet): decimal comma hours and a comma in the title', async () => {
     await t.ok(t.importCsv('title;platform;playtime_hours\nWarhammer 40,000: Space Marine 2;pc;12,5\n'));
     const g = await t.gameByTitle('Warhammer 40,000: Space Marine 2');
     assert.ok(g, `title kept whole; library has: ${(await t.gamesAll()).map((x) => x.title).join(' | ')}`);
     assert.equal(g.minutes, 750, '12,5 hours = 750 minutes');
   });
 
-  test('tab-separated file: a comma inside an unquoted title', { todo: 'APP BUG import-export-1: CSV parser splits on , ; and tab at once' }, async () => {
+  test('tab-separated file: a comma inside an unquoted title', async () => {
     await t.ok(t.importCsv('title\tplaytime_hours\nWarhammer 40,000: Dawn of War\t20\n'));
     const g = await t.gameByTitle('Warhammer 40,000: Dawn of War');
     assert.ok(g, `title kept whole; library has: ${(await t.gamesAll()).map((x) => x.title).join(' | ')}`);
     assert.equal(g.minutes, 1200);
   });
 
-  test('comma file: an unquoted semicolon inside notes stays part of the notes', { todo: 'APP BUG import-export-1: CSV parser splits on , ; and tab at once' }, async () => {
+  test('comma file: an unquoted semicolon inside notes stays part of the notes', async () => {
     await t.ok(t.importCsv('title,playtime_hours,notes\nSemicolon Notes,4,great; would replay\n'));
     const g = await t.gameByTitle('Semicolon Notes');
     assert.equal(g?.minutes, 240);
@@ -319,7 +319,7 @@ describe('non-Latin and accented titles', () => {
     assert.deepEqual(t.snapshot(), snap);
   });
 
-  test('different non-Latin titles that share a number stay different games', { todo: 'APP BUG import-export-16: titles without Latin letters normalise to just their digits, so "ペルソナ5" and "ドラゴンクエスト5" (or "Ведьмак 3" and "Герои 3") are merged and one total overwrites the other' }, async () => {
+  test('different non-Latin titles that share a number stay different games', async () => {
     await t.ok(t.importCsv(toCsv([
       ['title', 'platform', 'playtime_hours'],
       ['ペルソナ5', 'switch', '10'], ['ドラゴンクエスト5', 'switch', '20'],
@@ -478,7 +478,7 @@ describe('JSON import: totals, sessions, body shapes, time zones', () => {
     consistent(t);
   });
 
-  test('a session whose end is before its start is not stored backwards', { todo: 'APP BUG import-export-12: an imported session with ended_at before started_at is stored with a negative duration' }, async () => {
+  test('a session whose end is before its start is not stored backwards', async () => {
     await t.importJson({ games: [{ title: 'Inverted Session', platform: 'switch', playtime_minutes: 60, sessions: [{ started_at: iso(ago(3)), ended_at: iso(ago(3, 1)), minutes: 60 }] }] });
     const bad = t.db.prepare('SELECT COUNT(*) n FROM sessions WHERE started_at IS NOT NULL AND ended_at IS NOT NULL AND ended_at < started_at').get().n;
     assert.equal(bad, 0, 'rejected, or stored as start + minutes');
@@ -525,7 +525,7 @@ describe('JSON import: totals, sessions, body shapes, time zones', () => {
     assert.deepEqual(t.snapshot(), snap);
   });
 
-  test('an updated file that lists one more session does not count that session twice', { todo: 'APP BUG import-export-4: a re-import that adds a session to an unchanged total adds its minutes on top of the total' }, async () => {
+  test('an updated file that lists one more session does not count that session twice', async () => {
     const s1 = { started_at: iso(ago(40, 2)), minutes: 120 };
     const s2 = { started_at: iso(ago(35, 2)), minutes: 60 };
     const v1 = { games: [{ title: 'Growing Game', platform: 'switch', playtime_minutes: 600, sessions: [s1] }] };
@@ -557,7 +557,7 @@ describe('JSON import: totals, sessions, body shapes, time zones', () => {
     consistent(t);
   });
 
-  test('future-dated sessions and last-played dates never become play or history in the future', { todo: 'APP BUG import-export-5: imported sessions dated in the future are stored as tracked play in the future' }, async () => {
+  test('future-dated sessions and last-played dates never become play or history in the future', async () => {
     await t.importJson({ games: [
       { title: 'Future Session', platform: 'switch', playtime_minutes: 100, sessions: [{ started_at: iso(NOW + 10 * DAY), minutes: 60 }] },
       { title: 'Future Last Played', platform: 'switch', playtime_minutes: 600, last_played: iso(NOW + 30 * DAY) },
@@ -844,7 +844,7 @@ describe('rows for games a synced Steam account tracks join it', () => {
 
 // =====================================================================================
 describe('trademark signs in titles', () => {
-  test('a spreadsheet row without the ™ joins the synced "ELDEN RING™" (and the other way round)', { todo: 'APP BUG import-export-15: title normalisation turns ™ into "tm" (NFKD before stripping), so "ELDEN RING™" and "Elden Ring" are different games' }, async () => {
+  test('a spreadsheet row without the ™ joins the synced "ELDEN RING™" (and the other way round)', async () => {
     const t = await startApp();
     try {
       const acc = await t.linkCustom('Console');
@@ -960,7 +960,7 @@ describe('linking an account later adopts imported copies', () => {
 });
 
 describe('restoring an export with two accounts on the same platform', () => {
-  test('relinking one account adopts only its own copies; the other account\'s copies and sessions stay put', { todo: 'APP BUG import-export-14: adoption matches imported copies by title only, so the first relinked Steam account takes the other account\'s copy' }, async () => {
+  test('relinking one account adopts only its own copies; the other account\'s copies and sessions stay put', async () => {
     const libMain = [{ appid: 620, name: 'Portal 2', minutes: 900, lastPlayed: ago(100) }, { appid: 1145360, name: 'Hades', minutes: 100, lastPlayed: ago(5) }];
     const libAlt = [{ appid: 620, name: 'Portal 2', minutes: 300, lastPlayed: ago(50) }];
     const a = await startApp();
@@ -1193,7 +1193,7 @@ describe('export (streamed JSON / CSV), round trips and SQLite backup', () => {
     assert.deepEqual(await a.lifetime(), life);
   });
 
-  test('hidden games and your own cover art survive an export / import round trip', { todo: 'APP BUG import-export-6: the export omits hidden flags and cover art, so a restore loses them' }, async () => {
+  test('hidden games and your own cover art survive an export / import round trip', async () => {
     const b = await startApp();
     try {
       await b.ok(b.importJson(JSON.parse((await a.get('/export')).text)));
@@ -1433,7 +1433,7 @@ describe('GameTrack export ZIP import', () => {
     assert.deepEqual(odd, (({ empty_games: _, ...o }) => o)(NO_ODDITIES));
   });
 
-  test('wish-listed games are added to the library (visible, status wishlist, no time) and sequels stay separate', { todo: 'APP BUG import-export-10: GameTrack wish-listed games are created without an entry, so the library never shows them and unlinking any account deletes them' }, async () => {
+  test('wish-listed games are added to the library (visible, status wishlist, no time) and sequels stay separate', async () => {
     const lib = await t.gamesAll();
     for (const title of ['Hollow Knight: Silksong', 'Hades II']) {
       const g = lib.find((x) => x.title === title);
@@ -1460,7 +1460,7 @@ describe('GameTrack export ZIP import', () => {
     assert.deepEqual(t.snapshot(), snap);
   });
 
-  test('a ZIP whose compressed data is corrupt is rejected as a bad upload (400), not a server error', { todo: 'APP BUG import-export-9: corrupt deflate data in a ZIP answers 500 instead of 400' }, async () => {
+  test('a ZIP whose compressed data is corrupt is rejected as a bad upload (400), not a server error', async () => {
     const snap = t.snapshot();
     const bad = buildZip({ 'games.csv': 'uuid,title,hours_played\nQ,Never Imported,5\n'.repeat(20) }, { corrupt: 'games.csv' });
     const r = await t.importZip(bad);
@@ -1542,10 +1542,9 @@ describe('GameTrack first, Steam linked later', () => {
       // Hades 1200 (Steam hours, but this account does not own it), Secret Game 300 (no hidden list in this ZIP)
       assert.equal(life.total_minutes, 960 + 1230 + 720 + 1200 + 300);
       assert.deepEqual(t.sumViolations(), []);
-      // the only game without an entry is GameTrack's wish-listed Silksong (import-export-10), not a leftover of the adoption
-      assert.deepEqual(t.db.prepare('SELECT title, status FROM games WHERE id NOT IN (SELECT game_id FROM entries)').all().map((g) => ({ ...g })), [{ title: 'Hollow Knight: Silksong', status: 'wishlist' }]);
-      const { empty_games, ...odd } = t.oddities();
-      assert.deepEqual(odd, (({ empty_games: _, ...o }) => o)(NO_ODDITIES));
+      // no game is left without an entry: not by the adoption, and GameTrack's wish-listed Silksong has its own (import-export-10)
+      assert.deepEqual(t.db.prepare('SELECT title, status FROM games WHERE id NOT IN (SELECT game_id FROM entries)').all().map((g) => ({ ...g })), []);
+      assert.deepEqual(t.oddities(), NO_ODDITIES);
     } finally { await t.close(); steam.dispose(); }
   });
 });
@@ -1609,7 +1608,7 @@ describe('Steam licenses page paste', () => {
     assert.deepEqual(t.snapshot(), snap);
   });
 
-  test('a sequel\'s license does not date the original game (Hades II vs Hades)', { todo: 'APP BUG import-export-8: a sequel\'s license ("Hades II") is matched to the original ("Hades") as if it were an edition' }, async () => {
+  test('a sequel\'s license does not date the original game (Hades II vs Hades)', async () => {
     const r = await t.post(`/accounts/${acc.id}/licenses`, { text: '6 May, 2024\tHades II\tSteam Store\n1 Jun, 2024\tHades\tSteam Store' });
     assert.equal(r.status, 200);
     assert.equal(dayOf(await dateAdded('Hades')), '2024-06-01');

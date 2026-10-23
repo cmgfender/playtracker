@@ -2,6 +2,9 @@
 // platform's totals authoritative for synced games.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { openDb, tx } from '../src/db.js';
 import { Settings } from '../src/services/settings.js';
 import { applyItems, parseAccount } from '../src/services/sync.js';
@@ -118,4 +121,22 @@ test('linking an account adopts imported copies: no game twice, your sessions an
   assert.equal(hades.baseline_min, 600);
   assert.equal(db.prepare("SELECT excluded FROM entries WHERE title = 'Celeste'").get().excluded, 1, 'your exclusion kept');
   assert.deepEqual(consistent(db), []);
+});
+
+test('titles stored by an older version are normalised again when the database opens', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pt-norm-'));
+  const file = path.join(dir, 'playtracker.db');
+  let db = openDb(file);
+  // what the old normalisation stored: "™" spelled "tm", letters of other scripts dropped
+  const ins = db.prepare('INSERT INTO games(title, norm_title, created_at, updated_at) VALUES (?, ?, 0, 0)');
+  for (const [title, norm] of [['ELDEN RING', 'elden ringtm'], ['ペルソナ5', '5'], ['ドラゴンクエスト5', '5'], ['Hades', 'hades']]) ins.run(title, norm);
+  db.exec('PRAGMA user_version = 4');
+  db.close();
+  db = openDb(file);
+  const settings = new Settings(db);
+  importRows(db, [{ title: 'Elden Ring™', platform: 'switch', playtime_hours: 1 }, { title: 'ドラゴンクエスト5', platform: 'switch', playtime_hours: 2 }], { settings: settings.all() });
+  const games = db.prepare('SELECT g.title, COUNT(e.id) n FROM games g LEFT JOIN entries e ON e.game_id = g.id GROUP BY g.id ORDER BY g.id').all().map((g) => [g.title, g.n]);
+  assert.deepEqual(games, [['ELDEN RING', 1], ['ペルソナ5', 0], ['ドラゴンクエスト5', 1], ['Hades', 0]], 'each row joins its own game, none another');
+  db.close();
+  fs.rmSync(dir, { recursive: true, force: true });
 });

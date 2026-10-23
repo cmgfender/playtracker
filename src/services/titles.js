@@ -13,12 +13,14 @@ const PLATFORM_TAGS = [
 
 const EDITION_SUFFIX = /[\s:–—-]+(?:the\s+)?(?:game of the year|goty|deluxe|digital deluxe|standard|complete|ultimate|gold|premium|definitive|enhanced|anniversary|legendary|special|collector'?s|director'?s cut|launch|day one|cross-gen|bundle)(?:\s+(?:edition|version|bundle|cut))?\s*$/;
 
+const ROMAN = { ii: 2, iii: 3, iv: 4, v: 5, vi: 6, vii: 7, viii: 8, ix: 9, x: 10 };
+
 export function normalizeTitle(title) {
   let t = String(title || '')
+    .replace(/[™®©℠]/g, '') // before NFKD, which spells ™ as "TM"
     .normalize('NFKD')
     .replace(/[̀-ͯ]/g, '')
     .toLowerCase()
-    .replace(/[™®©℠]/g, '')
     .replace(/[’`]/g, "'")
     .trim();
   for (const re of PLATFORM_TAGS) t = t.replace(re, ' ');
@@ -31,11 +33,13 @@ export function normalizeTitle(title) {
   t = t
     .replace(/&/g, ' and ')
     .replace(/\b(?:the)\b/g, ' ')
-    .replace(/[^a-z0-9]+/g, ' ')
+    // letters of every script stay ("ペルソナ5" and "ドラゴンクエスト5" are different games)
+    .replace(/[^\p{L}\p{N}\p{M}]+/gu, ' ')
     .replace(/\s+/g, ' ')
-    .trim();
-  // Arabic/roman numeral equivalence for common sequels
-  t = t.replace(/\b(ii|iii|iv|v|vi|vii|viii|ix|x)\b/g, (m) => String({ ii: 2, iii: 3, iv: 4, v: 5, vi: 6, vii: 7, viii: 8, ix: 9, x: 10 }[m]));
+    .trim()
+    .normalize('NFC');
+  // Arabic/roman numeral equivalence for common sequels (whole words only, in any script)
+  t = t.replace(/(?<![\p{L}\p{N}\p{M}])(?:ii|iii|iv|v|vi|vii|viii|ix|x)(?![\p{L}\p{N}\p{M}])/gu, (m) => String(ROMAN[m]));
   return t || String(title || '').toLowerCase().trim();
 }
 
@@ -90,5 +94,7 @@ export function matchScore(a, b) {
     if (/^\d+\b/.test(rest)) return Math.min(sim, 0.5); // sequel, not a duplicate
     return Math.max(sim, 0.82);
   }
+  // a possessive publisher prefix ("sid meier s civilization 5" vs "civilization 5")
+  if (short.length >= 5 && long.endsWith(' ' + short) && / s$/.test(long.slice(0, -short.length - 1))) return Math.max(sim, 0.82);
   return sim;
 }

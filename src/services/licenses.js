@@ -60,7 +60,8 @@ export function applyLicenses(db, accountId, text, { settings = null } = {}) {
     const n = normalizeTitle(l.title);
     let hit = byNorm.get(n);
     if (!hit) {
-      const k = norms.find((x) => n.startsWith(`${x} `));
+      // an edition, never a sequel ("hades 2" is not an edition of "hades")
+      const k = norms.find((x) => n.startsWith(`${x} `) && !/^\d+\b/.test(n.slice(x.length + 1)));
       hit = k ? byNorm.get(k) : null;
     }
     if (!hit) { unmatched.push(l.title); continue; }

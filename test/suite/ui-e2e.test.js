@@ -1047,7 +1047,7 @@ describe('PlayTracker web UI (no password)', () => {
     assertInvariant('after re-import');
   });
 
-  test('import preview of an already-imported file says "Nothing new"', { todo: 'APP BUG ui-e2e-4: re-import preview claims entries are "joined" / synced games gain "dates and details" although nothing changes' }, async () => {
+  test('import preview of an already-imported file says "Nothing new"', async () => {
     const csv = 'title,platform,playtime_hours,last_played,status,rating\nRepeat Me,import,3,2026-02-01,beaten,7\n';
     await S.ok('/import', { method: 'POST', body: csv });
     const h = await visit('/settings');
@@ -1061,7 +1061,7 @@ describe('PlayTracker web UI (no password)', () => {
     } finally { await h.close(); }
   });
 
-  test('import of a title you only logged by hand joins that game instead of adding its hours on top', { todo: 'APP BUG ui-e2e-3: a generic-platform import row for a manual game creates a second entry and sums totals (double counting)' }, async () => {
+  test('import of a title you only logged by hand joins that game instead of adding its hours on top', async () => {
     // Celeste exists only as a manual game with 2h 15m logged. A spreadsheet row without a platform
     // saying "Celeste: 1h total" is the same play; joined, the lifetime must stay 2h 15m (totals only
     // grow, never shrink) - the same rule the importer applies to synced games.

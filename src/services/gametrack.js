@@ -93,6 +93,9 @@ export function importGameTrack(db, tables, { settings = null, now = Date.now() 
   const setStatus = db.prepare("UPDATE games SET status = ?, updated_at = ? WHERE id = ? AND status = 'unset'");
   const setRating = db.prepare('UPDATE games SET rating = ?, updated_at = ? WHERE id = ? AND rating IS NULL');
   const setCover = db.prepare('UPDATE games SET cover_url = ? WHERE id = ? AND cover_url IS NULL');
+  // a wish-listed game gets a 0-minute entry, so the library lists it and keeps it like any game
+  const addWish = db.prepare(`INSERT INTO entries(account_id, game_id, platform, ext_id, title, playtime_min, first_seen_at, last_synced_at)
+    SELECT NULL, ?, ?, ?, ?, 0, ?, ? WHERE NOT EXISTS (SELECT 1 FROM entries WHERE game_id = ?)`);
 
   const anchoredIds = new Set();
   const rows = [];
@@ -164,7 +167,9 @@ export function importGameTrack(db, tables, { settings = null, now = Date.now() 
         if (times.length) pendingAnchors.push({ platform, title, times });
         res.imported_titles++;
       } else if (!gameIds.size && (status === 'wishlist' || wished.has(g.uuid))) {
-        gameIds.add(findOrCreateGame(db, { title, coverUrl: cover }, { autoMerge: settings?.auto_merge_titles !== false, now }));
+        const id = findOrCreateGame(db, { title, coverUrl: cover }, { autoMerge: settings?.auto_merge_titles !== false, now });
+        addWish.run(id, platform, `import:gametrack:${norm}`, title, now, now, id);
+        gameIds.add(id);
         res.wishlist_added++;
       } else if (!gameIds.size) res.skipped_no_playtime++;
 

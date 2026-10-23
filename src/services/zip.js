@@ -39,8 +39,10 @@ export function readZip(buf, { maxBytes = 512 * 1024 * 1024, maxFiles = 2000 } =
     if (total > maxBytes) throw new HttpError(413, 'ZIP contents too large');
     let file;
     if (method === 0) file = data;
-    else if (method === 8) file = zlib.inflateRawSync(data, { maxOutputLength: Math.max(usize, 1) });
-    else throw new HttpError(400, `Unsupported ZIP compression (${method}) for ${name}`);
+    else if (method === 8) {
+      // corrupt data (or more of it than declared) is a bad upload, not a server error
+      try { file = zlib.inflateRawSync(data, { maxOutputLength: Math.max(usize, 1) }); } catch { throw new HttpError(400, `Corrupt ZIP data in ${name}`); }
+    } else throw new HttpError(400, `Unsupported ZIP compression (${method}) for ${name}`);
     out.set(name, file);
   }
   return out;

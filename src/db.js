@@ -1,6 +1,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import fs from 'node:fs';
 import path from 'node:path';
+import { normalizeTitle } from './services/titles.js';
 
 const MIGRATIONS = [
   // 1: initial schema
@@ -269,6 +270,15 @@ const MIGRATIONS = [
   ALTER TABLE presence ADD COLUMN session_id INTEGER;
   ALTER TABLE presence ADD COLUMN device TEXT;
   `,
+  // 5: titles normalised again (trademark signs dropped, letters of every script kept), so
+  //    existing games are found by the titles that now group with them
+  (db) => {
+    const upd = db.prepare('UPDATE games SET norm_title = ? WHERE id = ?');
+    for (const g of db.prepare('SELECT id, title, norm_title FROM games').all()) {
+      const norm = normalizeTitle(g.title);
+      if (norm !== g.norm_title) upd.run(norm, g.id);
+    }
+  },
 ];
 
 export function openDb(file) {
@@ -284,7 +294,7 @@ function migrate(db) {
   for (let v = version; v < MIGRATIONS.length; v++) {
     db.exec('BEGIN');
     try {
-      db.exec(MIGRATIONS[v]);
+      if (typeof MIGRATIONS[v] === 'function') MIGRATIONS[v](db); else db.exec(MIGRATIONS[v]);
       db.exec(`PRAGMA user_version = ${v + 1}`);
       db.exec('COMMIT');
     } catch (err) {

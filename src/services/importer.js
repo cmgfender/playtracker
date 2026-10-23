@@ -6,18 +6,32 @@ import { flushRollups } from './rollup.js';
 import { mergeEvidence, reinferMany } from './inference.js';
 
 const MIN = 60_000;
+const DAY = 24 * 60 * MIN;
 const STATUSES = new Set(['unset', 'backlog', 'playing', 'paused', 'completed', 'beaten', 'dropped', 'wishlist']);
+
+/** A file's one delimiter: whichever of comma, semicolon or tab its header line uses most. */
+function delimiterOf(src) {
+  const n = { ',': 0, ';': 0, '\t': 0 };
+  let q = false;
+  for (const c of src) {
+    if (c === '"') q = !q;
+    else if (!q && (c === '\n' || c === '\r')) break;
+    else if (!q && c in n) n[c]++;
+  }
+  return n[';'] > n[','] && n[';'] >= n['\t'] ? ';' : n['\t'] > n[','] ? '\t' : ',';
+}
 
 export function parseCsv(text, { commaOnly = false } = {}) {
   const rows = [];
   let row = []; let cell = ''; let q = false;
   const src = String(text).replace(/^﻿/, '');
+  const sep = commaOnly ? ',' : delimiterOf(src);
   for (let i = 0; i < src.length; i++) {
     const c = src[i];
     if (q) {
       if (c === '"' && src[i + 1] === '"') { cell += '"'; i++; } else if (c === '"') q = false; else cell += c;
     } else if (c === '"') q = true;
-    else if (c === ',' || (!commaOnly && (c === ';' || c === '\t'))) { row.push(cell); cell = ''; }
+    else if (c === sep) { row.push(cell); cell = ''; }
     else if (c === '\n' || c === '\r') {
       if (c === '\r' && src[i + 1] === '\n') i++;
       row.push(cell); rows.push(row); row = []; cell = '';
@@ -36,8 +50,8 @@ function minutesOf(row) {
   if (m !== undefined) return Math.max(0, Math.round(Number(m) || 0));
   const h = pick('playtime_hours', 'hours', 'hours_played', 'playtime', 'time_played');
   if (h !== undefined) {
-    const hm = /^(\d+):(\d{2})$/.exec(String(h));
-    if (hm) return Number(hm[1]) * 60 + Number(hm[2]);
+    const hm = /^(\d+):(\d{2})(?::(\d{2}))?$/.exec(String(h)); // h:mm, or a spreadsheet's [h]:mm:ss
+    if (hm) return Number(hm[1]) * 60 + Number(hm[2]) + Math.round(Number(hm[3] || 0) / 60);
     return Math.max(0, Math.round((Number(String(h).replace(',', '.')) || 0) * 60));
   }
   return 0;
@@ -52,6 +66,8 @@ export function importRows(db, rows, { settings, now = Date.now() } = {}) {
   const res = {
     games: 0, entries_created: 0, entries_updated: 0, merged_synced: 0, sessions: 0, sessions_restored: 0,
     baseline_minutes: 0, tracked_minutes: 0, skipped: 0, details_filled: 0,
+    // synced games the file adds something to; rows that are already here in full
+    synced_updated: 0, unchanged: 0,
   };
   const st = {
     // imports assist: they fill what is empty and never overwrite what is already set
@@ -67,8 +83,13 @@ export function importRows(db, rows, { settings, now = Date.now() } = {}) {
     addHistory: db.prepare('UPDATE entries SET baseline_min = baseline_min + ? WHERE id = ?'),
     updEntry: db.prepare('UPDATE entries SET playtime_min = ?, last_played_at = MAX(COALESCE(last_played_at, 0), COALESCE(?, 0)) WHERE id = ?'),
     exclude: db.prepare('UPDATE entries SET excluded = 1 WHERE id = ?'),
+    gameEntries: db.prepare('SELECT id, account_id, platform FROM entries WHERE game_id = ? ORDER BY id'),
+    hide: db.prepare('UPDATE games SET hidden = 1 WHERE id = ?'),
+    lock: db.prepare('UPDATE games SET merge_locked = 1 WHERE id = ?'),
   };
   const toInfer = new Set();
+  const used = new Set(); // entries this file created or joined
+  const lock = new Set(); // games to lock against auto-merging once every row has joined them
   // Existing entries, so a file that overlaps what is already here joins it instead of adding a
   // second copy: by platform + account name + title (our own exports), and synced entries by
   // platform + title / title alone.
@@ -100,11 +121,13 @@ export function importRows(db, rows, { settings, now = Date.now() } = {}) {
   };
   const str = (v) => (v == null ? '' : typeof v === 'string' ? v : typeof v === 'object' ? '' : String(v));
   const flag = (v) => v === true || v === 'true' || v === '1' || v === 1;
+  // a session's end as given when it is after its start, else start + its minutes
+  const endOf = (s, start, minutes) => { const end = toTime(s.ended_at); return end > start ? end : start + minutes * MIN; };
 
-  /** Status / rating / notes / favourite: only where the library has nothing yet. */
+  /** Status / rating / notes / favourite: only where the library has nothing yet. True if any was filled. */
   const fillGame = (gameId, row) => {
     const g = st.game.get(gameId);
-    if (!g) return;
+    if (!g) return false;
     const status = str(row.status).toLowerCase();
     const rating = row.rating !== undefined && row.rating !== '' && Number.isFinite(Number(row.rating)) && Number(row.rating) > 0 ? Math.min(10, Math.max(0, Number(row.rating))) : null;
     const notes = str(row.notes).trim();
@@ -118,7 +141,9 @@ export function importRows(db, rows, { settings, now = Date.now() } = {}) {
     if (next.status !== g.status || next.rating !== g.rating || next.notes !== g.notes || next.favorite !== (g.favorite || 0)) {
       st.setGame.run(next.status, next.rating, next.notes, next.favorite, now, gameId);
       res.details_filled++;
+      return true;
     }
+    return false;
   };
 
   /** Dates from the file, as evidence: fill gaps, keep the earliest first-played. */
@@ -149,7 +174,9 @@ export function importRows(db, rows, { settings, now = Date.now() } = {}) {
       const norm = normalizeTitle(title);
       const acc = str(row.account).trim().toLowerCase();
       const reported = minutesOf(row);
-      const lastPlayed = toTime(row.last_played || row.last_played_at);
+      // never in the future (a date-only "today" is noon; a later date is no evidence)
+      const lp = toTime(row.last_played || row.last_played_at);
+      const lastPlayed = lp && lp <= now + DAY ? Math.min(lp, now) : null;
       const sessions = Array.isArray(row.sessions) ? row.sessions : [];
       res.games++;
 
@@ -161,7 +188,7 @@ export function importRows(db, rows, { settings, now = Date.now() } = {}) {
       const syncedEntry = !entry && !(same && same.account_id == null) ? (same?.account_id != null ? same : syncedFor(platform, acc, norm, reported)) : null;
       if (syncedEntry) {
         const se = st.getEntry.get(syncedEntry.id);
-        fillGame(se.game_id, row);
+        const details = fillGame(se.game_id, row);
         const filled = fillEvidence(se.id, { ...evidenceOf(row), last_played_at: undefined });
         // exact sessions from before tracking began replace that much estimated history
         const h = JSON.parse(se.hist || '{}');
@@ -173,7 +200,7 @@ export function importRows(db, rows, { settings, now = Date.now() } = {}) {
           const minutes = Math.round(Number(s.minutes) || 0);
           const start = toTime(s.started_at || s.date || s.start);
           if (minutes <= 0 || !start || minutes > room) continue;
-          const end = toTime(s.ended_at) || start + minutes * MIN;
+          const end = endOf(s, start, minutes);
           if (end > trackedFrom || have.has(`${start}:${minutes}`) || st.overlaps.get(se.id, end, start)) continue;
           st.insPlay.run(se.id, minutes, start, end, start, end, str(s.note) || null, now);
           have.add(`${start}:${minutes}`);
@@ -182,14 +209,29 @@ export function importRows(db, rows, { settings, now = Date.now() } = {}) {
         if (restored) { st.addHistory.run(-restored, se.id); res.tracked_minutes += restored; }
         if (restored || filled) toInfer.add(se.id);
         res.merged_synced++;
+        if (restored || filled || details) res.synced_updated++; else res.unchanged++;
         continue;
       }
 
       // 2) a manual / imported entry for this game is already here: join it
-      const gameId = entry?.game_id ?? same?.game_id ?? (same ? st.getEntry.get(same.id).game_id : null)
-        ?? findOrCreateGame(db, { title, coverUrl: str(row.cover_url) || null }, { autoMerge: settings?.auto_merge_titles !== false, now });
+      let gameId = entry?.game_id ?? same?.game_id ?? (same ? st.getEntry.get(same.id).game_id : null);
+      if (gameId == null) {
+        gameId = findOrCreateGame(db, { title, coverUrl: str(row.cover_url) || null }, { autoMerge: settings?.auto_merge_titles !== false, now });
+        const own = st.gameEntries.all(gameId);
+        if (!own.length) {
+          // a game new to the library keeps the choices your export recorded
+          if (flag(row.hidden)) st.hide.run(gameId);
+          if (flag(row.merge_locked)) lock.add(gameId);
+        } else if (UNNAMED.has(platform) && !acc && own.every((e) => e.account_id == null && e.platform === 'manual') && !used.has(own[0].id)) {
+          // a game you only log by hand, and a row that names no platform: the file's total is
+          // that same play, so it joins your manual entry (totals only grow) instead of adding its
+          // hours on top - unless this file lists that entry itself (your own export)
+          entry = st.getEntry.get(own[0].id);
+          index.set(`${platform}|${acc}|${norm}`, { id: entry.id, game_id: gameId, account_id: null });
+        }
+      }
       if (!entry && same) entry = st.getEntry.get(same.id);
-      fillGame(gameId, row);
+      const details = fillGame(gameId, row);
       const existed = !!entry;
       if (!entry) {
         const r = st.insEntry.run(gameId, platform, extId, title, lastPlayed, now, now);
@@ -198,7 +240,8 @@ export function importRows(db, rows, { settings, now = Date.now() } = {}) {
         res.entries_created++;
         // your exclusions only apply to entries the file creates; existing ones keep yours
         if (flag(row.excluded)) { st.exclude.run(entry.id); res.excluded = (res.excluded || 0) + 1; }
-      } else res.entries_updated++;
+      }
+      used.add(entry.id);
 
       let sessionMinutes = 0;
       let earliestSession = Infinity;
@@ -208,7 +251,9 @@ export function importRows(db, rows, { settings, now = Date.now() } = {}) {
         const minutes = Math.round(Number(s.minutes) || 0);
         const start = toTime(s.started_at || s.date || s.start);
         if (minutes <= 0 || !start) continue;
-        const end = toTime(s.ended_at) || start + minutes * MIN;
+        const end = endOf(s, start, minutes);
+        // tracked play never lies in the future: its minutes stay in the file's total, as history
+        if (end > now + 5 * MIN) { res.skipped_sessions = (res.skipped_sessions || 0) + 1; continue; }
         const k = `${start}:${minutes}`;
         if (have.has(k)) continue;
         have.add(k);
@@ -218,9 +263,13 @@ export function importRows(db, rows, { settings, now = Date.now() } = {}) {
         res.sessions++;
         res.tracked_minutes += minutes;
       }
-      // totals never go down: the larger of the file's total and what is already here
-      const newTotal = Math.max(reported, entry.playtime_min + sessionMinutes);
-      const baseline = newTotal - entry.playtime_min - sessionMinutes;
+      // Totals never go down: the larger of the file's total and what is already here. Sessions
+      // the file's own total covers (an updated file listing one more session) take their
+      // minutes from the history; without such a total they add to what is here.
+      const tracked = entry.playtime_min - entry.baseline_min + sessionMinutes;
+      const newTotal = reported >= tracked ? Math.max(reported, entry.playtime_min) : entry.playtime_min + sessionMinutes;
+      const baseline = newTotal - tracked - entry.baseline_min; // change of the history
+      let changed = sessionMinutes > 0 || details || newTotal !== entry.playtime_min || (lastPlayed != null && lastPlayed > (entry.last_played_at || 0));
       if (baseline > 0) {
         // Totals not covered by explicit sessions are history: date them from whatever the
         // file tells us (first played / date added / last played / play count).
@@ -232,9 +281,14 @@ export function importRows(db, rows, { settings, now = Date.now() } = {}) {
         });
         toInfer.add(entry.id);
         res.baseline_minutes += baseline;
-      } else if (existed && fillEvidence(entry.id, evidenceOf(row)) && entry.baseline_min > 0) toInfer.add(entry.id);
+      } else {
+        if (baseline < 0) { st.addHistory.run(baseline, entry.id); toInfer.add(entry.id); }
+        if (existed && fillEvidence(entry.id, evidenceOf(row))) { changed = true; if (entry.baseline_min > 0) toInfer.add(entry.id); }
+      }
       st.updEntry.run(newTotal, lastPlayed, entry.id);
+      if (existed) { if (changed) res.entries_updated++; else res.unchanged++; }
     }
+    for (const id of lock) st.lock.run(id);
     res.estimated_minutes = 0;
     res.undated_minutes = 0;
     flushRollups(db);
@@ -248,8 +302,10 @@ export function importRows(db, rows, { settings, now = Date.now() } = {}) {
 
 // platforms that say nothing about where a game was played
 const GENERIC = new Set(['import', 'imported', 'pc', 'other', 'unknown', '']);
+// rows without a platform at all
+const UNNAMED = new Set(['import', 'imported', 'unknown']);
 
-const CSV_COLS = ['title', 'platform', 'account', 'playtime_minutes', 'playtime_hours', 'last_played', 'status', 'rating', 'favorite', 'excluded', 'sessions', 'notes'];
+const CSV_COLS = ['title', 'platform', 'account', 'playtime_minutes', 'playtime_hours', 'last_played', 'status', 'rating', 'favorite', 'hidden', 'merge_locked', 'excluded', 'sessions', 'cover_url', 'notes'];
 const csvEsc = (v) => {
   const s = v == null ? '' : String(v);
   return /[",\n\r\t;]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
@@ -262,7 +318,7 @@ const iso = (t) => (t ? new Date(t).toISOString() : null);
  */
 export function* exportChunks(db, format = 'json') {
   const rows = db.prepare(`SELECT e.id, e.platform, e.playtime_min, e.last_played_at, e.excluded, a.name account_name,
-      g.title, g.status, g.rating, g.notes, g.favorite
+      g.title, g.status, g.rating, g.notes, g.favorite, g.hidden, g.merge_locked, g.cover_url
     FROM entries e JOIN games g ON g.id = e.game_id LEFT JOIN accounts a ON a.id = e.account_id
     ORDER BY g.title COLLATE NOCASE, e.id`);
   const sessions = db.prepare("SELECT started_at, ended_at, window_start, window_end, minutes, source, note FROM sessions WHERE entry_id = ? AND kind = 'play' ORDER BY sort_time");
@@ -272,7 +328,8 @@ export function* exportChunks(db, format = 'json') {
     let buf = '';
     for (const r of rows.iterate()) {
       const rec = { title: r.title, platform: r.platform, account: r.account_name, playtime_minutes: r.playtime_min, playtime_hours: (r.playtime_min / 60).toFixed(1),
-        last_played: iso(r.last_played_at), status: r.status, rating: r.rating, favorite: !!r.favorite, excluded: !!r.excluded, sessions: count.get(r.id).n, notes: r.notes };
+        last_played: iso(r.last_played_at), status: r.status, rating: r.rating, favorite: !!r.favorite, hidden: !!r.hidden, merge_locked: !!r.merge_locked,
+        excluded: !!r.excluded, sessions: count.get(r.id).n, cover_url: r.cover_url, notes: r.notes };
       buf += CSV_COLS.map((c) => csvEsc(rec[c])).join(',') + '\n';
       if (buf.length > 64_000) { yield buf; buf = ''; }
     }
@@ -285,7 +342,8 @@ export function* exportChunks(db, format = 'json') {
   for (const r of rows.iterate()) {
     const rec = {
       title: r.title, platform: r.platform, account: r.account_name || null, playtime_minutes: r.playtime_min, last_played: iso(r.last_played_at),
-      status: r.status, rating: r.rating, notes: r.notes, favorite: !!r.favorite, excluded: !!r.excluded,
+      status: r.status, rating: r.rating, notes: r.notes, favorite: !!r.favorite, hidden: !!r.hidden, merge_locked: !!r.merge_locked,
+      excluded: !!r.excluded, cover_url: r.cover_url,
       sessions: sessions.all(r.id).map((s) => ({
         started_at: iso(s.started_at || s.window_start || s.window_end), ended_at: iso(s.ended_at), window_end: iso(s.window_end),
         minutes: s.minutes, source: s.source, note: s.note,
