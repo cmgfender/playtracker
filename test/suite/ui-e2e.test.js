@@ -1143,7 +1143,8 @@ describe('PlayTracker web UI (no password)', UI, () => {
       assert.equal(g.summary.tracked_minutes + g.summary.estimated_minutes + g.summary.baseline_minutes, 300, 'the rest is history, nothing lost');
       const sess = await S.ok(`/sessions?game_id=${id}`);
       assert.equal(sess.items[0].source, 'import');
-      assert.equal(new Date(sess.items[0].started_at).toISOString().slice(0, 10), '2026-03-01');
+      const day = new Date(sess.items[0].started_at); // the file's date, on your own calendar
+      assert.equal(`${day.getFullYear()}-${String(day.getMonth() + 1).padStart(2, '0')}-${String(day.getDate()).padStart(2, '0')}`, '2026-03-01');
       await page.goto(`${S.origin}/sessions`);
       await waitView(page);
       await page.locator('#s-chips [data-src="import"]').click();
