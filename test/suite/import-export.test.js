@@ -884,7 +884,7 @@ describe('?dry_run=true previews an import without changing anything', () => {
       lifetime: await t.lifetime(),
       games: (await t.ok(t.get('/games', { limit: '500' }))),
       dupes: await t.ok(t.get('/duplicates')),
-      stats: await t.ok(t.get('/stats', { range: 'all' })),
+      stats: await t.ok(t.get('/stats', { range: 'all' })).then(({ range, ...rest }) => rest), // range.to is "now"
       sessions: await t.ok(t.get('/sessions', { kind: 'all', limit: '1000' })),
     };
   }
@@ -1168,5 +1168,299 @@ describe('import / export security boundaries', () => {
       assert.equal(r.status, 403);
       assert.equal(open.db.prepare('SELECT COUNT(*) n FROM games').get().n, 0);
     } finally { await open.close(); }
+  });
+});
+
+// =====================================================================================
+// GameTrack export: one CSV per table inside a ZIP
+const xboxTime = (t) => new Date(t).toISOString().replace(/\.(\d{3})Z$/, '.$10000Z'); // Xbox writes 7 fraction digits
+function gameTrackFiles() {
+  return {
+    'GameTrack Export/manifest.json': '{"app":"GameTrack","version":"5"}',
+    'GameTrack Export/games.csv': toCsv([
+      ['uuid', 'title', 'poster_url', 'status', 'user_rating', 'hours_played', 'owned_platform', 'start_date', 'finish_date', 'added_date', 'summary'],
+      ['A', 'Portal 2', 'https://img.example/gt-portal2.png', 'Finished', '9', '15.0', 'PC', '', '', '', 'Puzzles; portals, "science"'],
+      ['B', 'Zelda: Echoes of Wisdom', 'https://img.example/gt-zelda.png', 'Now Playing', '8', '20.5', 'Nintendo Switch', iso(ago(60)), '', '', 'multi\nline summary'],
+      ['C', 'Hollow Knight: Silksong', '', 'Wanted', '0', '0', '', '', '', '', ''],
+      ['D', 'Hades', '', 'Finished', '10', '20', 'PC', '', '', '', ''],
+      ['E', 'Bloodborne', '', 'Completed', '10', '0', 'PS4', '', '', '', ''],
+      ['F', 'Halo Infinite', '', 'Playing', '0', '12', 'Xbox Series X', '', '', '', ''],
+      ['G', 'Secret Game', '', '', '0', '5', 'PC', '', '', '', ''],
+      ['H', 'Hades II', '', '', '0', '0', 'PC', '', '', '', ''],
+    ]),
+    'GameTrack Export/playthroughs.csv': toCsv([['uuid', 'game_uuid', 'date_started', 'date_finished'], ['P1', 'B', iso(ago(60)), iso(ago(10))]]),
+    'GameTrack Export/steam_games.csv': toCsv([['game_uuid', 'appid', 'name', 'playtime_forever'], ['A', '620', 'Portal 2', '900'], ['D', '1145360', 'Hades', '1200']]),
+    'GameTrack Export/steam_achievements.csv': toCsv([
+      ['steam_game_appid', 'name', 'achieved', 'unlock_time'],
+      ['620', 'a', 'true', iso(ago(300))], ['620', 'b', 'true', iso(ago(290))], ['620', 'c', 'false', ''],
+    ]),
+    'GameTrack Export/xbox_games.csv': toCsv([['game_uuid', 'title_id', 'modern_title_id', 'name', 'last_time_played'], ['F', '2043073184', '', 'Halo Infinite', xboxTime(ago(20))]]),
+    'GameTrack Export/xbox_achievements.csv': toCsv([
+      ['xbox_game_title_id', 'name', 'progress_state', 'time_unlocked'],
+      ['2043073184', 'x1', 'Achieved', xboxTime(ago(30))], ['2043073184', 'x2', 'NotStarted', ''],
+    ]),
+    'GameTrack Export/playstation_games.csv': toCsv([
+      ['game_uuid', 'np_communication_id', 'title_id', 'name', 'play_duration', 'play_count', 'first_played', 'last_played'],
+      ['E', 'NPWR08661_00', 'CUSA00207', 'Bloodborne', '50.5', '40', iso(ago(900)), iso(ago(700))],
+    ]),
+    'GameTrack Export/game_trophies.csv': toCsv([
+      ['playstation_game_npid', 'name', 'earned', 'earn_date'],
+      ['NPWR08661_00', 't1', 'true', iso(ago(880))], ['NPWR08661_00', 't2', 'true', iso(ago(800))], ['NPWR08661_00', 't3', 'true', iso(ago(720))], ['NPWR08661_00', 't4', 'false', ''],
+    ]),
+    'GameTrack Export/lists.csv': toCsv([['uuid', 'list_name', 'list_type'], ['L1', 'Wishlist', 'wishlist'], ['L2', 'Favourites', 'custom']]),
+    'GameTrack Export/game_lists.csv': toCsv([['list_uuid', 'game_uuid'], ['L1', 'H'], ['L2', 'A']]),
+    'GameTrack Export/hidden_games.csv': toCsv([['name'], ['Secret Game']]),
+  };
+}
+
+describe('GameTrack export ZIP import', () => {
+  let t; let steam;
+  const zip = buildZip(gameTrackFiles());
+  let preview;
+  before(async () => {
+    t = await startApp();
+    steam = new SteamMock({ games: [
+      { appid: 620, name: 'Portal 2', minutes: 900, lastPlayed: ago(100) },
+      { appid: 1145360, name: 'Hades', minutes: 1200, lastPlayed: ago(5) },
+    ] });
+    await t.linkSteam(steam);
+    const hades = await t.gameByTitle('Hades');
+    await t.ok(t.patch(`/games/${hades.id}`, { status: 'dropped' }));
+  });
+  after(async () => { await t.close(); steam.dispose(); });
+
+  test('preview (?dry_run=true) reports the import and changes nothing', async () => {
+    const snap = t.snapshot();
+    const r = await t.importZip(zip, { dry_run: 'true' });
+    assert.equal(r.status, 200, r.text);
+    assert.equal(r.data.dry_run, true);
+    assert.deepEqual(t.snapshot(), snap);
+    preview = r.data;
+  });
+
+  test('synced games gain unlock-time evidence (no second copy); untracked hours become history; details fill gaps', async () => {
+    const r = await t.importZip(zip);
+    assert.equal(r.status, 200, r.text);
+    const { dry_run, ...rest } = preview;
+    assert.deepEqual(r.data, rest, 'the preview predicted the real import');
+
+    // Steam games: Steam's totals stand, GameTrack only adds evidence and details
+    for (const [title, minutes] of [['Portal 2', 900], ['Hades', 1200]]) {
+      const es = t.entriesOf(title);
+      assert.equal(es.length, 1, `${title}: no second copy`);
+      assert.ok(es[0].account_id);
+      assert.equal(es[0].playtime_min, minutes);
+    }
+    const portal = await t.gameByTitle('Portal 2');
+    assert.equal(portal.entries[0].history.evidence.anchors, 2, 'two unlocked achievements date its history');
+    assert.equal(portal.status, 'beaten', 'GameTrack "Finished" fills an unset status');
+    assert.equal(portal.rating, 9);
+    assert.notEqual(portal.cover_url, 'https://img.example/gt-portal2.png', 'an existing cover is not replaced');
+    const hades = await t.gameByTitle('Hades');
+    assert.equal(hades.status, 'dropped', 'your status stays');
+    assert.equal(hades.rating, 10, 'an empty rating is filled');
+
+    // games no account here tracks: imported once, as history dated from GameTrack's dates
+    const zelda = await t.gameByTitle('Zelda: Echoes of Wisdom');
+    assert.equal(zelda.minutes, 1230);
+    assert.deepEqual(zelda.platforms, ['switch']);
+    assert.equal(zelda.summary.tracked_minutes, 0);
+    assert.equal(zelda.status, 'playing');
+    assert.equal(zelda.rating, 8);
+    assert.equal(zelda.cover_url, 'https://img.example/gt-zelda.png');
+    const zd = historyDays(t, zelda.entries[0].id);
+    assert.ok(zd.length && zd[0].day >= dayOf(ago(60)) && zd.at(-1).day <= dayOf(ago(10)), `Zelda history ${zd[0]?.day}..${zd.at(-1)?.day}`);
+
+    const bb = await t.gameByTitle('Bloodborne');
+    assert.equal(bb.minutes, 3030);
+    assert.deepEqual(bb.platforms, ['psn']);
+    assert.equal(bb.status, 'completed');
+    const ev = bb.entries[0].history.evidence;
+    assert.equal(dayOf(ev.first_played_at), dayOf(ago(900)));
+    assert.equal(ev.play_count, 40);
+    assert.equal(ev.anchors, 3, 'earned trophies only');
+    const bd = historyDays(t, bb.entries[0].id);
+    assert.ok(bd[0].day >= dayOf(ago(900)) && bd.at(-1).day <= dayOf(ago(700)), `Bloodborne history ${bd[0].day}..${bd.at(-1).day}`);
+
+    const halo = await t.gameByTitle('Halo Infinite');
+    assert.equal(halo.minutes, 720);
+    assert.deepEqual(halo.platforms, ['xbox']);
+    assert.equal(halo.entries[0].history.evidence.anchors, 1, 'unlocked achievements only');
+    assert.ok(historyDays(t, halo.entries[0].id).every((d) => d.day <= dayOf(ago(20))));
+
+    // wish-listed games are added without time; hidden games are not imported; sequels stay separate
+    for (const title of ['Hollow Knight: Silksong', 'Hades II']) {
+      const g = await t.gameByTitle(title);
+      assert.ok(g, `${title} added`);
+      assert.equal(g.status, 'wishlist');
+      assert.equal(g.minutes, 0);
+    }
+    assert.notEqual((await t.gameByTitle('Hades II')).id, hades.id);
+    assert.equal(await t.gameByTitle('Secret Game'), null);
+
+    const life = await t.lifetime();
+    assert.equal(life.total_minutes, 900 + 1200 + 1230 + 3030 + 720);
+    assert.equal(life.tracked_minutes, 0);
+    consistent(t);
+  });
+
+  test('importing the same GameTrack ZIP again changes nothing', async () => {
+    const snap = t.snapshot();
+    assert.equal((await t.importZip(zip)).status, 200);
+    assert.deepEqual(t.snapshot(), snap);
+  });
+
+  test('a stored (uncompressed) ZIP with games.csv at the root works too', async () => {
+    const z = buildZip({ 'games.csv': toCsv([['uuid', 'title', 'status', 'user_rating', 'hours_played', 'owned_platform'], ['S1', 'Stored Zip Game', 'Finished', '6', '3', 'Nintendo Switch']]) }, { store: true });
+    const r = await t.importZip(z);
+    assert.equal(r.status, 200, r.text);
+    const g = await t.gameByTitle('Stored Zip Game');
+    assert.equal(g.minutes, 180);
+    assert.equal(g.status, 'beaten');
+  });
+
+  test('bad uploads are rejected with 400 and change nothing', async () => {
+    const snap = t.snapshot();
+    const good = buildZip({ 'games.csv': 'uuid,title,hours_played\nQ,Never Imported,5\n' });
+    for (const [label, body, type] of [
+      ['plain text', 'hello, this is not a zip', 'application/zip'],
+      ['JSON', JSON.stringify({ games: [] }), 'application/json'],
+      ['empty', Buffer.alloc(0), 'application/zip'],
+      ['no games.csv', buildZip({ 'GameTrack Export/steam_games.csv': 'game_uuid,appid\n' }), 'application/zip'],
+      ['truncated', good.subarray(0, good.length - 30), 'application/zip'],
+      ['corrupt deflate data', buildZip({ 'games.csv': 'uuid,title,hours_played\nQ,Never Imported,5\n'.repeat(20) }, { corrupt: 'games.csv' }), 'application/zip'],
+    ]) {
+      const r = await t.call('/import/gametrack', { method: 'POST', body: typeof body === 'string' ? Buffer.from(body) : body, type });
+      assert.equal(r.status, 400, `${label} -> ${r.status} ${r.text.slice(0, 160)}`);
+      assert.ok(r.data?.error, `${label}: readable error`);
+    }
+    assert.deepEqual(t.snapshot(), snap);
+  });
+});
+
+describe('GameTrack first, Steam linked later', () => {
+  test('the Steam game GameTrack brought in is adopted by the account: one copy, its evidence and status kept', async () => {
+    const t = await startApp();
+    const steam = new SteamMock({ games: [{ appid: 620, name: 'Portal 2', minutes: 960, lastPlayed: ago(3) }] });
+    try {
+      const f = gameTrackFiles();
+      const z = buildZip({ 'games.csv': f['GameTrack Export/games.csv'], 'steam_games.csv': f['GameTrack Export/steam_games.csv'], 'steam_achievements.csv': f['GameTrack Export/steam_achievements.csv'] });
+      await t.ok(t.importZip(z));
+      const before_ = t.entriesOf('Portal 2');
+      assert.equal(before_.length, 1);
+      assert.equal(before_[0].account_id, null);
+      assert.equal(before_[0].playtime_min, 900, "GameTrack's Steam hours are history while no Steam account is linked");
+      await t.linkSteam(steam);
+      const es = t.entriesOf('Portal 2');
+      assert.equal(es.length, 1, 'one copy after linking');
+      assert.ok(es[0].account_id);
+      assert.equal(es[0].playtime_min, 960);
+      const g = await t.gameByTitle('Portal 2');
+      assert.equal(g.status, 'beaten');
+      assert.equal(g.entries[0].history.evidence.anchors, 2, 'the unlock times GameTrack provided are kept');
+      const life = await t.lifetime();
+      assert.equal(life.total_minutes, 960 + 1230 + 3030 + 720 + 1200, 'Portal 2 counted once (Hades from GameTrack stays history: no Steam copy of it here)');
+      consistent(t);
+    } finally { await t.close(); steam.dispose(); }
+  });
+});
+
+// =====================================================================================
+describe('Steam licenses page paste', () => {
+  let t; let steam; let acc;
+  const paste = [
+    'Date\tItem\tAcquisition Method',
+    '3 Jan, 2013\tPortal 2\tGift/Guest Pass',
+    '20 Nov, 2015\tPortal 2\tSteam Store',
+    '1 Jan, 2010\tPortal 2 Soundtrack\tComplimentary',
+    'Nov 20, 2016\tThe Witcher 3: Wild Hunt - Game of the Year Edition\tSteam Store',
+    '2017-03-05\tDOOM\tRetail',
+    '1 Feb, 2016\tDOOM - Season Pass\tSteam Store',
+    '5 Mar, 2018\tUnknown Game XYZ\tSteam Store',
+  ].join('\n');
+  const dateAdded = async (title) => (await t.gameByTitle(title)).entries.find((e) => e.account_id === acc.id)?.history?.evidence?.date_added;
+  before(async () => {
+    t = await startApp();
+    steam = new SteamMock({ timecreated: Date.UTC(2009, 0, 1), games: [
+      { appid: 620, name: 'Portal 2', minutes: 900, lastPlayed: ago(100) },
+      { appid: 292030, name: 'The Witcher 3: Wild Hunt', minutes: 3000, lastPlayed: ago(200) },
+      { appid: 379720, name: 'DOOM', minutes: 600, lastPlayed: ago(300) },
+      { appid: 1145360, name: 'Hades', minutes: 1200, lastPlayed: ago(5) },
+    ] });
+    acc = (await t.linkSteam(steam)).account;
+  });
+  after(async () => { await t.close(); steam.dispose(); });
+
+  test('preview (?dry_run=true) reports matches and changes nothing', async () => {
+    const snap = t.snapshot();
+    const r = await t.post(`/accounts/${acc.id}/licenses`, { text: paste }, { query: { dry_run: 'true' } });
+    assert.equal(r.status, 200, r.text);
+    assert.equal(r.data.dry_run, true);
+    assert.equal(r.data.matched, 3);
+    assert.deepEqual(t.snapshot(), snap);
+  });
+
+  test('the earliest license dates each game (editions matched; soundtracks and DLC skipped); totals never change', async () => {
+    const life0 = await t.lifetime();
+    const r = await t.post(`/accounts/${acc.id}/licenses`, { text: paste });
+    assert.equal(r.status, 200, r.text);
+    assert.equal(r.data.matched, 3);
+    assert.ok(r.data.unmatched_sample.includes('Unknown Game XYZ'));
+    assert.equal(dayOf(await dateAdded('Portal 2')), '2013-01-03', 'earliest license; the 2010 soundtrack is not the game');
+    assert.equal(dayOf(await dateAdded('The Witcher 3: Wild Hunt')), '2016-11-20', 'GOTY edition matches the game');
+    assert.equal(dayOf(await dateAdded('DOOM')), '2017-03-05', 'the earlier season pass (DLC) is ignored');
+    const [p] = t.entriesOf('Portal 2');
+    const days = historyDays(t, p.id);
+    assert.ok(days.length && days[0].day >= '2013-01-03', `Portal 2 history starts ${days[0]?.day}, not before the license`);
+    const life = await t.lifetime();
+    assert.equal(life.total_minutes, life0.total_minutes);
+    assert.equal(life.tracked_minutes, life0.tracked_minutes);
+    consistent(t);
+  });
+
+  test('pasting the same page again changes nothing', async () => {
+    const snap = t.snapshot();
+    assert.equal((await t.post(`/accounts/${acc.id}/licenses`, { text: paste })).status, 200);
+    assert.deepEqual(t.snapshot(), snap);
+  });
+
+  test('a sequel\'s license does not date the original game (Hades II vs Hades)', { todo: 'APP BUG import-export-8: a sequel\'s license ("Hades II") is matched to the original ("Hades") as if it were an edition' }, async () => {
+    const r = await t.post(`/accounts/${acc.id}/licenses`, { text: '6 May, 2024\tHades II\tSteam Store\n1 Jun, 2024\tHades\tSteam Store' });
+    assert.equal(r.status, 200);
+    assert.equal(dayOf(await dateAdded('Hades')), '2024-06-01');
+  });
+
+  test('date formats: "20 Nov, 2015", "Nov 21, 2015", ISO, full and abbreviated month names, and space-separated copies', async () => {
+    const c = await t.linkCustom('Formats');
+    const titles = ['Format Alpha', 'Format Beta', 'Format Gamma', 'Format Delta', 'Format Epsilon', 'Format Zeta', 'Format Eta', 'Format Theta'];
+    await t.ok(t.post(`/accounts/${c.id}/report`, { games: titles.map((title, i) => ({ id: `f${i}`, title, playtime_minutes: 120, last_played_at: iso(ago(30)) })) }));
+    const r = await t.ok(t.post(`/accounts/${c.id}/licenses`, { text: [
+      '20 Nov, 2015\tFormat Alpha\tSteam Store',
+      'Nov 21, 2015\tFormat Beta\tSteam Store',
+      '2015-11-22\tFormat Gamma\tRetail',
+      '23 November 2015\tFormat Delta\tComplimentary',
+      'November 24, 2015\tFormat Epsilon\tGift/Guest Pass',
+      '25 Sept, 2015\tFormat Zeta\tSteam Store',
+      '26 Nov, 2015  Format Eta  Steam Store',
+      'Dec 1, 2015\tFormat Theta - Deluxe Edition\tSteam Store',
+    ].join('\r\n') }));
+    assert.equal(r.matched, titles.length);
+    const want = ['2015-11-20', '2015-11-21', '2015-11-22', '2015-11-23', '2015-11-24', '2015-09-25', '2015-11-26', '2015-12-01'];
+    for (const [i, title] of titles.entries()) {
+      const g = await t.gameByTitle(title);
+      assert.equal(dayOf(g.entries[0].history.evidence.date_added), want[i], title);
+    }
+  });
+
+  test('bad pastes: 400 for a missing / empty / non-text body, 404 for an unknown account, 0 matches for unrelated text', async () => {
+    const snap = t.snapshot();
+    for (const body of [{}, { text: '' }, { text: 5 }, { text: ['20 Nov, 2015\tPortal 2'] }]) {
+      const r = await t.post(`/accounts/${acc.id}/licenses`, body);
+      assert.equal(r.status, 400, `${JSON.stringify(body)} -> ${r.status}`);
+    }
+    assert.equal((await t.post('/accounts/99999/licenses', { text: paste })).status, 404);
+    const none = await t.ok(t.post(`/accounts/${acc.id}/licenses`, { text: 'Licenses and product key activations\nNothing here\n' }));
+    assert.equal(none.matched, 0);
+    assert.deepEqual(t.snapshot(), snap);
   });
 });

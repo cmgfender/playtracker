@@ -241,6 +241,27 @@ describe('PSN sign-in: NPSSO, tokens, refresh and fallbacks', () => {
     }
   });
 
+  test('linking an account starts its initial import in the background; "sync now" without wait returns at once', async (tc) => {
+    const t = await fresh(tc);
+    const psn = fakePsn(psnTitle({ id: 'PPSA00010_00', name: 'Background Import', minutes: 240, first: T0 - 20 * DAY, last: T0 - DAY, count: 4 }));
+    const r = await t.api('POST', '/accounts', { platform: 'psn', name: 'Auto', config: { npsso: NPSSO } });
+    assert.equal(r.status, 200, r.text);
+    await t.settle();
+    const a = await accountRow(t, r.body.id);
+    assert.equal(a.last_sync_at, T0);
+    assert.equal(a.last_status, 'ok');
+    assert.equal(t.entry(r.body.id, 'PPSA00010_00').playtime_min, 240);
+    const syncs = (await t.api('GET', `/syncs?account_id=${r.body.id}`)).body;
+    assert.equal(syncs[0].trigger, 'initial');
+    clock.set(T0 + DAY);
+    psn.play('PPSA00010_00', { minutes: 30, end: T0 + DAY - HOUR });
+    const quick = await t.api('POST', `/accounts/${r.body.id}/sync`);
+    assert.deepEqual(quick.body, { ok: true, started: true });
+    await t.settle();
+    assert.equal(t.entry(r.body.id, 'PPSA00010_00').playtime_min, 270);
+    assertHealthy(t);
+  });
+
   test('missing or blank NPSSO is rejected when linking; unknown platforms are rejected', async (tc) => {
     const t = await fresh(tc);
     let r = await t.api('POST', '/accounts', { platform: 'psn', config: {} });
@@ -889,6 +910,20 @@ describe('PSN live presence (basicPresences)', () => {
     assert.equal(t.db.prepare('SELECT COUNT(*) n FROM presence WHERE ended_at IS NULL').get().n, 1, 'a failed poll does not end the running span');
   });
 
+  test('a presence poll refreshes an expired access token once and keeps the new one', async (tc) => {
+    const t = await fresh(tc);
+    const psn = fakePsn(A());
+    const acc = await linkPsn(t);
+    assert.equal((await t.syncNow(acc.id)).status, 200);
+    clock.advance(2 * HOUR);
+    await poll(t, acc.id);
+    clock.advance(3 * MIN);
+    await poll(t, acc.id);
+    assert.deepEqual(psn.of('token').map((x) => x.form.grant_type), ['authorization_code', 'refresh_token']);
+    assert.equal(psn.of('presence').length, 2);
+    assert.equal((await accountRow(t, acc.id)).presence.failures, 0);
+  });
+
   test('live presence can be switched off per account', async (tc) => {
     const t = await fresh(tc);
     fakePsn(A());
@@ -1198,6 +1233,61 @@ describe('Custom accounts: pushed reports', () => {
     assertHealthy(t);
   });
 
+  test('device and cover art in a report: sessions are tagged with the device, the game gets the cover', async (tc) => {
+    const t = await fresh(tc);
+    const acc = await linkCustom(t);
+    const cover = 'https://images.example/zelda.jpg';
+    await t.report(acc.id, [{ id: 'z', title: 'Device Game', playtime_minutes: 100, device: 'switch-oled', cover_url: cover }]);
+    clock.set(T0 + DAY);
+    await t.report(acc.id, [{ id: 'z', title: 'Device Game', playtime_minutes: 160, device: 'switch-oled', last_played_at: iso(T0 + DAY - HOUR) }]);
+    const e = t.entry(acc.id, 'z');
+    const s = (await t.api('GET', `/sessions?game_id=${e.game_id}`)).body.items;
+    assert.equal(s.length, 1);
+    assert.equal(s[0].device, 'switch-oled');
+    assert.equal(s[0].minutes, 60);
+    assert.equal(s[0].account_id, acc.id);
+    assert.equal((await t.api('GET', `/games/${e.game_id}`)).body.cover_url, cover);
+  });
+
+  test('pushing a new lifetime total for one entry (POST /entries/:id/playtime) records the delta like a report', async (tc) => {
+    const t = await fresh(tc);
+    const acc = await linkCustom(t);
+    await t.report(acc.id, [{ id: 'p', title: 'Single Push', playtime_minutes: 100 }]);
+    clock.set(T0 + DAY);
+    const e = t.entry(acc.id, 'p');
+    const r = await t.api('POST', `/entries/${e.id}/playtime`, { playtime_minutes: 145, last_played_at: iso(T0 + DAY - HOUR) });
+    assert.equal(r.status, 200, r.text);
+    await t.settle();
+    const [s] = playRows(t, e.id);
+    assert.equal(s.minutes, 45);
+    assert.equal(s.ended_at, T0 + DAY - HOUR);
+    assert.equal((await t.api('POST', `/entries/${e.id}/playtime`, {})).status, 400);
+    assert.equal((await t.api('POST', `/entries/${e.id}/playtime`, { playtime_minutes: -5 })).status, 400);
+    assert.equal(t.entry(acc.id, 'p').playtime_min, 145);
+    assertHealthy(t);
+  });
+
+  test('a last_played_at in the future (clock skew) or before the previous report never creates sessions outside the window', async (tc) => {
+    const t = await fresh(tc);
+    const acc = await linkCustom(t);
+    await t.report(acc.id, [{ id: 'f', title: 'Future Clock', playtime_minutes: 100 }, { id: 's', title: 'Stale Clock', playtime_minutes: 100 }]);
+    clock.set(T0 + DAY);
+    const r = await t.report(acc.id, [
+      { id: 'f', title: 'Future Clock', playtime_minutes: 160, last_played_at: iso(T0 + DAY + 3 * HOUR) },
+      { id: 's', title: 'Stale Clock', playtime_minutes: 150, last_played_at: iso(T0 - 5 * DAY) },
+    ]);
+    assert.equal(r.status, 200, r.text);
+    for (const [id, m] of [['f', 60], ['s', 50]]) {
+      const plays = playRows(t, t.entry(acc.id, id).id);
+      assert.equal(t.sum(plays), m);
+      for (const x of plays) {
+        assert.ok((x.started_at ?? x.window_start) >= T0 - MIN, `${id}: starts ${iso(x.started_at ?? x.window_start)} before the previous report`);
+        assert.ok((x.ended_at ?? x.window_end) <= T0 + DAY, `${id}: ends ${iso(x.ended_at ?? x.window_end)} after the report`);
+      }
+    }
+    assertHealthy(t);
+  });
+
   test('unchanged totals create nothing; small deltas are held back until they add up', async (tc) => {
     const t = await fresh(tc);
     const acc = await linkCustom(t);
@@ -1247,11 +1337,11 @@ describe('Custom accounts: pushed reports', () => {
 
   test('recent_minutes on the first report: dated history inside the last 14 days, the rest before it, nothing as play', async (tc) => {
     const { t, e, est } = await recentImport(tc);
-    const boundary = T0 - 14 * DAY;
-    assert.deepEqual(est.filter((x) => x.window_start < boundary - 1 && x.window_end > boundary + 1), [], 'no chunk straddles the 14-day boundary');
+    const firstDay = startOfDay(T0 - 14 * DAY); // history is dated in whole days
+    assert.deepEqual(est.filter((x) => x.window_start < firstDay && x.window_end > T0 - 14 * DAY + 1), [], 'no chunk straddles the 14-day boundary');
     const recentChunks = est.filter((x) => x.note === 'Recent play before tracking');
     assert.ok(recentChunks.length > 0);
-    assert.ok(recentChunks.every((x) => x.window_start >= boundary && x.window_end <= T0), 'recent play lies inside the recent window');
+    assert.ok(recentChunks.every((x) => x.window_start >= firstDay && x.window_end <= T0), 'recent play lies inside the recent window');
     assert.equal(playRows(t, e.id).length, 0);
     assert.equal(t.sum(est) + t.sum(t.sessions(e.id, 'baseline')), 1000);
     assertHealthy(t);
@@ -1259,7 +1349,7 @@ describe('Custom accounts: pushed reports', () => {
 
   test('recent_minutes on the first report: exactly that many minutes are dated inside the last 14 days', { todo: 'APP BUG psn-custom-10: of recent_minutes: 120 only 119 are dated inside the recent window (one minute lost to rounding)' }, async (tc) => {
     const { est } = await recentImport(tc);
-    const inRecent = est.filter((x) => x.window_start >= T0 - 14 * DAY - 1).reduce((a, x) => a + x.minutes, 0);
+    const inRecent = est.filter((x) => x.window_start >= startOfDay(T0 - 14 * DAY)).reduce((a, x) => a + x.minutes, 0);
     assert.equal(inRecent, 120);
   });
 
@@ -1269,7 +1359,7 @@ describe('Custom accounts: pushed reports', () => {
     const r = await t.report(acc.id, [{ id: 'a', title: 'Last Three Days', playtime_minutes: 1000, recent_minutes: 120, recent_days: 3, last_played_at: iso(T0 - DAY), first_played_at: iso(T0 - 120 * DAY) }]);
     assert.equal(r.status, 200, r.text);
     const est = t.sessions(t.entry(acc.id, 'a').id, 'estimate');
-    const inRecent = est.filter((x) => x.window_start >= T0 - 3 * DAY - 1).reduce((a, x) => a + x.minutes, 0);
+    const inRecent = est.filter((x) => x.window_start >= startOfDay(T0 - 3 * DAY)).reduce((a, x) => a + x.minutes, 0);
     assert.equal(inRecent, 120, '120 minutes in the last 3 days');
   });
 
@@ -1447,5 +1537,453 @@ describe('Custom accounts: pushed reports', () => {
     assert.ok(r.status >= 400, `status ${r.status}`);
     assert.match(r.body.error, /report/);
     assert.equal(t.entry(acc.id, 'a').playtime_min, 100);
+  });
+});
+
+// =====================================================================================
+describe('Custom accounts: presence pushes', () => {
+  async function setup(tc) {
+    const t = await fresh(tc);
+    const acc = await linkCustom(t);
+    assert.equal((await t.report(acc.id, [{ id: 'a', title: 'Presence Push', playtime_minutes: 100 }])).status, 200);
+    const push = async (at, playing) => { clock.set(at); const r = await t.api('POST', `/accounts/${acc.id}/presence`, { playing }); assert.equal(r.status, 200, r.text); return r.body; };
+    return { t, acc, push };
+  }
+  const P0 = T0 + DAY - 3 * HOUR;
+  const A = [{ id: 'a', title: 'Presence Push' }];
+
+  test('presence pushes pin the next reported delta to the exact start and end', async (tc) => {
+    const { t, acc, push } = await setup(tc);
+    assert.deepEqual(await push(P0, A), { open: 1, closed: 0 });
+    const np = (await t.api('GET', '/now-playing')).body;
+    assert.equal(np.length, 1);
+    assert.equal(np[0].title, 'Presence Push');
+    assert.equal(np[0].platform, 'custom');
+    assert.deepEqual(await push(P0 + 60 * MIN, A), { open: 1, closed: 0 });
+    await push(P0 + 89 * MIN, A);
+    assert.deepEqual(await push(P0 + 90 * MIN, []), { open: 0, closed: 1 });
+    assert.equal((await t.api('GET', '/now-playing')).body.length, 0);
+    clock.set(P0 + 100 * MIN);
+    const r = await t.report(acc.id, [{ id: 'a', title: 'Presence Push', playtime_minutes: 190, last_played_at: iso(P0 + 90 * MIN) }]);
+    assert.equal(r.status, 200, r.text);
+    assert.equal(r.body.exact_sessions, 1);
+    const [s] = playRows(t, t.entry(acc.id, 'a').id);
+    assert.equal(s.minutes, 90);
+    assert.equal(s.confidence, 'exact');
+    assert.equal(s.started_at, P0);
+    assert.equal(s.ended_at, P0 + 90 * MIN);
+    assertHealthy(t);
+  });
+
+  test('two presence spans in one report window become two exact sessions', async (tc) => {
+    const { t, acc, push } = await setup(tc);
+    await push(P0, A); await push(P0 + 59 * MIN, A); await push(P0 + 60 * MIN, []);
+    await push(P0 + 120 * MIN, A); await push(P0 + 149 * MIN, A); await push(P0 + 150 * MIN, []);
+    clock.set(P0 + 160 * MIN);
+    const r = await t.report(acc.id, [{ id: 'a', title: 'Presence Push', playtime_minutes: 190, last_played_at: iso(P0 + 150 * MIN) }]);
+    assert.equal(r.status, 200, r.text);
+    const plays = playRows(t, t.entry(acc.id, 'a').id);
+    assert.deepEqual(plays.map((s) => [s.minutes, s.confidence, s.started_at, s.ended_at]), [
+      [60, 'exact', P0, P0 + 60 * MIN],
+      [30, 'exact', P0 + 120 * MIN, P0 + 150 * MIN],
+    ]);
+    assertHealthy(t);
+  });
+
+  test('a presence span that was already fully credited is not used again by the next report', { todo: 'APP BUG psn-custom-9: a report right after a presence session lets the next day\'s report pull 6 minutes back into the old session (span reused)' }, async (tc) => {
+    const { t, acc, push } = await setup(tc);
+    await push(P0, A); await push(P0 + 89 * MIN, A); await push(P0 + 90 * MIN, []);
+    clock.set(P0 + 91 * MIN); // e.g. a Home Assistant automation reports as soon as the game closes
+    await t.report(acc.id, [{ id: 'a', title: 'Presence Push', playtime_minutes: 190, last_played_at: iso(P0 + 90 * MIN) }]);
+    clock.set(P0 + DAY);
+    const lp = P0 + DAY - HOUR;
+    await t.report(acc.id, [{ id: 'a', title: 'Presence Push', playtime_minutes: 250, last_played_at: iso(lp) }]);
+    const plays = playRows(t, t.entry(acc.id, 'a').id);
+    assert.deepEqual(plays.map((s) => s.minutes), [90, 60], 'yesterday stays 90 minutes, today is 60');
+    assert.equal(plays[1].ended_at, lp);
+  });
+
+  test('presence push validation: playing must be an array, junk items are skipped, unknown accounts are 404', async (tc) => {
+    const { t, acc } = await setup(tc);
+    assert.equal((await t.api('POST', '/accounts/999/presence', { playing: [] })).status, 404);
+    assert.equal((await t.api('POST', `/accounts/${acc.id}/presence`, { playing: 'zelda' })).status, 400);
+    assert.equal((await t.api('POST', `/accounts/${acc.id}/presence`, { playing: { id: 'a' } })).status, 400);
+    const r = await t.api('POST', `/accounts/${acc.id}/presence`, { playing: [null, 7, { id: 'a' }] });
+    assert.equal(r.status, 200, r.text);
+    assert.equal(r.body.open, 1);
+    const none = await t.api('POST', `/accounts/${acc.id}/presence`, {});
+    assert.equal(none.status, 200, 'no "playing" = nothing is being played');
+    assert.equal(none.body.closed, 1);
+  });
+});
+
+// =====================================================================================
+describe('Account management: CRUD, schedules, enable/disable, delete', () => {
+  test('create, rename, list with totals; unknown ids are 404', async (tc) => {
+    const t = await fresh(tc);
+    let r = await t.api('POST', '/accounts', { platform: 'custom', config: {} });
+    assert.equal(r.status, 200, r.text);
+    assert.equal(r.body.name, 'Custom / API push', 'named after the platform by default');
+    const id = r.body.id;
+    r = await t.api('PATCH', `/accounts/${id}`, { name: 'Living Room Switch' });
+    assert.equal(r.body.name, 'Living Room Switch');
+    r = await t.api('PATCH', `/accounts/${id}`, { name: 'N'.repeat(200) });
+    assert.equal(r.status, 200);
+    assert.ok(r.body.name.length <= 80, 'names are bounded');
+    const off = await t.api('POST', '/accounts', { platform: 'custom', name: 'Spare', config: {}, enabled: false });
+    assert.equal(off.body.enabled, false);
+    await t.report(id, [{ id: 'a', title: 'Counted Game', playtime_minutes: 120 }, { id: 'b', title: 'Second Game', playtime_minutes: 30 }]);
+    const list = (await t.api('GET', '/accounts')).body;
+    assert.equal(list.length, 2);
+    const me = list.find((a) => a.id === id);
+    assert.equal(me.games, 2);
+    assert.equal(me.minutes, 150);
+    assert.ok(me.last_sync_at);
+    assert.equal((await t.api('PATCH', '/accounts/999', { name: 'x' })).status, 404);
+    assert.equal((await t.api('DELETE', '/accounts/999')).status, 404);
+    assert.equal((await t.api('POST', '/accounts/999/sync?wait=true')).status, 404);
+  });
+
+  test('per-account schedule overrides are validated, described and drive the next sync; null falls back to the global schedule', async (tc) => {
+    const t = await fresh(tc);
+    fakePsn(psnTitle({ id: 'PPSA91001_00', name: 'Scheduled', minutes: 100, first: T0 - 9 * DAY, last: T0 - DAY, count: 2 }));
+    const acc = await linkPsn(t);
+    assert.equal((await t.syncNow(acc.id)).status, 200);
+    let a = await accountRow(t, acc.id);
+    assert.equal(a.schedule, null);
+    assert.equal(a.schedule_label, 'Daily at 04:00');
+    assert.equal(a.next_sync_at, local(2026, 3, 3, 4, 0));
+    const patch = async (schedule) => t.api('PATCH', `/accounts/${acc.id}`, { schedule });
+
+    let r = await patch({ schedule_mode: 'hourly' });
+    assert.equal(r.status, 200, r.text);
+    assert.equal(r.body.schedule_label, 'Every hour');
+    assert.equal(r.body.next_sync_at, T0 + HOUR);
+
+    r = await patch({ schedule_mode: 'days', schedule_every: 3, schedule_time: '06:30' });
+    assert.equal(r.body.schedule_label, 'Every 3 days at 06:30');
+    const nd = new Date(r.body.next_sync_at);
+    assert.deepEqual([nd.getHours(), nd.getMinutes()], [6, 30]);
+    assert.ok(r.body.next_sync_at > T0 + 2 * DAY && r.body.next_sync_at <= T0 + 3.5 * DAY, iso(r.body.next_sync_at));
+
+    r = await patch({ schedule_mode: 'weekly', schedule_weekday: 6, schedule_time: '10:00' });
+    assert.equal(r.body.schedule_label, 'Weekly on Saturday at 10:00');
+    assert.equal(r.body.next_sync_at, local(2026, 3, 7, 10, 0));
+
+    for (const bad of [{ schedule_mode: 'sometimes' }, { schedule_time: '25:00' }, { schedule_mode: 'days', schedule_every: 0 }, { schedule_weekday: 9 }]) {
+      const b = await patch(bad);
+      assert.equal(b.status, 400, JSON.stringify(bad));
+    }
+    a = await accountRow(t, acc.id);
+    assert.equal(a.schedule_label, 'Weekly on Saturday at 10:00', 'a rejected change leaves the override as it was');
+
+    r = await patch({ schedule_mode: 'off' });
+    assert.equal(r.body.schedule_label, 'Manual only');
+    assert.equal(r.body.next_sync_at, null);
+
+    r = await patch(null);
+    assert.equal(r.body.schedule, null);
+    assert.equal(r.body.schedule_label, 'Daily at 04:00');
+    assert.equal(r.body.next_sync_at, local(2026, 3, 3, 4, 0));
+
+    const create = await t.api('POST', '/accounts', { platform: 'psn', config: { npsso: NPSSO }, sync: false, schedule: { schedule_mode: 'every-now-and-then' } });
+    assert.equal(create.status, 400);
+    assert.equal((await t.api('GET', '/accounts')).body.length, 1, 'nothing created on a bad schedule');
+  });
+
+  test('changing the global schedule re-plans accounts without an override and leaves overrides alone', async (tc) => {
+    const t = await fresh(tc);
+    fakePsn(psnTitle({ id: 'PPSA91002_00', name: 'Global', minutes: 100, first: T0 - 9 * DAY, last: T0 - DAY, count: 2 }));
+    const plain = await linkPsn(t, { name: 'Plain' });
+    const own = await linkPsn(t, { name: 'Own', schedule: { schedule_mode: 'weekly', schedule_weekday: 6, schedule_time: '10:00' } });
+    assert.equal((await t.syncNow(plain.id)).status, 200);
+    assert.equal((await t.syncNow(own.id)).status, 200);
+    assert.equal((await accountRow(t, own.id)).next_sync_at, local(2026, 3, 7, 10, 0));
+    const s = await t.api('PUT', '/settings', { schedule_mode: 'hourly' });
+    assert.equal(s.status, 200, s.text);
+    const p = await accountRow(t, plain.id);
+    assert.equal(p.schedule_label, 'Every hour');
+    assert.equal(p.next_sync_at, p.last_sync_at + HOUR);
+    const o = await accountRow(t, own.id);
+    assert.equal(o.schedule_label, 'Weekly on Saturday at 10:00');
+    assert.equal(o.next_sync_at, local(2026, 3, 7, 10, 0));
+  });
+
+  test('disabled accounts are not scheduled, not polled and skipped by "sync all"; push accounts are never scheduled', async (tc) => {
+    const t = await fresh(tc);
+    const psn = fakePsn(psnTitle({ id: 'PPSA91003_00', name: 'Toggle', minutes: 100, first: T0 - 9 * DAY, last: T0 - DAY, count: 2 }));
+    const acc = await linkPsn(t);
+    const custom = await linkCustom(t);
+    assert.equal((await t.syncNow(acc.id)).status, 200);
+    await t.report(custom.id, [{ id: 'a', title: 'Pushed', playtime_minutes: 10 }]);
+    assert.equal((await accountRow(t, custom.id)).next_sync_at, null);
+    let r = await t.api('PATCH', `/accounts/${acc.id}`, { enabled: false });
+    assert.equal(r.body.enabled, false);
+    assert.equal(r.body.next_sync_at, null);
+    assert.equal(r.body.presence.enabled, false);
+    const before = psn.count('gamelist');
+    r = await t.api('POST', '/sync');
+    assert.equal(r.body.started, 0);
+    await t.settle();
+    assert.equal(psn.count('gamelist'), before);
+    r = await t.api('PATCH', `/accounts/${acc.id}`, { enabled: true });
+    assert.equal(r.body.enabled, true);
+    assert.equal(r.body.next_sync_at, local(2026, 3, 3, 4, 0));
+    r = await t.api('POST', '/sync');
+    assert.equal(r.body.started, 1);
+    await t.settle();
+    assert.equal(psn.count('gamelist'), before + 1);
+  });
+
+  test('deleting an account removes exactly its data; games that other sources also track survive', async (tc) => {
+    const t = await fresh(tc);
+    const psn = fakePsn(
+      psnTitle({ id: 'PPSA92001_00', name: 'Shared Quest', minutes: 300, first: T0 - 30 * DAY, last: T0 - DAY, count: 5, concept: 920001 }),
+      psnTitle({ id: 'PPSA92002_00', name: 'Only On PSN', minutes: 200, first: T0 - 30 * DAY, last: T0 - DAY, count: 5, concept: 920002 }),
+    );
+    const acc = await linkPsn(t);
+    const custom = await linkCustom(t);
+    assert.equal((await t.syncNow(acc.id)).status, 200);
+    await t.report(custom.id, [{ id: 'sq', title: 'Shared Quest', playtime_minutes: 120 }, { id: 'oc', title: 'Only Custom', playtime_minutes: 80 }]);
+    const onlyPsnGame = t.entry(acc.id, 'PPSA92002_00').game_id;
+    const sharedGame = t.entry(acc.id, 'PPSA92001_00').game_id;
+    assert.equal(t.entry(custom.id, 'sq').game_id, sharedGame, 'same title on two accounts is one game');
+    const manual = await t.api('POST', '/sessions', { game_id: onlyPsnGame, minutes: 45, started_at: T0 - 2 * HOUR });
+    assert.equal(manual.status, 200, manual.text);
+    psn.playing = [{ id: 'PPSA92001_00', title: 'Shared Quest' }];
+    await t.sync.pollPresence(t.sync.account(acc.id));
+    assert.equal((await t.api('GET', '/now-playing')).body.length, 1);
+    const del = await t.api('DELETE', `/accounts/${acc.id}`);
+    assert.equal(del.status, 200, del.text);
+    const n = (sql, ...a) => t.db.prepare(sql).get(...a).n;
+    assert.equal(n('SELECT COUNT(*) n FROM entries WHERE account_id = ?', acc.id), 0);
+    assert.equal(n('SELECT COUNT(*) n FROM syncs WHERE account_id = ?', acc.id), 0);
+    assert.equal(n('SELECT COUNT(*) n FROM presence WHERE account_id = ?', acc.id), 0);
+    assert.equal((await t.api('GET', '/now-playing')).body.length, 0, 'no ghost "playing now" card');
+    assert.equal(n('SELECT COUNT(*) n FROM sessions WHERE entry_id NOT IN (SELECT id FROM entries)'), 0);
+    assert.equal(n('SELECT COUNT(*) n FROM snapshots WHERE entry_id NOT IN (SELECT id FROM entries)'), 0);
+    assert.equal(n('SELECT COUNT(*) n FROM play_days WHERE session_id NOT IN (SELECT id FROM sessions)'), 0);
+    const shared = (await t.api('GET', `/games/${sharedGame}`)).body;
+    assert.deepEqual(shared.entries.map((e) => e.account_id), [custom.id]);
+    assert.equal(shared.minutes, 120);
+    const onlyPsn = (await t.api('GET', `/games/${onlyPsnGame}`)).body;
+    assert.deepEqual(onlyPsn.entries.map((e) => e.platform), ['manual'], 'the hand-logged session keeps the game');
+    assert.equal(onlyPsn.minutes, 45);
+    const lt = (await t.api('GET', '/stats/lifetime')).body;
+    assert.equal(lt.total_minutes, 120 + 80 + 45);
+    assert.deepEqual(lt.platforms.map((p) => p.platform).sort(), ['custom', 'manual']);
+    // charts hold tracked + dated history only (undated history counts toward lifetime totals)
+    assert.equal((await t.api('GET', '/stats?range=all&estimates=include')).body.total_minutes, lt.tracked_minutes + lt.estimated_minutes);
+    assert.deepEqual((await t.api('GET', '/accounts')).body.map((a) => a.id), [custom.id]);
+    assertHealthy(t);
+  });
+
+  test('a re-linked account starts with clean API usage and no inherited rate-limit pause', { todo: 'APP BUG psn-custom-12: account ids are reused after a delete, and the new account inherits the old one\'s API usage counters and rate-limit pause' }, async (tc) => {
+    const t = await fresh(tc);
+    const psn = fakePsn(psnTitle({ id: 'PPSA93001_00', name: 'Relinked', minutes: 100, first: T0 - 9 * DAY, last: T0 - DAY, count: 2 }));
+    const old = await linkPsn(t);
+    assert.equal((await t.syncNow(old.id)).status, 200);
+    clock.advance(10 * MIN);
+    psn.failNext('gamelist', { status: 429, body: { error: { message: 'Too Many Requests' } } });
+    assert.equal((await t.syncNow(old.id)).status, 429);
+    const o = await accountRow(t, old.id);
+    assert.ok(o.api_usage_hour.calls >= 4 && o.api_quota?.blockedUntil > Date.now(), 'the old account used its quota');
+    assert.equal((await t.api('DELETE', `/accounts/${old.id}`)).status, 200);
+    const fresh2 = await linkPsn(t, { name: 'Relinked PS5' });
+    const a = await accountRow(t, fresh2.id);
+    assert.equal(a.api_usage_hour.calls, 0, `account ${fresh2.id} (old id ${old.id}) shows calls it never made`);
+    assert.equal(a.api_quota, null, 'and a rate-limit pause it never hit');
+  });
+});
+
+// =====================================================================================
+describe('Webhooks', () => {
+  async function hooked(tc, url, on) {
+    const t = await fresh(tc);
+    const sink = useSink(await startSink());
+    tc.after(() => sink.close());
+    const s = await t.api('PUT', '/settings', { webhook_url: url ?? `${sink.base}/hook`, webhook_on: on });
+    assert.equal(s.status, 200, s.text);
+    return { t, sink };
+  }
+  const quiet = () => realSleep(300); // give a (wrong) delivery time to arrive
+
+  test('generic URL, webhook_on=sessions: a sync with new sessions posts a JSON summary; one without posts nothing', async (tc) => {
+    const { t, sink } = await hooked(tc, null, 'sessions');
+    const acc = await linkCustom(t);
+    await t.report(acc.id, [{ id: 'w', title: 'Webhook Game', playtime_minutes: 100 }]);
+    await quiet();
+    assert.equal(sink.hits.length, 0, 'the import created no sessions');
+    clock.set(T0 + DAY);
+    await t.report(acc.id, [{ id: 'w', title: 'Webhook Game', playtime_minutes: 190, last_played_at: iso(T0 + DAY - HOUR) }]);
+    const [hit] = await sink.waitFor(1);
+    assert.equal(hit.method, 'POST');
+    assert.equal(hit.path, '/hook');
+    assert.match(hit.headers['content-type'], /application\/json/);
+    assert.equal(hit.body.event, 'sync.completed');
+    assert.deepEqual(hit.body.account, { id: acc.id, platform: 'custom', name: 'Switch' });
+    assert.equal(hit.body.result.sessions_created, 1);
+    assert.equal(hit.body.result.minutes_added, 90);
+    assert.equal(hit.body.error ?? null, null);
+    assert.match(hit.body.text, /Webhook Game/);
+    assert.match(hit.body.text, /1h 30m/);
+    await quiet();
+    assert.equal(sink.hits.length, 1, 'exactly one delivery per sync');
+  });
+
+  test('webhook_on=always posts even when nothing changed', async (tc) => {
+    const { t, sink } = await hooked(tc, null, 'always');
+    const acc = await linkCustom(t);
+    await t.report(acc.id, [{ id: 'w', title: 'Quiet Game', playtime_minutes: 100 }]);
+    const [hit] = await sink.waitFor(1);
+    assert.equal(hit.body.event, 'sync.completed');
+    assert.equal(hit.body.result.sessions_created, 0);
+  });
+
+  test('webhook_on=errors posts failures only, with the error and without credentials', async (tc) => {
+    const { t, sink } = await hooked(tc, null, 'errors');
+    fakePsn(psnTitle({ id: 'PPSA94001_00', name: 'X', minutes: 10 }));
+    const custom = await linkCustom(t);
+    await t.report(custom.id, [{ id: 'w', title: 'Fine Game', playtime_minutes: 100 }]);
+    clock.set(T0 + DAY);
+    await t.report(custom.id, [{ id: 'w', title: 'Fine Game', playtime_minutes: 160, last_played_at: iso(T0 + DAY - HOUR) }]);
+    await quiet();
+    assert.equal(sink.hits.length, 0, 'successful syncs are not reported');
+    const bad = 'bad-npsso-that-must-stay-secret-1234';
+    const psnAcc = await linkPsn(t, { npsso: bad, name: 'Broken PS5' });
+    assert.ok((await t.syncNow(psnAcc.id)).status >= 400);
+    const [hit] = await sink.waitFor(1);
+    assert.equal(hit.body.event, 'sync.failed');
+    assert.match(hit.body.error, /NPSSO/);
+    assert.deepEqual(hit.body.account, { id: psnAcc.id, platform: 'psn', name: 'Broken PS5' });
+    assert.ok(!hit.text.includes(bad), 'the NPSSO is never sent to the webhook');
+  });
+
+  test('Discord and Slack webhook URLs get chat-formatted messages within their size limits', async (tc) => {
+    const discord = 'https://discord.com/api/webhooks/123456/tokenABC';
+    const { t, sink } = await hooked(tc, discord, 'sessions');
+    const acc = await linkCustom(t);
+    const games = Array.from({ length: 40 }, (_, i) => ({ id: `g${i}`, title: `A Rather Long Game Title Number ${i} - Definitive Remaster Collection`, playtime_minutes: 100 }));
+    await t.report(acc.id, games);
+    clock.set(T0 + DAY);
+    await t.report(acc.id, games.map((g) => ({ ...g, playtime_minutes: 130, last_played_at: iso(T0 + DAY - HOUR) })));
+    const [d] = await sink.waitFor(1);
+    assert.equal(d.host, 'discord.com');
+    assert.equal(d.path, '/api/webhooks/123456/tokenABC');
+    assert.deepEqual(Object.keys(d.body).sort(), ['content', 'username']);
+    assert.equal(d.body.username, 'PlayTracker');
+    assert.ok(d.body.content.length <= 2000, `Discord rejects content over 2000 chars (got ${d.body.content.length})`);
+    assert.match(d.body.content, /40 session/);
+
+    sink.clear();
+    assert.equal((await t.api('PUT', '/settings', { webhook_url: 'https://hooks.slack.com/services/T000/B000/XXXX' })).status, 200);
+    clock.set(T0 + 2 * DAY);
+    await t.report(acc.id, [{ id: 'g1', title: games[1].title, playtime_minutes: 175, last_played_at: iso(T0 + 2 * DAY - HOUR) }]);
+    const [s] = await sink.waitFor(1);
+    assert.equal(s.host, 'hooks.slack.com');
+    assert.deepEqual(Object.keys(s.body), ['text']);
+    assert.match(s.body.text, /Number 1 /);
+    assert.match(s.body.text, /45m/);
+  });
+
+  test('a failing webhook endpoint never fails the sync; the failure is logged', async (tc) => {
+    const { t, sink } = await hooked(tc, null, 'always');
+    sink.setStatus(500);
+    const acc = await linkCustom(t);
+    const r = await t.report(acc.id, [{ id: 'w', title: 'Unlucky Hook', playtime_minutes: 100 }]);
+    assert.equal(r.status, 200, r.text);
+    await sink.waitFor(1);
+    for (let i = 0; i < 40 && !t.logs.warn.some((m) => /Webhook delivery failed/.test(m)); i++) await realSleep(25);
+    assert.ok(t.logs.warn.some((m) => /Webhook delivery failed.*500/.test(m)), t.logs.warn.join('\n'));
+    assert.equal(t.entry(acc.id, 'w').playtime_min, 100);
+  });
+
+  test('webhook URLs must be http(s)', async (tc) => {
+    const t = await fresh(tc);
+    for (const url of ['ftp://example.com/hook', 'javascript:alert(1)', 'file:///etc/passwd']) {
+      const r = await t.api('PUT', '/settings', { webhook_url: url });
+      assert.equal(r.status, 400, url);
+    }
+    assert.equal((await t.api('GET', '/settings')).body.webhook_url, '');
+  });
+
+  test('webhook_on only accepts sessions, always or errors', { todo: 'APP BUG psn-custom-13: PUT /settings accepts any webhook_on value (e.g. "sometimes"), which then posts on every sync' }, async (tc) => {
+    const t = await fresh(tc);
+    const r = await t.api('PUT', '/settings', { webhook_on: 'sometimes' });
+    assert.equal(r.status, 400);
+  });
+});
+
+// =====================================================================================
+describe('Security boundaries for pushes', () => {
+  test('with a password set, report and presence pushes need a valid token (Bearer, X-API-Key or api_key)', async (tc) => {
+    const t = await fresh(tc, { password: 'correct horse battery staple' });
+    const { token } = t.app.auth.createToken('home-assistant');
+    const auth = { authorization: `Bearer ${token}` };
+    assert.equal((await t.api('POST', '/accounts', { platform: 'custom', name: 'Switch', config: {} })).status, 401);
+    const acc = (await t.api('POST', '/accounts', { platform: 'custom', name: 'Switch', config: {} }, auth)).body;
+    const body = { games: [{ id: 'a', title: 'Guarded', playtime_minutes: 100 }] };
+    assert.equal((await t.api('POST', `/accounts/${acc.id}/report`, body)).status, 401);
+    assert.equal((await t.api('POST', `/accounts/${acc.id}/report`, body, { authorization: 'Bearer pt_wrongwrongwrong' })).status, 401);
+    assert.equal((await t.api('POST', `/accounts/${acc.id}/presence`, { playing: [{ id: 'a' }] })).status, 401);
+    assert.equal(t.db.prepare('SELECT COUNT(*) n FROM entries').get().n, 0);
+    assert.equal(t.db.prepare('SELECT COUNT(*) n FROM presence').get().n, 0);
+    assert.equal((await t.api('POST', `/accounts/${acc.id}/report`, body, auth)).status, 200);
+    clock.advance(DAY);
+    assert.equal((await t.api('POST', `/accounts/${acc.id}/report`, { games: [{ id: 'a', title: 'Guarded', playtime_minutes: 130 }] }, { 'x-api-key': token })).status, 200);
+    clock.advance(DAY);
+    assert.equal((await t.api('POST', `/accounts/${acc.id}/report?api_key=${encodeURIComponent(token)}`, { games: [{ id: 'a', title: 'Guarded', playtime_minutes: 160 }] })).status, 200);
+    assert.equal((await t.api('POST', `/accounts/${acc.id}/presence`, { playing: [{ id: 'a' }] }, auth)).status, 200);
+    await t.settle();
+    assert.equal(t.entry(acc.id, 'a').playtime_min, 160);
+  });
+
+  test('a browser on another origin cannot push a report to an open (password-less) instance', async (tc) => {
+    const t = await fresh(tc);
+    const acc = await linkCustom(t);
+    const r = await t.api('POST', `/accounts/${acc.id}/report`, { games: [{ id: 'a', title: 'CSRF', playtime_minutes: 999 }] }, { origin: 'https://evil.example' });
+    assert.equal(r.status, 403);
+    assert.equal(t.db.prepare('SELECT COUNT(*) n FROM entries').get().n, 0);
+  });
+});
+
+// =====================================================================================
+describe('Catalogue, API description and joining imported PSN data', () => {
+  test('the platform catalogue and OpenAPI describe PSN credentials and the custom push endpoints', async (tc) => {
+    const t = await fresh(tc);
+    const platforms = (await t.api('GET', '/platforms')).body;
+    const psn = platforms.find((p) => p.id === 'psn');
+    const npsso = psn.fields.find((f) => f.key === 'npsso');
+    assert.equal(npsso.type, 'password');
+    assert.equal(npsso.required, true);
+    assert.equal(psn.push, false);
+    assert.equal(psn.can_enrich, true);
+    const custom = platforms.find((p) => p.id === 'custom');
+    assert.equal(custom.push, true);
+    const spec = (await t.api('GET', '/api/openapi.json')).body;
+    assert.ok(spec.paths['/api/v1/accounts/{id}/report']?.post, 'report endpoint documented');
+    assert.ok(spec.paths['/api/v1/accounts/{id}/presence']?.post, 'presence endpoint documented');
+    assert.match(spec.paths['/api/v1/accounts/{id}/report'].post.requestBody.content['application/json'].schema.description, /recent_minutes/);
+  });
+
+  test('linking PSN after importing a PSN spreadsheet joins the data: one entry, the platform total, imported sessions kept', async (tc) => {
+    const t = await fresh(tc);
+    const imp = await t.api('POST', '/import', { games: [{ title: 'Astro Run', platform: 'psn', playtime_minutes: 500, sessions: [{ date: '2026-02-20', minutes: 120 }] }] });
+    assert.equal(imp.status, 200, imp.text);
+    assert.equal(await lifetimeTotal(t), 500);
+    fakePsn(psnTitle({ id: 'PPSA95001_00', name: 'Astro Run', minutes: 600, first: T0 - 100 * DAY, last: T0 - 2 * DAY, count: 12 }));
+    const acc = await linkPsn(t);
+    assert.equal((await t.syncNow(acc.id)).status, 200);
+    const entries = t.db.prepare("SELECT * FROM entries WHERE platform = 'psn'").all();
+    assert.equal(entries.length, 1, 'the synced entry takes over the imported copy');
+    assert.equal(entries[0].account_id, acc.id);
+    assert.equal(entries[0].playtime_min, 600, "the platform's total stands");
+    assert.equal(await lifetimeTotal(t), 600, 'not 1100');
+    const plays = playRows(t, entries[0].id);
+    assert.equal(t.sum(plays), 120, 'the imported real session is kept as play');
+    assert.equal(dayKey(plays[0].started_at ?? plays[0].window_start), '2026-02-20');
+    const dups = (await t.api('GET', '/duplicates')).body;
+    assert.equal(dups.counts?.double_counted ?? (dups.double_counted || []).length, 0);
+    assertHealthy(t);
   });
 });
