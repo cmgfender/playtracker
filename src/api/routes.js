@@ -542,7 +542,7 @@ export function registerRoutes(r, app) {
     { summary: 'Delete a manual session, or drop a synced one from stats (becomes baseline)' });
 
   r.post('/api/v1/sessions/bulk', (c) => {
-    const ids = arr(c.body.ids, 'ids').map(Number).filter(Boolean);
+    const ids = [...new Set(arr(c.body.ids, 'ids').map(Number).filter(Boolean))]; // a repeated id acts once
     const action = c.body.action;
     if (!['baseline', 'play', 'delete'].includes(action)) throw new HttpError(400, 'action must be baseline, play or delete');
     tx(db, () => { for (const id of ids) action === 'delete' ? removeSession(id) : changeSession(id, { kind: action }); });

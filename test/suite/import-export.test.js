@@ -1235,7 +1235,7 @@ describe('export (streamed JSON / CSV), round trips and SQLite backup', () => {
     } finally { await b.close(); }
   });
 
-  test('your "Don\'t chart" history choice survives an export / import round trip', { todo: 'APP BUG import-export-7: history corrections (Don\'t chart / manual window) are not exported' }, async () => {
+  test('your "Don\'t chart" history choice survives an export / import round trip', async () => {
     const b = await startApp();
     try {
       await b.ok(b.importJson(JSON.parse((await a.get('/export')).text)));
@@ -1519,7 +1519,7 @@ describe('GameTrack export ZIP import', () => {
     assert.equal((await t.gamesAll()).filter((g) => g.title === 'Pikmin 4').length, 1, 'one game in the library');
   });
 
-  test('Steam hours GameTrack has for a game the linked Steam account does not own are imported, not dropped', { todo: 'APP BUG import-export-13: GameTrack Steam games missing from the linked Steam account are skipped as "already synced" and their hours are lost' }, async () => {
+  test('Steam hours GameTrack has for a game the linked Steam account does not own are imported, not dropped', async () => {
     const life0 = await t.lifetime();
     const r = await t.ok(t.importZip(buildZip({
       'games.csv': toCsv([['uuid', 'title', 'status', 'hours_played', 'owned_platform'], ['K', 'Celeste', 'Finished', '10', 'PC']]),

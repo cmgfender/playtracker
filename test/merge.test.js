@@ -8,7 +8,8 @@ import path from 'node:path';
 import { openDb, tx } from '../src/db.js';
 import { Settings } from '../src/services/settings.js';
 import { applyItems, parseAccount } from '../src/services/sync.js';
-import { importRows } from '../src/services/importer.js';
+import { importRows, exportChunks, parseCsv } from '../src/services/importer.js';
+import { findOrCreateGame, manualEntry } from '../src/services/library.js';
 import { importGameTrack } from '../src/services/gametrack.js';
 import { importedAccount } from '../src/services/titles.js';
 import { lifetime } from '../src/services/stats.js';
@@ -201,4 +202,92 @@ test('two wish-listed GameTrack games kept apart (title merging off) are both li
   assert.equal(r.wishlist_added, 2);
   const games = db.prepare('SELECT g.title, g.status, COUNT(e.id) n FROM games g LEFT JOIN entries e ON e.game_id = g.id GROUP BY g.id ORDER BY g.id').all().map((g) => [g.title, g.status, g.n]);
   assert.deepEqual(games, [['Hollow Knight: Silksong', 'wishlist', 1], ['Hollow Knight Silksong', 'wishlist', 1]]);
+});
+
+/** A game you log by hand: sessions of the given minutes, one a day, ending `ago` days back. */
+function handLogged(db, title, minutes, ago = 10) {
+  const gameId = findOrCreateGame(db, { title });
+  const e = manualEntry(db, gameId, NOW - 100 * D);
+  minutes.forEach((m, i) => {
+    const start = NOW - (ago + i) * D;
+    db.prepare("INSERT INTO sessions(entry_id, source, kind, minutes, window_start, window_end, started_at, ended_at, created_at) VALUES (?, 'manual', 'play', ?, ?, ?, ?, ?, ?)").run(e.id, m, start, start + m * 60_000, start, start + m * 60_000, NOW);
+  });
+  db.prepare('UPDATE entries SET playtime_min = ? WHERE id = ?').run(minutes.reduce((a, m) => a + m, 0), e.id);
+  return e.id;
+}
+
+test('a row with no platform joins a game you log by hand when its hours fit; more hours stay a copy of their own', () => {
+  const { db, settings } = setup();
+  const celeste = handLogged(db, 'Celeste', [90, 45]);
+  handLogged(db, 'Hollow Knight', [120]);
+  const s0 = NOW - 10 * D;
+  const r = importRows(db, [
+    // the same play, counted earlier: joins, adds its dates and details, nothing on top
+    { title: 'Celeste', playtime_hours: 1, status: 'beaten', first_played: new Date(NOW - 50 * D).toISOString(), sessions: [{ started_at: new Date(s0 + 5 * 60_000).toISOString(), minutes: 85 }] },
+    // 30 h against 2 h logged: the file can't say whether it includes yours, so nothing is absorbed
+    { title: 'Hollow Knight', playtime_hours: 30 },
+  ], { settings: settings.all() });
+  assert.equal(r.entries_created, 1, 'only Hollow Knight gets a copy');
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM entries WHERE game_id = (SELECT game_id FROM entries WHERE id = ?)').get(celeste).n, 1);
+  assert.equal(db.prepare('SELECT playtime_min FROM entries WHERE id = ?').get(celeste).playtime_min, 135, 'your logged total stands');
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM sessions WHERE entry_id = ? AND kind = 'play'").get(celeste).n, 2, 'a session overlapping one you logged is that one');
+  assert.equal(game(db, 'Celeste').status, 'beaten');
+  assert.equal(lifetime(db).total_minutes, 135 + 120 + 1800);
+  assert.deepEqual(consistent(db), []);
+  // a row that names a device, an account, or a file that lists hand-logged rows itself stays apart
+  importRows(db, [{ title: 'Celeste', platform: 'pc', playtime_minutes: 60 }], { settings: settings.all() });
+  importRows(db, [{ title: 'Celeste', account: 'Main', playtime_minutes: 60 }], { settings: settings.all() });
+  importRows(db, [{ title: 'Celeste', platform: 'manual', playtime_minutes: 135 }, { title: 'Celeste', platform: 'import', playtime_minutes: 50 }], { settings: settings.all() });
+  const copies = db.prepare("SELECT e.platform, e.playtime_min FROM entries e JOIN games g ON g.id = e.game_id WHERE g.title = 'Celeste' ORDER BY e.id").all().map((e) => `${e.platform} ${e.playtime_min}`);
+  assert.deepEqual(copies, ['manual 135', 'pc 60', 'import 60'], 'your logged entry untouched; the rest are copies (an unnamed 50 min row joins the imported one)');
+  // and again: nothing changes
+  const life = lifetime(db).total_minutes;
+  importRows(db, [{ title: 'Celeste', playtime_hours: 1 }, { title: 'Hollow Knight', playtime_hours: 30 }], { settings: settings.all() });
+  assert.equal(lifetime(db).total_minutes, life);
+  assert.deepEqual(consistent(db), []);
+});
+
+test('your history choices travel with an export: Don\'t chart, a window, a confirmed estimate - and never override a choice made here', () => {
+  const a = setup();
+  importRows(a.db, [
+    { title: 'Undated', platform: 'switch', playtime_hours: 10 },
+    { title: 'Windowed', platform: 'switch', playtime_hours: 10 },
+    { title: 'Confirmed', platform: 'switch', playtime_hours: 10, first_played: new Date(NOW - 200 * D).toISOString(), last_played: new Date(NOW - 20 * D).toISOString() },
+  ], { settings: a.settings.all() });
+  const setHist = (title, fn) => {
+    const e = a.db.prepare('SELECT e.id, e.hist FROM entries e WHERE e.title = ?').get(title);
+    const h = JSON.parse(e.hist || '{}'); fn(h);
+    a.db.prepare('UPDATE entries SET hist = ? WHERE id = ?').run(JSON.stringify(h), e.id);
+    return e.id;
+  };
+  setHist('Undated', (h) => { h.mode = 'undated'; });
+  setHist('Windowed', (h) => { h.manual = { start: NOW - 90 * D, end: NOW - 60 * D }; });
+  const chunks = a.db.prepare("SELECT window_start s, window_end e, minutes m FROM sessions WHERE entry_id = (SELECT id FROM entries WHERE title = 'Confirmed') AND kind = 'estimate' ORDER BY window_start").all();
+  assert.ok(chunks.length > 1);
+  setHist('Confirmed', (h) => { h.manual = { start: chunks[0].s, end: chunks.at(-1).e, confirmed: true, chunks: chunks.map((c) => [c.s, c.e, c.m, 'history']), undated: 0 }; });
+  const json = JSON.parse([...exportChunks(a.db, 'json')].join(''));
+  const csv = parseCsv([...exportChunks(a.db, 'csv')].join(''));
+  assert.equal(csv.find((r) => r.title === 'Undated').history_mode, 'undated');
+  assert.ok(csv.find((r) => r.title === 'Windowed').history_start);
+
+  const b = setup();
+  const r = importRows(b.db, json.games, { settings: b.settings.all() });
+  assert.equal(r.history_choices, 3);
+  const kinds = (title) => Object.fromEntries(b.db.prepare("SELECT kind, SUM(minutes) m FROM sessions WHERE entry_id = (SELECT id FROM entries WHERE title = ?) GROUP BY kind").all(title).map((x) => [x.kind, x.m]));
+  assert.deepEqual(kinds('Undated'), { baseline: 600 }, "Don't chart: none of it charted");
+  const win = b.db.prepare("SELECT MIN(window_start) s, MAX(window_end) e FROM sessions WHERE entry_id = (SELECT id FROM entries WHERE title = 'Windowed') AND kind = 'estimate'").get();
+  assert.ok(win.s >= NOW - 91 * D && win.e <= NOW - 59 * D, 'dated inside your window');
+  const got = b.db.prepare("SELECT window_start s, window_end e, minutes m FROM sessions WHERE entry_id = (SELECT id FROM entries WHERE title = 'Confirmed') AND kind = 'estimate' ORDER BY window_start").all();
+  assert.deepEqual(got, chunks, 'the confirmed estimate comes back exactly');
+  // the CSV carries the same choices
+  const c = setup();
+  importRows(c.db, csv, { settings: c.settings.all() });
+  assert.deepEqual(Object.fromEntries(c.db.prepare("SELECT kind, SUM(minutes) m FROM sessions WHERE entry_id = (SELECT id FROM entries WHERE title = 'Undated') GROUP BY kind").all().map((x) => [x.kind, x.m])), { baseline: 600 });
+  // a choice made here is never replaced by the file's
+  const e = b.db.prepare("SELECT id, hist FROM entries WHERE title = 'Undated'").get();
+  const h = JSON.parse(e.hist); h.mode = 'auto'; h.manual = { start: NOW - 30 * D, end: NOW - 25 * D };
+  b.db.prepare('UPDATE entries SET hist = ? WHERE id = ?').run(JSON.stringify(h), e.id);
+  importRows(b.db, json.games, { settings: b.settings.all() });
+  assert.deepEqual(JSON.parse(b.db.prepare('SELECT hist FROM entries WHERE id = ?').get(e.id).hist).manual, h.manual);
+  assert.deepEqual(consistent(b.db), []);
 });

@@ -1347,7 +1347,7 @@ describe('Custom accounts: pushed reports', () => {
     assertHealthy(t);
   });
 
-  test('recent_minutes on the first report: exactly that many minutes are dated inside the last 14 days', { todo: 'APP BUG psn-custom-10: of recent_minutes: 120 only 119 are dated inside the recent window (one minute lost to rounding)' }, async (tc) => {
+  test('recent_minutes on the first report: exactly that many minutes are dated inside the last 14 days', async (tc) => {
     const { est } = await recentImport(tc);
     const inRecent = est.filter((x) => x.window_start >= startOfDay(T0 - 14 * DAY)).reduce((a, x) => a + x.minutes, 0);
     assert.equal(inRecent, 120);

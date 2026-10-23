@@ -551,7 +551,7 @@ describe('bulk actions', () => {
     assertInvariants(h);
   });
 
-  test('duplicate ids in one batch act once and do not fail the batch', { todo: 'APP BUG sessions-stats-8: bulk delete with a repeated id fails the whole batch with 404' }, async () => {
+  test('duplicate ids in one batch act once and do not fail the batch', async () => {
     const target = ids[ids.length - 1];
     const l0 = await h.get('/stats/lifetime');
     const r = await h.call('POST', '/sessions/bulk', { ids: [target, target], action: 'delete' });

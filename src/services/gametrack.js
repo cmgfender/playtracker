@@ -5,7 +5,8 @@
 // never counted twice:
 //  - achievement / trophy unlock times date the history of games already synced here
 //  - hours of games no account here tracks (Switch, PlayStation without a linked account, other
-//    PC stores) are imported as history, dated from GameTrack's dates
+//    PC stores, Steam games the linked Steam account does not have) are imported as history,
+//    dated from GameTrack's dates
 //  - status, rating and cover fill in only where PlayTracker has none; wish-listed games are added
 import { tx } from '../db.js';
 import { normalizeTitle } from './titles.js';
@@ -143,7 +144,6 @@ export function importGameTrack(db, tables, { settings = null, now = Date.now() 
 
       // hours that no account here tracks
       const family = PLATFORM.find(([re]) => re.test(g.owned_platform || ''))?.[1] || (ps.length ? 'psn' : xbox.length ? 'xbox' : steam.length ? 'steam' : 'pc');
-      const syncedSame = (syncedByTitle.get(norm) || []).some((e) => (SYNCED_FAMILY[family] || []).includes(e.platform));
       let minutes = 0; let platform = family; let playCount; let lastPlayed = null; let firstPlayed = null;
       const psRow = ps.find((p) => Number(p.play_duration) > 0);
       if (psRow) {
@@ -158,9 +158,12 @@ export function importGameTrack(db, tables, { settings = null, now = Date.now() 
       firstPlayed = firstPlayed ?? (starts.length ? Math.min(...starts) : null);
       lastPlayed = lastPlayed ?? (ends.length ? Math.max(...ends) : null);
       if (firstPlayed && lastPlayed && lastPlayed < firstPlayed) firstPlayed = null;
+      const families = [...(SYNCED_FAMILY[family] || []), ...(SYNCED_FAMILY[platform] || [])];
+      const syncedSame = (syncedByTitle.get(norm) || []).some((e) => families.includes(e.platform));
 
-      if (minutes > 0 && (matched.length || syncedSame || (platform === 'steam' && byExt.size && [...byExt.keys()].some((k) => k.startsWith('steam:'))))) {
-        // a synced account here already counts this game's time
+      if (minutes > 0 && (matched.length || syncedSame)) {
+        // a synced account here already counts this game's time (by its id, else by its title);
+        // a Steam game the linked account does not have is another account's or since removed
         res.skipped_synced++;
       } else if (minutes > 0) {
         rows.push({ title, platform, account: 'GameTrack', playtime_minutes: minutes, last_played: lastPlayed || undefined, first_played: firstPlayed || undefined, play_count: playCount });

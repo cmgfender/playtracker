@@ -201,7 +201,7 @@ The checks are exact:
 - **Late uploads:** offline play uploaded late is identified exactly as late.
 - **Agreement:** the stats API, year in review, heatmap and lifetime totals all agree with the database.
 - **Duplicates:** the duplicated spreadsheet row is flagged, and excluding it makes the lifetime total equal the true total.
-- **Round trip:** export → import preserves lifetime totals, tracked minutes and exclusions.
+- **Round trip:** export → import preserves lifetime totals, tracked minutes, exclusions, hidden games, cover art, first-played / date-added dates and your history choices (Don't chart, a first-played window, a confirmed estimate).
 
 Accuracy over those 6 months:
 
