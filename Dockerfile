@@ -28,5 +28,9 @@ LABEL org.opencontainers.image.title="PlayTracker" \
       net.unraid.docker.webui="http://[IP]:[PORT:7720]/" \
       net.unraid.docker.icon="https://raw.githubusercontent.com/cmgfender/playtracker/main/public/icon-512.png"
 
+# the commit the image was built from (set by CI), shown in health, diagnostics and the startup log
+ARG REVISION=
+ENV PLAYTRACKER_REVISION=$REVISION
+
 STOPSIGNAL SIGTERM
 CMD ["node", "--disable-warning=ExperimentalWarning", "src/server.js"]

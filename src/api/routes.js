@@ -147,10 +147,10 @@ export function registerRoutes(r, app) {
     if (!Array.isArray(v)) throw new HttpError(400, `${name} must be an array`);
     return v;
   };
-  const { db, settings, sync, auth, version } = app;
+  const { db, settings, sync, auth, version, revision = null } = app;
 
   // ---------- meta ----------
-  r.get('/api/v1/health', () => ({ ok: true, version, time: Date.now(), tz: Intl.DateTimeFormat().resolvedOptions().timeZone }), { summary: 'Health check', public: true });
+  r.get('/api/v1/health', () => ({ ok: true, version, revision, time: Date.now(), tz: Intl.DateTimeFormat().resolvedOptions().timeZone }), { summary: 'Health check', public: true });
   r.get('/api/v1/platforms', () => providerInfo(), { summary: 'Supported platforms and their credential fields' });
 
   // ---------- auth ----------
@@ -985,7 +985,7 @@ export function registerRoutes(r, app) {
     });
     const mem = process.memoryUsage();
     return {
-      version, node: process.version, platform: `${process.platform}/${process.arch}`, pid: process.pid, uid: process.getuid?.() ?? null,
+      version, revision, node: process.version, platform: `${process.platform}/${process.arch}`, pid: process.pid, uid: process.getuid?.() ?? null,
       uptime_s: Math.round(process.uptime()), started_at: app.http?.started_at,
       tz: Intl.DateTimeFormat().resolvedOptions().timeZone, tz_env: process.env.TZ || null,
       data_dir: dbFile === ':memory:' ? null : dbFile, db_bytes: size(dbFile) + size(`${dbFile}-wal`), memory_mb: Math.round(mem.rss / 1048576), heap_mb: Math.round(mem.heapUsed / 1048576),

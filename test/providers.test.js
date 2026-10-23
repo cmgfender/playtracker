@@ -1,6 +1,7 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { createApp } from '../src/server.js';
+import { providers } from '../src/providers/index.js';
 
 // Mock the platform APIs at the fetch level and drive real syncs through the app.
 const realFetch = globalThis.fetch;
@@ -347,4 +348,53 @@ test('provider failures are recorded with context', async () => {
   assert.match(syncs[0].error, /vanity/);
   const a = (await call('/accounts')).find((x) => x.id === acc.id);
   assert.equal(a.last_status, 'error');
+});
+
+test('presence: Xbox app shells are not games; Steam reports its persona state', async () => {
+  const xbox = providers.xbox;
+  const reply = { content: { xuid: '2533', state: 'Online', devices: [{ type: 'WindowsOneCore', titles: [
+    { id: '1810111157', name: 'Gears of War: E-Day', placement: 'Full', state: 'Active' },
+    { id: '704208617', name: 'Online', placement: 'Full', state: 'Active' }, // the Xbox app on Windows
+    { id: '999', name: 'Online', placement: 'Full', state: 'Active' }, // another shell by its presence word
+  ] }] }, code: 200 };
+  const library = new Set(['1810111157']);
+  const r = await xbox.presence({ config: { api_key: 'k' }, state: { xuid: '2533' } }, { http: async () => reply, remainingBudget: () => 100, getEntry: (id) => library.has(id) || null });
+  assert.deepEqual(r.playing.map((p) => p.extId), ['1810111157']);
+  assert.deepEqual(r.seen.filter((x) => x.skipped).map((x) => x.id), ['704208617', '999']);
+  // a game in the library keeps its name, whatever it is
+  library.add('999');
+  assert.ok((await xbox.presence({ config: { api_key: 'k' }, state: { xuid: '2533' } }, { http: async () => reply, remainingBudget: () => 100, getEntry: (id) => library.has(id) || null })).playing.some((p) => p.extId === '999'));
+
+  const steam = providers.steam;
+  const summary = (p) => ({ async summary() { return { communityvisibilitystate: 3, ...p }; } });
+  const away = await steam.presence.call({ ...steam, ...summary({ personastate: 3 }) }, { state: { steamid64: '1' } }, {});
+  assert.equal(away.online, 'Away');
+  assert.deepEqual(away.playing, []);
+  const playing = await steam.presence.call({ ...steam, ...summary({ personastate: 1, gameid: '620', gameextrainfo: 'Portal 2' }) }, { state: { steamid64: '1' } }, {});
+  assert.equal(playing.online, 'Online');
+  assert.deepEqual(playing.seen, [{ id: '620', name: 'Portal 2' }]);
+});
+
+test('the sync after a session waits while a game is still being played, then runs once it ends', async () => {
+  const s = app.app.sync;
+  const acc = await call('/accounts', { method: 'POST', body: { platform: 'xbox', name: 'Waits', config: { api_key: 'k5', presence: 'off' }, sync: false } });
+  const a = () => s.account(acc.id);
+  app.app.db.prepare('UPDATE accounts SET last_sync_at = ? WHERE id = ?').run(Date.now(), acc.id); // next scheduled run: tomorrow
+  const MIN = 60_000; const t0 = Date.now() - 50 * MIN;
+  const play = (now, on) => s.applyPresence(a(), on ? [{ extId: '1810111157', title: 'Gears of War: E-Day' }] : [], { intervalSec: 300, now });
+  // played, dropped out of presence for 10 minutes, then picked up again
+  play(t0, true); play(t0 + 20 * MIN, true); play(t0 + 25 * MIN, false);
+  const armed = s.soon.get(acc.id);
+  assert.ok(armed > t0 + 25 * MIN, 'a sync is armed when the game drops out');
+  play(t0 + 35 * MIN, true); play(Date.now(), true);
+  assert.equal(s.soonFor(a()), null, 'it waits while the game is played again');
+  assert.ok(s.computeNext(a()) > Date.now() + 60 * MIN, 'the next sync is the scheduled one');
+  play(Date.now() + 1, false);
+  assert.ok(s.soonFor(a()) > Date.now(), 'armed again when the game ends');
+  assert.equal(s.computeNext(a()), s.soonFor(a()));
+  // a game presence no longer sees (polling stopped) never holds the sync back
+  s.soon.set(acc.id, Date.now() - 1000);
+  app.app.db.prepare('UPDATE presence SET ended_at = NULL, last_seen_at = ? WHERE account_id = ?').run(Date.now() - 60 * MIN, acc.id);
+  assert.ok(s.soonFor(a()) <= Date.now());
+  await call(`/accounts/${acc.id}`, { method: 'DELETE' });
 });

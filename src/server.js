@@ -18,6 +18,8 @@ import os from 'node:os';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
 const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
+// the commit the image was built from (CI sets it), so diagnostics say exactly which build runs
+const REVISION = /^[0-9a-f]{7,40}$/i.test(process.env.PLAYTRACKER_REVISION || '') ? process.env.PLAYTRACKER_REVISION.slice(0, 7) : null;
 
 const MIME = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8',
@@ -121,7 +123,7 @@ export function createApp({ dbFile = process.env.PLAYTRACKER_DB || path.join(dat
   const auth = new Auth({ db, settings, envPassword: password });
   const router = new Router();
   const http_ = { requests: 0, errors: 0, client_errors: 0, started_at: Date.now(), slow: 0 };
-  const app = { db, dbFile, settings, sync, auth, log, version: pkg.version, router, http: http_, rebuildRollups: () => rebuildRollups(db) };
+  const app = { db, dbFile, settings, sync, auth, log, version: pkg.version, revision: REVISION, router, http: http_, rebuildRollups: () => rebuildRollups(db) };
   const apiLog = log.scoped('api');
   const t0 = Date.now();
   const rolled = ensureRollupTimezone(db, settings, log.scoped('rollup'));
@@ -351,7 +353,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   }
   listen(instance.server, port, log).then((actual) => {
     const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
-    log.info(`PlayTracker ${pkg.version} ready on port ${actual} (TZ=${tz}, db=${instance.app.dbFile})`);
+    log.info(`PlayTracker ${pkg.version}${REVISION ? ` (${REVISION})` : ''} ready on port ${actual} (TZ=${tz}, db=${instance.app.dbFile})`);
     for (const ip of lanAddresses()) log.info(`  → http://${ip}:${actual}`);
     if (tz === 'UTC' && !process.env.TZ) log.warn('TZ is not set - daily stats use UTC. Set the TZ variable (e.g. America/New_York).');
   }).catch((err) => {
