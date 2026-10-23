@@ -1507,7 +1507,7 @@ describe('Custom accounts: pushed reports', () => {
     assertHealthy(t);
   });
 
-  test('a huge lifetime total is stored exactly and its history stays within the daily caps', async (tc) => {
+  test('a huge lifetime total is stored exactly; what cannot be dated stays undated', async (tc) => {
     const t = await fresh(tc);
     const acc = await linkCustom(t);
     const t0 = performance.now();

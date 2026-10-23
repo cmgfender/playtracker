@@ -88,9 +88,17 @@ describe('CSV import: columns, delimiters, quoting, validation', () => {
     await t.ok(t.importCsv(toCsv([['title', 'playtime_minutes'], ['Minutes Only', '95']])));
     await t.ok(t.importCsv(toCsv([['title', 'playtime_hours'], ['Clock Short', '1:30'], ['Clock Long', '120:05'], ['Quarter Hour', '0.25']])));
     await t.ok(t.importCsv(toCsv([['title', 'playtime_minutes', 'playtime_hours'], ['Both Columns', '125', '2.1']])));
-    const want = { 'Minutes Only': 95, 'Clock Short': 90, 'Clock Long': 120 * 60 + 5, 'Quarter Hour': 15, 'Both Columns': 125 };
+    await t.ok(t.importCsv('title,playtime_hours\nQuoted Decimal Comma,"12,5"\n'));
+    const want = { 'Minutes Only': 95, 'Clock Short': 90, 'Clock Long': 120 * 60 + 5, 'Quarter Hour': 15, 'Both Columns': 125, 'Quoted Decimal Comma': 750 };
     for (const [title, minutes] of Object.entries(want)) assert.equal((await t.gameByTitle(title))?.minutes, minutes, title);
     consistent(t);
+  });
+
+  test('spreadsheet durations written as h:mm:ss are read, not imported as zero', { todo: 'APP BUG import-export-11: "12:30:00" (h:mm:ss) in playtime_hours imports as 0 minutes' }, async () => {
+    await t.ok(t.importCsv(toCsv([['title', 'playtime_hours'], ['Duration Game', '12:30:00'], ['Long Duration Game', '105:05:59']])));
+    assert.equal((await t.gameByTitle('Duration Game'))?.minutes, 750);
+    const long = (await t.gameByTitle('Long Duration Game'))?.minutes;
+    assert.ok(long === 105 * 60 + 5 || long === 105 * 60 + 6, `105:05:59 -> ${long} min`);
   });
 
   test('semicolon-, tab- and comma-separated files with BOM, CRLF and capitalised headers', async () => {
@@ -293,6 +301,37 @@ describe('CSV import: columns, delimiters, quoting, validation', () => {
 });
 
 // =====================================================================================
+describe('non-Latin and accented titles', () => {
+  let t;
+  before(async () => { t = await startApp(); });
+  after(() => t.close());
+
+  test('accented, Japanese and emoji titles import, and export / re-import byte-for-byte', async () => {
+    const titles = [['Pokémon Violet', 3], ['ゼルダの伝説 ブレス オブ ザ ワイルド', 5], ['🎮 Emoji Quest', 1]];
+    await t.ok(t.importCsv(toCsv([['title', 'platform', 'playtime_hours'], ...titles.map(([n, h]) => [n, 'switch', String(h)])])));
+    for (const [title, hours] of titles) assert.equal((await t.gameByTitle(title))?.minutes, hours * 60, title);
+    const doc = JSON.parse((await t.get('/export')).text);
+    assert.deepEqual(doc.games.map((g) => g.title).sort(), titles.map(([n]) => n).sort());
+    const csv = readCsv((await t.get('/export', { format: 'csv' })).text);
+    assert.deepEqual(csv.map((r) => r.title).sort(), titles.map(([n]) => n).sort());
+    const snap = t.snapshot();
+    await t.ok(t.importJson(doc));
+    assert.deepEqual(t.snapshot(), snap);
+  });
+
+  test('different non-Latin titles that share a number stay different games', { todo: 'APP BUG import-export-16: titles without Latin letters normalise to just their digits, so "ペルソナ5" and "ドラゴンクエスト5" (or "Ведьмак 3" and "Герои 3") are merged and one total overwrites the other' }, async () => {
+    await t.ok(t.importCsv(toCsv([
+      ['title', 'platform', 'playtime_hours'],
+      ['ペルソナ5', 'switch', '10'], ['ドラゴンクエスト5', 'switch', '20'],
+      ['Ведьмак 3', 'pc', '30'], ['Герои 3', 'pc', '40'],
+    ])));
+    for (const [title, minutes] of [['ペルソナ5', 600], ['ドラゴンクエスト5', 1200], ['Ведьмак 3', 1800], ['Герои 3', 2400]]) {
+      assert.equal((await t.gameByTitle(title))?.minutes, minutes, title);
+    }
+  });
+});
+
+// =====================================================================================
 describe('CSV import at scale (2,000 rows) and streamed export of it', () => {
   let t;
   const N = 2000;
@@ -426,6 +465,24 @@ describe('JSON import: totals, sessions, body shapes, time zones', () => {
     assert.equal(e.playtime_min, 300);
     assert.equal(historyMinutes(t, e.id), 255);
     consistent(t);
+  });
+
+  test('a game given only sessions gets their sum as its total; a CSV sent as text/plain is read as CSV', async () => {
+    await t.ok(t.importJson({ games: [{ title: 'Only Sessions', platform: 'switch', sessions: [{ started_at: iso(ago(3, 2)), minutes: 60 }, { started_at: iso(ago(2, 2)), minutes: 30 }] }] }));
+    const [e] = t.entriesOf('Only Sessions');
+    assert.equal(e.playtime_min, 90);
+    assert.equal(kindMinutes(t, e.id, 'play'), 90);
+    const r = await t.call('/import', { method: 'POST', body: 'title,playtime_hours\nPlain Text Csv,3\n', type: 'text/plain' });
+    assert.equal(r.status, 200, r.text);
+    assert.equal((await t.gameByTitle('Plain Text Csv')).minutes, 180);
+    consistent(t);
+  });
+
+  test('a session whose end is before its start is not stored backwards', { todo: 'APP BUG import-export-12: an imported session with ended_at before started_at is stored with a negative duration' }, async () => {
+    await t.importJson({ games: [{ title: 'Inverted Session', platform: 'switch', playtime_minutes: 60, sessions: [{ started_at: iso(ago(3)), ended_at: iso(ago(3, 1)), minutes: 60 }] }] });
+    const bad = t.db.prepare('SELECT COUNT(*) n FROM sessions WHERE started_at IS NOT NULL AND ended_at IS NOT NULL AND ended_at < started_at').get().n;
+    assert.equal(bad, 0, 'rejected, or stored as start + minutes');
+    assert.deepEqual(t.sumViolations(), []);
   });
 
   test('timestamps as ISO with offsets, epoch seconds and epoch milliseconds are all understood', async () => {
@@ -706,6 +763,25 @@ describe('rows for games a synced Steam account tracks join it', () => {
     consistent(t);
   });
 
+  test('title variants (case, punctuation, platform tags) join the synced game; a sequel does not', async () => {
+    const life0 = await t.lifetime();
+    await t.ok(t.importCsv(toCsv([
+      ['title', 'platform', 'playtime_hours', 'first_played'],
+      ['PORTAL 2', 'steam', '15', ''],
+      ['Hades (PC)', 'steam', '20', dayOf(ago(600))],
+      ['Hades II', 'steam', '4', ''],
+    ])));
+    assert.equal(t.entriesOf('Portal 2').length, 1);
+    assert.equal(t.entriesOf('Hades').length, 1);
+    assert.equal(dayOf((await t.gameByTitle('Hades')).entries[0].history.evidence.first_played_at), dayOf(ago(600)), 'the variant row added its date to the synced entry');
+    const h2 = await t.gameByTitle('Hades II');
+    assert.ok(h2, 'the sequel is its own game');
+    assert.notEqual(h2.id, (await t.gameByTitle('Hades')).id);
+    assert.equal(h2.minutes, 240);
+    assert.equal((await t.lifetime()).total_minutes, life0.total_minutes + 240);
+    consistent(t);
+  });
+
   test('rows without a platform join the synced copy when the hours fit; more hours means another copy', async () => {
     const life0 = await t.lifetime();
     await t.ok(t.importCsv(toCsv([['title', 'playtime_hours'], ['Stardew Valley', '45']])));
@@ -763,6 +839,26 @@ describe('rows for games a synced Steam account tracks join it', () => {
     assert.equal(t.entriesOf('Portal 2').length, 1);
     assert.equal(t.entriesOf('Portal 2')[0].playtime_min, 900);
     consistent(t);
+  });
+});
+
+// =====================================================================================
+describe('trademark signs in titles', () => {
+  test('a spreadsheet row without the ™ joins the synced "ELDEN RING™" (and the other way round)', { todo: 'APP BUG import-export-15: title normalisation turns ™ into "tm" (NFKD before stripping), so "ELDEN RING™" and "Elden Ring" are different games' }, async () => {
+    const t = await startApp();
+    try {
+      const acc = await t.linkCustom('Console');
+      await t.ok(t.post(`/accounts/${acc.id}/report`, { games: [
+        { id: 'er', title: 'ELDEN RING™', playtime_minutes: 6000, last_played_at: iso(ago(30)) },
+        { id: 'ds3', title: 'Dark Souls III', playtime_minutes: 3000, last_played_at: iso(ago(300)) },
+      ] }));
+      const life0 = await t.lifetime();
+      await t.ok(t.importCsv(toCsv([['title', 'playtime_hours', 'first_played'], ['Elden Ring', '90', dayOf(ago(500))], ['DARK SOULS™ III', '40', dayOf(ago(900))]])));
+      const games = await t.gamesAll();
+      assert.equal(games.length, 2, `two games, got ${games.map((g) => g.title).join(' | ')}`);
+      assert.equal(t.db.prepare('SELECT COUNT(*) n FROM entries').get().n, 2, 'both rows joined the synced entries');
+      assert.equal((await t.lifetime()).total_minutes, life0.total_minutes, 'nothing counted twice');
+    } finally { await t.close(); }
   });
 });
 
@@ -860,6 +956,43 @@ describe('linking an account later adopts imported copies', () => {
       assert.equal(b.db.prepare("SELECT COUNT(*) n FROM entries WHERE platform = 'steam' AND account_id IS NULL").get().n, 0, 'imported Steam copies adopted');
       consistent(b, 'B relinked');
     } finally { await b.close(); m2.dispose(); }
+  });
+});
+
+describe('restoring an export with two accounts on the same platform', () => {
+  test('relinking one account adopts only its own copies; the other account\'s copies and sessions stay put', { todo: 'APP BUG import-export-14: adoption matches imported copies by title only, so the first relinked Steam account takes the other account\'s copy' }, async () => {
+    const libMain = [{ appid: 620, name: 'Portal 2', minutes: 900, lastPlayed: ago(100) }, { appid: 1145360, name: 'Hades', minutes: 100, lastPlayed: ago(5) }];
+    const libAlt = [{ appid: 620, name: 'Portal 2', minutes: 300, lastPlayed: ago(50) }];
+    const a = await startApp();
+    const ma = new SteamMock({ games: libMain, steamid: '76561198000000001' });
+    const mb = new SteamMock({ games: libAlt, steamid: '76561198000000002' });
+    let exported; let total;
+    try {
+      await a.linkSteam(ma, { name: 'Main' });
+      await a.linkSteam(mb, { name: 'Alt' });
+      await a.ok(a.importJson({ games: [{ title: 'Portal 2', platform: 'steam', account: 'Alt', playtime_minutes: 300, sessions: [{ started_at: iso(ago(200, 2)), minutes: 45 }] }] }));
+      assert.equal(a.db.prepare("SELECT a.name FROM sessions s JOIN entries e ON e.id = s.entry_id JOIN accounts a ON a.id = e.account_id WHERE s.kind = 'play'").get().name, 'Alt');
+      total = (await a.lifetime()).total_minutes;
+      exported = JSON.parse((await a.get('/export')).text);
+    } finally { await a.close(); ma.dispose(); mb.dispose(); }
+    assert.equal(total, 1300);
+
+    const b = await startApp();
+    const mb2 = new SteamMock({ games: libAlt, steamid: '76561198000000002' });
+    const ma2 = new SteamMock({ games: libMain, steamid: '76561198000000001' });
+    try {
+      await b.ok(b.importJson(exported));
+      assert.equal((await b.lifetime()).total_minutes, 1300);
+      await b.linkSteam(mb2, { name: 'Alt' }); // the alternate account first
+      assert.equal((await b.lifetime()).total_minutes, 1300, 'linking Alt neither loses Main\'s 900 min nor counts Alt\'s 300 twice');
+      const portal = b.entriesOf('Portal 2');
+      const main = portal.find((e) => e.account_id == null);
+      assert.ok(main && main.playtime_min === 900, "Main's imported copy is untouched until Main is linked");
+      await b.linkSteam(ma2, { name: 'Main' });
+      const owner = b.db.prepare("SELECT a.name FROM sessions s JOIN entries e ON e.id = s.entry_id JOIN accounts a ON a.id = e.account_id WHERE s.kind = 'play'").get()?.name;
+      assert.equal(owner, 'Alt', 'the 45-minute Alt session stays on the Alt account');
+      assert.equal((await b.lifetime()).total_minutes, 1300);
+    } finally { await b.close(); ma2.dispose(); mb2.dispose(); }
   });
 });
 
@@ -1288,25 +1421,50 @@ describe('GameTrack export ZIP import', () => {
     assert.equal(halo.entries[0].history.evidence.anchors, 1, 'unlocked achievements only');
     assert.ok(historyDays(t, halo.entries[0].id).every((d) => d.day <= dayOf(ago(20))));
 
-    // wish-listed games are added without time; hidden games are not imported; sequels stay separate
-    for (const title of ['Hollow Knight: Silksong', 'Hades II']) {
-      const g = await t.gameByTitle(title);
-      assert.ok(g, `${title} added`);
-      assert.equal(g.status, 'wishlist');
-      assert.equal(g.minutes, 0);
-    }
-    assert.notEqual((await t.gameByTitle('Hades II')).id, hades.id);
+    // games GameTrack hides are not imported
     assert.equal(await t.gameByTitle('Secret Game'), null);
+    assert.equal(t.db.prepare("SELECT COUNT(*) n FROM games WHERE title = 'Secret Game'").get().n, 0);
 
     const life = await t.lifetime();
     assert.equal(life.total_minutes, 900 + 1200 + 1230 + 3030 + 720);
     assert.equal(life.tracked_minutes, 0);
+    assert.deepEqual(t.sumViolations(), []);
+    const { empty_games, ...odd } = t.oddities(); // wish-listed games: see the next test
+    assert.deepEqual(odd, (({ empty_games: _, ...o }) => o)(NO_ODDITIES));
+  });
+
+  test('wish-listed games are added to the library (visible, status wishlist, no time) and sequels stay separate', { todo: 'APP BUG import-export-10: GameTrack wish-listed games are created without an entry, so the library never shows them and unlinking any account deletes them' }, async () => {
+    const lib = await t.gamesAll();
+    for (const title of ['Hollow Knight: Silksong', 'Hades II']) {
+      const g = lib.find((x) => x.title === title);
+      assert.ok(g, `${title} is listed in the library (GET /games)`);
+      assert.equal(g.status, 'wishlist');
+      assert.equal(g.minutes, 0);
+    }
+    assert.notEqual(lib.find((x) => x.title === 'Hades II').id, lib.find((x) => x.title === 'Hades').id, 'Hades II is not merged into Hades');
+    assert.equal((await t.lifetime()).games, lib.length, 'the lifetime game count includes them');
     consistent(t);
+    // unlinking an unrelated account must not delete them (own instance: this file's later tests keep theirs)
+    const u = await startApp();
+    try {
+      await u.ok(u.importZip(zip));
+      const c = await u.linkCustom('Temporary');
+      await u.ok(u.del(`/accounts/${c.id}`));
+      assert.equal(u.db.prepare("SELECT COUNT(*) n FROM games WHERE title IN ('Hollow Knight: Silksong', 'Hades II')").get().n, 2);
+    } finally { await u.close(); }
   });
 
   test('importing the same GameTrack ZIP again changes nothing', async () => {
     const snap = t.snapshot();
     assert.equal((await t.importZip(zip)).status, 200);
+    assert.deepEqual(t.snapshot(), snap);
+  });
+
+  test('a ZIP whose compressed data is corrupt is rejected as a bad upload (400), not a server error', { todo: 'APP BUG import-export-9: corrupt deflate data in a ZIP answers 500 instead of 400' }, async () => {
+    const snap = t.snapshot();
+    const bad = buildZip({ 'games.csv': 'uuid,title,hours_played\nQ,Never Imported,5\n'.repeat(20) }, { corrupt: 'games.csv' });
+    const r = await t.importZip(bad);
+    assert.equal(r.status, 400, `${r.status} ${r.text.slice(0, 160)}`);
     assert.deepEqual(t.snapshot(), snap);
   });
 
@@ -1319,6 +1477,28 @@ describe('GameTrack export ZIP import', () => {
     assert.equal(g.status, 'beaten');
   });
 
+  test('GameTrack hours for a game you already imported from a spreadsheet are joined or flagged, never silently doubled', async () => {
+    await t.ok(t.importCsv(toCsv([['title', 'platform', 'playtime_hours'], ['Pikmin 4', 'switch', '20']])));
+    await t.ok(t.importZip(buildZip({ 'games.csv': toCsv([['uuid', 'title', 'status', 'hours_played', 'owned_platform'], ['PK', 'Pikmin 4', 'Finished', '20.5', 'Nintendo Switch']]) })));
+    const es = t.entriesOf('Pikmin 4').filter((e) => !e.excluded);
+    if (es.length > 1) {
+      const d = await t.ok(t.get('/duplicates'));
+      assert.ok(d.double_counted.some((x) => x.game.title === 'Pikmin 4'), 'two counted copies of one Switch game are flagged as double-counted');
+    } else assert.ok(es[0].playtime_min >= 1200 && es[0].playtime_min <= 1230);
+    assert.equal((await t.gamesAll()).filter((g) => g.title === 'Pikmin 4').length, 1, 'one game in the library');
+  });
+
+  test('Steam hours GameTrack has for a game the linked Steam account does not own are imported, not dropped', { todo: 'APP BUG import-export-13: GameTrack Steam games missing from the linked Steam account are skipped as "already synced" and their hours are lost' }, async () => {
+    const life0 = await t.lifetime();
+    const r = await t.ok(t.importZip(buildZip({
+      'games.csv': toCsv([['uuid', 'title', 'status', 'hours_played', 'owned_platform'], ['K', 'Celeste', 'Finished', '10', 'PC']]),
+      'steam_games.csv': toCsv([['game_uuid', 'appid', 'name', 'playtime_forever'], ['K', '504230', 'Celeste', '600']]),
+    })));
+    assert.equal(t.entriesOf('Celeste').length, 1, `imported once (result: ${JSON.stringify(r)})`);
+    assert.equal(t.entriesOf('Celeste')[0].playtime_min, 600);
+    assert.equal((await t.lifetime()).total_minutes, life0.total_minutes + 600, 'no account here tracks Celeste: its 10 h count once');
+  });
+
   test('bad uploads are rejected with 400 and change nothing', async () => {
     const snap = t.snapshot();
     const good = buildZip({ 'games.csv': 'uuid,title,hours_played\nQ,Never Imported,5\n' });
@@ -1328,7 +1508,6 @@ describe('GameTrack export ZIP import', () => {
       ['empty', Buffer.alloc(0), 'application/zip'],
       ['no games.csv', buildZip({ 'GameTrack Export/steam_games.csv': 'game_uuid,appid\n' }), 'application/zip'],
       ['truncated', good.subarray(0, good.length - 30), 'application/zip'],
-      ['corrupt deflate data', buildZip({ 'games.csv': 'uuid,title,hours_played\nQ,Never Imported,5\n'.repeat(20) }, { corrupt: 'games.csv' }), 'application/zip'],
     ]) {
       const r = await t.call('/import/gametrack', { method: 'POST', body: typeof body === 'string' ? Buffer.from(body) : body, type });
       assert.equal(r.status, 400, `${label} -> ${r.status} ${r.text.slice(0, 160)}`);
@@ -1359,8 +1538,14 @@ describe('GameTrack first, Steam linked later', () => {
       assert.equal(g.status, 'beaten');
       assert.equal(g.entries[0].history.evidence.anchors, 2, 'the unlock times GameTrack provided are kept');
       const life = await t.lifetime();
-      assert.equal(life.total_minutes, 960 + 1230 + 3030 + 720 + 1200, 'Portal 2 counted once (Hades from GameTrack stays history: no Steam copy of it here)');
-      consistent(t);
+      // Portal 2 once (960, Steam's total); the rest of games.csv as history: Zelda 1230, Halo 720,
+      // Hades 1200 (Steam hours, but this account does not own it), Secret Game 300 (no hidden list in this ZIP)
+      assert.equal(life.total_minutes, 960 + 1230 + 720 + 1200 + 300);
+      assert.deepEqual(t.sumViolations(), []);
+      // the only game without an entry is GameTrack's wish-listed Silksong (import-export-10), not a leftover of the adoption
+      assert.deepEqual(t.db.prepare('SELECT title, status FROM games WHERE id NOT IN (SELECT game_id FROM entries)').all().map((g) => ({ ...g })), [{ title: 'Hollow Knight: Silksong', status: 'wishlist' }]);
+      const { empty_games, ...odd } = t.oddities();
+      assert.deepEqual(odd, (({ empty_games: _, ...o }) => o)(NO_ODDITIES));
     } finally { await t.close(); steam.dispose(); }
   });
 });
@@ -1432,11 +1617,11 @@ describe('Steam licenses page paste', () => {
 
   test('date formats: "20 Nov, 2015", "Nov 21, 2015", ISO, full and abbreviated month names, and space-separated copies', async () => {
     const c = await t.linkCustom('Formats');
-    const titles = ['Format Alpha', 'Format Beta', 'Format Gamma', 'Format Delta', 'Format Epsilon', 'Format Zeta', 'Format Eta', 'Format Theta'];
+    const titles = ['Format Alpha', 'Format Bravo', 'Format Gamma', 'Format Delta', 'Format Epsilon', 'Format Zeta', 'Format Eta', 'Format Theta'];
     await t.ok(t.post(`/accounts/${c.id}/report`, { games: titles.map((title, i) => ({ id: `f${i}`, title, playtime_minutes: 120, last_played_at: iso(ago(30)) })) }));
     const r = await t.ok(t.post(`/accounts/${c.id}/licenses`, { text: [
       '20 Nov, 2015\tFormat Alpha\tSteam Store',
-      'Nov 21, 2015\tFormat Beta\tSteam Store',
+      'Nov 21, 2015\tFormat Bravo\tSteam Store',
       '2015-11-22\tFormat Gamma\tRetail',
       '23 November 2015\tFormat Delta\tComplimentary',
       'November 24, 2015\tFormat Epsilon\tGift/Guest Pass',
@@ -1462,5 +1647,43 @@ describe('Steam licenses page paste', () => {
     const none = await t.ok(t.post(`/accounts/${acc.id}/licenses`, { text: 'Licenses and product key activations\nNothing here\n' }));
     assert.equal(none.matched, 0);
     assert.deepEqual(t.snapshot(), snap);
+  });
+});
+
+// =====================================================================================
+describe('empty instance and the API description', () => {
+  let t;
+  before(async () => { t = await startApp(); });
+  after(() => t.close());
+
+  test('exports of an empty library are valid and empty; the backup still downloads', async () => {
+    const j = await t.get('/export');
+    assert.equal(j.status, 200);
+    assert.equal(j.headers.get('content-length'), null, 'the export is streamed');
+    const doc = JSON.parse(j.text);
+    assert.equal(doc.format, 'playtracker-export');
+    assert.deepEqual(doc.games, []);
+    const c = await t.get('/export', { format: 'csv' });
+    assert.equal(c.status, 200);
+    assert.deepEqual(readCsv(c.text), []);
+    assert.match(c.text.split('\n')[0], /^title,/);
+    const b = await t.get('/backup');
+    assert.equal(b.status, 200);
+    assert.equal(b.buf.subarray(0, 15).toString('latin1'), 'SQLite format 3');
+  });
+
+  test('the OpenAPI document describes every import / export endpoint and the preview flag', async () => {
+    const r = await t.get('/api/openapi.json');
+    assert.equal(r.status, 200);
+    const paths = r.data.paths;
+    const params = (p, m) => (paths[p]?.[m]?.parameters || []).map((x) => x.name);
+    assert.ok(paths['/api/v1/import']?.post, 'POST /import');
+    assert.ok(params('/api/v1/import', 'post').includes('dry_run'));
+    assert.ok(paths['/api/v1/import/gametrack']?.post, 'POST /import/gametrack');
+    assert.ok(params('/api/v1/import/gametrack', 'post').includes('dry_run'));
+    assert.ok(paths['/api/v1/accounts/{id}/licenses']?.post, 'POST /accounts/{id}/licenses');
+    assert.ok(params('/api/v1/accounts/{id}/licenses', 'post').includes('dry_run'));
+    assert.ok(params('/api/v1/export', 'get').includes('format'));
+    assert.ok(paths['/api/v1/backup']?.get, 'GET /backup');
   });
 });
