@@ -14,11 +14,13 @@
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="/icon-180.png">
   <link rel="stylesheet" href="/app.css">
-  <script>try{var t=localStorage.getItem('pt-theme');if(t)document.documentElement.dataset.theme=t;var a=localStorage.getItem('pt-accent');if(a)document.documentElement.style.setProperty('--accent',a);var u=JSON.parse(localStorage.getItem('pt-ui')||'{}');for(var k in u)document.documentElement.dataset[k]=u[k]}catch(e){}</script>
+  <!-- before the first paint: theme, accent (the old default #7c5cff reads as #7656ff), its text ink and on-accent flag, layout -->
+  <script>try{var d=document.documentElement,t=localStorage.getItem('pt-theme');if(t)d.dataset.theme=t;var a=localStorage.getItem('pt-accent');if(a)d.style.setProperty('--accent',a=='#7c5cff'?'#7656ff':a);var u=JSON.parse(localStorage.getItem('pt-ui')||'{}');for(var k in u)if(k=='ink')d.style.setProperty('--accent-ink',u[k]);else d.dataset[k]=u[k]}catch(e){}</script>
 </head>
 <body>
   <div id="app"></div>
-  <div class="toasts" id="toasts"></div>
+  <div class="toasts" id="toasts" role="status" aria-live="polite"></div>
+  <div class="vh" id="alerts" role="alert"></div>
   <noscript>Vestigo needs JavaScript.</noscript>
   <script type="module" src="/app.js"></script>
 </body>

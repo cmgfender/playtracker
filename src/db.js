@@ -288,6 +288,42 @@ const MIGRATIONS = [
       if (ext !== e.ext_id && !taken.get(e.platform, ext)) updExt.run(ext, e.id);
     }
   },
+  // 6: achievements / trophies of each entry, as the platform lists them (name, icon, rarity,
+  //    gamerscore or trophy grade) with the player's unlock times. Kept apart from playtime: they
+  //    never change sessions or totals, and the session an unlock belongs to is found by time when
+  //    read (sessions are edited, split and merged, so no session id is stored here). Safe to run
+  //    again on a database that has it.
+  (db) => {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS achievements (
+        id INTEGER PRIMARY KEY,
+        entry_id INTEGER NOT NULL REFERENCES entries(id) ON DELETE CASCADE,
+        ach_id TEXT NOT NULL,          -- Steam apiname | Xbox achievement id | PSN '<npCommunicationId>:<trophyId>'
+        name TEXT,
+        description TEXT,
+        icon_url TEXT,
+        icon_locked_url TEXT,
+        unlocked INTEGER NOT NULL DEFAULT 0,
+        unlocked_at INTEGER,           -- NULL when locked, or unlocked at a time the platform doesn't know
+        rarity REAL,                   -- % of the platform's players who have it
+        points INTEGER,                -- Xbox gamerscore
+        grade TEXT,                    -- PSN bronze | silver | gold | platinum
+        hidden INTEGER,                -- secret until unlocked (NULL = not said)
+        group_id TEXT,                 -- PSN trophy group ('default', DLC groups '001', ...)
+        sort INTEGER,                  -- the platform's order
+        first_seen_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS achievements_entry_ach ON achievements(entry_id, ach_id);
+      CREATE INDEX IF NOT EXISTS achievements_entry_time ON achievements(entry_id, unlocked_at);
+      CREATE INDEX IF NOT EXISTS achievements_time ON achievements(unlocked_at) WHERE unlocked_at IS NOT NULL;
+    `);
+    // the achievement data version an entry was last read with (0 = never: read once by the
+    // back-fill, like inferred_v) and when it was read (titles played since are read again)
+    const cols = new Set(db.prepare('PRAGMA table_info(entries)').all().map((c) => c.name));
+    if (!cols.has('ach_v')) db.exec('ALTER TABLE entries ADD COLUMN ach_v INTEGER NOT NULL DEFAULT 0');
+    if (!cols.has('ach_at')) db.exec('ALTER TABLE entries ADD COLUMN ach_at INTEGER');
+  },
 ];
 
 export function openDb(file) {

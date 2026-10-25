@@ -23,7 +23,7 @@ export const DEFAULT_SETTINGS = {
 
   // UI (stored server-side so every device gets the same look)
   theme: 'dark',              // 'dark' | 'black' (OLED) | 'light' | 'auto'
-  accent: '#7c5cff',
+  accent: '#7656ff',          // Vestigo Violet; the UI reads a stored #7c5cff (the old default) as this
   default_library_sort: 'recent',
   ui_density: 'comfortable',  // 'comfortable' | 'compact'
   cover_size: 'm',            // library grid: 's' | 'm' | 'l'

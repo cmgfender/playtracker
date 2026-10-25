@@ -10,12 +10,24 @@ import { allocate } from './inference.js';
 import { reinferMany, mergeEvidence, reinferPending, relearnStyle } from './inference.js';
 import { asLogger } from '../logger.js';
 import { modelFor, deviceDelta, intSplit } from './model.js';
+import { ACH_VERSION, storeAchievements, knownAchievements, TtlCache, PLAYED_SQL, HISTORY_PENDING_SQL, PLAYED_SINCE_SQL } from './achievements.js';
 
 const MIN = 60_000;
 const HOUR = 60 * MIN;
 const DAY = 24 * HOUR;
 const PIN_MAX = 360; // a single delta up to 6h is treated as one continuous session
 const TYPICAL_SESSION = { median: 120, long: 240 }; // until learned from exactly observed sessions
+
+// Achievements read per enrichment run, after the history pass: titles played since they were
+// last read (most recent first), then titles of the one-time back-fill (read before achievements
+// were stored). Steam and PSN keep enrichment's pace (requests 250 ms / 3.2 s apart, at most 400
+// / 120 per run, runs 5 s / 15 min apart); Xbox never goes below enrichment's 30% reserve and
+// back-fills at most a quarter of its hourly limit per clock hour.
+const ACH_PACE = {
+  steam: { played: 25, backfill: 150, calls: 400, every: 5000 },
+  psn: { played: 10, backfill: 40, calls: 120, every: 15 * MIN },
+  xbox: { played: 5, backfill: 40, calls: 45, hourlyShare: 0.25 },
+};
 
 /** Apply the keys that changed between `before` and `after` to the current stored state. */
 export function mergeState(current, before, after) {
@@ -545,6 +557,9 @@ export class SyncService {
     this.enriching = new Map(); // accountId -> in-flight promise
     this.generation = new Map(); // accountId -> bumped when it is deleted (ids are reused): work begun before is stale
     this.enrichTries = new Map(); // entryId -> failed enrichment attempts
+    this.achTries = new Map(); // entryId -> failed achievement reads
+    this.achHour = new Map(); // accountId -> { hour, calls }: Xbox back-fill requests this clock hour
+    this.platformCache = new TtlCache(1000); // platform data all accounts share (Steam schemas, rarity)
     this.soon = new Map();
     this.quota = new Map(); // accountId -> { limit, remaining, resetAt, blockedUntil } from API headers
     for (const a of db.prepare("SELECT id, json_extract(state, '$.rate_limited_until') u FROM accounts").all()) {
@@ -606,6 +621,7 @@ export class SyncService {
     this.quota.delete(id);
     this.presenceState.delete(id);
     this.soon.delete(id);
+    this.achHour.delete(id);
     this.generation.set(id, (this.generation.get(id) || 0) + 1); // its work still in flight is stale
   }
 
@@ -675,6 +691,9 @@ export class SyncService {
       },
       warn: (m) => { warnings?.push(m); this.log.warn(m, { account: `${account.platform}/${account.name}` }); },
       stopped: () => this.stopping || !live(),
+      // achievements already stored for an entry (providers skip details they have)
+      knownAchievements: (entryId) => knownAchievements(this.db, entryId),
+      cache: this.platformCache,
     };
   }
 
@@ -791,39 +810,147 @@ export class SyncService {
     const provider = providers[account?.platform];
     if (!account || !provider?.enrich) return null;
     const entries = this.db.prepare('SELECT * FROM entries WHERE account_id = ? AND baseline_min > 0 AND enriched_at IS NULL ORDER BY baseline_min DESC LIMIT ?').all(accountId, limit);
-    if (!entries.length) return { updated: 0, anchored: 0, remaining: 0 };
-    const counters = { calls: 0, errors: 0, rate_limited: 0, ms: 0, hosts: {} };
-    const t0 = Date.now();
     const live = this.lease(accountId);
+    let out = { updated: 0, anchored: 0, remaining: 0 };
+    let progressed = 0;
     try {
-      const { updates, state } = await provider.enrich(account, entries, this.ctxFor(account, { counters }));
-      if (!live()) return null; // the account was deleted meanwhile
-      let anchored = 0;
-      let progressed = 0;
-      tx(this.db, () => {
-        // refreshed tokens (PSN) are kept
-        if (state) this.db.prepare('UPDATE accounts SET state = ? WHERE id = ?').run(JSON.stringify({ ...this.account(accountId).state, ...state }), accountId);
-        for (const u of updates) {
-          mergeEvidence(this.db, u.entryId, { anchors: u.anchors?.length ? u.anchors : undefined, release_at: u.release_at });
-          if (u.anchors?.length) anchored++;
-          // a title that keeps failing is given up after 3 attempts (no endless retry loop)
-          const tries = u.done ? 0 : (this.enrichTries.get(u.entryId) || 0) + 1;
-          if (u.done || tries >= 3) { this.db.prepare('UPDATE entries SET enriched_at = ? WHERE id = ?').run(Date.now(), u.entryId); this.enrichTries.delete(u.entryId); } else this.enrichTries.set(u.entryId, tries);
-          if (u.done || tries >= 3) progressed++;
+      if (entries.length) {
+        const counters = { calls: 0, errors: 0, rate_limited: 0, ms: 0, hosts: {} };
+        const t0 = Date.now();
+        const { updates, state } = await provider.enrich(account, entries, this.ctxFor(account, { counters }));
+        if (!live()) return null; // the account was deleted meanwhile
+        let anchored = 0;
+        tx(this.db, () => {
+          // refreshed tokens (PSN) are kept
+          if (state) this.db.prepare('UPDATE accounts SET state = ? WHERE id = ?').run(JSON.stringify({ ...this.account(accountId).state, ...state }), accountId);
+          for (const u of updates) {
+            mergeEvidence(this.db, u.entryId, { anchors: u.anchors?.length ? u.anchors : undefined, release_at: u.release_at });
+            if (u.anchors?.length) anchored++;
+            // a title that keeps failing is given up after 3 attempts (no endless retry loop)
+            const tries = u.done ? 0 : (this.enrichTries.get(u.entryId) || 0) + 1;
+            if (u.done || tries >= 3) { this.db.prepare('UPDATE entries SET enriched_at = ? WHERE id = ?').run(Date.now(), u.entryId); this.enrichTries.delete(u.entryId); } else this.enrichTries.set(u.entryId, tries);
+            if (u.done || tries >= 3) progressed++;
+            // the same replies carry the achievements themselves (given up along with the title)
+            this.readAchievements(u, t0, { giveUp: !u.done && tries >= 3 });
+          }
+          flushRollups(this.db);
+          reinferMany(this.db, updates.map((u) => u.entryId), { account, settings: this.settings.all() });
+          flushRollups(this.db);
+        });
+        if (anchored) this.relearn({ force: true });
+        this.log.info(`Enriched ${updates.length} ${account.platform} titles (${anchored} with activity timestamps) in ${Math.round((Date.now() - t0) / 1000)}s, ${counters.calls} API calls`);
+        const left = this.db.prepare('SELECT COUNT(*) n FROM entries WHERE account_id = ? AND baseline_min > 0 AND enriched_at IS NULL').get(accountId).n;
+        out = { updated: updates.length, anchored, remaining: left };
+      }
+      // achievements of titles played since they were read; the back-fill once no history is left
+      if (provider.achievements && !this.stopping && live()) {
+        try {
+          out.achievements = await this.refreshAchievements(account, { backfill: !out.remaining });
+        } catch (err) {
+          this.log.warn(`Reading achievements of ${account.platform}/${account.name} failed: ${err.message}`, { account_id: accountId });
         }
-        flushRollups(this.db);
-        reinferMany(this.db, updates.map((u) => u.entryId), { account, settings: this.settings.all() });
-        flushRollups(this.db);
-      });
-      if (anchored) this.relearn({ force: true });
-      this.log.info(`Enriched ${updates.length} ${account.platform} titles (${anchored} with activity timestamps) in ${Math.round((Date.now() - t0) / 1000)}s, ${counters.calls} API calls`);
+        if (!live()) return null;
+      }
       // more to do? continue later within rate limits
-      const left = this.db.prepare('SELECT COUNT(*) n FROM entries WHERE account_id = ? AND baseline_min > 0 AND enriched_at IS NULL').get(accountId).n;
-      if (left && progressed && !this.stopping) setTimeout(() => this.enrich(accountId).catch((e) => this.log.error('Enrichment failed', e)), account.platform === 'xbox' ? HOUR / 2 : account.platform === 'psn' ? 15 * MIN : 5000).unref?.();
-      return { updated: updates.length, anchored, remaining: left };
+      let delay = out.remaining && progressed ? (account.platform === 'xbox' ? HOUR / 2 : account.platform === 'psn' ? 15 * MIN : 5000) : null;
+      if (out.achievements?.retry_in != null) delay = Math.min(delay ?? Infinity, out.achievements.retry_in);
+      if (delay != null && !this.stopping) setTimeout(() => this.enrich(accountId).catch((e) => this.log.error('Enrichment failed', e)), delay).unref?.();
+      return out;
     } catch (err) {
       this.log.error(`Enrichment of ${account.platform}/${account.name} failed: ${err.message}`, err);
       throw err;
+    }
+  }
+
+  // ---------- achievements / trophies (background) ----------
+  /**
+   * Store the achievements a provider read for one title (an update { entryId, achievements, done,
+   * partial }: achievements = a list, null = it has none, undefined = not read). Once read for
+   * good the title is marked read (ach_v, ach_at); one that keeps failing is given up after 3
+   * attempts, until it is played again. Never touches sessions, totals or history.
+   */
+  readAchievements(u, at, { giveUp = false } = {}) {
+    const db = this.db;
+    if (Array.isArray(u.achievements)) storeAchievements(db, u.entryId, u.achievements);
+    const read = u.achievements !== undefined && u.done !== false && !u.partial;
+    const tries = read ? 0 : (this.achTries.get(u.entryId) || 0) + 1;
+    if (read || giveUp || tries >= 3) {
+      db.prepare('UPDATE entries SET ach_v = ?, ach_at = ? WHERE id = ?').run(ACH_VERSION, at, u.entryId);
+      this.achTries.delete(u.entryId);
+      return true;
+    }
+    this.achTries.set(u.entryId, tries);
+    // read in part (names missing): not "played since" any more, but back-filled again
+    if (u.achievements !== undefined) db.prepare('UPDATE entries SET ach_at = ? WHERE id = ?').run(at, u.entryId);
+    return false;
+  }
+
+  /**
+   * Read achievements again for titles played since they were last read (they change during
+   * play), then - when `backfill` - titles never read with this version (libraries enriched before
+   * achievements were stored, titles first played after tracking began), most recently played
+   * first. Titles whose history is still to be enriched are left to enrichment (same requests).
+   * Paced by ACH_PACE; returns progress and, when more is left, retry_in (ms).
+   */
+  async refreshAchievements(account, { backfill = true } = {}) {
+    const provider = providers[account.platform];
+    if (!provider?.achievements) return null;
+    const db = this.db;
+    const pace = ACH_PACE[account.platform] || ACH_PACE.steam;
+    const t0 = Date.now();
+    const hour = Math.floor(t0 / HOUR);
+    const todo = db.prepare(`SELECT COALESCE(SUM(ach_v < ?), 0) pending, COALESCE(SUM(${PLAYED_SINCE_SQL}), 0) due FROM entries
+      WHERE account_id = ? AND ${PLAYED_SQL} AND NOT ${HISTORY_PENDING_SQL}`);
+    const start = todo.get(ACH_VERSION, account.id);
+    const played = db.prepare(`SELECT * FROM entries WHERE account_id = ? AND ${PLAYED_SINCE_SQL} AND NOT ${HISTORY_PENDING_SQL}
+      ORDER BY last_session_at DESC, id LIMIT ?`).all(account.id, pace.played);
+    let share = pace.backfill;
+    if (pace.hourlyShare) {
+      const h = this.achHour.get(account.id);
+      share = Math.min(share, Math.max(0, Math.ceil(provider.hourlyLimit(account) * pace.hourlyShare) - (h?.hour === hour ? h.calls : 0)));
+    }
+    const back = backfill && share > 0 ? db.prepare(`SELECT * FROM entries WHERE account_id = ? AND ach_v < ? AND ${PLAYED_SQL} AND NOT ${HISTORY_PENDING_SQL} AND NOT ${PLAYED_SINCE_SQL}
+      ORDER BY COALESCE(last_session_at, last_played_at, 0) DESC, id LIMIT ?`).all(account.id, ACH_VERSION, share) : [];
+    const counters = { calls: 0, errors: 0, rate_limited: 0, ms: 0, hosts: {} };
+    const ctx = this.ctxFor(account, { counters });
+    let read = 0; let backfilled = 0; let tried = 0;
+    if (played.length || back.length) {
+      const live = this.lease(account.id);
+      const isBack = new Set(back.map((e) => e.id));
+      const { updates = [], state } = await provider.achievements(account, [...played, ...back], ctx, { maxCalls: pace.calls });
+      if (!live()) return null; // the account was deleted meanwhile
+      tx(db, () => {
+        if (state) db.prepare('UPDATE accounts SET state = ? WHERE id = ?').run(JSON.stringify({ ...this.account(account.id).state, ...state }), account.id);
+        for (const u of updates) {
+          const ok = this.readAchievements(u, t0);
+          if (ok) read++;
+          if (isBack.has(u.entryId)) { tried++; if (ok) backfilled++; }
+        }
+      });
+      if (pace.hourlyShare && tried) this.achHour.set(account.id, { hour, calls: (this.achHour.get(account.id)?.hour === hour ? this.achHour.get(account.id).calls : 0) + tried });
+    }
+    const left = todo.get(ACH_VERSION, account.id);
+    if (read) this.log.info(`Read achievements of ${read} ${account.platform} titles (${backfilled} back-filled, ${left.pending} to go) in ${Math.round((Date.now() - t0) / 1000)}s, ${counters.calls} API calls`);
+    // more to do: Steam / PSN go on at enrichment's pace while what is left shrinks; Xbox goes on
+    // in the next clock hour while it shrinks or its budget / hourly share is what held it back
+    const progressed = left.pending + left.due < start.pending + start.due;
+    let retryIn = null;
+    if ((backfill && left.pending) || left.due) {
+      if (pace.hourlyShare) {
+        const reserve = Math.ceil(provider.hourlyLimit(account) * 0.3);
+        const held = share <= 0 || ctx.remainingBudget(provider.hourlyLimit(account)) <= reserve;
+        if (progressed || held) retryIn = (hour + 1) * HOUR + 2 * MIN - Date.now();
+      } else if (progressed) retryIn = pace.every;
+    }
+    return { read, backfilled, pending: left.pending, played_since: left.due, api_calls: counters.calls, retry_in: retryIn };
+  }
+
+  /** Start reading achievements where some are due (after a restart: the back-fill of an upgrade). */
+  kickAchievements() {
+    for (const a of this.db.prepare('SELECT id, platform FROM accounts WHERE enabled = 1 AND last_sync_at IS NOT NULL').all()) {
+      if (!providers[a.platform]?.achievements || this.blockedUntil(a.id) > Date.now()) continue;
+      const due = this.db.prepare(`SELECT 1 FROM entries WHERE account_id = ? AND ${PLAYED_SQL} AND (ach_v < ? OR ${PLAYED_SINCE_SQL}) LIMIT 1`).get(a.id, ACH_VERSION);
+      if (due) this.enrich(a.id).catch((e) => this.log.warn(`Reading achievements failed: ${e.message}`));
     }
   }
 
@@ -1054,11 +1181,13 @@ export class SyncService {
         }
       }
     };
-    // cover art for titles imported before cover lookup existed (or added since)
+    // cover art for titles imported before cover lookup existed (or added since), and achievements
+    // of titles read before they were stored (the one-time back-fill after an upgrade)
     this.coverTimer = setTimeout(() => {
       for (const a of this.db.prepare('SELECT id, platform FROM accounts WHERE enabled = 1 AND last_sync_at IS NOT NULL').all()) {
         if (providers[a.platform]?.resolveCovers) this.resolveCovers(a.id).catch((e) => this.log.warn(`Cover lookup failed: ${e.message}`));
       }
+      try { this.kickAchievements(); } catch (e) { this.log.warn(`Reading achievements failed: ${e.message}`); }
     }, 20_000);
     this.coverTimer.unref?.();
     const run = () => tick().catch((e) => this.log.error('Scheduler tick failed', e));

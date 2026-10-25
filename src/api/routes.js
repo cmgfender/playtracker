@@ -18,6 +18,8 @@ import { applyLicenses } from '../services/licenses.js';
 import { readZip, isZip } from '../services/zip.js';
 import { gameTrackTables, importGameTrack } from '../services/gametrack.js';
 import { modelFor } from '../services/model.js';
+import { entrySummaries, combineSummaries, gameAchievements, withSessionAchievements, achievementStats, achievementProgress } from '../services/achievements.js';
+import { punchcard, sessionLengths, platformSeries, timeline, gameCurve, libraryOverview, yearOverYear, records } from '../services/insights.js';
 import fsp from 'node:fs';
 import { httpJson, ProviderError } from '../providers/http.js';
 import { HttpError, toInt, toTime } from '../util.js';
@@ -55,6 +57,17 @@ function publicAccount(a, sync) {
     profile: a.state?.persona ? { name: a.state.persona, avatar: a.state.avatar, account_created_at: a.state.account_created_at || null } : null,
   };
 }
+
+// response shapes documented in the OpenAPI document (`returns`), shared by the routes carrying them
+const ACH_SUMMARY_DOC = '{ total, unlocked, percent (0-100, floored to 0.1), points, points_total (Xbox gamerscore; null elsewhere), '
+  + 'grades ({ platinum, gold, silver, bronze } unlocked; PlayStation, null elsewhere), last_unlocked_at, completed (everything unlocked, or the PlayStation platinum), '
+  + 'completed_at, fetched_at (when the platform was last read) } | null (never read, or not a platform title)';
+const ACH_ITEM_DOC = '{ id (platform id: Steam apiname, Xbox achievement id, PlayStation "<npCommunicationId>:<trophyId>"; unique per entry), entry_id, platform, name, description, '
+  + 'icon_url, icon_locked_url, unlocked, unlocked_at (null: locked, or the platform has no time), rarity (% of players), points (Xbox gamerscore), '
+  + 'grade (PlayStation bronze|silver|gold|platinum), hidden, group (PlayStation trophy group) }';
+const SESSION_ACH_DOC = 'achievements: { count, items: [{ id, entry_id, name, icon_url, rarity, points, grade, unlocked_at }] } - the unlocks that belong to the session (by time; see GET /games/{id}/achievements)';
+const SESSION_DOC = '{ id, game_id, entry_id, title, cover_url, platform, account_id, account_name, source, kind, minutes, window_start, window_end, started_at, ended_at, precise, confidence, device, note, sync_id, created_at, '
+  + `${SESSION_ACH_DOC} }`;
 
 const ESTIMATES = new Set(['include', 'exclude', 'only']);
 const estimatesParam = (q, settings) => (ESTIMATES.has(q.estimates) ? q.estimates : settings.get('stats_estimates') || 'include');
@@ -262,9 +275,11 @@ export function registerRoutes(r, app) {
     if (!g) {
       const bare = db.prepare('SELECT * FROM games WHERE id = ?').get(id);
       if (!bare) throw new HttpError(404, 'Game not found');
-      return { ...gameRow(bare), entries: [] };
+      return { ...gameRow(bare), entries: [], achievements: null };
     }
-    const entries = db.prepare(`SELECT e.*, a.name account_name FROM entries e LEFT JOIN accounts a ON a.id = e.account_id WHERE e.game_id = ? ORDER BY e.playtime_min DESC`).all(id)
+    const rows = db.prepare(`SELECT e.*, a.name account_name FROM entries e LEFT JOIN accounts a ON a.id = e.account_id WHERE e.game_id = ? ORDER BY e.playtime_min DESC`).all(id);
+    const ach = entrySummaries(db, rows);
+    const entries = rows
       .map((e) => {
         const h = JSON.parse(e.hist || '{}');
         return {
@@ -279,6 +294,7 @@ export function registerRoutes(r, app) {
             manual: h.manual || null, mode: h.mode || 'auto', enriched: !!e.enriched_at,
             ...(h.inference || {}),
           } : null,
+          achievements: ach.get(e.id) ?? null,
         };
       });
     const agg = db.prepare(`SELECT s.kind, COUNT(*) n, COALESCE(SUM(s.minutes),0) m, MIN(COALESCE(s.started_at, s.window_start, s.window_end)) first, MAX(s.minutes) longest
@@ -288,6 +304,8 @@ export function registerRoutes(r, app) {
     return {
       ...gameRow(g),
       entries,
+      // the game's achievements: its counted entries together (completed when any of them is)
+      achievements: combineSummaries(entries.filter((e) => !e.excluded).map((e) => e.achievements)),
       summary: {
         total_minutes: g.minutes,
         tracked_minutes: k.play?.m || 0,
@@ -307,7 +325,26 @@ export function registerRoutes(r, app) {
     const sessions = db.prepare(`${SESSION_SELECT} WHERE s.entry_id IN (SELECT id FROM entries WHERE game_id = ?) AND s.kind IN ('play', 'baseline') ORDER BY s.sort_time DESC, s.id DESC LIMIT 300`).all(game.id).map(sessionRow);
     const stats = computeStats(db, { range: 'all', gameId: game.id, group: 'month', weekStartsOn: settings.get('week_starts_on'), topLimit: 1 });
     return { ...game, sessions, sessions_truncated: game.summary && game.summary.sessions > 300, series: stats.series, weekday: stats.weekday };
-  }, { summary: 'Game detail with entries, latest 300 sessions, monthly history' });
+  }, {
+    summary: 'Game detail with entries, latest 300 sessions, monthly history, achievement summaries',
+    returns: `The game (as in GET /games) plus entries[] (each with history and achievements), achievements (the game's counted entries together: counts add up, completed when any entry is), summary, sessions, series, weekday. achievements: ${ACH_SUMMARY_DOC}. The full list: GET /games/{id}/achievements.`,
+  });
+
+  r.get('/api/v1/games/:id/achievements', (c) => {
+    const id = toInt(c.params.id);
+    if (!db.prepare('SELECT id FROM games WHERE id = ?').get(id)) throw new HttpError(404, 'Game not found');
+    const state = c.query.state || 'all';
+    if (!['all', 'unlocked', 'locked'].includes(state)) throw new HttpError(400, 'state must be all, unlocked or locked');
+    const entryId = c.query.entry_id ? toInt(c.query.entry_id) : null;
+    if (c.query.entry_id && !db.prepare('SELECT 1 FROM entries WHERE id = ? AND game_id = ?').get(entryId, id)) throw new HttpError(404, 'Entry not found in this game');
+    return gameAchievements(db, id, { entryId, state });
+  }, {
+    summary: 'A game\'s achievements / trophies: unlocked first (newest first), then locked in the platform\'s order, each with the session it was unlocked in',
+    query: { entry_id: 'only this entry (platform copy) of the game', state: 'all (default) | unlocked | locked' },
+    returns: `{ game_id, summary: ${ACH_SUMMARY_DOC} (the counted entries together), entries: [{ entry_id, platform, account_id, account_name, title, excluded, achievements: summary }], total, `
+      + `items: [${ACH_ITEM_DOC.slice(0, -2)}, session: { id, started_at, ended_at, precise } | null, session_kind: 'tracked' | 'history' | null }] }. `
+      + 'The session is found by time: the tracked play session whose span holds the unlock (exact times first, else its sync window; 10 minutes of slack after the end), else the dated history estimate whose window holds it (session_kind history), else null. precise = false: started_at / ended_at are the window.',
+  });
 
   r.get('/api/v1/entries/:id/snapshots', (c) => {
     const limit = clamp(c.query.limit, 1000, 1, 10000);
@@ -436,18 +473,27 @@ export function registerRoutes(r, app) {
     const pw = [...where]; const pargs = [...args];
     const cur = /^(\d+):(\d+)$/.exec(q.before || '');
     if (cur) { pw.push('(s.sort_time < ? OR (s.sort_time = ? AND s.id < ?))'); pargs.push(Number(cur[1]), Number(cur[1]), Number(cur[2])); }
-    const items = db.prepare(`${SESSION_SELECT} ${pw.length ? `WHERE ${pw.join(' AND ')}` : ''} ORDER BY s.sort_time DESC, s.id DESC LIMIT ? OFFSET ?`)
-      .all(...pargs, limit, cur ? 0 : offset).map(sessionRow);
+    // the achievements unlocked during each session of the page (two queries for the page)
+    const items = withSessionAchievements(db, db.prepare(`${SESSION_SELECT} ${pw.length ? `WHERE ${pw.join(' AND ')}` : ''} ORDER BY s.sort_time DESC, s.id DESC LIMIT ? OFFSET ?`)
+      .all(...pargs, limit, cur ? 0 : offset).map(sessionRow));
     const last = items.at(-1);
     const sortTime = (x) => x.ended_at || x.window_end || x.created_at;
     return { total: total.n, total_minutes: total.m, limit, offset, items, next: items.length === limit && last ? `${sortTime(last)}:${last.id}` : null };
-  }, { summary: 'List sessions (newest first). Use `before` = previous `next` for fast deep paging.', query: { from: 'date/ISO/epoch', to: '', game_id: '', platform: '', account_id: '', source: 'sync|manual|import|api', kind: 'play|baseline|all', sync_id: '', q: 'title search', limit: 'max 1000', offset: '', before: 'cursor from `next`' } });
+  }, {
+    summary: 'List sessions (newest first). Use `before` = previous `next` for fast deep paging.',
+    query: { from: 'date/ISO/epoch', to: '', game_id: '', platform: '', account_id: '', source: 'sync|manual|import|api', kind: 'play|baseline|estimate|all', sync_id: '', q: 'title search', limit: 'max 1000', offset: '', before: 'cursor from `next`' },
+    returns: `{ total, total_minutes, limit, offset, next, items: [session] }. session: ${SESSION_DOC}; items holds the first 5 unlocks in unlock order.`,
+  });
 
-  r.get('/api/v1/sessions/:id', (c) => {
-    const s = db.prepare(`${SESSION_SELECT} WHERE s.id = ?`).get(toInt(c.params.id));
+  /** One session as the API shows it (with all its unlocks), or a 404. */
+  const sessionOut = (id) => {
+    const s = db.prepare(`${SESSION_SELECT} WHERE s.id = ?`).get(id);
     if (!s) throw new HttpError(404, 'Session not found');
-    return sessionRow(s);
-  }, { summary: 'Get one session' });
+    return withSessionAchievements(db, [sessionRow(s)], { limit: null })[0];
+  };
+
+  r.get('/api/v1/sessions/:id', (c) => sessionOut(toInt(c.params.id)),
+    { summary: 'Get one session', returns: `session: ${SESSION_DOC}; items holds every unlock of the session in unlock order.` });
 
   r.post('/api/v1/sessions', (c) => {
     const b = c.body;
@@ -482,8 +528,8 @@ export function registerRoutes(r, app) {
       if (b.status && STATUSES.includes(b.status)) db.prepare('UPDATE games SET status = ?, updated_at = ? WHERE id = ?').run(b.status, now, gameId);
       return Number(r2.lastInsertRowid);
     });
-    return sessionRow(db.prepare(`${SESSION_SELECT} WHERE s.id = ?`).get(id));
-  }, { summary: 'Log a manual session', body: '{ game_id, minutes|hours, started_at?|ended_at?|date?, note?, status? }' });
+    return sessionOut(id);
+  }, { summary: 'Log a manual session', body: '{ game_id, minutes|hours, started_at?|ended_at?|date?, note?, status? }', returns: 'the session, as GET /sessions/{id}' });
 
   function changeSession(id, patch) {
     const s = db.prepare('SELECT s.*, e.platform, e.account_id FROM sessions s JOIN entries e ON e.id = s.entry_id WHERE s.id = ?').get(id);
@@ -539,8 +585,8 @@ export function registerRoutes(r, app) {
   r.patch('/api/v1/sessions/:id', (c) => {
     const id = toInt(c.params.id);
     tx(db, () => changeSession(id, c.body));
-    return sessionRow(db.prepare(`${SESSION_SELECT} WHERE s.id = ?`).get(id));
-  }, { summary: 'Edit a session (note, times, kind; minutes for manual sessions)', body: '{ note?, started_at?, ended_at?, kind?, minutes? }' });
+    return sessionOut(id);
+  }, { summary: 'Edit a session (note, times, kind; minutes for manual sessions)', body: '{ note?, started_at?, ended_at?, kind?, minutes? }', returns: 'the session, as GET /sessions/{id} (its unlocks follow its new times)' });
 
   r.delete('/api/v1/sessions/:id', (c) => ({ ok: true, result: tx(db, () => removeSession(toInt(c.params.id))) }),
     { summary: 'Delete a manual session, or drop a synced one from stats (becomes baseline)' });
@@ -571,6 +617,119 @@ export function registerRoutes(r, app) {
     if (!ys.includes(cur)) ys.unshift(cur);
     return ys;
   }, { summary: 'Years that have play data' });
+  r.get('/api/v1/stats/achievements', (c) => {
+    if (c.query.group && !['day', 'week', 'month', 'year'].includes(c.query.group)) throw new HttpError(400, 'group must be day, week, month or year');
+    return achievementStats(db, { range: c.query.range, group: c.query.group, platform: c.query.platform || null, weekStartsOn: settings.get('week_starts_on'), limit: clamp(c.query.limit, 10, 1, 100) });
+  }, {
+    summary: 'Achievement / trophy stats for a range: unlocks per period, rarest unlocks, games completed, totals, completion of played games',
+    query: { range: '7d|30d|90d|365d|week|month|year|all|year:2026|month:2026-05 (default 30d)', group: 'day|week|month|year (default: by the range\'s length, as /stats)', platform: 'steam|xbox|psn', limit: 'rarest / completed list length (default 10, max 100)' },
+    returns: '{ range: { from, to, label, group }, unlocked, points (gamerscore), grades: { platinum, gold, silver, bronze } - all unlocked in the range; '
+      + 'series: [{ key, unlocked, points }] per group; rarest: [achievement + { game_id, title, cover_url }] unlocked in the range, rarest first; '
+      + 'completed: [{ entry_id, game_id, title, cover_url, platform, total, unlocked, platinum, completed_at }] completed in the range, newest first; completed_count; '
+      + 'totals (all time): { unlocked, total, percent, points, points_total, grades, entries (titles with achievements), completed }; '
+      + 'completion: { entries (played titles with achievements), average_percent, buckets: [{ label, min, max, count }] (0%, 1-24%, 25-49%, 50-74%, 75-99%, 100%) } }. '
+      + 'Excluded entries are left out.',
+  });
+
+  // ---------- insights (charts: punchcard, lengths, stacks, timelines, library, records) ----------
+  // Tracked play and estimated history are always reported apart; views that need a real time
+  // of day (punchcard, session lengths, day / week / streak records) are tracked play only.
+  const RANGE_Q = '7d|30d|90d|365d|week|month|year|all|year:2026|month:2026-05';
+  const EST_Q = 'include|exclude|only (default: the stats_estimates setting)';
+  const groupParam = (g, allowed = ['day', 'week', 'month', 'year']) => {
+    if (g != null && g !== '' && !allowed.includes(g)) throw new HttpError(400, `group must be ${allowed.join(', ')}`);
+    return g || undefined;
+  };
+  const insightOpts = (c) => ({ gameId: toInt(c.query.game_id), platform: c.query.platform || null, weekStartsOn: settings.get('week_starts_on') });
+  const SESSION_REF_DOC = '{ session_id, minutes, game_id, title, cover_url, platform, started_at (null unless exact), ended_at, day (local, of the end), precise }';
+
+  r.get('/api/v1/stats/punchcard', (c) => punchcard(db, { range: c.query.range, ...insightOpts(c) }), {
+    summary: 'Minutes by weekday x hour of day for a range (tracked play with exact start/end times only)',
+    query: { range: `${RANGE_Q} (default 30d)`, game_id: '', platform: '' },
+    returns: '{ range: { from, to, label }, estimates: "exclude" (always: estimated history and sync-window sessions have no reliable time of day), week_starts_on, '
+      + 'minutes: number[7][24] (index 0 = Sunday, as getDay(); local hours; a session is split across the hours and days it covers), weekday: number[7], hours: number[24], '
+      + 'days: number[7] (how many of each weekday the range holds, for averages), total_minutes (in the grid), tracked_minutes (all tracked play in the range), '
+      + 'untimed_minutes (tracked play without exact times, not in the grid), busiest: { weekday, hour, minutes } | null, busiest_weekday: { weekday, minutes } | null, busiest_hour: { hour, minutes } | null }',
+  });
+  r.get('/api/v1/stats/session-lengths', (c) => sessionLengths(db, { range: c.query.range, exact: c.query.exact === 'true' || c.query.exact === '1', ...insightOpts(c) }), {
+    summary: 'Distribution of tracked session lengths for a range: histogram, median, p90, longest',
+    query: { range: `${RANGE_Q} (default 30d)`, game_id: '', platform: '', exact: 'true = only sessions with exact start/end times (a sync window can hold several sittings)' },
+    returns: '{ range: { from, to, label }, estimates: "exclude" (always: history is not sessions), exact_only, sessions (tracked play sessions ending in the range), exact_sessions, total_minutes, '
+      + 'mean_minutes, median_minutes (the middle value; mean of the two middle ones for an even count), p90_minutes (nearest rank), '
+      + 'buckets: [{ label, min, max (minutes; max exclusive, null = open), count, minutes }] (<15m, 15-30m, 30-60m, 1-2h, 2-3h, 3-5h, 5h+), '
+      + `longest: ${SESSION_REF_DOC} | null (the first to reach that length) }`,
+  });
+  r.get('/api/v1/stats/platforms', (c) => {
+    const by = c.query.by || 'platform';
+    if (!['platform', 'device'].includes(by)) throw new HttpError(400, 'by must be platform or device');
+    return platformSeries(db, { range: c.query.range, group: groupParam(c.query.group), by, estimates: estimatesParam(c.query, settings), ...insightOpts(c) });
+  }, {
+    summary: 'Minutes per platform (or device) per period, tracked and estimated apart - for stacked charts',
+    query: { range: `${RANGE_Q} (default 30d)`, group: 'day|week|month|year (default: by the range\'s length, as /stats)', by: 'platform (default) | device', game_id: '', platform: '', estimates: EST_Q },
+    returns: '{ range: { from, to, label, group }, by, estimates, keys: string[] (period keys, as /stats series), '
+      + 'series: [{ name (the platform, or the device as the platform reported it; null = no device known - history has none), minutes, tracked_minutes, estimated_minutes, tracked: number[keys], estimated: number[keys] }] (most played first), '
+      + 'totals: { tracked: number[keys], estimated: number[keys] } }',
+  });
+  r.get('/api/v1/stats/timeline', (c) => timeline(db, {
+    range: c.query.range || '365d', group: groupParam(c.query.group), limit: clamp(c.query.limit, 10, 1, 50), estimates: estimatesParam(c.query, settings), ...insightOpts(c),
+  }), {
+    summary: '"When did I play what": the top games of a range with minutes per week / month (swimlanes), and the most played game of each month (eras)',
+    query: { range: `${RANGE_Q} (default 365d)`, group: 'week|month (default: week up to 200 days, else month; day|year also accepted)', limit: 'games (default 10, max 50)', platform: '', estimates: EST_Q },
+    returns: '{ range: { from, to, label, group }, estimates, keys: string[], games_played, '
+      + 'games: [{ game_id, title, cover_url, minutes, estimated_minutes, first_day, last_day (in the range), tracked: number[keys], estimated: number[keys] }] (most played first), '
+      + 'others: { tracked: number[keys], estimated: number[keys] } (every other game together), '
+      + 'months: [{ month (YYYY-MM), game_id, title, cover_url, minutes, estimated_minutes, month_minutes, share (0-1 of the month) }] (months with play), '
+      + 'eras: [{ game_id, title, cover_url, from, to (YYYY-MM), months, minutes, estimated_minutes }] (consecutive months led by the same game) }',
+  });
+  r.get('/api/v1/games/:id/stats', (c) => gameCurve(db, toInt(c.params.id), { group: groupParam(c.query.group) || 'month', estimates: estimatesParam(c.query, settings), weekStartsOn: settings.get('week_starts_on') }), {
+    summary: 'A game over time: cumulative minutes (tracked and estimated apart), sessions and achievement unlocks per period, first / last played',
+    tag: 'stats',
+    query: { group: 'day|week|month|year (default month)', estimates: EST_Q },
+    returns: '{ game_id, title, cover_url, status, group, estimates, totals: { minutes (tracked + estimated + baseline), tracked_minutes, estimated_minutes, baseline_minutes (undated history: in totals, never on the curve), sessions }, '
+      + 'first_day, last_day (first / last day on the curve), first_session_at, last_session_at (tracked play), platform_first_played_at, platform_last_played_at (as the platforms report them), '
+      + 'achievements: { total, unlocked, undated (unlocked at a time the platform does not know: not on the curve), percent }, '
+      + 'series: [{ key, minutes, tracked, estimated, sessions (tracked, ending in the period), unlocked, cumulative_tracked, cumulative_estimated, cumulative_unlocked }] '
+      + '(from the first play or unlock to now; [] when there is none). Excluded entries never count. 404 for an unknown game.',
+  });
+  r.get('/api/v1/stats/library', (c) => libraryOverview(db, {
+    hidden: c.query.hidden === 'true', points: clamp(c.query.points, 500, 0, 2000), dustyLimit: clamp(c.query.dusty_limit, 20, 0, 100),
+  }), {
+    summary: 'Library overview: games and hours by status, platform, first-played year and year added; played vs never; dusty games; backlog age; hours distribution; completion vs hours',
+    query: { hidden: 'true = include hidden games (default: left out, as GET /games)', points: 'completion scatter points (default 500, max 2000; most played first)', dusty_limit: 'dusty games listed (default 20, max 100)' },
+    returns: '{ hidden_included, games, played, never_played, minutes (lifetime, as GET /games), tracked_minutes, history_minutes (estimated + undated baseline), '
+      + 'by_status: [{ status, games, played, minutes, tracked_minutes, history_minutes }] (every status), by_platform: [{ platform, games, played, minutes, tracked_minutes, history_minutes }] (a game on two platforms counts on both), '
+      + 'by_first_played_year: [{ year, games, minutes, from_history (games whose first play is known from history or the platform, not from tracking) }], first_played_unknown (played, no date), '
+      + 'by_year_added: [{ year, games, minutes }] (date added / purchased, where a platform, import or licenses page gave it), added_unknown, '
+      + 'hours: [{ label, min, max (lifetime minutes; max exclusive, null = open), games, minutes }] (Never, <1h, 1-5h, 5-10h, 10-25h, 25-50h, 50-100h, 100h+), '
+      + 'dusty: { count, minutes, items: [{ game_id, title, cover_url, status, minutes, last_played_at, days_since }] } (played, not in over a year, not completed / beaten / dropped / wishlist; most hours first), '
+      + 'backlog: { count, minutes, median_days, buckets: [{ label, min_days, max_days, games }], oldest: [{ game_id, title, cover_url, since, days, minutes }] } (status backlog; age from the date added, else from when it entered Vestigo), '
+      + 'completion: { games (with achievements), points: [{ game_id, title, minutes, percent, unlocked, total, status }] (at most `points`, most played first), truncated } }. Excluded entries never count.',
+  });
+  r.get('/api/v1/stats/year-over-year', (c) => {
+    let years;
+    if (c.query.years) {
+      years = String(c.query.years).split(',').map((y) => y.trim()).filter(Boolean);
+      if (!years.length || years.length > 10 || years.some((y) => !/^\d{4}$/.test(y))) throw new HttpError(400, 'years must be a comma list of up to 10 years (YYYY)');
+      years = years.map(Number);
+    }
+    return yearOverYear(db, { years, estimates: estimatesParam(c.query, settings), ...insightOpts(c) });
+  }, {
+    summary: 'Years side by side: minutes per month (tracked / estimated), totals, the same date in each year, top game, new games',
+    query: { years: 'comma list, up to 10 (default: last year and this year)', game_id: '', platform: '', estimates: EST_Q },
+    returns: '{ estimates, years: [{ year, partial (the current year), total_minutes, tracked_minutes, estimated_minutes, to_date: { through (MM-DD, today), minutes, tracked_minutes, estimated_minutes } (Jan 1 to the same date: compares years so far), '
+      + 'sessions, games_played, days_played (tracked), new_games (first ever play in that year), top_game: { game_id, title, cover_url, minutes, estimated_minutes } | null, '
+      + 'months: [{ month (1-12), key (YYYY-MM), minutes, tracked, estimated, sessions }] }] (oldest first) }',
+  });
+  r.get('/api/v1/stats/records', (c) => records(db, { range: c.query.range || 'all', group: groupParam(c.query.group, ['month', 'year']), estimates: estimatesParam(c.query, settings), ...insightOpts(c) }), {
+    summary: 'Records and highlights: longest session, biggest day, best week / month, longest streak, most played game per period, first tracked session',
+    query: { range: `${RANGE_Q} (default all)`, group: 'month|year for most_played_by (default: year for ranges over 400 days, else month)', game_id: '', platform: '', estimates: `${EST_Q} - most played only; the other records are tracked play` },
+    returns: `{ range: { from, to, label }, estimates, tracked_minutes, estimated_minutes, sessions, days_played, games_played, longest_session: ${SESSION_REF_DOC} | null, first_session: (same) | null, `
+      + 'biggest_day: { day, minutes } | null, best_week: { key, from, to (days; weeks start on week_starts_on), minutes } | null, best_month: { key, minutes } | null, '
+      + 'longest_streak: { days, from, to } | null (in the range), current_streak (days, ending today or yesterday), '
+      + 'most_played: { game_id, title, cover_url, minutes, estimated_minutes, share } | null, most_played_by: { group, items: [{ key, game_id, title, cover_url, minutes, estimated_minutes, share }] }, '
+      + 'weekday: number[7] (tracked minutes, 0 = Sunday), hours: number[24] (exact sessions), '
+      + 'highlights: [{ id (longest_session|biggest_day|best_week|longest_streak|most_played|favorite_weekday|time_of_day|first_session), text (an English one-liner from a fixed template), value, unit (minutes|days|percent), ...the ids / days it refers to }] }',
+  });
 
   // ---------- duplicates ----------
   r.get('/api/v1/duplicates', (c) => {
@@ -741,7 +900,11 @@ export function registerRoutes(r, app) {
     if (c.query.wait === 'true') return (await p) || { updated: 0 };
     p.catch(() => {});
     return { ok: true, started: true };
-  }, { summary: 'Fetch achievement times / release dates now to date pre-tracking history', body: '{ reset?: boolean }', query: { wait: 'true' } });
+  }, {
+    summary: 'Fetch achievement times / release dates now to date pre-tracking history, and read due achievements / trophies',
+    body: '{ reset?: boolean }', query: { wait: 'true' },
+    returns: 'with wait=true: { updated, anchored, remaining (history titles left), achievements: { read, backfilled, pending, played_since, api_calls, retry_in } | undefined }',
+  });
 
   r.post('/api/v1/accounts/:id/licenses', (c) => {
     const a = sync.account(toInt(c.params.id));
@@ -836,7 +999,11 @@ export function registerRoutes(r, app) {
     }
     if (!c.res.destroyed) c.res.end();
     return undefined;
-  }, { summary: 'Export everything (streamed JSON, or ?format=csv)', query: { format: 'json|csv' } });
+  }, {
+    summary: 'Export everything (streamed JSON, or ?format=csv)', query: { format: 'json|csv' },
+    returns: 'JSON: { format, version, app, exported_at, games: [{ title, platform, account, playtime_minutes, …, sessions, achievements?: [{ id, name, unlocked, unlocked_at, rarity?, points?, grade? }] }] } '
+      + '(achievements only on entries that have them; importing ignores them - they come back from the platform). CSV: unchanged columns.',
+  });
 
   r.get('/api/v1/backup', (c) => {
     const tmp = path.join(os.tmpdir(), `vestigo-backup-${Date.now()}.db`);
@@ -984,6 +1151,8 @@ export function registerRoutes(r, app) {
         ...publicAccount(a, sync), api_usage_24h: day, last_sync: last || null, failed_syncs_7d: fails,
         can_enrich: !!providers[a.platform]?.enrich,
         enrichment_pending: providers[a.platform]?.enrich ? count('SELECT COUNT(*) n FROM entries WHERE account_id = ? AND baseline_min > 0 AND enriched_at IS NULL', a.id) : 0,
+        // how far reading achievements / trophies has got (null: the platform has none)
+        achievements: providers[a.platform]?.achievements ? achievementProgress(db, a.id) : null,
         capabilities: providers[a.platform]?.capabilities || null,
       };
     });
@@ -1001,14 +1170,18 @@ export function registerRoutes(r, app) {
         sessions_estimated: count("SELECT COUNT(*) n FROM sessions WHERE kind = 'estimate'"),
         rollup_rows: count('SELECT COUNT(*) n FROM play_days'), rollup_queue: count('SELECT COUNT(*) n FROM rollup_queue'),
         snapshots: count('SELECT COUNT(*) n FROM snapshots'), presence_spans: count('SELECT COUNT(*) n FROM presence'),
-        logs: count('SELECT COUNT(*) n FROM logs'),
+        logs: count('SELECT COUNT(*) n FROM logs'), achievements: count('SELECT COUNT(*) n FROM achievements'),
       },
       errors_24h: count("SELECT COUNT(*) n FROM logs WHERE level = 'error' AND time > ?", Date.now() - 86_400_000),
       warnings_24h: count("SELECT COUNT(*) n FROM logs WHERE level = 'warn' AND time > ?", Date.now() - 86_400_000),
       accounts,
       console: app.log?.recent?.().slice(-80) || [],
     };
-  }, { summary: 'Diagnostics: versions, storage, per-account health, API usage & rate limits, recent console output' });
+  }, {
+    summary: 'Diagnostics: versions, storage, per-account health, API usage & rate limits, recent console output',
+    returns: 'accounts[].achievements (Steam, Xbox, PlayStation; null elsewhere): { titles (played titles), done, pending (not read yet), pending_with_history (of those, read by the history enrichment; the rest by the one-time back-fill), '
+      + 'refresh_due (played since last read: read after the next sync), achievements, unlocked, last_read_at, version }',
+  });
 
   r.get('/api/v1/widget', () => {
     const l = lifetime(db);

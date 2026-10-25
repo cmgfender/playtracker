@@ -1,4 +1,5 @@
 import { ProviderError, spacer } from './http.js';
+import { text, percent, unlockTime } from '../services/achievements.js';
 
 const API = 'https://xbl.io/api/v2';
 // Xbox Home / dashboard / app shells; 704208617 is the Xbox app on Windows (reported as "Online")
@@ -58,6 +59,38 @@ export function findUnlockTimes(obj, out = []) {
   return out;
 }
 
+/**
+ * Achievement rows from an achievements/player reply, in a { content, code } envelope or not:
+ * the modern shape (progressState, progression.timeUnlocked, mediaAssets, rarity, Gamerscore
+ * rewards) and the Xbox 360 one (unlocked, timeUnlocked, gamerscore, imageId - its icon is the
+ * classic image.xboxlive.com path, built from the title and image ids).
+ */
+export function parseXboxAchievements(payload, titleId = null) {
+  const body = unwrap(payload);
+  const list = Array.isArray(body?.achievements) ? body.achievements : Array.isArray(body) ? body : [];
+  const hex = (n) => (n != null && n !== '' && Number.isInteger(Number(n)) && Number(n) >= 0 ? Number(n).toString(16) : null);
+  return list.filter((a) => a && typeof a === 'object' && a.id != null && a.id !== '').map((a, i) => {
+    const modern = 'progressState' in a || (a.progression && typeof a.progression === 'object');
+    const when = unlockTime(modern ? a.progression?.timeUnlocked ?? a.timeUnlocked : a.timeUnlocked);
+    const unlocked = modern ? (a.progressState ? a.progressState === 'Achieved' : when != null) : !!(a.unlocked ?? a.unlockedOnline ?? when);
+    let icon = null;
+    if (modern) {
+      const media = Array.isArray(a.mediaAssets) ? a.mediaAssets.filter((m) => m?.url) : [];
+      icon = (media.find((m) => /icon/i.test(`${m.type || ''} ${m.name || ''}`)) || media[0])?.url ?? null;
+    } else if (hex(a.imageId) && hex(a.titleId ?? titleId)) {
+      icon = `https://image.xboxlive.com/global/t.${hex(a.titleId ?? titleId)}/ach/0/${hex(a.imageId)}`;
+    }
+    const score = modern ? (Array.isArray(a.rewards) ? a.rewards.find((r) => /gamerscore/i.test(String(r?.type || ''))) : null)?.value : a.gamerscore;
+    return {
+      id: String(a.id), name: text(a.name), description: text(a.description) ?? text(a.lockedDescription),
+      icon_url: text(icon), icon_locked_url: null,
+      unlocked, unlocked_at: unlocked ? when : null,
+      rarity: percent(a.rarity?.currentPercentage), points: score != null && score !== '' && Number.isFinite(Number(score)) ? Number(score) : null, grade: null,
+      hidden: a.isSecret == null ? null : !!a.isSecret, group: null, sort: i,
+    };
+  });
+}
+
 /** Capture (screenshot / game clip) times per title id, from either media API shape. */
 export function captureTimes(obj, out = new Map()) {
   if (!obj || typeof obj !== 'object') return out;
@@ -99,7 +132,7 @@ export const xbox = {
     { key: 'presence', label: 'Live presence tracking', type: 'select', options: ['on', 'off'], required: false, help: 'Polls presence every 5 minutes (12 requests/hour).' },
     { key: 'include_apps', label: 'Track apps', type: 'select', options: ['off', 'on'], required: false, help: 'Title history also lists apps (Netflix, YouTube, …). Off = games only.' },
   ],
-  notes: 'Per-title MinutesPlayed and last played time (console + PC/Game Pass), live presence and achievement unlock times for dating your history. Budgeted to the OpenXBL hourly limit.',
+  notes: 'Per-title MinutesPlayed and last played time (console + PC/Game Pass), live presence, and your achievements (gamerscore, rarity and unlock times, which also date your history). Budgeted to the OpenXBL hourly limit.',
   profile: {
     history: {
       update: 'periodic',         // MinutesPlayed is flushed during play: a long session spans reports
@@ -119,6 +152,7 @@ export const xbox = {
     per_device: 'devices the title is available on (not per-device minutes)',
     presence: 'presence: current title + placement (Full/Snapped)',
     history_anchors: 'Achievement unlock times (modern + Xbox 360 titles) and screenshot / game clip capture dates (2 requests per enrichment run)',
+    achievements: 'achievements/player (the enrichment request): names, icons, gamerscore, rarity, unlock times; read again after new play (1 request per title, above the 30% reserve)',
     rate_limit: 'OpenXBL: 150 requests/hour on the free plan (configurable for paid plans)',
     limitations: [
       'Requires the third-party OpenXBL service (Microsoft offers no public consumer API).',
@@ -292,10 +326,41 @@ export const xbox = {
       await gap();
       try {
         const r = await ctx.http(`${API}/achievements/player/${encodeURIComponent(xuid)}/${encodeURIComponent(e.ext_id)}`, { headers }, { retries: 0 });
-        updates.push({ entryId: e.id, anchors: [...findUnlockTimes(r), ...(captures.get(String(e.ext_id)) || [])], done: true });
+        // the same reply carries the achievements themselves: no extra request
+        updates.push({ entryId: e.id, anchors: [...findUnlockTimes(r), ...(captures.get(String(e.ext_id)) || [])], done: true, achievements: parseXboxAchievements(r, e.ext_id) });
       } catch (err) {
         if (err.rateLimited || err.auth) break;
-        updates.push({ entryId: e.id, anchors: captures.get(String(e.ext_id)) || [], done: err.status === 404 || err.status === 400 });
+        const none = err.status === 404 || err.status === 400; // the title has no achievements
+        updates.push({ entryId: e.id, anchors: captures.get(String(e.ext_id)) || [], done: none, ...(none ? { achievements: null } : {}) });
+      }
+    }
+    return { updates };
+  },
+
+  /**
+   * Read titles' achievements again (played since they were read, or never read): one
+   * achievements/player request per title, only while more than 30% of the hour's budget is left
+   * (like enrichment), at most `maxCalls`.
+   */
+  async achievements(account, entries, ctx, { maxCalls = 10 } = {}) {
+    const xuid = account.state.xuid;
+    if (!xuid) return { updates: [] };
+    const headers = this.headers(account);
+    const gap = spacer(1000);
+    const reserve = Math.ceil(this.hourlyLimit(account) * 0.3);
+    const updates = [];
+    let calls = 0;
+    for (const e of entries) {
+      if (ctx.stopped?.() || calls >= maxCalls) break;
+      if ((ctx.remainingBudget?.(this.hourlyLimit(account)) ?? 0) <= reserve) break;
+      await gap(); calls++;
+      try {
+        const r = await ctx.http(`${API}/achievements/player/${encodeURIComponent(xuid)}/${encodeURIComponent(e.ext_id)}`, { headers }, { retries: 0 });
+        updates.push({ entryId: e.id, achievements: parseXboxAchievements(r, e.ext_id), done: true });
+      } catch (err) {
+        if (err.rateLimited || err.auth) break;
+        const none = err.status === 404 || err.status === 400;
+        updates.push({ entryId: e.id, done: none, ...(none ? { achievements: null } : {}) });
       }
     }
     return { updates };
