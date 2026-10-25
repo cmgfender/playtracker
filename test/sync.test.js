@@ -270,3 +270,46 @@ test('a minute or two beyond what presence saw stays part of that session', () =
   assert.deepEqual(consistent(db), []);
   assert.equal(sessions(db, 'play').reduce((a, s) => a + s.minutes, 0), 31);
 });
+
+test('minutes a platform uploads late go to the session presence saw that had not been credited, not into today\'s', () => {
+  // Xbox (PC): the last minutes of Thursday's session arrive only on Friday, with Friday's play
+  const { db, settings } = setup();
+  const acc = addAccount(db, 'xbox');
+  const M = 60_000;
+  const thu = new Date('2026-10-22T14:00:00').getTime();
+  const span = (start, end, seen = end) => Number(db.prepare('INSERT INTO presence(account_id, ext_id, title, started_at, last_seen_at, ended_at) VALUES (?, ?, ?, ?, ?, ?)').run(acc, '1810111157', 'Gears', start, seen, end).lastInsertRowid);
+  const item = (min) => ({ extId: '1810111157', title: 'Gears', playtimeMin: min, lastPlayedAt: null });
+  runSync(db, settings, acc, [item(1000)], thu - 20 * H);
+  span(thu, thu + 25 * M);                                    // 14:00-14:25, credited at 14:38
+  const b = span(thu + 35 * M, null, thu + 38 * M);            // 14:35, still running at 14:38
+  runSync(db, settings, acc, [item(1023)], thu + 38 * M);      // 21 + 2 so far
+  db.prepare('UPDATE presence SET ended_at = ?, last_seen_at = ? WHERE id = ?').run(thu + 65 * M, thu + 63 * M, b);
+  runSync(db, settings, acc, [item(1023)], thu + 78 * M);      // the stat has not caught up
+  runSync(db, settings, acc, [item(1023)], thu + 18 * H);      // nor overnight
+  const fri = thu + D;
+  span(fri, fri + 35 * M);
+  runSync(db, settings, acc, [item(1085)], fri + 48 * M);      // +62: Thursday's rest and Friday's play
+  const bySpan = db.prepare('SELECT p.started_at, (COALESCE(p.ended_at, p.last_seen_at) - p.started_at) / 60000 len, s.minutes FROM presence p JOIN sessions s ON s.id = p.session_id ORDER BY p.started_at').all();
+  assert.equal(bySpan.length, 3);
+  const [, thuLate, friday] = bySpan;
+  assert.ok(thuLate.minutes >= 28 && thuLate.minutes <= 30, `Thursday's second session ${thuLate.minutes} of ${thuLate.len} min`);
+  assert.ok(friday.minutes >= 33 && friday.minutes <= 35, `Friday ${friday.minutes} of ${friday.len} min`);
+  assert.equal(sessions(db, 'play').reduce((a, s) => a + s.minutes, 0), 85);
+  assert.deepEqual(consistent(db), []);
+});
+
+test('late minutes never go to a session that ended before the total last moved', () => {
+  const { db, settings } = setup();
+  const acc = addAccount(db, 'xbox');
+  const M = 60_000;
+  const t = new Date('2026-10-22T14:00:00').getTime();
+  runSync(db, settings, acc, [{ extId: '7', title: 'G', playtimeMin: 500 }], t - 20 * H);
+  db.prepare('INSERT INTO presence(account_id, ext_id, title, started_at, last_seen_at, ended_at) VALUES (?, ?, ?, ?, ?, ?)').run(acc, '7', 'G', t, t + 40 * M, t + 40 * M);
+  runSync(db, settings, acc, [{ extId: '7', title: 'G', playtimeMin: 530 }], t + 55 * M); // credited 30 of 40: that was all
+  runSync(db, settings, acc, [{ extId: '7', title: 'G', playtimeMin: 530 }], t + 20 * H);
+  db.prepare('INSERT INTO presence(account_id, ext_id, title, started_at, last_seen_at, ended_at) VALUES (?, ?, ?, ?, ?, ?)').run(acc, '7', 'G', t + D, t + D + 20 * M, t + D + 20 * M);
+  runSync(db, settings, acc, [{ extId: '7', title: 'G', playtimeMin: 550 }], t + D + 35 * M);
+  const rows = db.prepare('SELECT s.minutes FROM presence p JOIN sessions s ON s.id = p.session_id ORDER BY p.started_at').all().map((r) => r.minutes);
+  assert.deepEqual(rows, [30, 20], 'the first session keeps what the platform credited');
+  assert.deepEqual(consistent(db), []);
+});
