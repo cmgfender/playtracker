@@ -1,7 +1,7 @@
 // Seed a database with ~120 days of simulated daily syncs so the UI can be explored
 // without real credentials:  node src/demo.js [path/to/db]
-import path from 'node:path';
 import { openDb, tx } from './db.js';
+import { resolveDbFile } from './env.js';
 import { Settings } from './services/settings.js';
 import { applyItems, parseAccount } from './services/sync.js';
 
@@ -74,7 +74,7 @@ export function seedDemo(db, { days = 120, now = Date.now() } = {}) {
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
-  const file = process.argv[2] || path.join(process.env.PLAYTRACKER_DATA || './data', 'playtracker.db');
+  const file = process.argv[2] || resolveDbFile(); // the database the server would open
   const db = openDb(file);
   if (db.prepare('SELECT COUNT(*) n FROM accounts').get().n) {
     console.error('Database already has accounts; refusing to seed demo data.');

@@ -1,6 +1,6 @@
-# Platform APIs: what they give, what they don't, and how PlayTracker uses them
+# Platform APIs: what they give, what they don't, and how Vestigo uses them
 
-None of the platforms expose a play-session history. They only report **lifetime totals** plus a few timestamps. PlayTracker gets as much out of each API as it can. The table below shows which signals each platform provides and what PlayTracker does with them.
+None of the platforms expose a play-session history. They only report **lifetime totals** plus a few timestamps. Vestigo gets as much out of each API as it can. The table below shows which signals each platform provides and what Vestigo does with them.
 
 | Signal | Steam | PlayStation | Xbox (OpenXBL) | Custom / API push | Used for |
 |---|---|---|---|---|---|
@@ -72,7 +72,7 @@ None of the platforms expose a play-session history. They only report **lifetime
 
 ## Xbox (OpenXBL)
 
-Microsoft has no public consumer API, so PlayTracker uses [OpenXBL](https://xbl.io).
+Microsoft has no public consumer API, so Vestigo uses [OpenXBL](https://xbl.io).
 
 **Calls per sync:**
 - 1 call to `player/titleHistory`, which gives the title list and last played times.
@@ -149,7 +149,7 @@ Steps 1–7 are tried in order; steps 8–11 are checks that apply throughout.
 7. **Large deltas over multi-day windows:** spread across the days, weighted toward the last activity, capped per day. Integer minutes are allocated exactly, so no minute is ever lost to rounding.
 8. **Self-repair:** if a new delta pins to a launch time that was already used, the earlier pin was a session still running at that report. It is moved to before the launch.
 9. **Strict recent counter** (Steam): minutes beyond `playtime_2weeks` are offline play uploaded late. They become undated history instead of being crammed into the window.
-10. **Calibration:** whenever presence shows exactly when a session ran, the account checks whether the platform's last-played timestamp sat at that session's start or end. After 3+ observations agreeing ≥75%, the learned meaning overrides the declared one for that account. If a platform changes its behaviour, PlayTracker follows it.
+10. **Calibration:** whenever presence shows exactly when a session ran, the account checks whether the platform's last-played timestamp sat at that session's start or end. After 3+ observations agreeing ≥75%, the learned meaning overrides the declared one for that account. If a platform changes its behaviour, Vestigo follows it.
 11. **Totals never go down:** a total lower than before is ignored. It is almost always a glitch (an empty stat, a bad report) that comes back later, so the total keeps its high-water mark and only play above it is new. Nothing is counted twice when it recovers.
 
 ### Measured accuracy (ground-truth simulation)
@@ -219,7 +219,7 @@ Accuracy over those 6 months:
 
 #### Learning the player's style
 
-The biggest error left after the evidence is used up is *how* a player spreads a game's hours, which differs a lot between people. So PlayTracker learns it from the player's own data (`learnStyle` / `learnStyleFromDb` in `inference.js`):
+The biggest error left after the evidence is used up is *how* a player spreads a game's hours, which differs a lot between people. So Vestigo learns it from the player's own data (`learnStyle` / `learnStyleFromDb` in `inference.js`):
 
 - **Teachers:** games tracked from their very first session (no pre-tracking time) that have gone quiet for 30 days, plus history entries with 8+ achievement/trophy times. Each is kept as a compact signature: total minutes, span, the share of minutes in each twentieth of its life, and the share by days before its last session.
 - **Use:** a game is dated like the k = 8 most similar teachers (by size, and by span when the start is known), blended with the default shape by evidence: weight = games / (games + 5).

@@ -1,0 +1,36 @@
+<?xml version="1.0"?>
+<Container version="2">
+  <Name>Vestigo</Name>
+  <Repository>ghcr.io/cmgfender/vestigo:latest</Repository>
+  <Registry>https://github.com/cmgfender/playtracker/pkgs/container/vestigo</Registry>
+  <Network>bridge</Network>
+  <Shell>sh</Shell>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/cmgfender/playtracker/issues</Support>
+  <Project>https://github.com/cmgfender/playtracker</Project>
+  <Overview>Vestigo Media Tracker: self-hosted playtime and session tracker for Steam, Xbox and PlayStation (plus anything you push via the API).&#xD;
+&#xD;
+Platforms only report lifetime playtime, so Vestigo snapshots it on a schedule (hourly, daily, weekly, monthly or every X days/hours) and turns the difference into play sessions. Live presence (what you're playing right now) pins sessions to exact start/end times and triggers a sync as soon as you stop playing.&#xD;
+&#xD;
+Your existing hours are never dumped onto import day: they are dated from first/last played dates, launch counts, achievement unlock times, release dates and account age, and shown as estimated history.&#xD;
+&#xD;
+Works out of the box: add the container, open the WebUI, connect an account. Stats, heatmaps, year in review, duplicate handling across platforms, CSV/JSON import, REST API, webhooks, error log and diagnostics included.&#xD;
+&#xD;
+Already running PlayTracker? Keep its container: it updates to Vestigo by itself. To switch to this template anyway, stop and remove the old container first and point Data at its folder.</Overview>
+  <Category>MediaApp:Other Tools: Status:Stable</Category>
+  <WebUI>http://[IP]:[PORT:7720]/</WebUI>
+  <TemplateURL>https://raw.githubusercontent.com/cmgfender/playtracker/main/unraid/vestigo.xml</TemplateURL>
+  <Icon>https://raw.githubusercontent.com/cmgfender/playtracker/main/public/icon-512.png?v=vestigo</Icon>
+  <ExtraParams>--restart=unless-stopped</ExtraParams>
+  <PostArgs/>
+  <Requires/>
+  <Config Name="WebUI Port" Target="7720" Default="7720" Mode="tcp" Description="Web interface and API. Change the host side if 7720 is taken." Type="Port" Display="always" Required="true" Mask="false">7720</Config>
+  <Config Name="Data" Target="/data" Default="/mnt/user/appdata/vestigo" Mode="rw" Description="Database (vestigo.db) and optional log file. Coming from PlayTracker? Use its folder (e.g. /mnt/user/appdata/playtracker): its playtracker.db is used in place." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/vestigo</Config>
+  <Config Name="Password" Target="VESTIGO_PASSWORD" Default="" Mode="" Description="Optional password for the UI and API (can also be set in Settings). Leave empty for open LAN access." Type="Variable" Display="always" Required="false" Mask="true"/>
+  <Config Name="Log level" Target="LOG_LEVEL" Default="info" Mode="" Description="debug | info | warn | error. Warnings and errors are always kept in the in-app error log (System page)." Type="Variable" Display="advanced" Required="false" Mask="false">info</Config>
+  <Config Name="Log file" Target="VESTIGO_LOG_FILE" Default="" Mode="" Description="Optional rotating log file, e.g. /data/vestigo.log" Type="Variable" Display="advanced" Required="false" Mask="false"/>
+  <Config Name="PUID" Target="PUID" Default="99" Mode="" Description="User ID the app runs as (Unraid: 99 = nobody)" Type="Variable" Display="advanced" Required="false" Mask="false">99</Config>
+  <Config Name="PGID" Target="PGID" Default="100" Mode="" Description="Group ID (Unraid: 100 = users)" Type="Variable" Display="advanced" Required="false" Mask="false">100</Config>
+  <Config Name="Secure cookie" Target="VESTIGO_SECURE_COOKIE" Default="false" Mode="" Description="Set to true when served over HTTPS (reverse proxy)" Type="Variable" Display="advanced" Required="false" Mask="false">false</Config>
+  <Config Name="CORS origin" Target="VESTIGO_CORS_ORIGIN" Default="" Mode="" Description="Allow browser API calls from another origin (e.g. a dashboard)" Type="Variable" Display="advanced" Required="false" Mask="false"/>
+</Container>

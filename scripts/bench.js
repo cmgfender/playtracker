@@ -1,4 +1,4 @@
-// Load-test PlayTracker with a huge library:  node scripts/bench.js [games] [sessions]
+// Load-test Vestigo with a huge library:  node scripts/bench.js [games] [sessions]
 // Seeds an in-memory DB directly, then times the heaviest API endpoints.
 import { createApp } from '../src/server.js';
 import { applyItems, parseAccount } from '../src/services/sync.js';

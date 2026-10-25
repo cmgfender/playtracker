@@ -5,6 +5,8 @@
 //  - ports: PORT, fallback when the port is taken, fallback disabled
 //  - data directory and migrations: fresh install, PLAYTRACKER_DB override, empty file,
 //    idempotent reopen, upgrade of a first-release (v1) database, corrupt / foreign files
+//  - upgrading a PlayTracker install in place: its playtracker.db, PLAYTRACKER_* variables and pt_
+//    tokens keep working; vestigo.db vs playtracker.db; VESTIGO_* names win over PLAYTRACKER_*
 //  - restarts: SIGTERM / SIGINT / SIGKILL keep every acknowledged write, tracking continues
 //  - time zones: day/hour buckets follow TZ and are rebuilt when it changes (incl. DST)
 //  - concurrency: parallel writes, reads, imports, merges, deletes and syncs
@@ -18,9 +20,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import zlib from 'node:zlib';
 import http from 'node:http';
+import crypto from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import { createApp } from '../../src/server.js';
 import { openDb } from '../../src/db.js';
+import { resolveDbFile } from '../../src/env.js';
 import * as H from './helpers/server-db-harness.js';
 import { buildLegacyV1, LEGACY, LEGACY_TOKEN } from './helpers/server-db-legacy.js';
 
@@ -343,7 +347,8 @@ describe('data directory and database migrations', () => {
     assert.equal(fs.existsSync(dir), false);
     const srv = await H.startServer({ env: { PORT: String(await H.freePort()), PLAYTRACKER_DATA: dir, TZ: 'UTC' } });
     try {
-      assert.ok(fs.existsSync(path.join(dir, 'playtracker.db')), 'playtracker.db lives in PLAYTRACKER_DATA');
+      assert.ok(fs.existsSync(path.join(dir, 'vestigo.db')), 'a new install gets vestigo.db in PLAYTRACKER_DATA');
+      assert.equal(fs.existsSync(path.join(dir, 'playtracker.db')), false, 'and no file under the old name');
       const games = ok(await srv.api('/api/v1/games'), 'games');
       assert.equal(games.total, 0);
       assert.deepEqual(games.items, []);
@@ -355,12 +360,12 @@ describe('data directory and database migrations', () => {
       ok(await srv.api('/api/v1/summary'), 'summary');
       ok(await srv.api('/api/v1/settings'), 'settings');
       const sys = ok(await srv.api('/api/v1/system'), 'system');
-      assert.equal(path.resolve(sys.data_dir), path.resolve(dir, 'playtracker.db'));
+      assert.equal(path.resolve(sys.data_dir), path.resolve(dir, 'vestigo.db'));
       // it really writes there
       const g = ok(await srv.api('/api/v1/games', { method: 'POST', body: { title: 'First Game' } }), 'add');
       ok(await srv.api('/api/v1/sessions', { method: 'POST', body: { game_id: g.id, minutes: 30, started_at: '2025-03-01T10:00:00Z' } }), 'session');
     } finally { await srv.stop(); }
-    H.inspect(path.join(dir, 'playtracker.db'), (db) => {
+    H.inspect(path.join(dir, 'vestigo.db'), (db) => {
       latestVersion = db.prepare('PRAGMA user_version').get().user_version;
       assert.ok(latestVersion >= 1, 'schema version recorded');
       const have = new Set(db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all().map((r) => r.name));
@@ -382,7 +387,7 @@ describe('data directory and database migrations', () => {
       assert.ok(sys.db_bytes > 0, 'reports the database size');
     } finally { await srv.stop(); }
     assert.ok(fs.existsSync(dbFile));
-    assert.equal(fs.existsSync(path.join(dataDir, 'playtracker.db')), false, 'no second database in PLAYTRACKER_DATA');
+    for (const f of ['vestigo.db', 'playtracker.db']) assert.equal(fs.existsSync(path.join(dataDir, f)), false, `no second database (${f}) in PLAYTRACKER_DATA`);
     H.inspect(dbFile, (db) => assert.equal(db.prepare('SELECT title FROM games').get().title, 'Stored Elsewhere'));
   });
 
@@ -496,6 +501,11 @@ describe('data directory and database migrations', () => {
       H.inspect(dbFile, (db) => assert.equal(db.prepare('SELECT COUNT(*) n FROM dismissed_duplicates WHERE key = ?').get(LEGACY.dismissed).n, 1));
     });
 
+    test('the first release\'s playtracker.db is upgraded where it is: no vestigo.db appears', async () => {
+      assert.equal(path.resolve(ok(await srv.api('/api/v1/system', { headers: auth }), 'system').data_dir), path.resolve(dbFile));
+      assert.equal(fs.existsSync(path.join(dir, 'vestigo.db')), false);
+    });
+
     test('the upgraded database is structurally sound and every entry adds up', () => {
       H.inspect(dbFile, (db) => {
         H.assertHealthy(assert, db, 'upgraded');
@@ -554,10 +564,206 @@ describe('data directory and database migrations', () => {
 });
 
 // =====================================================================================
+describe('upgrading a PlayTracker install in place', () => {
+  const PASS = 'old-install-pass-1';
+  const sha = (x) => crypto.createHash('sha256').update(x).digest('hex');
+  const exists = (dir, f) => fs.existsSync(path.join(dir, f));
+
+  /** A data folder as PlayTracker left it: playtracker.db with `titles` and a pt_ token. */
+  async function playtrackerFolder(titles = ['Old Faithful']) {
+    const dir = H.tmpDir();
+    const file = path.join(dir, 'playtracker.db');
+    const app = await H.startApp(createApp, { dbFile: file });
+    try {
+      for (const title of titles) ok(await app.api('/api/v1/games', { method: 'POST', body: { title } }), 'add');
+    } finally { app.close(); }
+    // minted the way PlayTracker did: pt_ + random, stored as its SHA-256 and a short prefix
+    const token = `pt_${crypto.randomBytes(24).toString('base64url')}`;
+    const db = new DatabaseSync(file);
+    db.prepare('INSERT INTO api_tokens(name, token_hash, prefix, created_at) VALUES (?, ?, ?, ?)').run('Grafana', sha(token), token.slice(0, 7), Date.now());
+    db.close();
+    return { dir, file, token };
+  }
+  /** A data folder holding a vestigo.db with `titles`. */
+  async function vestigoFile(dir, titles) {
+    const app = await H.startApp(createApp, { dbFile: path.join(dir, 'vestigo.db') });
+    try {
+      for (const title of titles) ok(await app.api('/api/v1/games', { method: 'POST', body: { title } }), 'add');
+    } finally { app.close(); }
+  }
+
+  test('upgrade in place: playtracker.db, PLAYTRACKER_DATA, PLAYTRACKER_PASSWORD and the pt_ token keep working', async () => {
+    const { dir, file, token } = await playtrackerFolder();
+    const before = fs.readdirSync(dir).sort();
+    // exactly what an existing container passes: the old variable names, nothing else
+    const srv = await H.startServer({ env: { PORT: String(await H.freePort()), PLAYTRACKER_DATA: dir, PLAYTRACKER_PASSWORD: PASS, TZ: 'UTC' } });
+    try {
+      assert.match(srv.output, /Vestigo \S+( \(\w+\))? ready on port/, 'the startup line names Vestigo');
+      assert.ok(srv.output.includes(`db=${file}`), `the startup log names the file in use:\n${srv.output}`);
+      assert.equal(exists(dir, 'vestigo.db'), false, 'no vestigo.db is created next to it');
+      assert.equal((await srv.api('/api/v1/games')).status, 401, 'still protected by the old variable');
+      const st = ok(await srv.api('/api/v1/auth/status'), 'status');
+      assert.equal(st.auth_enabled, true);
+      assert.equal(st.password_source, 'env');
+      const login = await srv.api('/api/v1/auth/login', { method: 'POST', body: { password: PASS } });
+      assert.equal(login.status, 200, login.text);
+      const cookie = { cookie: login.headers.get('set-cookie').split(';')[0] };
+      assert.match(cookie.cookie, /^pt_session=/, 'the login cookie keeps its name');
+      assert.equal(ok(await srv.api('/api/v1/auth/status', { headers: cookie }), 'status').password_env, 'PLAYTRACKER_PASSWORD');
+      const games = ok(await srv.api('/api/v1/games', { headers: cookie }), 'games');
+      assert.deepEqual(games.items.map((g) => g.title), ['Old Faithful'], 'the library is there');
+      const bearer = { Authorization: `Bearer ${token}` };
+      assert.equal(ok(await srv.api('/api/v1/games', { headers: bearer }), 'old pt_ token').total, 1);
+      assert.equal((await srv.api('/api/v1/games', { headers: { 'X-API-Key': token } })).status, 200);
+      const metrics = await srv.api('/metrics', { headers: bearer });
+      assert.equal(metrics.status, 200);
+      assert.match(metrics.text, /^playtracker_games_total 1$/m, 'old metric names still published');
+      assert.match(metrics.text, /^vestigo_games_total 1$/m);
+      assert.equal(path.resolve(ok(await srv.api('/api/v1/system', { headers: bearer }), 'system').data_dir), path.resolve(file), 'the System page shows the file in use');
+      ok(await srv.api('/api/v1/games', { method: 'POST', headers: bearer, body: { title: 'Added After The Update' } }), 'write');
+    } finally { await srv.stop(); }
+    assert.equal(exists(dir, 'vestigo.db'), false);
+    assert.deepEqual(fs.readdirSync(dir).filter((f) => !/-(wal|shm)$/.test(f)).sort(), before.filter((f) => !/-(wal|shm)$/.test(f)), 'nothing renamed, moved or added');
+    H.inspect(file, (db) => {
+      assert.deepEqual(db.prepare('SELECT title FROM games ORDER BY id').all().map((g) => g.title), ['Old Faithful', 'Added After The Update'], 'writes go to the old file');
+      H.assertHealthy(assert, db, 'upgraded in place');
+    });
+  });
+
+  test('an empty data folder gets vestigo.db', async () => {
+    const dir = H.tmpDir();
+    const srv = await H.startServer({ env: { PORT: String(await H.freePort()), VESTIGO_DATA: dir, TZ: 'UTC' } });
+    try {
+      ok(await srv.api('/api/v1/games', { method: 'POST', body: { title: 'Brand New' } }), 'add');
+      assert.equal(path.resolve(ok(await srv.api('/api/v1/system'), 'system').data_dir), path.resolve(dir, 'vestigo.db'));
+    } finally { await srv.stop(); }
+    assert.equal(exists(dir, 'playtracker.db'), false);
+    H.inspect(path.join(dir, 'vestigo.db'), (db) => assert.equal(db.prepare('SELECT title FROM games').get().title, 'Brand New'));
+  });
+
+  test('both files in the folder: the one holding the games is used, the log says which and why, nothing is touched', async () => {
+    const { dir, file } = await playtrackerFolder(['Copied Over', 'From The Old Server']);
+    await vestigoFile(dir, []); // e.g. a fresh Vestigo install that the old database was copied into
+    const bytes = () => Object.fromEntries(['vestigo.db', 'playtracker.db'].map((f) => [f, fs.readFileSync(path.join(dir, f))]));
+    const was = bytes();
+    const srv = await H.startServer({ env: { PORT: String(await H.freePort()), VESTIGO_DATA: dir, TZ: 'UTC' } });
+    try {
+      assert.match(srv.output, /using playtracker\.db \(2 games\), not vestigo\.db \(0 games\)/, srv.output);
+      assert.ok(srv.output.includes(`db=${file}`), srv.output);
+      assert.equal(path.resolve(ok(await srv.api('/api/v1/system'), 'system').data_dir), path.resolve(file));
+      assert.equal(ok(await srv.api('/api/v1/games'), 'games').total, 2);
+    } finally { await srv.stop(); }
+    assert.deepEqual(bytes()['vestigo.db'], was['vestigo.db'], 'the file not chosen is left exactly as it was');
+    assert.equal(exists(dir, 'vestigo.db-wal') || exists(dir, 'vestigo.db-shm'), false, 'and gains no side files from the look inside');
+  });
+
+  test('resolveDbFile: more games wins, a tie goes to vestigo.db, an unreadable file loses; files are only read', async () => {
+    const log = { lines: [], warn(m) { this.lines.push(m); } };
+    const pick = (dir) => path.basename(resolveDbFile({ dir, log }));
+    const env = { VESTIGO_DB: process.env.VESTIGO_DB, PLAYTRACKER_DB: process.env.PLAYTRACKER_DB };
+    delete process.env.VESTIGO_DB; delete process.env.PLAYTRACKER_DB;
+    try {
+      const empty = H.tmpDir();
+      assert.equal(pick(empty), 'vestigo.db', 'empty folder: a new vestigo.db');
+      assert.deepEqual(fs.readdirSync(empty), [], 'choosing creates nothing');
+
+      const legacyOnly = (await playtrackerFolder()).dir;
+      assert.equal(pick(legacyOnly), 'playtracker.db', 'only the old file: used in place');
+
+      const newer = (await playtrackerFolder(['One'])).dir;
+      await vestigoFile(newer, ['One', 'Two']);
+      assert.equal(pick(newer), 'vestigo.db', 'vestigo.db has more games');
+
+      const tie = (await playtrackerFolder(['Same'])).dir;
+      await vestigoFile(tie, ['Same']);
+      log.lines.length = 0;
+      assert.equal(pick(tie), 'vestigo.db', 'a tie goes to vestigo.db');
+      assert.match(log.lines.join('\n'), /Both vestigo\.db and playtracker\.db .*using vestigo\.db \(1 game\), not playtracker\.db \(1 game\)/);
+
+      const broken = (await playtrackerFolder(['Precious'])).dir;
+      fs.writeFileSync(path.join(broken, 'vestigo.db'), 'not a database '.repeat(300));
+      const junk = fs.readFileSync(path.join(broken, 'vestigo.db'));
+      assert.equal(pick(broken), 'playtracker.db', 'an unreadable vestigo.db never hides the real data');
+      assert.deepEqual(fs.readFileSync(path.join(broken, 'vestigo.db')), junk);
+      assert.match(log.lines.at(-1), /vestigo\.db \(unreadable\)/);
+
+      const zero = (await playtrackerFolder(['Kept'])).dir;
+      fs.writeFileSync(path.join(zero, 'vestigo.db'), '');
+      assert.equal(pick(zero), 'playtracker.db', 'an empty vestigo.db has no games');
+      assert.match(log.lines.at(-1), /using playtracker\.db \(1 game\), not vestigo\.db \(0 games\)/);
+      assert.equal(fs.statSync(path.join(zero, 'vestigo.db')).size, 0);
+      assert.deepEqual(fs.readdirSync(zero).sort(), ['playtracker.db', 'vestigo.db'], 'the look inside leaves no side files behind');
+
+      process.env.PLAYTRACKER_DB = path.join(empty, 'old-override.db');
+      assert.equal(pick(newer), 'old-override.db', 'PLAYTRACKER_DB still overrides');
+      process.env.VESTIGO_DB = path.join(empty, 'new-override.db');
+      assert.equal(pick(newer), 'new-override.db', 'VESTIGO_DB wins over PLAYTRACKER_DB');
+      process.env.VESTIGO_DB = '';
+      assert.equal(pick(newer), 'old-override.db', 'an empty VESTIGO_DB counts as unset');
+    } finally {
+      for (const [k, v] of Object.entries(env)) if (v === undefined) delete process.env[k]; else process.env[k] = v;
+    }
+  });
+
+  test('VESTIGO_DATA wins over PLAYTRACKER_DATA; an empty VESTIGO_DATA (Unraid) falls back to it', async () => {
+    const { dir: old, file } = await playtrackerFolder();
+    const other = H.tmpDir();
+    let srv = await H.startServer({ env: { PORT: String(await H.freePort()), VESTIGO_DATA: other, PLAYTRACKER_DATA: old, TZ: 'UTC' } });
+    try {
+      assert.equal(path.resolve(ok(await srv.api('/api/v1/system'), 'system').data_dir), path.resolve(other, 'vestigo.db'));
+    } finally { await srv.stop(); }
+    srv = await H.startServer({ env: { PORT: String(await H.freePort()), VESTIGO_DATA: '', VESTIGO_PASSWORD: '', PLAYTRACKER_DATA: old, PLAYTRACKER_PASSWORD: PASS, TZ: 'UTC' } });
+    try {
+      assert.equal((await srv.api('/api/v1/games')).status, 401, 'PLAYTRACKER_PASSWORD applies: the empty VESTIGO_PASSWORD is ignored');
+      const login = await srv.api('/api/v1/auth/login', { method: 'POST', body: { password: PASS } });
+      assert.equal(login.status, 200);
+      const headers = { cookie: login.headers.get('set-cookie').split(';')[0] };
+      assert.equal(path.resolve(ok(await srv.api('/api/v1/system', { headers }), 'system').data_dir), path.resolve(file));
+    } finally { await srv.stop(); }
+  });
+});
+
+describe('packaging: existing containers keep updating with no change', () => {
+  const read = (f) => fs.readFileSync(path.join(H.ROOT, f), 'utf8');
+  const tag = (xml, name) => new RegExp(`<${name}>([^<]*)</${name}>`).exec(xml)?.[1];
+  const config = (xml) => [...xml.matchAll(/<Config Name="([^"]+)" Target="([^"]+)"/g)].map((m) => [m[1], m[2]]);
+
+  test('the legacy Unraid template keeps its name, image, URL and PLAYTRACKER_ variables; the new one mirrors it', () => {
+    const old = read('unraid/playtracker.xml');
+    assert.equal(tag(old, 'Name'), 'PlayTracker', 're-applying the template must not rename or duplicate the container');
+    assert.equal(tag(old, 'Repository'), 'ghcr.io/cmgfender/playtracker:latest');
+    assert.equal(tag(old, 'TemplateURL'), 'https://raw.githubusercontent.com/cmgfender/playtracker/main/unraid/playtracker.xml');
+    assert.match(tag(old, 'Overview'), /^Vestigo \(formerly PlayTracker\)/);
+    const neu = read('unraid/vestigo.xml');
+    assert.equal(tag(neu, 'Name'), 'Vestigo');
+    assert.equal(tag(neu, 'Repository'), 'ghcr.io/cmgfender/vestigo:latest');
+    assert.equal(tag(neu, 'TemplateURL'), 'https://raw.githubusercontent.com/cmgfender/playtracker/main/unraid/vestigo.xml');
+    assert.deepEqual(config(old).map(([n, t]) => [n, t.replace(/^PLAYTRACKER_/, 'VESTIGO_')]), config(neu), 'same fields, new variable names');
+    assert.deepEqual(config(old).filter(([, t]) => /_/.test(t) && !/^LOG_LEVEL$/.test(t)).map(([, t]) => t).sort(),
+      ['PLAYTRACKER_CORS_ORIGIN', 'PLAYTRACKER_LOG_FILE', 'PLAYTRACKER_PASSWORD', 'PLAYTRACKER_SECURE_COOKIE']);
+  });
+
+  test('the image keeps its defaults and CI publishes every build under both names, the old one first', () => {
+    const docker = read('Dockerfile');
+    assert.match(docker, /^\s+PLAYTRACKER_DATA=\/data \\$/m, 'the baked data default keeps the old name (a baked VESTIGO_DATA would beat a user\'s PLAYTRACKER_DATA)');
+    assert.doesNotMatch(docker, /VESTIGO_DATA=/);
+    for (const re of [/PORT=7720/, /^VOLUME \["\/data"\]$/m, /^EXPOSE 7720$/m, /^STOPSIGNAL SIGTERM$/m, /^HEALTHCHECK /m, /PUID=99/, /PGID=100/]) assert.match(docker, re);
+    const ci = read('.github/workflows/docker.yml');
+    // the image existing installs pull is built and pushed on its own; the new name is a copy
+    // that can never fail that build
+    assert.match(ci, /^\s+images: ghcr\.io\/cmgfender\/playtracker$/m);
+    assert.match(ci, /build-args: REVISION=\$\{\{ github\.sha \}\}/);
+    const copy = ci.slice(ci.indexOf('- name: Copy to ghcr.io/cmgfender/vestigo'));
+    assert.match(copy, /continue-on-error: true/);
+    assert.match(copy, /imagetools create --tag "ghcr\.io\/cmgfender\/vestigo:/);
+  });
+});
+
+// =====================================================================================
 describe('restarts and durability (password-protected real server)', () => {
   const PASS = 'restart-pass-123';
   let dir; let env; let srv; let auth; let cookie; let snap; let etag;
-  const dbFile = () => path.join(dir, 'playtracker.db');
+  const dbFile = () => path.join(dir, 'vestigo.db');
 
   async function stateOf(s) {
     const get = async (p) => ok(await s.api(p, { headers: auth }), p);
@@ -642,7 +848,7 @@ describe('restarts and durability (password-protected real server)', () => {
     const wal = `${dbFile()}-wal`;
     assert.ok(!fs.existsSync(wal) || fs.statSync(wal).size === 0, 'no un-checkpointed WAL left behind');
     const copy = path.join(H.tmpDir(), 'copy.db');
-    fs.copyFileSync(dbFile(), copy); // e.g. a backup tool that copies only playtracker.db
+    fs.copyFileSync(dbFile(), copy); // e.g. a backup tool that copies only vestigo.db
     H.inspect(copy, (db) => {
       assert.equal(db.prepare('SELECT COUNT(*) n FROM games').get().n, snap.games.length);
       assert.equal(db.prepare('SELECT COALESCE(SUM(playtime_min), 0) m FROM entries WHERE excluded = 0').get().m, snap.lifetime.total_minutes);
@@ -707,14 +913,16 @@ describe('restarts and durability (password-protected real server)', () => {
     const buf = Buffer.from(await r.arrayBuffer());
     assert.equal(buf.subarray(0, 16).toString('latin1'), 'SQLite format 3\0');
     const rdir = H.tmpDir();
-    const rfile = path.join(rdir, 'playtracker.db');
+    const rfile = path.join(rdir, 'playtracker.db'); // restored under the old name, as a PlayTracker backup would be
     fs.writeFileSync(rfile, buf);
     H.inspect(rfile, (db) => H.assertHealthy(assert, db, 'backup'));
     const live = await stateOf(srv);
     const restored = await H.startServer({ env: { ...env, PORT: String(await H.freePort()), PLAYTRACKER_DATA: rdir } });
     try {
       assert.deepEqual(await stateOf(restored), live, 'restoring the backup gives back the same library, settings, accounts and tokens');
+      assert.equal(path.resolve(ok(await restored.api('/api/v1/system', { headers: auth }), 'system').data_dir), path.resolve(rfile));
     } finally { await restored.stop(); }
+    assert.equal(fs.existsSync(path.join(rdir, 'vestigo.db')), false, 'the restored file is used in place');
   });
 
   test('SIGTERM with idle keep-alive connections and a download in progress still exits promptly', async () => {
@@ -857,7 +1065,7 @@ describe('time zones: day and hour buckets follow TZ and are rebuilt when it cha
       assert.deepEqual(await heat(s, ids['Tokyo Drift']), { '2025-05-04': 60, '2025-05-05': 30 });
       assert.equal(ok(await s.api('/api/v1/stats/lifetime'), 'life').total_minutes, TOTAL + 90);
     } finally { await s.stop(); }
-    H.inspect(path.join(dir, 'playtracker.db'), (db) => H.assertHealthy(assert, db, 'tz'));
+    H.inspect(path.join(dir, 'vestigo.db'), (db) => H.assertHealthy(assert, db, 'tz'));
   });
 });
 

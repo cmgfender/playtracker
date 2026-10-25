@@ -90,7 +90,7 @@ test('settings validation and schedule label', async () => {
 
 test('password protects the API; tokens work', async () => {
   const tok = await call('/tokens', { method: 'POST', body: { name: 'ci' } });
-  assert.match(tok.data.token, /^pt_/);
+  assert.match(tok.data.token, /^vg_/);
   const set = await fetch(`${base}/auth/password`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password: 'hunter22' }) });
   assert.equal(set.status, 200);
   assert.equal((await call('/games')).status, 401);

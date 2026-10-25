@@ -812,7 +812,7 @@ describe('observability: provider failures, presence and secrets', () => {
     assert.equal(acc.api_usage_24h.errors, callsFor(KEYS.revoked));
     assert.equal((await S.get('/api/v1/summary')).body.errors_24h, s1.errors_24h, 'dashboard warning matches the System page');
     const metrics = await (await fetch(`${S.root}/metrics`)).text();
-    assert.match(metrics, new RegExp(`playtracker_account_last_sync_seconds\\{id="${ids.revoked}",platform="steam",status="error"\\} \\d+`));
+    for (const p of ['vestigo', 'playtracker']) assert.match(metrics, new RegExp(`${p}_account_last_sync_seconds\\{id="${ids.revoked}",platform="steam",status="error"\\} \\d+`));
     assert.equal(s1.counts.entries, 0, 'nothing was imported');
     assert.deepEqual(brokenTotals(S.db), []);
   });
@@ -938,7 +938,7 @@ describe('observability: provider failures, presence and secrets', () => {
     const psn = (await S.post('/api/v1/accounts', { platform: 'psn', name: 'PS5', config: { npsso: KEYS.npsso }, sync: false })).body.id;
     S.db.prepare('UPDATE accounts SET state = ? WHERE id = ?').run(JSON.stringify({ access_token: KEYS.psnAccess, refresh_token: KEYS.psnRefresh, access_expires_at: Date.now() + HOUR, refresh_expires_at: Date.now() + 30 * DAY }), psn);
     const token = (await S.post('/api/v1/tokens', { name: 'diag' })).body.token;
-    assert.match(token, /^pt_/);
+    assert.match(token, /^vg_/);
     S.app.log.scoped('test').info('console line written after all accounts exist');
     const text = await diagnosticsText(S);
     const secrets = [...Object.values(KEYS), token];
@@ -1099,19 +1099,37 @@ describe('error log: /api/v1/logs', () => {
     } finally { T.close(); }
   });
 
-  test('PLAYTRACKER_LOG_FILE writes plain text and rotates', async () => {
+  for (const name of ['VESTIGO_LOG_FILE', 'PLAYTRACKER_LOG_FILE']) {
+    test(`${name} writes plain text and rotates`, async () => {
+      const dir = tmpDir();
+      const file = path.join(dir, 'logs', 'vestigo.log');
+      process.env[name] = file;
+      let lg;
+      try { lg = createLogger({ quiet: true, maxFileBytes: 4096 }); } finally { delete process.env[name]; }
+      try {
+        for (let i = 0; i < 100; i++) lg.scoped('test').warn(`file-line-${i} ${'z'.repeat(60)}`);
+        const cur = fs.readFileSync(file, 'utf8');
+        assert.match(cur, /file-line-99/);
+        assert.ok(!cur.includes('\x1b['), 'no colour codes in the file');
+        assert.ok(fs.existsSync(`${file}.1`), 'rotated');
+        assert.ok(fs.statSync(file).size <= 4096 + 200, 'bounded');
+      } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+    });
+  }
+
+  test('VESTIGO_LOG_FILE wins over PLAYTRACKER_LOG_FILE; an empty one falls back to it', async () => {
     const dir = tmpDir();
-    const file = path.join(dir, 'logs', 'playtracker.log');
-    process.env.PLAYTRACKER_LOG_FILE = file;
-    let lg;
-    try { lg = createLogger({ quiet: true, maxFileBytes: 4096 }); } finally { delete process.env.PLAYTRACKER_LOG_FILE; }
+    const [a, b] = [path.join(dir, 'new.log'), path.join(dir, 'old.log')];
+    const make = (vars) => {
+      Object.assign(process.env, vars);
+      try { return createLogger({ quiet: true }); } finally { for (const k of Object.keys(vars)) delete process.env[k]; }
+    };
     try {
-      for (let i = 0; i < 100; i++) lg.scoped('test').warn(`file-line-${i} ${'z'.repeat(60)}`);
-      const cur = fs.readFileSync(file, 'utf8');
-      assert.match(cur, /file-line-99/);
-      assert.ok(!cur.includes('\x1b['), 'no colour codes in the file');
-      assert.ok(fs.existsSync(`${file}.1`), 'rotated');
-      assert.ok(fs.statSync(file).size <= 4096 + 200, 'bounded');
+      make({ VESTIGO_LOG_FILE: a, PLAYTRACKER_LOG_FILE: b }).scoped('test').warn('to-the-new-name');
+      assert.match(fs.readFileSync(a, 'utf8'), /to-the-new-name/);
+      assert.equal(fs.existsSync(b), false);
+      make({ VESTIGO_LOG_FILE: '', PLAYTRACKER_LOG_FILE: b }).scoped('test').warn('to-the-old-name');
+      assert.match(fs.readFileSync(b, 'utf8'), /to-the-old-name/);
     } finally { fs.rmSync(dir, { recursive: true, force: true }); }
   });
 
@@ -1346,10 +1364,30 @@ describe('metrics: /metrics', () => {
 
   test('an empty install exposes well-formed zero metrics', async () => {
     const { samples, types } = parse(await scrape());
-    for (const n of ['playtracker_playtime_minutes_total', 'playtracker_tracked_minutes_total', 'playtracker_sessions_total', 'playtracker_games_total']) {
-      assert.equal(samples.get(n), 0, n);
-      assert.equal(types.get(n), 'gauge');
+    for (const p of ['vestigo', 'playtracker']) {
+      for (const n of [`${p}_playtime_minutes_total`, `${p}_tracked_minutes_total`, `${p}_sessions_total`, `${p}_games_total`]) {
+        assert.equal(samples.get(n), 0, n);
+        assert.equal(types.get(n), 'gauge');
+      }
     }
+  });
+
+  test('every playtracker_ series is also published as vestigo_, with the same labels and value', async () => {
+    const T = await startApp(); // its own library: the totals checked below stay exact
+    try {
+      const g = (await T.post('/api/v1/games', { title: 'Twin Metric Game' })).body;
+      await T.post('/api/v1/sessions', { game_id: g.id, minutes: 25, date: '2025-05-04' });
+      await T.post('/api/v1/accounts', { platform: 'custom', name: 'Twin Push' });
+      const { samples, types } = parse(await (await fetch(`${T.root}/metrics`)).text());
+      const old = [...samples].filter(([k]) => k.startsWith('playtracker_'));
+      const neu = [...samples].filter(([k]) => k.startsWith('vestigo_'));
+      assert.equal(old.length, 6, `totals, one platform and one account: ${old.map(([k]) => k).join(', ')}`);
+      assert.equal(neu.length, old.length, 'one vestigo_ series per playtracker_ series');
+      for (const [k, v] of old) assert.equal(samples.get(k.replace(/^playtracker_/, 'vestigo_')), v, k);
+      for (const [k, t] of types) if (k.startsWith('playtracker_')) assert.equal(types.get(k.replace(/^playtracker_/, 'vestigo_')), t, k);
+      assert.equal(samples.size, old.length + neu.length, 'nothing else');
+      assert.equal(samples.get('vestigo_playtime_minutes_total'), (await T.get('/api/v1/stats/lifetime')).body.total_minutes);
+    } finally { T.close(); }
   });
 
   test('values match the lifetime totals, per platform and per account, and follow every change', async () => {
@@ -1361,10 +1399,12 @@ describe('metrics: /metrics', () => {
     const check = async () => {
       const { samples } = parse(await scrape());
       const l = (await S.get('/api/v1/stats/lifetime')).body;
-      assert.equal(samples.get('playtracker_playtime_minutes_total'), l.total_minutes);
-      assert.equal(samples.get('playtracker_tracked_minutes_total'), l.tracked_minutes);
-      assert.equal(samples.get('playtracker_sessions_total'), l.sessions);
-      assert.equal(samples.get('playtracker_games_total'), l.games);
+      for (const p of ['vestigo', 'playtracker']) {
+        assert.equal(samples.get(`${p}_playtime_minutes_total`), l.total_minutes);
+        assert.equal(samples.get(`${p}_tracked_minutes_total`), l.tracked_minutes);
+        assert.equal(samples.get(`${p}_sessions_total`), l.sessions);
+        assert.equal(samples.get(`${p}_games_total`), l.games);
+      }
       const perPlatform = [...samples].filter(([k]) => k.startsWith('playtracker_playtime_minutes{'));
       assert.equal(perPlatform.reduce((a, [, v]) => a + v, 0), l.total_minutes, 'platforms add up to the total');
       for (const p of l.platforms) assert.equal(samples.get(`playtracker_playtime_minutes{platform="${p.platform}"}`), p.minutes);

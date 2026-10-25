@@ -7,7 +7,7 @@
 //  - hours of games no account here tracks (Switch, PlayStation without a linked account, other
 //    PC stores, Steam games the linked Steam account does not have) are imported as history,
 //    dated from GameTrack's dates
-//  - status, rating and cover fill in only where PlayTracker has none; wish-listed games are added
+//  - status, rating and cover fill in only where Vestigo has none; wish-listed games are added
 import { tx } from '../db.js';
 import { normalizeTitle } from './titles.js';
 import { findOrCreateGame } from './library.js';
@@ -80,7 +80,7 @@ export function importGameTrack(db, tables, { settings = null, now = Date.now() 
   }
   const real = (v) => (v && (stampCount.get(String(v).slice(0, 16)) || 0) <= 5 ? t(v) : null);
 
-  // what PlayTracker already tracks
+  // what Vestigo already tracks
   const synced = db.prepare('SELECT e.id, e.platform, e.ext_id, e.title, e.game_id FROM entries e WHERE e.account_id IS NOT NULL').all();
   const byExt = new Map(synced.map((e) => [`${e.platform}:${e.ext_id}`, e]));
   const syncedByTitle = new Map();
@@ -135,7 +135,7 @@ export function importGameTrack(db, tables, { settings = null, now = Date.now() 
         res.anchors += times.length;
       }
 
-      // game details, only where PlayTracker has none
+      // game details, only where Vestigo has none
       const gameIds = new Set(matched.map(([e]) => e.game_id));
       if (!gameIds.size && gameByTitle.has(norm)) gameIds.add(gameByTitle.get(norm));
       const status = STATUS.find(([re]) => re.test(g.status || ''))?.[1] || (wished.has(g.uuid) ? 'wishlist' : null);

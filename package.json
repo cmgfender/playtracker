@@ -1,7 +1,7 @@
 {
-  "name": "playtracker",
+  "name": "vestigo",
   "version": "1.0.0",
-  "description": "Self-hosted game playtime & session tracker for Steam, Xbox and PlayStation",
+  "description": "Vestigo Media Tracker — self-hosted playtime and session tracker for Steam, Xbox and PlayStation",
   "type": "module",
   "main": "src/server.js",
   "engines": {

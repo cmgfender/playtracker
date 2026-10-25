@@ -8,9 +8,11 @@
   <Privileged>false</Privileged>
   <Support>https://github.com/cmgfender/playtracker/issues</Support>
   <Project>https://github.com/cmgfender/playtracker</Project>
-  <Overview>Self-hosted game playtime and session tracker for Steam, Xbox and PlayStation (plus anything you push via the API).&#xD;
+  <Overview>Vestigo (formerly PlayTracker): self-hosted playtime and session tracker for Steam, Xbox and PlayStation (plus anything you push via the API).&#xD;
 &#xD;
-Platforms only report lifetime playtime, so PlayTracker snapshots it on a schedule (hourly, daily, weekly, monthly or every X days/hours) and turns the difference into play sessions. Live presence (what you're playing right now) pins sessions to exact start/end times and triggers a sync as soon as you stop playing.&#xD;
+This template keeps existing PlayTracker installs updating with nothing to change: same container, image, data and variables. New installs can use the Vestigo template (vestigo.xml).&#xD;
+&#xD;
+Platforms only report lifetime playtime, so Vestigo snapshots it on a schedule (hourly, daily, weekly, monthly or every X days/hours) and turns the difference into play sessions. Live presence (what you're playing right now) pins sessions to exact start/end times and triggers a sync as soon as you stop playing.&#xD;
 &#xD;
 Your existing hours are never dumped onto import day: they are dated from first/last played dates, launch counts, achievement unlock times, release dates and account age, and shown as estimated history.&#xD;
 &#xD;
@@ -18,7 +20,7 @@ Works out of the box: add the container, open the WebUI, connect an account. Sta
   <Category>MediaApp:Other Tools: Status:Stable</Category>
   <WebUI>http://[IP]:[PORT:7720]/</WebUI>
   <TemplateURL>https://raw.githubusercontent.com/cmgfender/playtracker/main/unraid/playtracker.xml</TemplateURL>
-  <Icon>https://raw.githubusercontent.com/cmgfender/playtracker/main/public/icon-512.png</Icon>
+  <Icon>https://raw.githubusercontent.com/cmgfender/playtracker/main/public/icon-512.png?v=vestigo</Icon>
   <ExtraParams>--restart=unless-stopped</ExtraParams>
   <PostArgs/>
   <Requires/>

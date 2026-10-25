@@ -432,7 +432,8 @@ export function* exportChunks(db, format = 'json') {
     if (buf) yield buf;
     return;
   }
-  yield `{"format":"playtracker-export","version":1,"exported_at":"${new Date().toISOString()}","games":[`;
+  // "playtracker-export" is the data format's id: kept, so older versions and scripts still read the file
+  yield `{"format":"playtracker-export","version":1,"app":"Vestigo","exported_at":"${new Date().toISOString()}","games":[`;
   let first = true;
   let buf = '';
   for (const r of rows.iterate()) {

@@ -1,8 +1,10 @@
+# Coming from the old `playtracker` service? Run `docker compose down` before switching to this
+# file, and keep the same ./data folder: its playtracker.db is used in place (see README).
 services:
-  playtracker:
-    image: ghcr.io/cmgfender/playtracker:latest
+  vestigo:
+    image: ghcr.io/cmgfender/vestigo:latest
     # build: .
-    container_name: playtracker
+    container_name: vestigo
     restart: unless-stopped
     ports:
       - "7720:7720"
@@ -12,7 +14,7 @@ services:
       TZ: America/New_York          # used for daily buckets and sync times
       PUID: 1000
       PGID: 1000
-      # PLAYTRACKER_PASSWORD: change-me   # optional UI/API password (or set it in Settings)
-      # PLAYTRACKER_SECURE_COOKIE: "true" # when served over HTTPS via a reverse proxy
-      # LOG_LEVEL: debug                  # debug | info | warn | error
-      # PLAYTRACKER_LOG_FILE: /data/playtracker.log
+      # VESTIGO_PASSWORD: change-me      # optional UI/API password (or set it in Settings)
+      # VESTIGO_SECURE_COOKIE: "true"    # when served over HTTPS via a reverse proxy
+      # LOG_LEVEL: debug                 # debug | info | warn | error
+      # VESTIGO_LOG_FILE: /data/vestigo.log

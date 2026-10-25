@@ -35,10 +35,16 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      # Existing installs pull ghcr.io/cmgfender/playtracker: that image is built and pushed first,
+      # on its own, so nothing about the new name can hold their updates back. The labels set here
+      # override the Dockerfile's LABELs, so they carry the new name too.
       - id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ghcr.io/${{ github.repository }}
+          images: ghcr.io/cmgfender/playtracker
+          labels: |
+            org.opencontainers.image.title=Vestigo
+            org.opencontainers.image.description=Vestigo Media Tracker (formerly PlayTracker) - self-hosted playtime and session tracker for Steam, Xbox and PlayStation
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
             type=semver,pattern={{version}}
@@ -54,3 +60,11 @@ jobs:
           build-args: REVISION=${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+      # the same image (same digest, every tag) under the new name ghcr.io/cmgfender/vestigo; a
+      # failure here (e.g. the new package's permissions) never fails the build above
+      - name: Copy to ghcr.io/cmgfender/vestigo
+        continue-on-error: true
+        env:
+          TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          for t in $TAGS; do docker buildx imagetools create --tag "ghcr.io/cmgfender/vestigo:${t##*:}" "$t"; done

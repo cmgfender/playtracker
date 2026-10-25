@@ -24,10 +24,12 @@ function safeEqual(a, b) {
 }
 
 export class Auth {
-  constructor({ db, settings, envPassword }) {
+  /** envName: the variable envPassword came from (VESTIGO_PASSWORD, or PLAYTRACKER_PASSWORD on older installs). */
+  constructor({ db, settings, envPassword, envName }) {
     this.db = db;
     this.settings = settings;
     this.envPassword = envPassword || null;
+    this.envName = this.envPassword ? envName || 'VESTIGO_PASSWORD' : null;
   }
 
   enabled() {
@@ -38,6 +40,11 @@ export class Auth {
     return this.envPassword ? 'env' : this.settings.get('password_hash') ? 'settings' : null;
   }
 
+  /** The environment variable that sets the password, or null. */
+  passwordEnv() {
+    return this.envName;
+  }
+
   checkPassword(pw) {
     if (this.envPassword) return safeEqual(pw, this.envPassword);
     const h = this.settings.get('password_hash');
@@ -45,7 +52,7 @@ export class Auth {
   }
 
   setPassword(pw) {
-    if (this.envPassword) throw Object.assign(new Error('Password is set via the PLAYTRACKER_PASSWORD environment variable'), { status: 400 });
+    if (this.envPassword) throw Object.assign(new Error(`Password is set via the ${this.envName} environment variable`), { status: 400 });
     if (!pw) {
       this.settings.set({ password_hash: '' });
     } else {
@@ -67,8 +74,9 @@ export class Auth {
     if (token) this.db.prepare('DELETE FROM login_sessions WHERE token_hash = ?').run(sha(token));
   }
 
+  // tokens are looked up by the hash of the whole token, so pt_ tokens from PlayTracker keep working
   createToken(name) {
-    const token = `pt_${crypto.randomBytes(24).toString('base64url')}`;
+    const token = `vg_${crypto.randomBytes(24).toString('base64url')}`;
     const r = this.db.prepare('INSERT INTO api_tokens(name, token_hash, prefix, created_at) VALUES (?, ?, ?, ?)').run(String(name || 'API token').slice(0, 80), sha(token), token.slice(0, 7), Date.now());
     return { id: Number(r.lastInsertRowid), token };
   }

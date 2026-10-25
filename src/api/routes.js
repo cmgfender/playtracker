@@ -154,7 +154,11 @@ export function registerRoutes(r, app) {
   r.get('/api/v1/platforms', () => providerInfo(), { summary: 'Supported platforms and their credential fields' });
 
   // ---------- auth ----------
-  r.get('/api/v1/auth/status', (c) => ({ auth_enabled: auth.enabled(), authenticated: c.auth.ok, via: c.auth.via, password_source: auth.passwordSource() }), { summary: 'Auth status', public: true });
+  // password_env (the variable that sets the password) is configuration detail: signed-in callers only
+  r.get('/api/v1/auth/status', (c) => ({
+    auth_enabled: auth.enabled(), authenticated: c.auth.ok, via: c.auth.via, password_source: auth.passwordSource(),
+    ...(c.auth.ok ? { password_env: auth.passwordEnv() } : {}),
+  }), { summary: 'Auth status', public: true });
   // failed logins per client address: after 5 within 15 minutes, wait (grows up to 15 minutes)
   const failures = new Map();
   r.post('/api/v1/auth/login', (c) => {
@@ -603,7 +607,7 @@ export function registerRoutes(r, app) {
     try {
       res = await p.fetchLibrary(fake, ctx);
     } catch (err) {
-      // the platform said no: never relay its status (its 401 is not a PlayTracker login, a
+      // the platform said no: never relay its status (its 401 is not a Vestigo login, a
       // missing one is not an internal error) - rejected credentials 422, anything else 502
       if (!(err instanceof ProviderError)) throw err;
       throw new HttpError(err.auth ? 422 : 502, err.message);
@@ -817,7 +821,7 @@ export function registerRoutes(r, app) {
 
   r.get('/api/v1/export', async (c) => {
     const csv = c.query.format === 'csv';
-    c.stream(200, csv ? 'text/csv; charset=utf-8' : 'application/json', { 'Content-Disposition': `attachment; filename="playtracker-export.${csv ? 'csv' : 'json'}"` });
+    c.stream(200, csv ? 'text/csv; charset=utf-8' : 'application/json', { 'Content-Disposition': `attachment; filename="vestigo-export.${csv ? 'csv' : 'json'}"` });
     // a cancelled download ends the loop, which closes the generator and releases its statement
     // (left open, it blocks backups and WAL checkpoints on the shared connection)
     for (const chunk of exportChunks(db, csv ? 'csv' : 'json')) {
@@ -835,14 +839,14 @@ export function registerRoutes(r, app) {
   }, { summary: 'Export everything (streamed JSON, or ?format=csv)', query: { format: 'json|csv' } });
 
   r.get('/api/v1/backup', (c) => {
-    const tmp = path.join(os.tmpdir(), `playtracker-backup-${Date.now()}.db`);
+    const tmp = path.join(os.tmpdir(), `vestigo-backup-${Date.now()}.db`);
     // a read-only connection of its own: SQLite refuses VACUUM while a statement is running on the
     // app's connection (an export still downloading); either way it copies one consistent snapshot
     const src = app.dbFile && app.dbFile !== ':memory:' ? new DatabaseSync(app.dbFile, { readOnly: true }) : db;
     try { src.exec(`VACUUM INTO '${tmp.replace(/'/g, "''")}'`); } finally { if (src !== db) src.close(); }
     const buf = fs.readFileSync(tmp);
     fs.unlinkSync(tmp);
-    c.sendRaw(200, buf, 'application/vnd.sqlite3', { 'Content-Disposition': `attachment; filename="playtracker-${new Date().toISOString().slice(0, 10)}.db"` });
+    c.sendRaw(200, buf, 'application/vnd.sqlite3', { 'Content-Disposition': `attachment; filename="vestigo-${new Date().toISOString().slice(0, 10)}.db"` });
     return undefined;
   }, { summary: 'Download a consistent SQLite backup' });
 

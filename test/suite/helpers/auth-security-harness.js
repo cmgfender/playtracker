@@ -13,8 +13,8 @@ export function recordingLog() {
 }
 
 /**
- * Start an in-process PlayTracker on a random port.
- * opts.password: undefined = take PLAYTRACKER_PASSWORD from the environment (createApp default).
+ * Start an in-process Vestigo on a random port.
+ * opts.password: undefined = take VESTIGO_PASSWORD / PLAYTRACKER_PASSWORD from the environment (createApp default).
  */
 export async function startApp(opts = {}) {
   const args = { dbFile: opts.dbFile || ':memory:', log: opts.log || QUIET, scheduler: false };

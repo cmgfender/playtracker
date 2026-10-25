@@ -1,5 +1,5 @@
 // Test harness for test/suite/library.test.js (own helpers; no imports from other tests).
-// Starts PlayTracker in-process on an in-memory database and talks to it over HTTP.
+// Starts Vestigo in-process on an in-memory database and talks to it over HTTP.
 import { createApp } from '../../../src/server.js';
 
 export const MIN = 60_000;

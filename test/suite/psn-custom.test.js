@@ -308,7 +308,7 @@ describe('PSN credentials test (POST /accounts/test)', () => {
     assert.deepEqual(t.logs.error, [], 'a user typing a wrong token is not a server error');
   });
 
-  test('Sony answering 401 must not surface as HTTP 401 (which the web UI treats as "PlayTracker login required")', async (tc) => {
+  test('Sony answering 401 must not surface as HTTP 401 (which the web UI treats as "Vestigo login required")', async (tc) => {
     const t = await fresh(tc);
     const psn = fakePsn(psnTitle({ id: 'PPSA10005_00', name: 'X', minutes: 10 }));
     psn.failNext('token', { status: 401, body: { error: 'invalid_client' } });
@@ -1892,6 +1892,7 @@ describe('Webhooks', () => {
     return { t, sink };
   }
   const quiet = () => realSleep(300); // give a (wrong) delivery time to arrive
+  const EMOJI = /\p{Extended_Pictographic}/u;
 
   test('generic URL, webhook_on=sessions: a sync with new sessions posts a JSON summary; one without posts nothing', async (tc) => {
     const { t, sink } = await hooked(tc, null, 'sessions');
@@ -1912,6 +1913,9 @@ describe('Webhooks', () => {
     assert.equal(hit.body.error ?? null, null);
     assert.match(hit.body.text, /Webhook Game/);
     assert.match(hit.body.text, /1h 30m/);
+    const [head] = hit.body.text.split('\n');
+    assert.equal(head, 'Vestigo · Switch synced — 1 session, 1h 30m played', 'named by the account, singular for one session');
+    assert.ok(!EMOJI.test(hit.body.text), `no emoji: ${hit.body.text}`);
     await quiet();
     assert.equal(sink.hits.length, 1, 'exactly one delivery per sync');
   });
@@ -1923,6 +1927,7 @@ describe('Webhooks', () => {
     const [hit] = await sink.waitFor(1);
     assert.equal(hit.body.event, 'sync.completed');
     assert.equal(hit.body.result.sessions_created, 0);
+    assert.equal(hit.body.text, 'Vestigo · Switch synced — 0 sessions, 0m played');
   });
 
   test('webhook_on=errors posts failures only, with the error and without credentials', async (tc) => {
@@ -1941,6 +1946,9 @@ describe('Webhooks', () => {
     assert.equal(hit.body.event, 'sync.failed');
     assert.match(hit.body.error, /NPSSO/);
     assert.deepEqual(hit.body.account, { id: psnAcc.id, platform: 'psn', name: 'Broken PS5' });
+    assert.ok(hit.body.text.startsWith('Vestigo · sync failed for Broken PS5: '), hit.body.text);
+    assert.ok(hit.body.text.includes(hit.body.error), 'says what went wrong');
+    assert.ok(!EMOJI.test(hit.body.text), `no emoji: ${hit.body.text}`);
     assert.ok(!hit.text.includes(bad), 'the NPSSO is never sent to the webhook');
   });
 
@@ -1956,9 +1964,10 @@ describe('Webhooks', () => {
     assert.equal(d.host, 'discord.com');
     assert.equal(d.path, '/api/webhooks/123456/tokenABC');
     assert.deepEqual(Object.keys(d.body).sort(), ['content', 'username']);
-    assert.equal(d.body.username, 'PlayTracker');
+    assert.equal(d.body.username, 'Vestigo');
     assert.ok(d.body.content.length <= 2000, `Discord rejects content over 2000 chars (got ${d.body.content.length})`);
-    assert.match(d.body.content, /40 session/);
+    assert.match(d.body.content, /^Vestigo · Switch synced — 40 sessions, /);
+    assert.ok(!EMOJI.test(d.body.content), 'no emoji');
 
     sink.clear();
     assert.equal((await t.api('PUT', '/settings', { webhook_url: 'https://hooks.slack.com/services/T000/B000/XXXX' })).status, 200);
@@ -1967,6 +1976,7 @@ describe('Webhooks', () => {
     const [s] = await sink.waitFor(1);
     assert.equal(s.host, 'hooks.slack.com');
     assert.deepEqual(Object.keys(s.body), ['text']);
+    assert.match(s.body.text, /^Vestigo · Switch synced — 1 session, 45m played\n/);
     assert.match(s.body.text, /Number 1 /);
     assert.match(s.body.text, /45m/);
   });

@@ -82,7 +82,7 @@ function sync(platform, t, items, { complete = true } = {}) {
 }
 
 before(async () => {
-  app = createApp({ dbFile: ':memory:', log: quiet, scheduler: false });
+  app = createApp({ dbFile: ':memory:', password: '', log: quiet, scheduler: false });
   db = app.app.db; svc = app.app.sync; settings = app.app.settings;
   await new Promise((r) => app.server.listen(0, '127.0.0.1', r));
   base = `http://127.0.0.1:${app.server.address().port}/api/v1`;
@@ -377,7 +377,7 @@ test('stats API, year in review, heatmap and lifetime agree with the database', 
 test('export -> import into a fresh instance preserves lifetime, tracked sessions and exclusions', async () => {
   const json = [...exportChunks(db, 'json')].join('');
   const data = JSON.parse(json);
-  const fresh = createApp({ dbFile: ':memory:', log: quiet, scheduler: false });
+  const fresh = createApp({ dbFile: ':memory:', password: '', log: quiet, scheduler: false });
   try {
     importRows(fresh.app.db, data.games, { settings: fresh.app.settings.all() });
     const life = (d) => d.prepare('SELECT SUM(playtime_min) m FROM entries WHERE excluded = 0').get().m;

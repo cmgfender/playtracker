@@ -1345,7 +1345,7 @@ describe('credential test endpoint (POST /accounts/test) only samples', () => {
     } finally { await h.close(); }
   });
 
-  test('an invalid key is reported as bad credentials - not as a PlayTracker 401 (which the UI treats as "log in again")', async () => {
+  test('an invalid key is reported as bad credentials - not as a Vestigo 401 (which the UI treats as "log in again")', async () => {
     const h = await setup();
     try {
       const x = new FakeXbl({ key: 'the-real-key' });
@@ -1353,7 +1353,7 @@ describe('credential test endpoint (POST /accounts/test) only samples', () => {
       const r = await h.post('/accounts/test', { platform: 'xbox', config: { api_key: 'typo-key' } });
       assert.ok(r.status >= 400, `status ${r.status}`);
       assert.match(r.body?.error || '', /credentials|key|401/i, 'says what is wrong');
-      assert.notEqual(r.status, 401, 'the PlayTracker session is fine (no password is even set); only the OpenXBL key is wrong');
+      assert.notEqual(r.status, 401, 'the Vestigo session is fine (no password is even set); only the OpenXBL key is wrong');
     } finally { await h.close(); }
   });
 });

@@ -1,9 +1,9 @@
 // Harness for test/suite/steam-sync.test.js (own helpers; nothing imported from other tests).
 //
 //  - a controllable clock (Date.now is replaced; frozen by default, can "flow" with real time)
-//  - FakeSteam: an in-memory Steam Web API + store API that answers the requests PlayTracker makes
+//  - FakeSteam: an in-memory Steam Web API + store API that answers the requests Vestigo makes
 //  - a fetch router: 127.0.0.1 goes to the real network stack, every other host to the current fake
-//  - startApp(): PlayTracker in-process on :memory:, talked to over plain node:http
+//  - startApp(): Vestigo in-process on :memory:, talked to over plain node:http
 //  - invariant checks that must hold after any sync
 import http from 'node:http';
 import { performance } from 'node:perf_hooks';

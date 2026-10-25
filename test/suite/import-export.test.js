@@ -1150,8 +1150,10 @@ describe('export (streamed JSON / CSV), round trips and SQLite backup', () => {
     assert.equal(r.status, 200);
     assert.match(r.headers.get('content-type'), /application\/json/);
     assert.match(r.headers.get('content-disposition') || '', /attachment;.*\.json/);
+    assert.match(r.headers.get('content-disposition'), /filename="vestigo-export\.json"/);
     const doc = JSON.parse(r.text);
-    assert.equal(doc.format, 'playtracker-export');
+    assert.equal(doc.format, 'playtracker-export', 'the data format id stays, so older versions and scripts read the file');
+    assert.equal(doc.app, 'Vestigo');
     assert.equal(doc.games.length, a.db.prepare('SELECT COUNT(*) n FROM entries').get().n);
     assert.ok(!r.text.includes(steam.key), 'the Steam API key is not in the export');
     const life = await a.lifetime();
@@ -1171,6 +1173,7 @@ describe('export (streamed JSON / CSV), round trips and SQLite backup', () => {
     assert.equal(r.status, 200);
     assert.match(r.headers.get('content-type'), /text\/csv/);
     assert.match(r.headers.get('content-disposition') || '', /attachment;.*\.csv/);
+    assert.match(r.headers.get('content-disposition'), /filename="vestigo-export\.csv"/);
     assert.ok(!r.text.includes(steam.key));
     const recs = readCsv(r.text);
     assert.equal(recs.length, a.db.prepare('SELECT COUNT(*) n FROM entries').get().n);
@@ -1197,6 +1200,21 @@ describe('export (streamed JSON / CSV), round trips and SQLite backup', () => {
       const snap = b.snapshot();
       await b.ok(b.importJson(JSON.parse(exported)));
       assert.deepEqual(b.snapshot(), snap, 'importing the same export again changes nothing');
+    } finally { await b.close(); }
+  });
+
+  test('an export written by PlayTracker (no "app" field) imports into a fresh instance just the same', async () => {
+    const b = await startApp();
+    try {
+      const doc = JSON.parse((await a.get('/export')).text);
+      delete doc.app; // what PlayTracker wrote: {"format":"playtracker-export","version":1,...}
+      assert.deepEqual(Object.keys(doc).slice(0, 2), ['format', 'version']);
+      await b.ok(b.importJson(doc));
+      const B = await describeInstance(b);
+      assert.deepEqual(B.lifetime, A.lifetime);
+      assert.deepEqual(visible(B.games), visible(A.games));
+      assert.deepEqual(B.play, A.play);
+      consistent(b, 'B');
     } finally { await b.close(); }
   });
 
@@ -1250,6 +1268,7 @@ describe('export (streamed JSON / CSV), round trips and SQLite backup', () => {
     assert.equal(r.status, 200);
     assert.match(r.headers.get('content-type'), /application\/vnd\.sqlite3/);
     assert.match(r.headers.get('content-disposition') || '', /attachment;.*\.db/);
+    assert.match(r.headers.get('content-disposition'), /filename="vestigo-\d{4}-\d{2}-\d{2}\.db"/);
     assert.equal(r.buf.subarray(0, 16).toString('latin1'), 'SQLite format 3\u0000');
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pt-ie-backup-'));
     const file = path.join(dir, 'backup.db');

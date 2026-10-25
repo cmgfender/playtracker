@@ -7,7 +7,7 @@ let app; let base;
 const realFetch = globalThis.fetch;
 
 before(async () => {
-  app = createApp({ dbFile: ':memory:', log: createLogger({ quiet: true }), scheduler: false });
+  app = createApp({ dbFile: ':memory:', password: '', log: createLogger({ quiet: true, file: '' }), scheduler: false });
   await new Promise((r) => app.server.listen(0, '127.0.0.1', r));
   base = `http://127.0.0.1:${app.server.address().port}/api/v1`;
 });
