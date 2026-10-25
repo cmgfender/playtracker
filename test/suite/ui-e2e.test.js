@@ -14,7 +14,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   chromium, installFetchGuard, startApp, seed, openPage, waitView, overflow, waitUntil, toast, markToasts, modalReady, contrast,
-  srgb, sampleContrasts, ringContrast, invariantViolations, viewReady, labelViolations, axeLoaded, DESKTOP, PHONE, PHONE_SMALL, MIN, HOUR, DAY, skipReason,
+  srgb, sampleContrasts, seedAchievements, chartReport, chartProblems, ringContrast, invariantViolations, viewReady, labelViolations, axeLoaded, DESKTOP, PHONE, PHONE_SMALL, MIN, HOUR, DAY, skipReason,
 } from './helpers/ui-e2e-harness.js';
 const UI = { skip: skipReason || false };
 
@@ -61,45 +61,6 @@ const waitH1 = (page, expected, timeout = 8000) => page.waitForFunction((e) => {
   return e.startsWith('re:') ? new RegExp(e.slice(3)).test(t) : t === e;
 }, expected instanceof RegExp ? `re:${expected.source}` : expected, { timeout });
 
-/** Every chart on the page: its SVG's role, label and scale, and the boxes of its axis text (CSS px). */
-const chartReport = (page) => page.evaluate(() => [...document.querySelectorAll('#view .chart > svg, #view .donut-wrap > svg')].map((svg) => {
-  const host = svg.closest('.chart') || svg.parentElement;
-  const vb = svg.viewBox.baseVal;
-  const r = svg.getBoundingClientRect();
-  const hb = host.getBoundingClientRect();
-  const scale = r.width / vb.width;
-  return {
-    kind: String(host.className), role: svg.getAttribute('role'), label: svg.getAttribute('aria-label') || '', hostW: host.clientWidth, svgW: r.width,
-    heat: host.classList.contains('heat'), donut: !host.classList.contains('chart'), box: { l: hb.left, r: hb.right },
-    texts: host.classList.contains('chart') ? [...svg.querySelectorAll('.axis text')].map((t) => {
-      const b = t.getBoundingClientRect();
-      return { s: t.textContent, px: parseFloat(getComputedStyle(t).fontSize) * scale, l: b.left, r: b.right, t: b.top, b: b.bottom };
-    }) : [],
-  };
-}));
-/** What is wrong with the charts of chartReport(): role / label, a stretched drawing, text size, text leaving the box, overlaps. */
-function chartProblems(where, charts) {
-  const out = [];
-  for (const c of charts) {
-    const id = `${where} ${c.kind}`;
-    if (c.role !== 'img') out.push(`${id}: role=${c.role}`);
-    if (!/\w{3,}.*: \S/.test(c.label) || /undefined|NaN/.test(c.label)) out.push(`${id}: aria-label ${JSON.stringify(c.label)}`);
-    if (c.donut) continue;
-    if (!c.heat && Math.abs(c.svgW - c.hostW) > 1) out.push(`${id}: drawn ${c.svgW}px wide in a ${c.hostW}px box`);
-    for (const t of c.texts) {
-      if (Math.abs(t.px - 11) > 1) out.push(`${id}: "${t.s}" renders at ${t.px.toFixed(1)}px`);
-      if (!c.heat && (t.l < c.box.l - 1 || t.r > c.box.r + 1)) out.push(`${id}: "${t.s}" leaves the chart (${Math.round(t.l)}-${Math.round(t.r)} of ${Math.round(c.box.l)}-${Math.round(c.box.r)})`);
-    }
-    for (let i = 0; i < c.texts.length; i++) {
-      for (let j = i + 1; j < c.texts.length; j++) {
-        const a = c.texts[i]; const b = c.texts[j];
-        if (Math.min(a.r, b.r) - Math.max(a.l, b.l) > 0.5 && Math.min(a.b, b.b) - Math.max(a.t, b.t) > 0.5) out.push(`${id}: "${a.s}" and "${b.s}" overlap`);
-      }
-    }
-  }
-  return out;
-}
-
 describe('Vestigo web UI (no password)', UI, () => {
   let S; // started app
   let D; // seeded data
@@ -107,6 +68,7 @@ describe('Vestigo web UI (no password)', UI, () => {
   before(async () => {
     S = await startApp();
     D = await seed(S.ok, NOW);
+    D.ach = await seedAchievements(S.ok, S.db, D.ids.zelda);
   });
   after(() => {
     // the server never tried to reach a real platform during any of this
@@ -142,7 +104,7 @@ describe('Vestigo web UI (no password)', UI, () => {
   // [path, highlighted nav entry, browser tab title]
   const ROUTES = () => [
     ['/', 'Home', 'Vestigo'], ['/library', 'Library', 'Library · Vestigo'], [`/game/${D.ids.celeste}`, 'Library', 'Celeste · Vestigo'],
-    [`/game/${D.ids.zelda}`, 'Library', 'Zelda: TotK · Vestigo'], ['/sessions', 'Sessions', 'Sessions · Vestigo'], ['/stats', 'Stats', 'Stats · Vestigo'],
+    [`/game/${D.ids.zelda}`, 'Library', 'Zelda: TotK · Vestigo'], ['/sessions', 'Sessions', 'Sessions · Vestigo'], ['/stats', 'Stats', 'Stats · Vestigo'], ['/insights', 'Insights', 'Insights · Vestigo'],
     [`/wrapped/${YEAR}`, null, `${YEAR} in review · Vestigo`], [`/wrapped/${YEAR - 1}`, null, `${YEAR - 1} in review · Vestigo`],
     ['/duplicates', 'Duplicates', 'Duplicates · Vestigo'], ['/history', 'Improve history', 'Improve history · Vestigo'], ['/accounts', 'Accounts', 'Accounts · Vestigo'],
     ['/system', 'System', 'System · Vestigo'], ['/settings', 'Settings', 'Settings · Vestigo'], ['/api', 'API', 'API · Vestigo'], ['/more', null, 'More · Vestigo'],
@@ -254,8 +216,8 @@ describe('Vestigo web UI (no password)', UI, () => {
       assert.equal(new URL(p.page.url()).pathname, '/library');
       await spa(p, p.page.locator('.tabbar a', { hasText: 'More' }), 'More');
       const links = (await p.page.locator('#view .more-feature .ttl, #view .more-row .ttl').allInnerTexts()).map((x) => x.trim());
-      assert.deepEqual(links, ['Year in review', 'Duplicates', 'Improve history', 'Accounts', 'Settings', 'System', 'API']);
-      assert.deepEqual((await p.page.locator('#view .more-sec h2').allInnerTexts()).map((x) => x.trim().toLowerCase()), ['tidy up', 'setup', 'advanced'], 'the sidebar\'s groups, minus the tabs');
+      assert.deepEqual(links, ['Year in review', 'Insights', 'Duplicates', 'Improve history', 'Accounts', 'Settings', 'System', 'API']);
+      assert.deepEqual((await p.page.locator('#view .more-sec h2').allInnerTexts()).map((x) => x.trim().toLowerCase()), ['track', 'tidy up', 'setup', 'advanced'], 'the sidebar\'s groups, minus the tabs');
       await spa(p, p.page.locator('#view .item', { hasText: 'Accounts' }), 'Accounts');
       assert.equal(await p.page.title(), 'Accounts · Vestigo');
       await p.page.goBack();
@@ -323,32 +285,46 @@ describe('Vestigo web UI (no password)', UI, () => {
       assert.equal(new URL(page.url()).searchParams.get('q'), 'cel', 'search is kept in the URL');
       assert.match(await page.locator('#lib-count').innerText(), /^1 game · /);
       await page.locator('#lib-q').fill('zzz-no-such-game');
-      await page.locator('#lib-items .empty h2', { hasText: 'No matches' }).waitFor();
+      await page.locator('#lib-items .empty h2', { hasText: 'Nothing matches' }).waitFor();
       await page.locator('#lib-q').fill('');
       await waitTitles((t) => t.length === 7, 'cleared search');
 
-      await page.locator('#lib-chips [data-plat="custom"]').click();
+      // filter menus: a checkbox per platform / status, the "More" switches; the menu stays open while ticking
+      const tick = async (menu, value, name = menu) => {
+        if (!(await page.locator(`.fmenu input[name="${name}"][value="${value}"]`).count())) await page.locator(`#lib-filters [data-menu="${menu}"]`).click();
+        await page.locator(`.fmenu input[name="${name}"][value="${value}"]`).click();
+      };
+      await tick('platform', 'custom');
       await waitTitles((t) => t.length === 2, 'platform filter');
       assert.deepEqual(await setOf(), new Set(['Zelda: TotK', 'Mario Kart 8 Deluxe']), 'Custom filter = games pushed by the custom account');
       assert.equal(new URL(page.url()).searchParams.get('platform'), 'custom');
-      await page.locator('#lib-chips [data-plat="manual"]').click();
+      await tick('platform', 'manual');
+      await waitTitles((t) => t.length === 5, 'custom + manual');
+      assert.equal(new URL(page.url()).searchParams.get('platform'), 'custom,manual', 'several platforms: a comma list');
+      await tick('platform', 'custom');
       await waitTitles((t) => t.includes('Celeste') && !t.includes('Zelda: TotK'), 'manual filter');
       assert.deepEqual(await setOf(), new Set(['Celeste', 'Hollow Knight', 'Ori and the Will of the Wisps']));
-      await page.locator('#lib-chips [data-plat=""]').click();
+      assert.equal((await page.locator('#lib-filters [data-menu="platform"]').textContent()).replace(/\s+/g, ' ').trim(), 'Platform · 1');
+      await page.keyboard.press('Escape');
+      assert.equal(await page.locator('.fmenu').count(), 0, 'Escape closes the menu');
+      // a pill per active filter removes it
+      await page.locator('#lib-pills [data-rm="platform:manual"]').click();
       await waitTitles((t) => t.length === 7, 'All platforms');
 
-      await page.locator('#lib-chips [data-status="playing"]').click();
+      await tick('status', 'playing');
       await waitTitles((t) => t.length === 2, 'status filter');
       assert.deepEqual(await setOf(), new Set(['Celeste', 'Hollow Knight']));
-      await page.locator('#lib-chips [data-status="playing"]').click(); // toggles off
+      await tick('status', 'playing'); // unticks
       await waitTitles((t) => t.length === 7, 'status filter off');
+      await page.keyboard.press('Escape');
 
-      await page.locator('#lib-chips [data-played="false"]').click();
+      await tick('more', 'never');
       await waitTitles((t) => t.length === 1, 'never played filter');
       assert.deepEqual(await titles(), ['Ori and the Will of the Wisps']);
       assert.match(await page.locator('#lib-items .tile .m').innerText(), /Unplayed/);
-      await page.locator('#lib-chips [data-played="false"]').click();
+      await tick('more', 'never');
       await waitTitles((t) => t.length === 7, 'never played off');
+      await page.keyboard.press('Escape');
 
       await page.locator('#lib-sort').selectOption('title');
       await waitTitles((t) => t[0] === 'Celeste', 'A-Z sort');
@@ -419,7 +395,7 @@ describe('Vestigo web UI (no password)', UI, () => {
     const { page } = h;
     try {
       assert.equal((await page.locator('#view h1').innerText()).trim(), 'Detail Lab');
-      await page.locator('#g-status [data-st="beaten"]').click();
+      await page.locator('#g-status-sel').selectOption('beaten');
       await waitUntil(async () => (await game(g0.id)).status === 'beaten', { message: 'status saved' });
       await page.locator('#g-stars [data-r="8"]').click();
       await waitUntil(async () => (await game(g0.id)).rating === 8, { message: 'rating saved' });
@@ -438,9 +414,16 @@ describe('Vestigo web UI (no password)', UI, () => {
       await page.locator('#g-notes').fill('Stuck on the second boss');
       await page.locator('#g-notes-st', { hasText: 'Saved' }).waitFor();
       assert.equal((await game(g0.id)).notes, 'Stuck on the second boss');
-      await page.locator('label.switch:has(#g-hidden) span').click();
+      // hide: in the ⋯ menu, a checkable item
+      await page.locator('#g-more').click();
+      assert.equal(await page.locator('#g-hidden').getAttribute('aria-checked'), 'false');
+      await page.locator('#g-hidden').click();
       await toast(page, 'Hidden from library');
       await waitUntil(async () => !!(await game(g0.id)).hidden, { message: 'hidden saved' });
+      assert.equal(await page.locator('#g-hidden').getAttribute('aria-checked'), 'true');
+      await page.keyboard.press('Escape');
+      assert.equal(await page.locator('#g-hidden').count(), 0, 'Escape closes the menu');
+      assert.ok(await page.evaluate(() => document.activeElement?.id === 'g-more'), 'focus back on ⋯');
       const lib = await S.ok('/games?limit=500');
       assert.ok(!lib.items.some((g) => g.id === g0.id), 'hidden games leave the library list');
       const hiddenOnly = await S.ok('/games?hidden=only');
@@ -479,7 +462,7 @@ describe('Vestigo web UI (no password)', UI, () => {
       assert.equal(g.status, 'backlog');
       assert.equal(g.minutes, 0);
       assert.deepEqual(g.platforms, ['manual']);
-      assert.equal(await d.page.locator('#g-status button.on').innerText(), 'Backlog');
+      assert.equal(await d.page.locator('#g-status-sel').inputValue(), 'backlog');
       // adding a title that already exists joins it instead of creating a duplicate
       await d.page.goto(`${S.origin}/library`);
       await waitView(d.page);
@@ -584,7 +567,7 @@ describe('Vestigo web UI (no password)', UI, () => {
     const { page } = h;
     let extra = null;
     try {
-      const count = async () => Number((await page.locator('#s-count').innerText()).match(/^([\d,]+) session/)[1].replace(/,/g, ''));
+      const count = async () => Number((await page.locator('#s-count').innerText()).match(/ · ([\d,]+) sessions? · /)[1].replace(/,/g, ''));
       const n0 = (await S.ok('/sessions')).total;
       assert.equal(await count(), n0, 'session count matches the API');
       await page.locator('#s-log').click();
@@ -727,8 +710,8 @@ describe('Vestigo web UI (no password)', UI, () => {
       const back = (await S.ok(`/sessions?game_id=${g0.id}`)).items.map((x) => [x.minutes, x.started_at, x.ended_at]).sort((a, b) => a[0] - b[0]);
       assert.deepEqual(back, [[b1.minutes, b1.started_at, b1.ended_at], [b2.minutes, b2.started_at, b2.ended_at]], 'restored with the same minutes and times');
       await page.locator('#s-select').click();
-      await page.locator('#s-list .check').first().check();
-      await page.locator('#s-list .check').nth(1).check();
+      await page.locator('#s-list .item .check').first().check();
+      await page.locator('#s-list .item .check').nth(1).check();
       await page.locator('[data-bulk="delete"]').click();
       await toast(page, 'Deleted 2 sessions');
       await waitUntil(async () => (await page.locator('#s-list .item').count()) === 0, { message: 'bulk deleted again' });
@@ -1102,8 +1085,13 @@ describe('Vestigo web UI (no password)', UI, () => {
           ['focus ring: switch', '#view .switch input', 3, true, { ring: true }],
         ],
         library: [
-          ['.chip.on', '#lib-chips .chip.on', 4.5, true],
-          ['chip', '#lib-chips .chip:not(.on)', 4.5, false],
+          ['filter button (on)', '#lib-filters .fbtn.on', 4.5, false],
+          ['filter button count', '#lib-filters .fbtn.on .fcount', 4.5, true],
+          ['filter button', '#lib-filters .fbtn:not(.on)', 4.5, false],
+          ['filter pill', '#lib-pills .pill', 4.5, false],
+          ['Clear all', '#lib-pills .pill-clear', 4.5, true],
+          ['sidebar search', '.side .side-search .grow', 4.5, false],
+          ['sidebar search key', '.side .side-search kbd', 4.5, false],
           ['focus ring: tile', '#lib-items .tile', 3, true, { ring: true }],
         ],
         game: [
@@ -1111,6 +1099,31 @@ describe('Vestigo web UI (no password)', UI, () => {
           ['unrated star', '#g-stars button:not(.on) svg', 3, false],
           ['platform chip', '#view .plat-ic', 4.5, false],
           ['KPI value', '#view .kpis.k4 .kpi .value', 4.5, false],
+          ['hero split legend', '#view .hero-split .legend span', 4.5, false],
+          ['achievement progress', '#g-ach .ap-sub', 4.5, false],
+          ['achievement completion %', '#g-ach .ap-pct', 4.5, false],
+          ['unlock group link', '#g-ach .ach-gh-link', 4.5, false],
+          ['rare tag', '#g-ach .rare-tag', 4.5, false],
+          ['rarity', '#g-ach .rar:not(.rare)', 4.5, false],
+          ['achievement description', '#g-ach .ach-row .sub', 4.5, false],
+          ['achievement icon', '#g-ach .ach-ic svg', 3, false],
+          ['session unlock line', '#g-sessions .ach-line > span:last-child', 4.5, false],
+        ],
+        insights: [
+          ['section line', '#ins-when .ins-sh .small', 4.5, false],
+          ['jump chip', '#view .ins-toc .chip', 4.5, false],
+          ['card note', '#ins-when .legend span', 4.5, false],
+          ['strip KPI label', '#ins-when .kpi .label', 4.5, false],
+        ],
+        sessions: [
+          ['week subtotal', '#s-list .week-h', 4.5, false],
+          ['period (on)', '#s-period button.on', 4.5, false],
+          ['period', '#s-period button:not(.on)', 4.5, false],
+        ],
+        empty: [
+          ['empty state line', '#view .empty p', 4.5, false],
+          ['empty state button', '#view .empty .btn.primary', 4.5, true],
+          ['year switcher', '#view .wr-y', 4.5, false],
         ],
         wrapped: [
           ['Year in review g1 number', '#view .wcard.g1 .big', 4.5, true],
@@ -1134,7 +1147,7 @@ describe('Vestigo web UI (no password)', UI, () => {
         ],
       },
     };
-    const PATHS = { more: '/more', home: '/', settings: '/settings', library: '/library', game: `/game/${D.ids.zelda}`, wrapped: `/wrapped/${YEAR}` };
+    const PATHS = { more: '/more', home: '/', settings: '/settings', library: '/library?status=playing', game: `/game/${D.ids.zelda}`, wrapped: `/wrapped/${YEAR}`, insights: '/insights', sessions: '/sessions', empty: '/wrapped/2001' };
     const rows = [];
     const missing = [];
     await S.ok(`/games/${D.ids.zelda}`, { method: 'PATCH', body: { rating: 6 } }); // 3 stars lit, 2 not
@@ -1264,6 +1277,9 @@ describe('Vestigo web UI (no password)', UI, () => {
       assert.ok(f.inSide && /\bbrand\b/.test(f.cls), `then the Vestigo home link (${JSON.stringify(f)})`);
       await page.keyboard.press('Tab');
       f = await focused();
+      assert.ok(f.inSide && /side-search/.test(f.cls), `then the search (${JSON.stringify(f)})`);
+      await page.keyboard.press('Tab');
+      f = await focused();
       assert.ok(f.inNav && f.text === 'Home' && f.current === 'page', `then the Main navigation, at the current page (${JSON.stringify(f)})`);
       assert.equal(await page.locator('nav[aria-label="Main"] [aria-current="page"]').count(), 1);
       clean(h);
@@ -1305,7 +1321,7 @@ describe('Vestigo web UI (no password)', UI, () => {
       await page.goto(`${S.origin}/library`);
       await waitView(page);
       await h.settle();
-      for (const sel of ['#lib-chips .chip.on', '#lib-chips .chip:not(.on)', '#lib-items .tile', '#lib-q', '#view .seg [data-view="list"]', '#lib-add']) {
+      for (const sel of ['#lib-filters [data-menu="status"]', '#lib-items .tile', '#lib-q', '#view .seg [data-view="list"]', '#lib-add']) {
         const r = await ringContrast(page, sel);
         assert.ok(r.focusVisible && r.style !== 'none' && r.width >= 2, `${sel}: a 2px focus ring (${JSON.stringify(r)})`);
         assert.ok(r.ratio >= 3, `${sel}: ring contrast ${r.ratio.toFixed(2)} (${r.fg} on ${r.bg})`);
@@ -1413,16 +1429,16 @@ describe('Vestigo web UI (no password)', UI, () => {
       const [steam, psn] = await srgb(h.page, await h.page.evaluate(() => ['--steam', '--psn'].map((k) => getComputedStyle(document.documentElement).getPropertyValue(k).trim())));
       assert.ok(contrast(steam, psn) >= 2.7, `Steam and PlayStation are ${contrast(steam, psn).toFixed(2)}:1 apart in dark`);
       const side = await h.page.locator('.side-nav svg').evaluateAll((els) => els.map((e) => [e.innerHTML, e.getAttribute('stroke-width')]));
-      assert.equal(side.length, 11);
-      assert.equal(new Set(side.map((x) => x[0])).size, 11, 'eleven distinct sidebar icons');
+      assert.equal(side.length, 12);
+      assert.equal(new Set(side.map((x) => x[0])).size, 12, 'twelve distinct sidebar icons');
       assert.ok(side.every((x) => x[1] === '2'), 'all drawn at stroke 2');
       clean(h);
     } finally { await h.close(); }
     const p = await visit('/more', { viewport: PHONE });
     try {
       const more = await p.page.locator('#view .mi svg').evaluateAll((els) => els.map((e) => [e.innerHTML, e.getAttribute('stroke-width'), e.getBoundingClientRect().width]));
-      assert.equal(more.length, 7);
-      assert.equal(new Set(more.map((x) => x[0])).size, 7, 'seven distinct icons');
+      assert.equal(more.length, 8);
+      assert.equal(new Set(more.map((x) => x[0])).size, 8, 'eight distinct icons');
       assert.ok(more.every((x) => x[1] === '2' && x[2] === 18), 'stroke 2 at 18px (.ic-18)');
       clean(p);
     } finally { await p.close(); }
@@ -1629,31 +1645,24 @@ describe('Vestigo web UI (no password)', UI, () => {
   });
 
   test('chips and segments: every Library chip shows at 1400px; on a phone a row that scrolls fades its edge, Stats ranges fit 360px and all 8 statuses are one select away', async () => {
-    const d = await visit('/library');
-    try {
-      const chips = await d.page.evaluate(() => {
-        const row = document.querySelector('#lib-chips');
-        const a = row.getBoundingClientRect();
-        return { wrap: getComputedStyle(row).flexWrap, hidden: [...row.querySelectorAll('.chip')].filter((c) => { const b = c.getBoundingClientRect(); return b.right > a.right + 1 || b.left < a.left - 1 || b.right > innerWidth; }).map((c) => c.textContent.trim()), n: row.querySelectorAll('.chip').length };
-      });
-      assert.equal(chips.wrap, 'wrap');
-      assert.deepEqual(chips.hidden, [], 'no chip is cut off');
-      assert.ok(chips.n >= 10);
-      clean(d);
-    } finally { await d.close(); }
-
-    const p = await visit('/library', { viewport: PHONE });
-    try {
-      const row = p.page.locator('#lib-chips');
-      assert.ok(await row.evaluate((el) => el.scrollWidth > el.clientWidth && el.classList.contains('more-r')), 'more chips off to the right: the row fades out');
-      await row.evaluate((el) => { el.scrollLeft = el.scrollWidth; });
-      await waitUntil(() => row.evaluate((el) => !el.classList.contains('more-r')), { message: 'scrolled to the end, no fade' });
-      await p.page.goto(`${S.origin}/library?status=wishlist`);
-      await waitView(p.page);
-      const on = await p.page.locator('#lib-chips').evaluate((el) => { const a = el.getBoundingClientRect(); const b = el.querySelector('.chip.on').getBoundingClientRect(); return b.left >= a.left && b.right <= a.right; });
-      assert.ok(on, 'the chosen chip is scrolled into view');
-      clean(p);
-    } finally { await p.close(); }
+    // Library: no filter control is clipped at 1400 or 390, even with every kind of filter on
+    for (const viewport of [DESKTOP, PHONE]) {
+      const d = await visit('/library?status=playing,wishlist&platform=custom,manual&favorite=true&hidden=all', { viewport });
+      try {
+        const r = await d.page.evaluate(() => {
+          const out = [];
+          for (const el of document.querySelectorAll('#lib-filters button, .lib-row1 > *')) {
+            const b = el.getBoundingClientRect();
+            if (b.width && (b.right > innerWidth + 0.5 || b.left < -0.5)) out.push(el.textContent.trim() || el.getAttribute('aria-label'));
+          }
+          return { cut: out, pills: document.querySelectorAll('#lib-pills .pill').length, labels: [...document.querySelectorAll('[data-menu]')].map((b) => b.textContent.trim()) };
+        });
+        assert.deepEqual(r.cut, [], `${viewport.width}px: nothing cut off`);
+        assert.equal(r.pills, 6, 'a pill per filter');
+        assert.deepEqual(r.labels, ['Platform · 2', 'Status · 2', 'More · 2'], 'menu buttons count what is on');
+        clean(d);
+      } finally { await d.close(); }
+    }
 
     const s = await visit('/stats?range=30d', { viewport: PHONE_SMALL });
     try {
@@ -1673,7 +1682,6 @@ describe('Vestigo web UI (no password)', UI, () => {
     const g0 = await S.ok('/games', { method: 'POST', body: { title: 'Status Lab' } });
     const g = await visit(`/game/${g0.id}`, { viewport: PHONE });
     try {
-      assert.ok(!(await g.page.locator('#g-status').isVisible()), 'the segment is for wider screens');
       const sel = g.page.locator('#g-status-sel');
       assert.ok(await sel.isVisible());
       assert.deepEqual(await sel.locator('option').allInnerTexts(), ['No status', 'Playing', 'Backlog', 'Paused', 'Beaten', 'Completed', 'Dropped', 'Wishlist']);
@@ -2255,13 +2263,13 @@ describe('Vestigo web UI: navigation, status and feedback', UI, () => {
           return [g.getAttribute('role'), label?.textContent.trim(), [...g.querySelectorAll('a.nav-link')].map((a) => [...a.childNodes].filter((n) => n.nodeType === 3).map((n) => n.textContent).join('').trim())];
         }));
         assert.deepEqual(groups, [
-          ['group', 'Track', ['Home', 'Library', 'Sessions', 'Stats', 'Year in review']],
+          ['group', 'Track', ['Home', 'Library', 'Sessions', 'Stats', 'Insights', 'Year in review']],
           ['group', 'Tidy up', ['Duplicates', 'Improve history']],
           ['group', 'Setup', ['Accounts', 'Settings']],
           ['group', 'Advanced', ['System', 'API']],
         ]);
         await waitUntil(async () => (await d.page.locator('#dupe-badge').textContent()) === String(dupes) && (await d.page.locator('#err-badge').textContent()) === String(errors), { message: 'sidebar badges' });
-        await spa(d, d.page.locator('.side a.nav-link', { hasText: 'Year in review' }), `${YEAR} in review`);
+        await spa(d, d.page.locator('.side a.nav-link', { hasText: 'Year in review' }), `Your ${YEAR} trail`);
         assert.equal(new URL(d.page.url()).pathname, `/wrapped/${YEAR}`, 'Year in review opens the latest year');
         assert.deepEqual((await d.page.locator('.side .nav-link.active').allTextContents()).map((x) => x.trim()), ['Year in review']);
         clean(d);
@@ -2390,12 +2398,12 @@ describe('Vestigo web UI: navigation, status and feedback', UI, () => {
       assert.equal((await S.ok(`/games/${g0.id}`)).minutes, 45);
       assert.deepEqual(invariantViolations(S.db), [], 'after undoing a delete: sessions add up to every lifetime total');
 
-      await page.locator('#g-status [data-st="beaten"]').click();
+      await page.locator('#g-status-sel').selectOption('beaten');
       await toast(page, 'Status: Beaten');
       await waitUntil(async () => (await S.ok(`/games/${g0.id}`)).status === 'beaten', { message: 'status saved' });
       await undo('Status: Beaten');
       await waitUntil(async () => (await S.ok(`/games/${g0.id}`)).status === 'unset', { message: 'status back' });
-      assert.equal(await page.locator('#g-status button.on').innerText(), 'No status');
+      assert.equal(await page.locator('#g-status-sel').inputValue(), 'unset');
 
       await page.locator('#g-fav').click();
       await toast(page, 'Added to favorites');
@@ -2410,11 +2418,13 @@ describe('Vestigo web UI: navigation, status and feedback', UI, () => {
       await waitUntil(async () => (await S.ok(`/games/${g0.id}`)).rating === null, { message: 'rating back' });
       assert.equal(await page.locator('#g-stars button.on').count(), 0);
 
-      await page.locator('label.switch:has(#g-hidden) span').click();
+      await page.locator('#g-more').click();
+      await page.locator('#g-hidden').click();
       await toast(page, 'Hidden from library');
       await undo('Hidden from library');
       await waitUntil(async () => !(await S.ok(`/games/${g0.id}`)).hidden, { message: 'hidden back' });
-      assert.equal(await page.locator('#g-hidden').isChecked(), false);
+      if (await page.locator('#g-hidden').count()) assert.equal(await page.locator('#g-hidden').getAttribute('aria-checked'), 'false');
+      await page.keyboard.press('Escape');
 
       await page.locator('[data-entry-menu]').first().click();
       await modalReady(page);
@@ -2525,7 +2535,7 @@ describe('Vestigo web UI: navigation, status and feedback', UI, () => {
       await page.evaluate(() => document.querySelector('#view').insertAdjacentHTML('beforeend', '<input id="e2e-unlabelled">'));
       assert.ok((await labelViolations(page)).some((v) => v.includes('e2e-unlabelled')), `the ${axeLoaded ? 'axe' : 'built-in'} check reports an unlabelled field`);
       await page.evaluate(() => document.querySelector('#e2e-unlabelled').remove());
-      for (const path of ['/', '/library', '/sessions', '/stats', `/game/${D.ids.zelda}`, `/game/${D.ids.celeste}`, '/settings', '/history', '/accounts', '/system', '/more']) {
+      for (const path of ['/', '/library', '/sessions', '/stats', '/insights', `/wrapped/${YEAR}`, `/game/${D.ids.zelda}`, `/game/${D.ids.celeste}`, '/settings', '/history', '/accounts', '/system', '/more']) {
         await page.goto(`${S.origin}${path}`);
         await waitView(page);
         await h.settle();
@@ -2534,29 +2544,52 @@ describe('Vestigo web UI: navigation, status and feedback', UI, () => {
       const dialogs = [
         ['/sessions', '#s-log', 'Log a session', async () => { await page.locator('#gp').fill('ce'); await page.locator('#gp-list [role=option]').first().waitFor(); }],
         ['/sessions', '[data-edit-session]', null], ['/library', '#lib-add', 'Add a game'], ['/', '#dash-custom', 'Customize home'],
-        [`/game/${D.ids.celeste}`, '#g-edit', 'Edit game'], [`/game/${D.ids.celeste}`, '[data-entry-menu]', null], [`/game/${D.ids.celeste}`, '#g-merge', 'Merge', () => h.settle()],
+        [`/game/${D.ids.celeste}`, ['#g-more', '#g-edit'], 'Edit game'], [`/game/${D.ids.celeste}`, '[data-entry-menu]', null], [`/game/${D.ids.celeste}`, ['#g-more', '#g-merge'], 'Merge', () => h.settle()],
+        ['/library', '#lib-add', 'Add a game'], ['/', '[data-action="palette"]', 'Search', async () => { await page.keyboard.type('ce'); await page.locator('#pal-list [role=option]').first().waitFor(); }],
+        ['/insights', '[data-action="palette"]', 'Search'],
         [`/game/${D.ids.zelda}`, '[data-hist-edit]', 'When did you play this?'], ['/accounts', '[data-edit]', 'Edit'], ['/settings', '#tok-new', 'New API token'],
         ['/accounts', '#acc-add', 'Connect', async () => { await page.locator('[data-p="custom"]').click(); await page.locator('.modal', { hasText: 'Connect Custom' }).waitFor(); }],
       ];
       for (const [path, sel, title, then] of dialogs) {
         await page.goto(`${S.origin}${path}`);
         await waitView(page);
-        await page.locator(sel).first().click();
+        for (const s of [sel].flat()) await page.locator(s).first().click();
         await (title ? page.locator('.modal', { hasText: title }) : page.locator('.modal')).last().waitFor();
         await then?.();
         await check(`${path} ${sel} dialog`);
+      }
+      // the menus that are not dialogs: a library filter menu and the game's ⋯ menu
+      for (const [path, sel, menu] of [['/library', '[data-menu="platform"]', '.fmenu'], ['/library', '[data-menu="more"]', '.fmenu'], [`/game/${D.ids.zelda}`, '#g-more', '.fmenu.pop']]) {
+        await page.goto(`${S.origin}${path}`);
+        await waitView(page);
+        await page.locator(sel).click();
+        await page.locator(menu).waitFor();
+        await check(`${path} ${sel} menu`);
       }
       assert.deepEqual(found, [], `no "label" or "nested-interactive" violations (${axeLoaded ? 'axe-core' : 'built-in check'})`);
 
       // toggle states
       await page.goto(`${S.origin}/library`);
       await waitView(page);
-      const chip = page.locator('#lib-chips [data-status="playing"]');
+      const fb = page.locator('#lib-filters [data-menu="status"]');
+      assert.equal(await fb.getAttribute('aria-expanded'), 'false');
+      await fb.click();
+      assert.equal(await fb.getAttribute('aria-expanded'), 'true', 'a menu button says it is open');
+      await page.locator('.fmenu input[value="playing"]').check();
+      await waitUntil(async () => (await fb.getAttribute('aria-label')) === 'Status filter, 1 on', { message: 'the button names its count' });
+      await page.locator('.fmenu input[value="playing"]').uncheck();
+      await page.keyboard.press('Escape');
+      assert.equal(await fb.getAttribute('aria-expanded'), 'false');
+      await page.goto(`${S.origin}/sessions`);
+      await waitView(page);
+      const chip = page.locator('#s-chips [data-src="manual"]');
       assert.equal(await chip.getAttribute('aria-pressed'), 'false');
       await chip.click();
       await waitUntil(async () => (await chip.getAttribute('aria-pressed')) === 'true', { message: 'chip pressed' });
       await chip.click();
       await waitUntil(async () => (await chip.getAttribute('aria-pressed')) === 'false', { message: 'chip released' });
+      await page.goto(`${S.origin}/library`);
+      await waitView(page);
       const seg = page.locator('#view .seg').first();
       assert.equal(await seg.getAttribute('role'), 'radiogroup');
       assert.equal(await seg.getAttribute('aria-label'), 'View');
@@ -2820,10 +2853,11 @@ describe('Vestigo web UI with a long history (3,000 sessions)', UI, () => {
   });
 
   // Budget: the first 150 rows within 1,500 ms of opening the page (boot, two API calls, one render:
-  // ~350 ms here, the rest is headroom for a loaded CI machine), and each "Load more" within 300 ms
-  // (~70-120 ms here, flat). "Load more" appends 150 rows to a list whose off-screen rows skip layout;
-  // redrawing the whole list instead grew linearly, to 1.4 s at 3,000 rows.
-  test('Sessions with 3,000 sessions: first rows within 1.5s, every "Load more" up to all 3,000 within 300ms', async (t) => {
+  // ~350 ms here, the rest is headroom for a loaded CI machine), and each next page, loaded as the
+  // end of the list comes near, within 300 ms of scrolling there (~70-120 ms here, flat). It appends
+  // 150 rows to a list whose off-screen rows skip layout; redrawing the whole list instead grew
+  // linearly, to 1.4 s at 3,000 rows.
+  test('Sessions with 3,000 sessions: first rows within 1.5s, every next page (on scrolling to the end) up to all 3,000 within 300ms', async (t) => {
     const h = await openPage(browser, S.origin);
     const { page } = h;
     try {
@@ -2832,20 +2866,30 @@ describe('Vestigo web UI with a long history (3,000 sessions)', UI, () => {
       const firstMs = await page.evaluate(() => performance.now());
       assert.equal(await page.locator('#s-list .item').count(), 150);
       assert.equal(await page.locator('#s-list .item').first().evaluate((e) => getComputedStyle(e).contentVisibility), 'auto');
+      assert.equal(await page.locator('#s-load, #view button', { hasText: 'Load more' }).count(), 0, 'no "Load more" button: the list continues by itself');
       const loads = [];
-      while (await page.locator('#s-load').count()) {
+      for (let i = 0; i < 40 && (await page.locator('#s-list .item').count()) < 3000; i++) {
+        // from the request for the next page (sent as the end comes near) to its rows on screen
         loads.push(await page.evaluate(() => new Promise((res) => {
           const n0 = document.querySelectorAll('#s-list .item').length;
-          const t0 = performance.now();
-          document.querySelector('#s-load').click();
-          const f = () => (document.querySelectorAll('#s-list .item').length > n0 ? requestAnimationFrame(() => res(performance.now() - t0)) : requestAnimationFrame(f));
+          window.scrollTo(0, document.documentElement.scrollHeight);
+          const f = () => {
+            if (document.querySelectorAll('#s-list .item').length <= n0) return requestAnimationFrame(f);
+            requestAnimationFrame(() => {
+              const req = performance.getEntriesByType('resource').filter((e) => /\/api\/v1\/sessions\?.*before=/.test(e.name)).pop();
+              res(performance.now() - req.startTime);
+            });
+          };
           f();
         })));
       }
       assert.equal(await page.locator('#s-list .item').count(), 3000, 'all 3,000 rows');
-      t.diagnostic(`first rows after ${Math.round(firstMs)}ms; load more: ${loads.map(Math.round).join(', ')} ms`);
+      t.diagnostic(`first rows after ${Math.round(firstMs)}ms; next pages: ${loads.map(Math.round).join(', ')} ms`);
       assert.ok(firstMs < 1500, `first rows after ${Math.round(firstMs)}ms`);
-      assert.ok(Math.max(...loads) < 300, `slowest "Load more": ${Math.round(Math.max(...loads))}ms`);
+      assert.ok(Math.max(...loads) < 300, `slowest next page: ${Math.round(Math.max(...loads))}ms`);
+      // a week subtotal ahead of each week, counting every loaded row of it
+      const weeks = await page.locator('#s-list .week-h').count();
+      assert.ok(weeks > 40, `${weeks} week subtotals`);
       // and the long page still scrolls to its end
       await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
       await page.locator('#s-more', { hasText: 'That’s everything' }).waitFor();
@@ -2917,7 +2961,7 @@ describe('Vestigo web UI with a long history (3,000 sessions)', UI, () => {
       assert.equal(await all.getAttribute('href'), `/sessions?game_id=${first.id}`);
       await all.click();
       await waitH1(page, 'Sessions');
-      assert.match(await page.locator('#s-count').innerText(), /^150 sessions/);
+      assert.match(await page.locator('#s-count').innerText(), /^All time · 150 sessions/);
       clean(h);
     } finally { await h.close(); }
   });
@@ -3096,7 +3140,7 @@ describe('Vestigo web assets', () => {
   });
 
   test('no emoji or pictographs in the UI markup', () => {
-    for (const f of ['index.html', 'app.js', 'pages.js', 'charts.js']) {
+    for (const f of ['index.html', 'app.js', 'pages.js', 'charts.js', 'insights.js']) {
       assert.deepEqual([...read(f).matchAll(/\p{Extended_Pictographic}/gu)].map((m) => m[0]), [], f);
     }
   });

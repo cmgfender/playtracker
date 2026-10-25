@@ -1,20 +1,21 @@
 import {
   $, $$, esc, fmtMin, fmtHours, ago, fmtDate, fmtTime, dayLabel, plat, platDot, platTag, platIcon, STATUSES, cover, icon,
   api, toast, undoToast, fail, modal, confirmBox, navigate, rerender, state, watchSync, syncStarted, applyTheme, paintAccent, accentOf, scrollMotion, plural, setTitle, MARK, tagline,
-  NAV_GROUPS, navItems, applyBadges,
+  NAV_GROUPS, navItems, applyBadges, coverHue,
 } from './app.js';
 
 const arrow = () => icon('arrowR', 'ic-inline'); // trailing "go there" arrow on links
-import { barChart, sparkline, donut, heatmap, topList, platformLegend, mountCharts } from './charts.js';
+import { barChart, sparkline, donut, heatmap, topList, platformLegend, mountCharts, curveChart, dayName } from './charts.js';
+import { insights, eraStrip } from './insights.js';
 
 const WD = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 // time-of-day axis: 12a / 6a / 12p / 6p, or 00 / 06 / 12 / 18 where the clock is 24-hour
 const H24 = /h2[34]/.test(new Intl.DateTimeFormat(undefined, { hour: 'numeric' }).resolvedOptions().hourCycle || '');
-const hourLabel = (h) => (H24 ? String(h).padStart(2, '0') : `${h % 12 || 12}${h < 12 ? 'a' : 'p'}`);
+export function hourLabel(h) { return H24 ? String(h).padStart(2, '0') : `${h % 12 || 12}${h < 12 ? 'a' : 'p'}`; }
 // a URL safe inside CSS url('...'): quotes, parentheses, backslashes and newlines percent-encoded
 const cssUrl = (u) => String(u).replace(/['"()\\\s]/g, (c) => `%${c.charCodeAt(0).toString(16).padStart(2, '0')}`);
 
-function seriesLabel(key, group) {
+export function seriesLabel(key, group) {
   if (group === 'month') return new Date(`${key}-01T12:00`).toLocaleDateString(undefined, { month: 'short' });
   if (group === 'year') return key;
   const d = new Date(`${key}T12:00`);
@@ -23,7 +24,7 @@ function seriesLabel(key, group) {
 }
 
 /** A bucket in words, for chart summaries: "Oct 2", "the week of Oct 2", "October 2026". */
-function seriesName(key, group) {
+export function seriesName(key, group) {
   if (group === 'month') return new Date(`${key}-01T12:00`).toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
   if (group === 'year') return key;
   const d = new Date(`${key}T12:00`).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
@@ -65,7 +66,7 @@ const CONF = {
   low: ['low', 'bad', 'Rough estimate — only one date known'],
 };
 
-function kpi(label, value, sub = '', extra = '', cls = '') {
+export function kpi(label, value, sub = '', extra = '', cls = '') {
   return `<div class="kpi ${cls}"><div class="label">${label}</div><div class="value">${value}</div>${sub ? `<div class="sub">${sub}</div>` : ''}${extra}</div>`;
 }
 
@@ -124,6 +125,7 @@ function sessionItem(s, { showGame = true, selectable = false, selected = false,
     <div class="grow">
       ${showGame ? `<a href="/game/${s.game_id}" data-link class="ttl ellipsis" style="display:block">${esc(s.title)}</a>` : ''}
       <div class="sub">${showGame ? platDot(s.platform) : platLabel ? `<b style="color:var(--text)">${esc(plat(s.platform).label)}</b>` : ''}<span class="when">${esc(sessionWhen(s))}</span><span class="when-c">${esc(day + sessionWhenShort(s))}</span>${sourceBadge(s)}${s.note ? `<span class="note ellipsis" title="${esc(s.note)}">· ${esc(s.note)}</span>` : ''}</div>
+      ${sessionAchLine(s)}
     </div>
     <div class="amt">${fmtMin(s.minutes)}</div>
     ${selectable ? '' : `<button class="btn ghost sm icon" data-edit-session="${s.id}" aria-label="Edit session">${icon('edit')}</button>`}
@@ -142,8 +144,36 @@ function groupByDay(sessions) {
   return groups;
 }
 
-function emptyState(ic, title, text, actions = '') {
-  return `<div class="empty"><div class="em-ic">${icon(ic)}</div><h2>${title}</h2><p style="max-width:440px;margin:0 auto 16px">${text}</p>${actions}</div>`;
+// a short faded trail above an empty state's icon: the mark's capsules, oldest faintest
+const TRAIL = '<svg class="em-trail" viewBox="0 0 80 28" width="80" height="28" fill="none" stroke="currentColor" stroke-width="4.2" stroke-linecap="round" aria-hidden="true"><path d="M9 5 12 10.5" opacity=".15"/><path d="M25 14.5 28 20" opacity=".3"/><path d="M52 20 55 14.5" opacity=".5"/></svg>';
+/** An empty page or list: the trail, an icon tile, a heading, a line and its actions (buttons in a row). */
+export function emptyState(ic, title, text, actions = '') {
+  return `<div class="empty">${TRAIL}<div class="em-ic">${icon(ic)}</div><h2>${title}</h2><p style="max-width:460px;margin:0 auto 16px">${text}</p>${actions ? `<div class="row wrap em-act">${actions}</div>` : ''}</div>`;
+}
+
+// ---------- achievements ----------
+/** Under this share of players an unlock counts as rare. */
+export const RARE = 10;
+export const fmtRarity = (r) => `${r < 10 ? (Math.round(r * 10) / 10).toFixed(1) : Math.round(r)}%`;
+/** "4.2%" with a "rare" marker under RARE, or nothing when the platform gives no rarity. */
+export function rarityText(x) {
+  if (x.rarity == null) return '';
+  const rare = x.rarity < RARE;
+  return `<span class="rar${rare ? ' rare' : ''}" title="${esc(`${fmtRarity(x.rarity)} of players have it`)}">${rare ? '<span class="rare-tag">rare</span>' : ''}${fmtRarity(x.rarity)}</span>`;
+}
+/** An achievement's icon over a trophy (PlayStation grades tinted); a locked one shows a lock. */
+export function achIcon(x, { size = 36, locked = false } = {}) {
+  const src = locked ? x.icon_locked_url || x.icon_url : x.icon_url;
+  return `<span class="ach-ic${x.grade ? ` g-${x.grade}` : ''}${locked ? ' locked' : ''}" style="width:${size}px;height:${size}px" aria-hidden="true">${icon(locked ? 'lock' : 'trophy')}${src ? `<img src="${esc(src)}" alt="" loading="lazy" decoding="async" onerror="this.remove()">` : ''}</span>`;
+}
+/** "3 achievements · 1 rare (4.2%)" with up to three tiny icons, under a session row that has unlocks. */
+function sessionAchLine(s) {
+  const a = s.achievements;
+  if (!a?.count) return '';
+  const rare = a.items.filter((x) => x.rarity != null && x.rarity < RARE);
+  const rarest = Math.min(...rare.map((x) => x.rarity));
+  const names = a.items.map((x) => x.name).filter(Boolean);
+  return `<div class="ach-line" title="${esc(names.join(', ') + (a.count > names.length ? '…' : ''))}">${a.items.slice(0, 3).map((x) => achIcon(x, { size: 16 })).join('')}<span>${plural(a.count, 'achievement')}${rare.length ? ` · ${rare.length} rare (${fmtRarity(rarest)})` : ''}</span></div>`;
 }
 
 // ---------- session edit / log ----------
@@ -278,6 +308,7 @@ async function editSessionModal(id, onDone = rerender) {
     title: esc(s.title),
     body: `<div class="stack">
       <div class="row wrap">${platTag(s.platform)} ${sourceBadge(s)} <span class="muted small">${esc(sessionWhen(s))}</span></div>
+      ${s.achievements?.count ? `<div class="ach-sess"><h3 class="small">${plural(s.achievements.count, 'achievement')} unlocked during this session</h3><div class="list">${s.achievements.items.map((x) => `<div class="item ach-row">${achIcon(x, { size: 32 })}<div class="grow"><div class="ttl ellipsis">${esc(x.name || 'Achievement')}</div><div class="sub">${fmtTime(x.unlocked_at)}${x.points ? ` · ${x.points}G` : ''}${x.grade ? ` · ${esc(x.grade)}` : ''}</div></div>${rarityText(x)}</div>`).join('')}</div></div>` : ''}
       ${!local ? `<div class="card small muted" style="padding:12px">${icon('info', 'ic-inline')} Synced from ${esc(plat(s.platform).label)}. ${s.source === 'inferred'
         ? `This is history from before tracking started: its <b>${fmtMin(s.minutes)}</b> are part of the platform's total, so it can only leave the stats.`
         : `The platform only reported <b>${fmtMin(s.minutes)}</b> played between ${fmtDate(s.window_start)} ${fmtTime(s.window_start)} and ${fmtDate(s.window_end)} ${fmtTime(s.window_end)}. You can pin the exact time below.`}</div>` : ''}
@@ -372,6 +403,79 @@ function trackingHealth(accounts) {
   return { level: 'good', text: ['Up to date', last ? `${pulled.length ? 'synced' : 'last report'} ${ago(last)}` : 'waiting for the first sync', Number.isFinite(next) && `next ${soon(next)}`].filter(Boolean).join(' · ') };
 }
 
+// ---------- first run: a checklist of what is really there ----------
+const FIRSTRUN = 'vg-firstrun'; // '1' while this device shows the checklist, 'done' once it is dismissed
+const lsGet = (k) => { try { return localStorage.getItem(k); } catch { return null; } };
+const lsSet = (k, v) => { try { localStorage.setItem(k, v); } catch { /* private mode */ } };
+
+async function checklistData(accounts, hasData, pre = {}) {
+  const [syncs, dupes, hist] = await Promise.all([
+    accounts.length ? api(`/syncs?limit=${Math.max(10, accounts.length * 3)}`).catch(() => []) : [],
+    'dupes' in pre ? pre.dupes : hasData ? api('/duplicates?summary=true').catch(() => null) : null,
+    'hist' in pre ? pre.hist : hasData ? api('/history/summary').catch(() => null) : null,
+  ]);
+  return { accounts, hasData, syncs, dupes, hist };
+}
+
+/** The steps, each done or not from the data: connect, first import (per account, live), duplicates, history dating, a password. */
+function checklist({ accounts, hasData, syncs, dupes, hist }, { first = false } = {}) {
+  const connected = accounts.length > 0;
+  const status = (a) => {
+    const s = syncs.find((x) => x.account_id === a.id);
+    if (a.syncing || s?.status === 'running') return ['pulse', a.push ? 'Waiting for a report…' : 'Importing your library…'];
+    if (a.last_status === 'error') return ['bad', `Failed: ${a.last_error || 'see Accounts'}`];
+    if (s) return ['good', `${plural(s.games_seen || 0, 'game')} ${a.push ? 'reported' : 'imported'}`];
+    return ['', a.push ? 'Waiting for the first report' : 'Waiting for the first sync'];
+  };
+  const nd = dupes ? dupes.counts.suggestions + dupes.counts.double_counted : 0;
+  const rows = hist?.rows || [];
+  const histMin = rows.reduce((t, r) => t + r.minutes, 0);
+  const solid = rows.filter((r) => r.confidence === 'high' || r.confidence === 'medium').reduce((t, r) => t + r.minutes, 0);
+  const pctSolid = histMin ? Math.round((solid / histMin) * 100) : 100;
+  const steps = [
+    { title: 'Connect an account', done: connected,
+      text: connected ? esc(accounts.map((a) => a.name).join(', ')) : 'Steam, Xbox or PlayStation, or a custom account you push totals to.',
+      act: `<button class="btn sm primary" data-ck="connect">${icon('plus')}Connect an account</button>` },
+    { title: 'First import', done: connected && hasData,
+      text: connected ? `<ul class="ck-acc">${accounts.map((a) => { const [cls, t] = status(a); return `<li class="${cls}">${platDot(a.platform)}<b>${esc(a.name)}</b><span>${esc(t)}</span></li>`; }).join('')}</ul>` : 'Your library and lifetime hours arrive with the first sync, dated as history.' },
+    { title: 'Review duplicates', done: hasData && !nd,
+      text: !hasData ? 'Editions and copies on several platforms, looked for after the import.' : nd ? `${plural(nd, 'possible duplicate')} found` : 'Nothing is counted twice',
+      act: hasData && nd ? '<a class="btn sm" href="/duplicates" data-link>Review</a>' : '' },
+    { title: 'Date old playtime', done: hasData && pctSolid >= 80,
+      text: !hasData ? 'Hours played before tracking are dated from what the platforms report.' : histMin ? `${pctSolid}% of the ${fmtHours(histMin)}h before tracking is dated solidly` : 'No history before tracking to date',
+      act: hasData && pctSolid < 80 ? '<a class="btn sm" href="/history" data-link>Improve history</a>' : '' },
+    ...(state.authEnabled ? [] : [{ title: 'Protect with a password', done: false, text: 'Until you set one, anyone who can reach this server can see and change your data.', act: `<a class="btn sm" href="/settings#security" data-link>${icon('key')}Set a password</a>` }]),
+  ];
+  const active = steps.findIndex((s) => !s.done);
+  const done = steps.filter((s) => s.done).length;
+  return `<div class="ck-h"><h2 id="ck-title">${first ? 'Getting started' : 'Finish setting up'}</h2><span class="small muted">${done} of ${steps.length} done</span>${first ? '' : '<button class="btn ghost sm" data-ck="dismiss">Dismiss</button>'}</div>
+    <ol class="checklist" aria-labelledby="ck-title">${steps.map((s, i) => `<li class="ck${s.done ? ' done' : ''}${i === active ? ' active' : ''}"${i === active ? ' aria-current="step"' : ''}><span class="ck-n" aria-hidden="true">${s.done ? icon('check') : i + 1}</span><div class="grow"><b>${s.title}</b><span class="vh">${s.done ? ', done' : i === active ? ', next' : ''}</span><div class="small muted">${s.text}</div></div>${s.act && !s.done ? s.act : ''}</li>`).join('')}</ol>`;
+}
+
+/** Connect opens the dialog right here, Dismiss hides the checklist for good; while an import runs the checklist follows it. */
+function bindChecklist(root, hasData, syncing) {
+  const host = root.querySelector('#checklist');
+  if (!host) return;
+  host.addEventListener('click', async (e) => {
+    const b = e.target.closest('[data-ck]');
+    if (!b) return;
+    if (b.dataset.ck === 'connect') accountModal(await api('/platforms').catch(() => []));
+    if (b.dataset.ck === 'dismiss') { lsSet(FIRSTRUN, 'done'); host.remove(); toast('Checklist dismissed'); }
+  });
+  const follow = async () => {
+    if (!host.isConnected) return;
+    const accs = await api('/accounts').catch(() => null);
+    if (!accs || !host.isConnected) return;
+    const games = hasData || (await api('/stats/lifetime').catch(() => ({ games: 0 }))).games > 0;
+    if (!hasData && games && !accs.some((a) => a.syncing)) { rerender(); return; } // the import is in: the full Home
+    const data = await checklistData(accs, games);
+    if (!host.isConnected) return;
+    host.innerHTML = checklist(data, { first: !hasData });
+    if (accs.some((a) => a.syncing)) setTimeout(follow, 2500);
+  };
+  if (syncing) setTimeout(follow, 2500);
+}
+
 const dayKey = (t) => { const x = new Date(t); return `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}-${String(x.getDate()).padStart(2, '0')}`; };
 /**
  * "▲ 1h 20m vs last week · 3 games · 5 sessions". Like with like: this week so far (it starts on the
@@ -396,23 +500,21 @@ async function dashboard(view, stale) {
   const syncing = d.accounts.some((a) => a.syncing);
 
   if (!hasData) {
+    lsSet(FIRSTRUN, lsGet(FIRSTRUN) === 'done' ? 'done' : '1');
+    const ck = await checklistData(d.accounts, false);
+    if (stale()) return;
     view.innerHTML = `<div class="page-h"><div><h1>${greeting}</h1><p>Let’s get your play history in.</p></div></div>
       <div class="card onboard fade-in">
         <div class="onboard-head"><div class="brand brand-stack"><span class="brand-mark">${MARK}</span><h2 class="brand-word">Welcome to Vestigo</h2></div>${tagline()}</div>
         <p class="muted" style="margin:16px auto 0;max-width:720px;text-align:center">Platforms only report lifetime totals. Vestigo snapshots them on a schedule and turns each difference into a session — and dates the hours you played before, so your charts don’t open with a 500-hour spike.</p>
-        <div class="steps">
-          <div><b>1 · Connect</b><span class="muted small">Link Steam, Xbox or PlayStation, or create a custom account you push to via the API.</span></div>
-          <div><b>2 · Import</b><span class="muted small">The first sync imports your library and lifetime hours as baseline history.</span></div>
-          <div><b>3 · Play</b><span class="muted small">Each sync (daily, weekly, monthly or every X days) turns new playtime into sessions.</span></div>
-        </div>
+        <div id="checklist">${checklist(ck, { first: true })}</div>
         <div class="row wrap" style="margin-top:18px;justify-content:center">
-          <a class="btn primary" href="/accounts?add=1" data-link>${icon('plus')}Connect an account</a>
           <a class="btn" href="/settings#import" data-link>${icon('upload')}Import CSV / JSON</a>
           <button class="btn" id="dash-log">${icon('clock')}Log a session</button>
         </div>
-        ${syncing ? `<p class="muted pulse" style="margin-top:16px">${icon('sync', '')} First sync in progress…</p>` : ''}
       </div>`;
     $('#dash-log').addEventListener('click', () => logSessionModal());
+    bindChecklist(view, false, syncing);
     return;
   }
 
@@ -427,6 +529,8 @@ async function dashboard(view, stale) {
     api('/duplicates?summary=true').catch(() => null),
     api('/history/summary').catch(() => null),
   ]);
+  // the first-run checklist stays on Home (on the device that saw it) until it is dismissed
+  const ck = lsGet(FIRSTRUN) === '1' ? await checklistData(d.accounts, true, { dupes, hist }) : null;
   if (stale()) return;
   const health = trackingHealth(d.accounts);
   // things to look at, each only while there is something to do
@@ -480,6 +584,7 @@ async function dashboard(view, stale) {
       <div class="row wrap dash-act">${health ? `<a class="health h-${health.level}" href="/accounts" data-link><span class="hdot" aria-hidden="true"></span><span>${esc(health.text)}${health.action ? ` · <u>${health.action}</u>` : ''}</span></a>` : ''}
         <button class="btn ghost sm" id="dash-custom" aria-label="Customize home" title="Customize home">${icon('settings')}<span class="desk-only">Customize</span></button><button class="btn desk-only" id="dash-log">${icon('plus')}Log session</button></div></div>
     <div class="dash">
+    ${ck ? `<div class="card checklist-card" id="checklist">${checklist(ck)}</div>` : ''}
     ${attention.length ? `<div class="attn" role="group" aria-label="Needs attention">${attention.map(([href, ic, what, act, cls = '']) => `<a class="card attn-card ${cls}" href="${href}" data-link>${icon(ic)}<span class="grow"><b>${what}</b><span class="small muted">${act}</span></span>${icon('chevR', 'ic-16')}</a>`).join('')}</div>` : ''}
     ${blocks.join('\n') || `<div class="card muted">Every section is hidden. <a href="#" id="dash-custom2" class="link">Customize</a> to bring some back.</div>`}
     </div>
@@ -491,6 +596,7 @@ async function dashboard(view, stale) {
   $('#dash-custom').addEventListener('click', custom);
   $('#dash-custom2')?.addEventListener('click', custom);
   bindSessionEdits(view);
+  bindChecklist(view, true, false);
 }
 
 // ---------- home layout ----------
@@ -550,7 +656,7 @@ async function saveSettings(patch) {
   return r;
 }
 
-function layoutModal() {
+export function layoutModal() {
   let next = null;
   modal({
     title: 'Customize home',
@@ -575,41 +681,44 @@ function layoutModal() {
 // =====================================================================
 // Library
 // =====================================================================
+const LIB_FLAGS = [['favorite', 'Favorites'], ['recent', 'Played in the last 2 weeks'], ['multi', 'On several platforms']];
 function libState() {
   const q = new URLSearchParams(location.search);
+  const list = (k) => (q.get(k) || '').split(',').map((x) => x.trim()).filter(Boolean);
   return {
-    q: q.get('q') || '', platform: q.get('platform') || '', status: q.get('status') || '',
+    q: q.get('q') || '', platform: list('platform'), status: list('status'),
+    // one account at a time: GET /games takes a single account_id
+    account: q.get('account_id') || '',
     sort: q.get('sort') || state.settings?.default_library_sort || 'recent', // the URL keeps any other sort
     view: state.settings?.library_view || 'grid',
     // "hide never-played" setting: show played games unless a filter in the URL says otherwise
     played: q.get('played') ?? (state.settings?.library_hide_unplayed ? 'true' : ''), hidden: q.get('hidden') || '',
+    ...Object.fromEntries(LIB_FLAGS.map(([k]) => [k, q.get(k) === 'true'])),
   };
 }
 
 async function library(view, stale) {
   const st = libState();
-  const [platforms] = await Promise.all([api('/stats/lifetime')]);
+  const [platforms, accounts] = await Promise.all([api('/stats/lifetime'), api('/accounts').catch(() => [])]);
   if (stale()) return;
   const platList = platforms.platforms.map((p) => p.platform);
+  const playedDef = state.settings?.library_hide_unplayed ? 'true' : '';
+  const sortOpts = [['recent', 'Recently played'], ['trending', 'Trending (2 wks)'], ['playtime', 'Most played'], ['title', 'A–Z'], ['added', 'Recently added'], ['rating', 'Top rated']];
   view.innerHTML = `
     <div class="page-h"><div><h1>Library</h1><p id="lib-count">&nbsp;</p></div>
       <div class="row"><button class="btn desk-only" id="lib-add">${icon('plus')}Add game</button></div></div>
-    <div class="toolbar">
-      <div class="row" style="margin-bottom:10px">
-        <div class="search grow">${icon('search')}<input class="input" id="lib-q" type="search" placeholder="Search ${platforms.games} games…" value="${esc(st.q)}" aria-label="Search library"></div>
-        <select class="input" id="lib-sort" style="width:auto" aria-label="Sort by">
-          ${[['recent', 'Recently played'], ['trending', 'Trending (2 wks)'], ['playtime', 'Most played'], ['title', 'A–Z'], ['added', 'Recently added'], ['rating', 'Top rated']].map(([v, l]) => `<option value="${v}" ${st.sort === v ? 'selected' : ''}>${l}</option>`).join('')}
-        </select>
+    <div class="toolbar lib-tb">
+      <div class="row lib-row1">
+        <div class="search grow">${icon('search')}<input class="input" id="lib-q" type="search" placeholder="Search ${platforms.games.toLocaleString()} games…" value="${esc(st.q)}" aria-label="Search library"></div>
+        <select class="input" id="lib-sort" style="width:auto" aria-label="Sort by">${sortOpts.map(([v, l]) => `<option value="${v}" ${st.sort === v ? 'selected' : ''}>${l}</option>`).join('')}</select>
         <div class="seg desk-only" aria-label="View"><button data-view="grid" class="${st.view === 'grid' ? 'on' : ''}" aria-label="Covers">${icon('grid', 'ic-16')}</button><button data-view="list" class="${st.view === 'list' ? 'on' : ''}" aria-label="List">${icon('list', 'ic-16')}</button></div>
+        <button class="btn icon mob-only" id="lib-view-t" aria-label="${st.view === 'grid' ? 'Show as a list' : 'Show as covers'}">${icon(st.view === 'grid' ? 'list' : 'grid')}</button>
       </div>
-      <div class="chips" id="lib-chips" role="group" aria-label="Filters">
-        <button class="chip ${!st.platform ? 'on' : ''}" data-plat="">All</button>
-        ${platList.map((p) => `<button class="chip ${st.platform === p ? 'on' : ''}" data-plat="${esc(p)}">${platDot(p)}${esc(plat(p).label)}</button>`).join('')}
-        <span style="width:1px;background:var(--line);flex:none"></span>
-        ${Object.entries(STATUSES).filter(([k]) => k !== 'unset').map(([k, v]) => `<button class="chip ${st.status === k ? 'on' : ''}" data-status="${k}">${v.label}</button>`).join('')}
-        <button class="chip ${st.played === 'false' ? 'on' : ''}" data-played="false">Never played</button>
-        ${state.settings?.library_hide_unplayed ? `<button class="chip ${st.played === '' ? 'on' : ''}" data-played="all">Include unplayed</button>` : ''}
-        <button class="chip ${st.hidden === 'only' ? 'on' : ''}" data-hidden="only">${icon('eyeoff', 'ic-14')}Hidden</button>
+      <div class="lib-row2" id="lib-filters" role="group" aria-label="Filters">
+        <button class="fbtn" data-menu="platform" aria-expanded="false" aria-haspopup="true"></button>
+        <button class="fbtn" data-menu="status" aria-expanded="false" aria-haspopup="true"></button>
+        <button class="fbtn" data-menu="more" aria-expanded="false" aria-haspopup="true"></button>
+        <span class="pills" id="lib-pills"></span>
       </div>
     </div>
     <div id="lib-items"></div>
@@ -628,13 +737,21 @@ async function library(view, stale) {
           <div class="t">${esc(g.title)}</div><div class="m">${g.platforms.filter((p) => p !== 'manual' || g.platforms.length === 1).map(platDot).join('')}<span>${g.minutes ? fmtMin(g.minutes, { short: g.minutes >= 600 }) : 'Unplayed'}</span>${g.entry_count > 1 ? `<span class="dim">· ${g.entry_count}×</span>` : ''}</div></a>`
       : `<a class="li" href="/game/${g.id}" data-link>${cover(g)}<div class="grow"><div class="ellipsis" style="font-weight:620">${esc(g.title)}</div><div class="small muted row" style="gap:6px">${g.platforms.map(platDot).join('')}${g.last_played_at ? `Played ${ago(g.last_played_at)}` : 'Never played'}${g.status !== 'unset' ? ` · ${STATUSES[g.status]?.label}` : ''}</div></div><div class="amt" style="font-weight:700">${fmtMin(g.minutes, { short: g.minutes >= 600 })}</div></a>`).join(''));
   };
-  const params = (offset) => {
-    const p = new URLSearchParams({ limit: String(PAGE), offset: String(offset), sort: st.sort });
+  /** The filters as query parameters (the same names in the page URL and in GET /games). */
+  const filterParams = () => {
+    const p = new URLSearchParams();
     if (st.q) p.set('q', st.q);
-    if (st.platform) p.set('platform', st.platform);
-    if (st.status) p.set('status', st.status);
-    if (st.played) p.set('played', st.played);
+    if (st.platform.length) p.set('platform', st.platform.join(','));
+    if (st.status.length) p.set('status', st.status.join(','));
+    if (st.account) p.set('account_id', st.account);
+    for (const [k] of LIB_FLAGS) if (st[k]) p.set(k, 'true');
     if (st.hidden) p.set('hidden', st.hidden);
+    return p;
+  };
+  const params = (offset) => {
+    const p = filterParams();
+    p.set('limit', String(PAGE)); p.set('offset', String(offset)); p.set('sort', st.sort);
+    if (st.played) p.set('played', st.played);
     return p;
   };
   const more = async () => {
@@ -659,7 +776,9 @@ async function library(view, stale) {
     total = r.total; loaded = r.items.length; maxMin = Math.max(1, r.max_minutes || 1);
     $('#lib-count').textContent = `${r.total.toLocaleString()} game${r.total === 1 ? '' : 's'} · ${fmtHours(r.total_minutes)}h total`;
     if (!r.items.length) {
-      box.innerHTML = platforms.games ? emptyState('search', 'No matches', 'Try a different search or filter.') : emptyState('library', 'Your library is empty', 'Connect an account to import your games, or add one manually.', `<a class="btn primary" href="/accounts?add=1" data-link>${icon('plus')}Connect an account</a>`);
+      box.innerHTML = platforms.games
+        ? emptyState('search', 'Nothing matches', `No game in your library fits ${activeCount() ? 'these filters' : 'this search'}${st.q ? ` and “${esc(st.q)}”` : ''}.`, `<button class="btn primary" data-clear>${icon('x')}Clear filters</button>`)
+        : emptyState('library', 'No tracks yet', 'Connect Steam, Xbox or PlayStation and Vestigo picks up your library — and every hour you’ve already played.', `<a class="btn primary" href="/accounts?add=1" data-link>${icon('plus')}Connect an account</a><a class="btn" href="/settings#import" data-link>${icon('upload')}Import CSV / JSON</a>`);
       return;
     }
     box.innerHTML = st.view === 'grid' ? '<div class="lib-grid"></div>' : '<div class="card pad-0 lib-list"></div>';
@@ -673,34 +792,162 @@ async function library(view, stale) {
     if (el && !view.hidden && el.getBoundingClientRect().top < window.innerHeight + 800) more();
   };
   const sync = () => {
-    const p = new URLSearchParams();
-    for (const k of ['q', 'platform', 'status', 'hidden']) if (st[k]) p.set(k, st[k]);
+    if (stale()) return; // a search typed just before leaving the page
+    const p = filterParams();
     // the URL only records a played filter that differs from the default
-    if (st.played !== (state.settings?.library_hide_unplayed ? 'true' : '')) p.set('played', st.played);
+    if (st.played !== playedDef) p.set('played', st.played);
     if (st.sort !== (state.settings?.default_library_sort || 'recent')) p.set('sort', st.sort);
     history.replaceState({}, '', `/library${p.toString() ? `?${p}` : ''}`);
+    drawFilters();
     load();
   };
+
+  // ---- filter menus: Platform (platforms + one account), Status, More; pills for what is on
+  const accName = (id) => accounts.find((a) => String(a.id) === String(id))?.name || `Account ${id}`;
+  const statusCount = (k) => platforms.status?.[k] || 0;
+  const MORE = [...LIB_FLAGS, ['never', 'Never played'], ...(playedDef ? [['unplayed', 'Include never-played']] : []), ['hidden-all', 'Include hidden'], ['hidden-only', 'Only hidden']];
+  const moreOn = (k) => (k === 'never' ? st.played === 'false' : k === 'unplayed' ? st.played === '' : k === 'hidden-all' ? st.hidden === 'all' : k === 'hidden-only' ? st.hidden === 'only' : st[k]);
+  const counts = () => ({ platform: st.platform.length + (st.account ? 1 : 0), status: st.status.length, more: MORE.filter(([k]) => moreOn(k)).length });
+  const activeCount = () => Object.values(counts()).reduce((a, b) => a + b, 0);
+  const check = (name, value, on, label, extra = '', type = 'checkbox') => `<label class="opt"><input type="${type}" class="check${type === 'radio' ? ' radio' : ''}" name="${name}" value="${esc(value)}" ${on ? 'checked' : ''}><span class="grow">${label}</span>${extra}</label>`;
+  const menuBody = (kind) => {
+    if (kind === 'platform') {
+      return `<fieldset><legend>Platforms</legend>${platList.map((p) => check('platform', p, st.platform.includes(p), `${platDot(p)}${esc(plat(p).label)}`, `<span class="tiny muted">${platforms.platforms.find((x) => x.platform === p)?.games ?? ''}</span>`)).join('')}</fieldset>
+        ${accounts.length > 1 ? `<fieldset><legend>Account</legend>${check('account', '', !st.account, 'Any account', '', 'radio')}${accounts.map((a) => check('account', a.id, String(st.account) === String(a.id), `${platDot(a.platform)}${esc(a.name)}`, `<span class="tiny muted">${a.games ?? ''}</span>`, 'radio')).join('')}</fieldset>` : ''}`;
+    }
+    if (kind === 'status') return `<fieldset><legend>Status</legend>${Object.entries(STATUSES).map(([k, v]) => check('status', k, st.status.includes(k), esc(v.label), `<span class="tiny muted">${statusCount(k)}</span>`)).join('')}</fieldset>`;
+    return `<fieldset><legend>Show</legend>${MORE.map(([k, l]) => check('more', k, moreOn(k), l)).join('')}</fieldset>`;
+  };
+  const LABELS = { platform: 'Platform', status: 'Status', more: 'More' };
+  const drawFilters = () => {
+    const c = counts();
+    for (const b of $$('[data-menu]', view)) {
+      const k = b.dataset.menu;
+      b.classList.toggle('on', !!c[k]);
+      b.innerHTML = `${LABELS[k]}${c[k] ? ` <span class="fcount">· ${c[k]}</span>` : ''}${icon('chevD', 'ic-14')}`;
+      b.setAttribute('aria-label', `${LABELS[k]} filter${c[k] ? `, ${c[k]} on` : ''}`);
+    }
+    const pills = [
+      ...st.platform.map((p) => [`platform:${p}`, `${platDot(p)}${esc(plat(p).label)}`]),
+      ...(st.account ? [[`account:${st.account}`, esc(accName(st.account))]] : []),
+      ...st.status.map((s) => [`status:${s}`, esc(STATUSES[s]?.label || s)]),
+      ...MORE.filter(([k]) => moreOn(k)).map(([k, l]) => [`more:${k}`, esc(l)]),
+    ];
+    $('#lib-pills').innerHTML = pills.map(([k, l]) => `<button class="pill" data-rm="${esc(k)}" aria-label="Remove filter: ${esc(l.replace(/<[^>]+>/g, ''))}">${l}${icon('x', 'ic-14')}</button>`).join('')
+      + (pills.length ? '<button class="pill-clear" data-clear>Clear all</button>' : '');
+  };
+  const apply = (name, value, on) => {
+    if (name === 'platform' || name === 'status') st[name] = on ? [...new Set([...st[name], value])] : st[name].filter((x) => x !== value);
+    else if (name === 'account') st.account = on ? value : '';
+    else if (value === 'never') st.played = on ? 'false' : playedDef;
+    else if (value === 'unplayed') st.played = on ? '' : playedDef;
+    else if (value === 'hidden-all') st.hidden = on ? 'all' : (st.hidden === 'all' ? '' : st.hidden);
+    else if (value === 'hidden-only') st.hidden = on ? 'only' : (st.hidden === 'only' ? '' : st.hidden);
+    else st[value] = on;
+    sync();
+  };
+  const clearAll = () => {
+    Object.assign(st, { platform: [], status: [], account: '', played: playedDef, hidden: '', ...Object.fromEntries(LIB_FLAGS.map(([k]) => [k, false])) });
+    sync();
+  };
+  let menu = null; // the open popover: { el, btn, close }
+  const closeMenu = (focus = false) => {
+    if (!menu) return;
+    const m = menu; menu = null;
+    m.btn.setAttribute('aria-expanded', 'false');
+    m.close();
+    if (focus) m.btn.focus();
+  };
+  const bindMenu = (root, kind) => {
+    root.addEventListener('change', (e) => {
+      const i = e.target;
+      if (!i.matches('input')) return;
+      apply(i.name, i.value, i.checked);
+      // a radio-like pair (never / include never-played, include / only hidden) shows what is on now
+      root.querySelector('.fbody').innerHTML = menuBody(kind);
+      root.querySelector(`input[name="${CSS.escape(i.name)}"][value="${CSS.escape(i.value)}"]`)?.focus();
+    });
+  };
+  const openMenu = (btn) => {
+    const kind = btn.dataset.menu;
+    if (menu?.btn === btn) return closeMenu(true);
+    closeMenu();
+    btn.setAttribute('aria-expanded', 'true');
+    if (matchMedia('(max-width: 600px)').matches) {
+      // a phone: the menu is a sheet
+      const m = modal({ title: `${LABELS[kind]} filters`, body: `<div class="fmenu sheet"><div class="fbody">${menuBody(kind)}</div></div>`, foot: '<button class="btn ghost" data-clear-menu>Clear</button><span class="grow"></span><button class="btn primary" data-close>Done</button>',
+        onMount(el) {
+          bindMenu(el, kind);
+          el.querySelector('[data-clear-menu]').addEventListener('click', () => {
+            if (kind === 'platform') Object.assign(st, { platform: [], account: '' });
+            else if (kind === 'status') st.status = [];
+            else Object.assign(st, { played: playedDef, hidden: '', ...Object.fromEntries(LIB_FLAGS.map(([k]) => [k, false])) });
+            sync();
+            el.querySelector('.fbody').innerHTML = menuBody(kind);
+          });
+        } });
+      const obs = new MutationObserver(() => { if (!m.el.isConnected) { obs.disconnect(); if (menu?.el === m.el) { menu = null; btn.setAttribute('aria-expanded', 'false'); } } });
+      obs.observe(document.body, { childList: true });
+      menu = { el: m.el, btn, close: m.close };
+      return;
+    }
+    const el = document.createElement('div');
+    el.className = 'fmenu card';
+    el.id = `lib-menu-${kind}`;
+    el.setAttribute('role', 'group');
+    el.setAttribute('aria-label', `${LABELS[kind]} filters`);
+    el.innerHTML = `<div class="fbody">${menuBody(kind)}</div>`;
+    btn.setAttribute('aria-controls', el.id);
+    btn.after(el);
+    el.style.left = `${btn.offsetLeft}px`;
+    el.style.top = `${btn.offsetTop + btn.offsetHeight + 6}px`;
+    // keep the card on screen: shift it left when it would leave the right edge
+    const r = el.getBoundingClientRect();
+    if (r.right > innerWidth - 8) el.style.left = `${Math.max(0, btn.offsetLeft - (r.right - (innerWidth - 8)))}px`;
+    bindMenu(el, kind);
+    el.querySelector('input')?.focus();
+    const onKey = (e) => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); closeMenu(true); } };
+    const onDown = (e) => { if (!el.contains(e.target) && e.target !== btn && !btn.contains(e.target)) closeMenu(); };
+    const onFocus = (e) => { if (!el.contains(e.target) && e.target !== btn) closeMenu(); };
+    el.addEventListener('keydown', onKey);
+    document.addEventListener('pointerdown', onDown, true);
+    document.addEventListener('focusin', onFocus);
+    menu = { el, btn, close: () => { el.remove(); document.removeEventListener('pointerdown', onDown, true); document.removeEventListener('focusin', onFocus); } };
+  };
+  $('#lib-filters').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-menu]');
+    if (b) return openMenu(b);
+    const rm = e.target.closest('[data-rm]');
+    if (rm) {
+      const [name, ...v] = rm.dataset.rm.split(':');
+      const value = v.join(':');
+      apply(name === 'more' ? 'more' : name, value, false);
+      ($('#lib-pills [data-rm]') || $('#lib-filters [data-menu="more"]'))?.focus();
+    }
+  });
+  // "Clear all" by the pills keeps the search; the no-match state's "Clear filters" clears it too
+  view.addEventListener('click', (e) => {
+    const c = e.target.closest('[data-clear]');
+    if (!c) return;
+    if (!c.matches('.pill-clear')) { st.q = ''; $('#lib-q').value = ''; }
+    clearAll();
+    $('#lib-q').focus();
+  });
+  drawFilters();
   let t;
   $('#lib-q').addEventListener('input', (e) => { clearTimeout(t); t = setTimeout(() => { st.q = e.target.value.trim(); sync(); }, 180); });
   $('#lib-sort').addEventListener('change', (e) => { st.sort = e.target.value; sync(); });
-  $$('[data-view]', view).forEach((b) => b.addEventListener('click', () => {
-    st.view = b.dataset.view; $$('[data-view]', view).forEach((x) => x.classList.toggle('on', x === b)); sync();
-    if (state.settings?.library_view !== st.view) saveSettings({ library_view: st.view }).catch(() => {}); // remembered on every device
-  }));
-  $('#lib-chips').addEventListener('click', (e) => {
-    const c = e.target.closest('.chip');
-    if (!c) return;
-    if ('plat' in c.dataset) { st.platform = c.dataset.plat; $$('[data-plat]', view).forEach((x) => x.classList.toggle('on', x === c)); }
-    if (c.dataset.status) { st.status = st.status === c.dataset.status ? '' : c.dataset.status; $$('[data-status]', view).forEach((x) => x.classList.toggle('on', x.dataset.status === st.status)); }
-    if (c.dataset.played) {
-      const def = state.settings?.library_hide_unplayed ? 'true' : '';
-      st.played = c.dataset.played === 'all' ? (st.played === '' ? def : '') : (st.played === 'false' ? def : 'false');
-      $$('[data-played]', view).forEach((x) => x.classList.toggle('on', x.dataset.played === 'all' ? st.played === '' : st.played === x.dataset.played));
-    }
-    if (c.dataset.hidden) { st.hidden = st.hidden ? '' : 'only'; c.classList.toggle('on', !!st.hidden); }
+  const setView = (v) => {
+    st.view = v;
+    $$('[data-view]', view).forEach((x) => x.classList.toggle('on', x.dataset.view === v));
+    const tb = $('#lib-view-t');
+    tb.innerHTML = icon(v === 'grid' ? 'list' : 'grid');
+    tb.setAttribute('aria-label', v === 'grid' ? 'Show as a list' : 'Show as covers');
     sync();
-  });
+    if (state.settings?.library_view !== st.view) saveSettings({ library_view: st.view }).catch(() => {}); // remembered on every device
+  };
+  $$('[data-view]', view).forEach((b) => b.addEventListener('click', () => setView(b.dataset.view)));
+  $('#lib-view-t').addEventListener('click', () => setView(st.view === 'grid' ? 'list' : 'grid'));
   const addGame = () => modal({
     title: 'Add a game',
     body: `<form class="stack" id="ag"><div class="field"><label>Title</label><input class="input" name="title" required placeholder="The Legend of Zelda: Tears of the Kingdom"></div>
@@ -726,88 +973,244 @@ async function library(view, stale) {
 // =====================================================================
 // Game detail
 // =====================================================================
+/**
+ * A small menu card under `btn` (a sheet on a phone). Escape, a click outside or Tab away closes it
+ * and focus goes back to the button; arrow keys move along a role=menu. onMount(el, close) wires it.
+ */
+function popover(btn, { title, html, onMount }) {
+  if (btn.getAttribute('aria-expanded') === 'true') return;
+  btn.setAttribute('aria-expanded', 'true');
+  const done = () => btn.setAttribute('aria-expanded', 'false');
+  const arrows = (el) => el.addEventListener('keydown', (e) => {
+    if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(e.key)) return;
+    const items = [...el.querySelectorAll('[role^="menuitem"]')];
+    const i = items.indexOf(document.activeElement);
+    const next = e.key === 'Home' ? 0 : e.key === 'End' ? items.length - 1 : (i + (e.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length;
+    e.preventDefault();
+    items[next]?.focus();
+  });
+  if (matchMedia('(max-width: 600px)').matches) {
+    const m = modal({ title: esc(title), body: html, onMount(el, close) { arrows(el); onMount?.(el, close); } });
+    const obs = new MutationObserver(() => { if (!m.el.isConnected) { obs.disconnect(); done(); } });
+    obs.observe(document.body, { childList: true });
+    return;
+  }
+  const el = document.createElement('div');
+  el.className = 'fmenu card pop';
+  el.innerHTML = html;
+  btn.after(el);
+  const onDown = (e) => { if (!el.contains(e.target) && !btn.contains(e.target)) close(); };
+  const onFocus = (e) => { if (!el.contains(e.target)) close(); };
+  function close(focus = false) {
+    if (!el.isConnected) return;
+    el.remove(); done();
+    document.removeEventListener('pointerdown', onDown, true);
+    document.removeEventListener('focusin', onFocus);
+    if (focus) btn.focus();
+  }
+  el.addEventListener('keydown', (e) => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); close(true); } });
+  arrows(el);
+  document.addEventListener('pointerdown', onDown, true);
+  setTimeout(() => document.addEventListener('focusin', onFocus));
+  onMount?.(el, () => close(true));
+  el.querySelector('button, input, a[href]')?.focus();
+}
+
+/** The game's curve: the running total (tracked over hatched history, sessions and unlocks below) or minutes per month. */
+function gameCurve(series, mode, g) {
+  if (mode === 'month') {
+    return barChart(series.slice(-36).map((x) => ({ label: x.label, name: x.name, value: x.minutes, tip: `${x.name}: ${x.minutes ? fmtMin(x.minutes) : 'no play'}${x.estimated ? ` (${fmtMin(x.estimated)} estimated)` : ''}${x.sessions ? ` · ${plural(x.sessions, 'session')}` : ''}${x.unlocked ? ` · ${x.unlocked} unlocked` : ''}`,
+      stack: [{ value: x.tracked, color: 'var(--accent-mark)' }, { key: 'estimated', value: x.estimated || 0, color: 'url(#pt-hatch)' }] })), { size: 'page', title: `${g.title}, playtime by month` });
+  }
+  return curveChart({ series }, { title: `${g.title}, playtime over time`, keys: `${g.title} over time; arrow keys read each month` });
+}
+
+/** When a group of unlocks happened, in words: the session, before tracking, or a day. */
+function achGroupHead(gr) {
+  if (gr.kind === 'tracked') {
+    const s = gr.session;
+    const when = s.precise ? `${fmtDate(s.started_at)}, ${fmtTime(s.started_at)}` : fmtDate(s.ended_at);
+    return `<button class="ach-gh-link" data-edit-session="${s.id}">Earned during the session on ${esc(when)}</button>`;
+  }
+  if (gr.kind === 'history') return '<span>Before tracking <span class="muted">· during estimated history</span></span>';
+  if (gr.kind === 'day') return `<span>Unlocked on ${esc(fmtDate(gr.at, { year: 'numeric', month: 'short', day: 'numeric' }))} <span class="muted">· no session matched</span></span>`;
+  return '<span>Unlocked <span class="muted">· time unknown</span></span>';
+}
+function achRow(x, dated = false) {
+  const secret = x.hidden && !x.unlocked;
+  return `<div class="item ach-row${secret ? ' secret' : ''}">${achIcon(x, { size: 36, locked: !x.unlocked })}
+    <div class="grow"><div class="ttl ellipsis">${secret ? `<span class="blur" aria-hidden="true">${esc(x.name || 'Hidden')}</span><span class="vh">Hidden achievement</span>` : esc(x.name || 'Achievement')}</div>
+      ${x.description ? `<div class="sub">${secret ? `<span class="blur" aria-hidden="true">${esc(x.description)}</span>` : esc(x.description)}</div>` : ''}</div>
+    <div class="ach-meta">${rarityText(x)}${x.points ? `<span class="tiny muted">${x.points}G</span>` : ''}${x.unlocked && x.unlocked_at ? `<span class="tiny muted">${dated ? `${fmtDate(x.unlocked_at)}, ` : ''}${fmtTime(x.unlocked_at)}</span>` : ''}</div>
+    ${secret ? '<button class="btn ghost sm" data-reveal>Reveal</button>' : ''}</div>`;
+}
+/** Unlocked achievements in groups: by session (newest first), then those from before tracking, then the rest. */
+function achGroups(items) {
+  const out = []; const at = new Map();
+  for (const x of items.filter((i) => i.unlocked)) {
+    const k = x.session_kind === 'tracked' ? `s${x.session.id}` : x.session_kind === 'history' ? 'history' : x.unlocked_at ? `d${dayKey(x.unlocked_at)}` : 'unknown';
+    if (!at.has(k)) { at.set(k, out.length); out.push({ k, kind: x.session_kind === 'tracked' ? 'tracked' : x.session_kind === 'history' ? 'history' : x.unlocked_at ? 'day' : 'unknown', session: x.session, at: x.unlocked_at, items: [] }); }
+    out[at.get(k)].items.push(x);
+  }
+  // before tracking, then without a time, always last
+  const rank = (gr) => (gr.kind === 'history' ? 1 : gr.kind === 'unknown' ? 2 : 0);
+  return out.sort((a, b) => rank(a) - rank(b));
+}
+const ACH_SHOWN = 8; // unlocks in the timeline before "Show all"
+/** The first `n` unlocks of the groups (a group may be cut short). */
+const firstUnlocks = (groups, n) => { const out = []; for (const gr of groups) { if (n <= 0) break; out.push({ ...gr, total: gr.items.length, items: gr.items.slice(0, n) }); n -= gr.items.length; } return out; };
+/** The achievements card: progress (count, %, gamerscore or trophy grades, completion date), the unlock timeline, the locked ones folded away. */
+function achBlock(ach) {
+  const sm = ach.summary;
+  const groups = achGroups(ach.items);
+  const locked = ach.items.filter((x) => !x.unlocked);
+  const plat = sm.grades?.platinum;
+  const grades = sm.grades ? ['platinum', 'gold', 'silver', 'bronze'].filter((k) => sm.grades[k] || k !== 'platinum').map((k) => `<span class="grade g-${k}" title="${k}">${sm.grades[k]}<span class="vh"> ${k}</span></span>`).join('') : '';
+  const per = ach.entries.filter((e) => e.achievements?.total);
+  return `<div class="card ach-card" id="g-ach"><div class="card-h"><h2>Achievements</h2>${sm.completed ? `<span class="badge good">${icon('check')}${plat ? 'Platinum' : '100%'}</span>` : ''}</div>
+    <div class="ach-prog">
+      <div class="ap-num"><b>${sm.unlocked.toLocaleString()}</b><span class="muted">of ${sm.total.toLocaleString()}</span></div>
+      <div class="grow"><div class="meter"><i style="width:${Math.min(100, sm.percent)}%"></i></div>
+        <div class="small muted ap-sub"><b class="ap-pct">${sm.percent}%</b>${sm.points_total ? ` · ${sm.points.toLocaleString()} of ${sm.points_total.toLocaleString()}G` : ''}${grades ? ` · <span class="grades">${grades}</span>` : ''}</div></div>
+    </div>
+    ${sm.completed_at ? `<p class="small ach-done">${icon('trophy', 'ic-16')}${plat ? 'Platinum' : 'Completed'} on ${fmtDate(sm.completed_at, { year: 'numeric', month: 'long', day: 'numeric' })}</p>` : ''}
+    ${per.length > 1 ? `<div class="ach-entries">${per.map((e) => `<span class="small">${platDot(e.platform)}${esc(e.account_name || e.platform)} · ${e.achievements.unlocked}/${e.achievements.total}${e.excluded ? ' <span class="muted">(excluded)</span>' : ''}</span>`).join('')}</div>` : ''}
+    ${groups.length ? `<h3 class="ach-h">Unlock timeline</h3><div class="ach-tl" id="g-ach-tl">${firstUnlocks(groups, ACH_SHOWN).map(achGroup).join('')}</div>
+      ${sm.unlocked > ACH_SHOWN ? `<button class="btn sm" data-ach-more>Show all ${plural(sm.unlocked, 'unlock')}</button>` : ''}` : '<p class="small muted">Nothing unlocked yet.</p>'}
+    ${locked.length ? `<details class="ach-locked"><summary><span>${plural(locked.length, 'locked achievement')}</span>${locked.some((x) => x.hidden) ? `<span class="tiny muted">${locked.filter((x) => x.hidden).length} hidden</span>` : ''}</summary><div class="list" data-locked></div></details>` : ''}
+  </div>`;
+}
+const achGroup = (gr) => `<section class="ach-g"><div class="ach-gh">${achGroupHead(gr)}<span class="tiny muted">${gr.total ?? gr.items.length}</span></div><div class="list">${gr.items.map((x) => achRow(x, gr.kind === 'history')).join('')}</div></section>`;
+function bindAch(root, ach) {
+  const card = root.querySelector('#g-ach');
+  if (!card) return;
+  card.addEventListener('click', (e) => {
+    const more = e.target.closest('[data-ach-more]');
+    if (more) { card.querySelector('#g-ach-tl').innerHTML = achGroups(ach.items).map(achGroup).join(''); more.remove(); return; }
+    const rv = e.target.closest('[data-reveal]');
+    if (rv) {
+      const row = rv.closest('.ach-row');
+      row.classList.add('revealed');
+      row.querySelectorAll('.blur').forEach((b) => b.removeAttribute('aria-hidden'));
+      row.querySelector('.vh')?.remove();
+      rv.remove();
+    }
+  });
+  // the locked list is drawn when it is opened
+  card.querySelector('.ach-locked')?.addEventListener('toggle', (e) => {
+    const host = e.target.querySelector('[data-locked]');
+    if (e.target.open && !host.childElementCount) host.innerHTML = ach.items.filter((x) => !x.unlocked).map((x) => achRow(x)).join('');
+  });
+}
+
 async function game(view, id, stale) {
-  const g = await api(`/games/${id}`);
+  const [g, ach, curve] = await Promise.all([
+    api(`/games/${id}`),
+    api(`/games/${id}/achievements`).catch(() => null),
+    api(`/games/${id}/stats`).catch(() => null),
+  ]);
   if (stale()) return;
   setTitle(g.title);
-  const s = g.summary;
+  const s = g.summary || { total_minutes: g.minutes || 0, tracked_minutes: 0, estimated_minutes: 0, baseline_minutes: 0, sessions: 0, avg_session_minutes: 0, longest_session_minutes: 0 };
   const pct = (m) => (s.total_minutes ? Math.max(0, Math.min(100, (m / s.total_minutes) * 100)) : 0);
   const rating = g.rating || 0;
-  const hasSeries = g.series.some((x) => x.minutes > 0);
+  // the unlocks of each tracked session, for the session rows
+  const bySession = new Map();
+  for (const x of ach?.items || []) {
+    if (!x.unlocked || x.session_kind !== 'tracked') continue;
+    if (!bySession.has(x.session.id)) bySession.set(x.session.id, { count: 0, items: [] });
+    const b = bySession.get(x.session.id);
+    b.count++; b.items.unshift(x); // the list is newest first: unlock order
+  }
   // the 10 most recent sessions; the rest are a click away on Sessions, filtered to this game
   const plays = g.sessions.filter((x) => x.kind === 'play');
-  const recent = plays.slice(0, 10);
+  const recent = plays.slice(0, 10).map((x) => ({ ...x, achievements: bySession.get(x.id) || { count: 0, items: [] } }));
+  const nSessions = Math.max(s.sessions, plays.length);
+  const parts = [[s.tracked_minutes, 'tracked', 'background:var(--accent-mark)'], [s.estimated_minutes || 0, 'estimated history', null], [s.baseline_minutes, 'undated', 'background:var(--line-strong)']].filter(([m]) => m > 0);
+  const series = (curve?.series || []).map((x) => ({ ...x, label: x.key.endsWith('-01') && curve.series.length > 12 ? x.key.slice(0, 4) : seriesLabel(x.key, 'month'), name: seriesName(x.key, 'month') }));
+  const years = [...new Set(series.filter((x) => x.minutes > 0).map((x) => Number(x.key.slice(0, 4))))].sort((a, b) => b - a).slice(0, 6);
+  const hasAch = !!(ach?.summary && ach.total);
   view.innerHTML = `
     <a href="/library" data-link class="btn ghost sm" style="margin:-4px 0 10px -6px" onclick="if(history.length>1){event.preventDefault();event.stopPropagation();history.back()}">${icon('back')}Back</a>
-    <div class="hero fade-in">
-      ${g.cover_url ? `<div class="bg" style="background-image:url('${esc(cssUrl(g.cover_url))}')"></div>` : ''}
+    <div class="hero fade-in${g.cover_url ? '' : ' hero-ph'}" style="--ph-h:${coverHue(g.title)}">
+      ${g.cover_url ? `<div class="bgclip"><div class="bg" style="background-image:url('${esc(cssUrl(g.cover_url))}')"></div></div>` : ''}
       <div class="in">
         ${cover(g)}
         <div class="grow">
           <div class="row wrap" style="margin-bottom:8px">${g.platforms.map(platTag).join('')}</div>
           <h1>${esc(g.title)}</h1>
-          <div class="row wrap" style="margin-top:12px;gap:18px">
-            <div><div class="big">${fmtMin(s.total_minutes, { short: s.total_minutes >= 600 })}</div><div class="small muted">lifetime</div></div>
-            <div class="desk-only"><div style="font-size:20px;font-weight:750">${s.sessions}</div><div class="small muted">sessions</div></div>
-            <div class="desk-only"><div style="font-size:20px;font-weight:750">${g.last_played_at ? ago(g.last_played_at) : '—'}</div><div class="small muted">last played</div></div>
-          </div>
+          <div class="hero-life"><span class="big">${fmtMin(s.total_minutes, { short: s.total_minutes >= 600 })}</span><span class="muted">lifetime</span></div>
+          <div class="hero-line small muted">${plural(nSessions, 'session')} · ${g.last_played_at ? `played ${ago(g.last_played_at)}` : 'never played'}</div>
+          ${s.total_minutes ? `<div class="hero-split">
+            <div class="split-bar">${parts.map(([m, , st]) => `<i ${st ? `style="width:${pct(m)}%;${st}"` : `class="hatch-bg" style="width:${pct(m)}%"`}></i>`).join('')}</div>
+            <div class="legend">${parts.length > 1 ? `<span><b>${fmtMin(s.total_minutes)}</b> =</span>` : ''}${parts.map(([m, l, st], i) => `<span>${i ? '+ ' : ''}<i class="dot${st ? '' : ' hatch-dot'}" ${st ? `style="${st}"` : ''}></i>${fmtMin(m)} ${l}</span>`).join('')}</div>
+          </div>` : ''}
         </div>
+      </div>
+      <div class="hero-act">
+        <select class="input" id="g-status-sel" aria-label="Status">${Object.entries(STATUSES).map(([k, v]) => `<option value="${k}" ${g.status === k ? 'selected' : ''}>${v.label}</option>`).join('')}</select>
+        <div class="stars" id="g-stars" role="radiogroup" aria-label="Rating">${[1, 2, 3, 4, 5].map((i) => `<button data-r="${i * 2}" class="${rating >= i * 2 ? 'on' : ''}" role="radio" aria-checked="${rating === i * 2}" aria-label="Rate ${i} of 5">${icon('star')}</button>`).join('')}</div>
+        <button class="btn icon ghost${g.favorite ? ' fav-on' : ''}" id="g-fav" aria-label="Favorite" aria-pressed="${!!g.favorite}">${icon(g.favorite ? 'heartFill' : 'heart')}</button>
+        <span class="grow"></span>
+        <span class="pop-wrap"><button class="btn icon" id="g-more" aria-label="More actions" aria-haspopup="true" aria-expanded="false">${icon('more')}</button></span>
+        <button class="btn primary" id="g-log">${icon('plus')}Log session</button>
       </div>
     </div>
-    <div class="grid grid-main">
-      <div class="stack">
-        <div class="card">
-          <div class="row wrap between" style="margin-bottom:14px">
-            <div class="seg desk-only" id="g-status" aria-label="Status">${Object.entries(STATUSES).map(([k, v]) => `<button data-st="${k}" class="${g.status === k ? 'on' : ''}">${v.label}</button>`).join('')}</div>
-            <select class="input mob-only" id="g-status-sel" aria-label="Status" style="width:auto">${Object.entries(STATUSES).map(([k, v]) => `<option value="${k}" ${g.status === k ? 'selected' : ''}>${v.label}</option>`).join('')}</select>
-            <div class="row">
-              <div class="stars" id="g-stars" role="radiogroup" aria-label="Rating">${[1, 2, 3, 4, 5].map((i) => `<button data-r="${i * 2}" class="${rating >= i * 2 ? 'on' : ''}" role="radio" aria-checked="${rating === i * 2}" aria-label="Rate ${i} of 5">${icon('star')}</button>`).join('')}</div>
-              <button class="btn icon ghost${g.favorite ? ' fav-on' : ''}" id="g-fav" aria-label="Favorite" aria-pressed="${!!g.favorite}">${icon(g.favorite ? 'heartFill' : 'heart')}</button>
-            </div>
+    <div class="kpis k4 strip">
+      ${kpi('Tracked', fmtMin(s.tracked_minutes), 'since tracking began')}
+      ${kpi('Avg session', fmtMin(s.avg_session_minutes), plural(s.sessions, 'session'))}
+      ${kpi('Longest', fmtMin(s.longest_session_minutes), s.longest_session_minutes ? 'tracked' : '')}
+      ${kpi('First tracked', s.first_tracked_at ? fmtDate(s.first_tracked_at) : '—', s.tracking_since ? `owned since ${fmtDate(s.tracking_since)}` : '')}
+    </div>
+    <div class="grid grid-main game-cols">${columns()}</div>`;
+  /**
+   * The two columns: play on the left (curve, sessions), the game's facts on the right
+   * (achievements, platforms, notes). Activity and history before tracking go where the columns
+   * end closest together, from the cards' expected heights (the page is laid out once, hidden).
+   */
+  function columns() {
+    const curveCard = series.length ? `<div class="card"><div class="card-h"><h2>Playtime over time</h2><div class="seg" id="g-curve-mode" aria-label="Show"><button data-cm="total" class="on">Running total</button><button data-cm="month">By month</button></div></div>
+          <div id="g-curve">${gameCurve(series, 'total', g)}</div>
+          <div class="legend"><span><i class="dot" style="background:var(--accent-mark)"></i>Tracked</span>${curve.totals.estimated_minutes ? '<span><i class="dot hatch-dot"></i>Estimated history</span>' : ''}${series.some((x) => x.sessions) ? '<span><i class="dot" style="background:var(--accent2)"></i>Sessions</span>' : ''}${series.some((x) => x.unlocked) ? '<span><i class="dot" style="background:var(--star)"></i>Unlocks</span>' : ''}</div>
+          ${curve.totals.baseline_minutes ? `<p class="tiny muted" style="margin:8px 0 0">${fmtMin(curve.totals.baseline_minutes)} has no date: it counts toward lifetime, not on the curve.</p>` : ''}</div>` : '';
+    const heatCard = years.length ? `<div class="card"><div class="card-h"><h2>Activity</h2>${years.length > 1 ? `<div class="seg" id="g-hm-year" aria-label="Activity year">${years.map((y, i) => `<button data-y="${y}" class="${i ? '' : 'on'}">${y}</button>`).join('')}</div>` : `<span class="tiny muted">${years[0]}</span>`}</div><div id="g-heat"><div class="ins-ph short" aria-hidden="true"></div></div></div>` : '';
+    const baselines = g.sessions.filter((x) => x.kind === 'baseline' && x.source !== 'inferred');
+    const sessCard = `<div class="card"><div class="card-h"><h2>Recent sessions</h2>${nSessions > recent.length ? `<a href="/sessions?game_id=${g.id}" data-link>All ${nSessions.toLocaleString()} sessions${arrow()}</a>` : ''}</div>
+          <div class="list dated" id="g-sessions">${recent.length ? groupByDay(recent).map((grp) => `<div class="day-h"><span>${dayLabel(grp.day)}</span><span>${fmtMin(grp.minutes)}</span></div>${grp.items.map((x) => sessionItem(x, { showGame: false, platLabel: g.entries.length > 1, dated: true })).join('')}`).join('') : '<p class="muted">No sessions yet — they appear after a sync spots new playtime, or log one yourself.</p>'}
+          ${baselines.map((x) => `<div class="item"><span class="dot" style="background:var(--line);width:10px;height:10px"></span><div class="grow"><div class="sub"><b style="color:var(--text)">${esc(plat(x.platform).label)}</b> ${esc(x.note || 'History')} · ${fmtDate(x.window_end)}</div></div><div class="amt muted">${fmtMin(x.minutes)}</div><button class="btn ghost sm icon" data-edit-session="${x.id}" aria-label="Edit history">${icon('edit')}</button></div>`).join('')}
           </div>
-          <div class="kpis k4">
-            ${kpi('Tracked', fmtMin(s.tracked_minutes), 'since tracking began')}
-            ${kpi('Avg session', fmtMin(s.avg_session_minutes), `${s.sessions} sessions`)}
-            ${kpi('Longest', fmtMin(s.longest_session_minutes), '')}
-            ${kpi('First tracked', s.first_tracked_at ? fmtDate(s.first_tracked_at) : '—', s.tracking_since ? `owned since ${fmtDate(s.tracking_since)}` : '')}
-          </div>
-          <div style="margin-top:14px">
-            <div class="split-bar"><i style="width:${pct(s.tracked_minutes)}%;background:var(--accent-mark)"></i><i class="hatch-bg" style="width:${pct(s.estimated_minutes || 0)}%"></i><i style="width:${pct(s.baseline_minutes)}%;background:var(--line)"></i></div>
-            <div class="legend"><span><i class="dot" style="background:var(--accent-mark)"></i>Tracked ${fmtMin(s.tracked_minutes)}</span>${s.estimated_minutes ? `<span><i class="dot hatch-dot"></i>Estimated history ${fmtMin(s.estimated_minutes)}</span>` : ''}${s.baseline_minutes ? `<span><i class="dot" style="background:var(--line)"></i>Undated ${fmtMin(s.baseline_minutes)}</span>` : ''}</div>
-          </div>
-        </div>
-        ${hasSeries ? `<div class="card"><div class="card-h"><h2>Playtime by month</h2></div>${barChart(g.series.slice(-24).map((x) => ({ label: seriesLabel(x.key, 'month'), value: x.minutes, tip: seriesTip(x.key, 'month', x.minutes) + (x.estimated ? ` (${fmtMin(x.estimated)} estimated)` : ''), name: seriesName(x.key, 'month'), stack: [{ value: x.minutes - (x.estimated || 0), color: 'var(--accent-mark)' }, { key: 'estimated', value: x.estimated || 0, color: 'url(#pt-hatch)' }] })), { size: 'card', title: `${g.title}, playtime by month` })}</div>` : ''}
-        <div class="card"><div class="card-h"><h2>Sessions</h2><button class="btn sm" id="g-log">${icon('plus')}Log session</button></div>
-          <div class="list dated" id="g-sessions">${recent.length ? groupByDay(recent).map((grp) => `<div class="day-h"><span>${dayLabel(grp.day)}</span><span>${fmtMin(grp.minutes)}</span></div>${grp.items.map((x) => sessionItem(x, { showGame: false, platLabel: g.entries.length > 1, dated: true })).join('')}`).join('') : '<p class="muted">No sessions yet.</p>'}
-          ${Math.max(s.sessions, plays.length) > recent.length ? `<a class="btn sm" href="/sessions?game_id=${g.id}" data-link style="margin:12px 0">All ${Math.max(s.sessions, plays.length).toLocaleString()} sessions${arrow()}</a>` : ''}
-          ${g.sessions.filter((x) => x.kind === 'baseline' && x.source !== 'inferred').map((x) => `<div class="item"><span class="dot" style="background:var(--line);width:10px;height:10px"></span><div class="grow"><div class="sub"><b style="color:var(--text)">${esc(plat(x.platform).label)}</b> ${esc(x.note || 'History')} · ${fmtDate(x.window_end)}</div></div><div class="amt muted">${fmtMin(x.minutes)}</div><button class="btn ghost sm icon" data-edit-session="${x.id}" aria-label="Edit history">${icon('edit')}</button></div>`).join('')}
-          </div>
-        </div>
-      </div>
-      <div class="stack">
-        <div class="card"><div class="card-h"><h2>Platforms & accounts</h2><button class="btn sm ghost" id="g-merge">${icon('merge')}Merge</button></div>
+        </div>`;
+    const platCard = `<div class="card"><div class="card-h"><h2>Platforms & accounts</h2></div>
           <div class="list">${g.entries.map((e) => `<div class="item" style="${e.excluded ? 'opacity:.55' : ''}">
-              ${e.icon_url ? `<img src="${esc(e.icon_url)}" width="32" height="32" style="border-radius:8px" loading="lazy" onerror="this.style.visibility='hidden'">` : platIcon(e.platform, 32)}
+              ${e.icon_url ? `<img src="${esc(e.icon_url)}" width="32" height="32" style="border-radius:8px" alt="" loading="lazy" onerror="this.style.visibility='hidden'">` : platIcon(e.platform, 32)}
               <div class="grow"><div class="ttl ellipsis">${esc(e.account_name || plat(e.platform).label)}</div>
                 <div class="sub">${platDot(e.platform)}${esc(e.title !== g.title ? e.title : plat(e.platform).label)}${e.excluded ? ' · <b>excluded</b>' : ''}</div>
-                <div class="sub">${e.last_played_at ? `Played ${ago(e.last_played_at)}` : ''}${e.meta?.devices?.deck ? ` · Deck ${fmtMin(e.meta.devices.deck)}` : ''}${e.play_count ? ` · ${e.play_count} launches` : ''}${e.missing_since ? ` · <span style="color:var(--warn)">no longer in library since ${fmtDate(e.missing_since)}</span>` : ''}</div></div>
+                <div class="sub">${e.last_played_at ? `Played ${ago(e.last_played_at)}` : ''}${e.meta?.devices?.deck ? ` · Deck ${fmtMin(e.meta.devices.deck)}` : ''}${e.play_count ? ` · ${e.play_count} launches` : ''}${e.achievements?.total ? ` · ${e.achievements.unlocked} of ${e.achievements.total} unlocked` : ''}${e.missing_since ? ` · <span style="color:var(--warn)">no longer in library since ${fmtDate(e.missing_since)}</span>` : ''}</div></div>
               <div class="amt">${fmtMin(e.playtime_min)}</div>
               <button class="btn ghost sm icon" data-entry-menu="${e.id}" aria-label="Entry options">${icon('more')}</button>
             </div>`).join('')}</div>
           ${g.entries.length > 1 ? '<p class="small muted" style="margin:8px 0 0">Owned on several platforms — totals are summed. Exclude an entry if two platforms report the same playtime.</p>' : ''}
-        </div>
-        ${g.entries.some((e) => e.history) ? `<div class="card"><div class="card-h"><h2>History before tracking</h2></div>
+        </div>`;
+    const hist = g.entries.filter((e) => e.history);
+    const histCard = hist.length ? `<div class="card"><div class="card-h"><h2>History before tracking</h2></div>
           <p class="small muted" style="margin-top:-6px">Playtime from before tracking began. Instead of landing on import day it is dated from everything the platform reports, and shown hatched in charts.</p>
-          ${g.entries.filter((e) => e.history).map((e) => historyBlock(e)).join('')}</div>` : ''}
-        <div class="card"><div class="card-h"><h2 id="g-notes-h">Notes</h2><span class="tiny muted" id="g-notes-st" aria-live="polite"></span></div>
-          <textarea class="input" id="g-notes" aria-labelledby="g-notes-h" placeholder="Thoughts, progress, where you left off…">${esc(g.notes || '')}</textarea></div>
-        <div class="card"><div class="card-h"><h2>Details</h2></div>
-          <div class="setting"><div><div class="t">Hide from library</div><div class="d">Still counts toward stats</div></div><label class="switch"><input type="checkbox" id="g-hidden" ${g.hidden ? 'checked' : ''}><span></span></label></div>
-          <div class="setting"><div><div class="t">Block auto-merge</div><div class="d">New entries with this title won’t be grouped here</div></div><label class="switch"><input type="checkbox" id="g-lock" ${g.merge_locked ? 'checked' : ''}><span></span></label></div>
-          <div class="row wrap" style="margin-top:10px"><button class="btn sm" id="g-edit">${icon('edit')}Edit title & cover</button><button class="btn sm danger" id="g-del">${icon('trash')}Delete</button></div>
-        </div>
-      </div>
-    </div>`;
+          ${hist.map((e) => historyBlock(e)).join('')}</div>` : '';
+    const notesCard = `<div class="card"><div class="card-h"><h2 id="g-notes-h">Notes</h2><span class="tiny muted" id="g-notes-st" aria-live="polite"></span></div>
+          <textarea class="input" id="g-notes" aria-labelledby="g-notes-h" placeholder="Thoughts, progress, where you left off…">${esc(g.notes || '')}</textarea></div>`;
+    // expected heights (px at 1400 wide), enough to choose a column
+    const shown = hasAch ? Math.min(ACH_SHOWN, ach.summary.unlocked) : 0;
+    let L = (curveCard ? 360 : 0) + 90 + Math.max(1, recent.length) * 66 + new Set(recent.map((x) => dayKey(x.ended_at || x.window_end || x.created_at))).size * 40 + baselines.length * 50;
+    let R = (hasAch ? 230 + shown * 64 + (shown ? 40 : 0) + (ach.items.some((x) => !x.unlocked) ? 50 : 0) : 0) + 100 + g.entries.length * 76 + 190;
+    const left = [curveCard]; const right = [hasAch ? achBlock(ach) : '', platCard];
+    // Activity follows the curve, History sits above Notes, each in the shorter column
+    for (const [card, h] of [[heatCard, 260], [histCard, 110 + hist.length * 230]]) {
+      if (!card) continue;
+      if (L <= R) { left.push(card); L += h; } else { right.push(card); R += h; }
+    }
+    left.push(sessCard);
+    right.push(notesCard);
+    return `<div class="stack">${left.join('')}</div><div class="stack">${right.join('')}</div>`;
+  }
   mountCharts(view);
   bindSessionEdits(view);
   const patch = async (body, msg) => { try { await api(`/games/${id}`, { method: 'PATCH', body }); if (msg) toast(msg); } catch (e) { fail(e); } };
@@ -821,11 +1224,9 @@ async function game(view, id, stale) {
     try { await api(`/games/${id}`, { method: 'PATCH', body: { [key]: value } }); } catch (e) { g[key] = was; show(was); return fail(e); }
     undoToast(msg, async () => { await api(`/games/${id}`, { method: 'PATCH', body: { [key]: was } }); g[key] = was; show(was); });
   };
-  // a segment on desktop, a select on a phone (eight statuses do not fit a row); both stay in step
-  const segBtns = $$('#g-status button'); const statusSel = $('#g-status-sel');
-  const showStatus = (st) => { segBtns.forEach((x) => x.classList.toggle('on', x.dataset.st === st)); statusSel.value = st; };
+  const statusSel = $('#g-status-sel');
+  const showStatus = (st) => { statusSel.value = st; };
   const setStatus = (st) => { if (st !== g.status) undoable('status', st, showStatus, `Status: ${STATUSES[st]?.label || st}`); };
-  $('#g-status').addEventListener('click', (e) => { const b = e.target.closest('[data-st]'); if (b) setStatus(b.dataset.st); });
   statusSel.addEventListener('change', (e) => setStatus(e.target.value));
   const stars = $$('#g-stars button');
   const showRating = (r) => stars.forEach((x) => { x.classList.toggle('on', !!r && Number(x.dataset.r) <= r); x.setAttribute('aria-checked', String(Number(x.dataset.r) === r)); });
@@ -837,13 +1238,29 @@ async function game(view, id, stale) {
   const fav = $('#g-fav'); // swapped in place: no re-render, keyboard focus stays on the button
   const showFav = (v) => { fav.innerHTML = icon(v ? 'heartFill' : 'heart'); fav.classList.toggle('fav-on', !!v); fav.setAttribute('aria-pressed', String(!!v)); };
   fav.addEventListener('click', () => undoable('favorite', !g.favorite, showFav, !g.favorite ? 'Added to favorites' : 'Removed from favorites'));
-  const hid = $('#g-hidden');
-  hid.addEventListener('change', () => undoable('hidden', hid.checked, (v) => { hid.checked = !!v; }, hid.checked ? 'Hidden from library' : 'Visible in library'));
-  $('#g-lock').addEventListener('change', (e) => patch({ merge_locked: e.target.checked }));
   let nt;
   $('#g-notes').addEventListener('input', (e) => { $('#g-notes-st').textContent = 'Saving…'; clearTimeout(nt); nt = setTimeout(async () => { await patch({ notes: e.target.value }); $('#g-notes-st').textContent = 'Saved'; }, 600); });
   $('#g-log').addEventListener('click', () => logSessionModal(g));
-  $('#g-edit').addEventListener('click', () => modal({
+  // the ⋯ menu: edit, merge, hide, block auto-merge, delete (what the old Details card held)
+  const toggleItem = (id, on, label, desc) => `<button class="mitem" id="${id}" role="menuitemcheckbox" aria-checked="${!!on}"><span class="mcheck" aria-hidden="true">${icon('check')}</span><span class="grow">${label}<span class="d">${desc}</span></span></button>`;
+  $('#g-more').addEventListener('click', (e) => popover(e.currentTarget, {
+    title: 'Game actions',
+    html: `<div role="menu" aria-label="Game actions" class="mlist">
+      <button class="mitem" id="g-edit" role="menuitem">${icon('edit')}<span class="grow">Edit title & cover</span></button>
+      <button class="mitem" id="g-merge" role="menuitem">${icon('merge')}<span class="grow">Merge with…</span></button>
+      ${toggleItem('g-hidden', g.hidden, 'Hide from library', 'Still counts toward stats')}
+      ${toggleItem('g-lock', g.merge_locked, 'Block auto-merge', 'New entries with this title stay apart')}
+      <button class="mitem danger" id="g-del" role="menuitem">${icon('trash')}<span class="grow">Delete…</span></button></div>`,
+    onMount(el, close) {
+      const on = (sel, fn) => el.querySelector(sel).addEventListener('click', fn);
+      on('#g-edit', () => { close(); editGame(); });
+      on('#g-merge', () => { close(); mergeModal(g); });
+      on('#g-hidden', (ev) => { const b = ev.currentTarget; undoable('hidden', !g.hidden, (v) => { b.setAttribute('aria-checked', String(!!v)); }, !g.hidden ? 'Hidden from library' : 'Visible in library'); });
+      on('#g-lock', (ev) => { const b = ev.currentTarget; g.merge_locked = !g.merge_locked; b.setAttribute('aria-checked', String(!!g.merge_locked)); patch({ merge_locked: g.merge_locked }, g.merge_locked ? 'Auto-merge blocked' : 'Auto-merge allowed'); });
+      on('#g-del', () => { close(); deleteGame(); });
+    },
+  }));
+  const editGame = () => modal({
     title: 'Edit game',
     body: `<form class="stack" id="ge"><div class="field"><label>Title</label><input class="input" name="title" value="${esc(g.title)}"></div>
       <div class="field"><label>Cover image URL</label><input class="input" name="cover_url" value="${esc(g.cover_url || '')}"></div>
@@ -853,13 +1270,36 @@ async function game(view, id, stale) {
       el.querySelectorAll('[data-cov]').forEach((b) => b.addEventListener('click', () => { el.querySelector('[name=cover_url]').value = b.dataset.cov; }));
       el.querySelector('#ge-save').addEventListener('click', async () => { const f = el.querySelector('#ge'); await patch({ title: f.title.value, cover_url: f.cover_url.value }, 'Saved'); close(); rerender(); });
     },
-  }));
-  $('#g-del').addEventListener('click', async () => {
+  });
+  const deleteGame = async () => {
     const synced = g.entries.some((e) => e.account_id);
     if (!(await confirmBox(synced ? 'This game comes from a synced account and will come back on the next sync. Consider hiding it instead. Delete anyway?' : 'Delete this game and all of its sessions? This cannot be undone.', { ok: 'Delete', danger: true, title: 'Delete game?' }))) return;
     try { await api(`/games/${id}${synced ? '?force=true' : ''}`, { method: 'DELETE' }); toast('Deleted'); navigate('/library', { replace: true }); } catch (e) { fail(e); }
+  };
+  // running total or month by month
+  $('#g-curve-mode')?.addEventListener('click', (e) => {
+    const b = e.target.closest('[data-cm]');
+    if (!b || b.classList.contains('on')) return;
+    $$('#g-curve-mode button').forEach((x) => x.classList.toggle('on', x === b));
+    $('#g-curve').innerHTML = gameCurve(series, b.dataset.cm, g);
+    mountCharts($('#g-curve'));
   });
-  $('#g-merge').addEventListener('click', () => mergeModal(g));
+  // the year's activity, drawn once the page is up (it sits below the fold)
+  const heatHost = $('#g-heat');
+  let heatYear = years[0];
+  const loadHeat = async () => {
+    const y = heatYear;
+    const h = await api(`/stats/heatmap?game_id=${g.id}&year=${y}`).catch(() => null);
+    if (!h || !heatHost.isConnected || y !== heatYear) return;
+    heatHost.innerHTML = heatmap(y, h.days, { weekStartsOn: state.settings?.week_starts_on ?? 1, estimated: h.estimated_days || {} });
+    mountCharts(heatHost);
+  };
+  if (heatHost) {
+    const io = new IntersectionObserver((es) => { if (es[0].isIntersecting) { io.disconnect(); loadHeat(); } }, { rootMargin: '400px' });
+    io.observe(heatHost);
+    $('#g-hm-year')?.addEventListener('click', (e) => { const b = e.target.closest('[data-y]'); if (!b) return; heatYear = Number(b.dataset.y); $$('#g-hm-year button').forEach((x) => x.classList.toggle('on', x === b)); loadHeat(); });
+  }
+  if (hasAch) bindAch(view, ach);
   view.addEventListener('click', async (ev) => {
     const ed = ev.target.closest('[data-hist-edit]');
     if (ed) return historyModal(g.entries.find((x) => x.id === Number(ed.dataset.histEdit)), rerender);
@@ -975,74 +1415,163 @@ function mergeModal(g) {
 // =====================================================================
 // Sessions
 // =====================================================================
+const PERIODS_S = [['today', 'Today', 'Today'], ['week', 'This week', 'Week'], ['month', 'This month', 'Month'], ['custom', 'Custom', 'Custom'], ['all', 'All', 'All']];
+const ymd = (t) => dayKey(t);
+/** A period's from / to days (YYYY-MM-DD, local), the week starting on the day set in Settings. */
+function periodRange(p, custom = {}) {
+  const today = new Date(); today.setHours(12, 0, 0, 0);
+  if (p === 'today') return { from: ymd(today), to: ymd(today) };
+  if (p === 'week') {
+    const back = (today.getDay() - (state.settings?.week_starts_on ?? 1) + 7) % 7;
+    return { from: ymd(today.getTime() - back * D), to: ymd(today) };
+  }
+  if (p === 'month') return { from: ymd(new Date(today.getFullYear(), today.getMonth(), 1, 12)), to: ymd(today) };
+  if (p === 'custom') return { from: custom.from || '', to: custom.to || '' };
+  return { from: '', to: '' };
+}
+/** The first day of t's week (as a day timestamp), weeks starting on the day set in Settings. */
+function weekOf(t) {
+  const d = new Date(t); d.setHours(0, 0, 0, 0);
+  d.setDate(d.getDate() - ((d.getDay() - (state.settings?.week_starts_on ?? 1) + 7) % 7));
+  return d.getTime();
+}
+
 async function sessions(view, stale) {
-  const f = { platform: '', source: '', q: '', kind: 'play', game_id: new URLSearchParams(location.search).get('game_id') || '' };
-  let cursor = null; let all = []; let total = 0; let totalMin = 0; let selecting = false; const sel = new Set();
+  const q0 = new URLSearchParams(location.search);
+  const f = {
+    platform: '', source: '', q: '', kind: 'play', game_id: q0.get('game_id') || '',
+    period: PERIODS_S.some(([k]) => k === q0.get('period')) ? q0.get('period') : 'all', from: q0.get('from') || '', to: q0.get('to') || '',
+  };
+  if ((f.from || f.to) && !q0.get('period')) f.period = 'custom';
+  let cursor = null; let all = []; let total = 0; let totalMin = 0; let selecting = false; let lastPick = null; const sel = new Set();
   const lt = await api('/stats/lifetime');
   if (stale()) return;
+  const chip = (attr, value, label, title = '') => `<button class="chip" ${attr}="${value}"${title ? ` title="${title}"` : ''}>${label}</button>`;
   view.innerHTML = `
-    <div class="page-h"><div><h1>Sessions</h1><p id="s-count">&nbsp;</p></div>
+    <div class="page-h"><div><h1>Sessions</h1><p id="s-count" aria-live="polite">&nbsp;</p></div>
       <div class="row"><button class="btn" id="s-select">${icon('check')}Select</button><button class="btn primary desk-only" id="s-log">${icon('plus')}Log session</button></div></div>
     <div class="toolbar">
-      <div class="row" style="margin-bottom:10px"><div class="search grow">${icon('search')}<input class="input" id="s-q" type="search" placeholder="Filter by game" aria-label="Filter sessions by game"></div></div>
+      <div class="row wrap s-row1">
+        <div class="search grow">${icon('search')}<input class="input" id="s-q" type="search" placeholder="Filter by game" aria-label="Filter sessions by game"></div>
+        <select class="input mob-only" id="s-period-sel" aria-label="Period" style="width:auto">${PERIODS_S.map(([k, l]) => `<option value="${k}" ${f.period === k ? 'selected' : ''}>${l}</option>`).join('')}</select><div class="seg desk-only" id="s-period" aria-label="Period">${PERIODS_S.map(([k, l, sh]) => `<button data-period="${k}" class="${f.period === k ? 'on' : ''}"><span class="lg">${l}</span><span class="sm">${sh}</span></button>`).join('')}</div>
+      </div>
+      <div class="row wrap s-custom ${f.period === 'custom' ? '' : 'hide'}" id="s-custom">
+        <label class="small row" style="gap:6px">From <input class="input sm" type="date" id="s-from" value="${esc(f.from)}"></label>
+        <label class="small row" style="gap:6px">To <input class="input sm" type="date" id="s-to" value="${esc(f.to)}"></label>
+      </div>
       <div class="chips" id="s-chips" role="group" aria-label="Filters">
-        <button class="chip on" data-p="">All</button>
+        <button class="chip on" data-p="">All platforms</button>
         ${lt.platforms.map((p) => `<button class="chip" data-p="${esc(p.platform)}">${platDot(p.platform)}${esc(plat(p.platform).label)}</button>`).join('')}
-        <span style="width:1px;background:var(--line);flex:none"></span>
-        <button class="chip" data-src="manual">Manual</button><button class="chip" data-src="sync">Synced</button><button class="chip" data-src="import">Imported</button>
-        <button class="chip" data-kind="baseline">History / baseline</button>
+        <span class="chip-sep" aria-hidden="true"></span>
+        ${chip('data-src', 'manual', 'Logged by me')}${chip('data-src', 'sync', 'From platforms')}${chip('data-src', 'import', 'Imported')}
+        ${chip('data-kind', 'baseline', 'Pre-tracking history', 'Playtime filed as history: it counts toward lifetime, not in stats')}
       </div>
     </div>
-    <div id="s-bulk" class="card bulk-bar hide"><div class="row wrap"><b id="s-bulk-n">0 selected</b><span class="grow"></span>
-      <button class="btn sm" data-bulk="baseline">Move to history</button><button class="btn sm" data-bulk="play">Count in stats</button><button class="btn sm danger" data-bulk="delete">${icon('trash')}Delete</button><button class="btn sm ghost" id="s-bulk-x">Done</button></div></div>
+    <div id="s-bulk" class="card bulk-bar hide"><div class="row wrap"><b id="s-bulk-n">0 selected</b><span class="tiny muted desk-only">Shift-click to select a range</span><span class="grow"></span>
+      <button class="btn sm" data-bulk="baseline" title="Still counts toward lifetime">Exclude from stats</button><button class="btn sm" data-bulk="play" title="Counts toward lifetime either way">Include in stats</button><button class="btn sm danger" data-bulk="delete">${icon('trash')}Delete</button><button class="btn sm ghost" id="s-bulk-x">Done</button></div></div>
     <div class="card" style="padding-top:0"><div class="list" id="s-list"></div><div id="s-more" class="center" style="padding:14px"></div></div>
     <button class="fab" id="fab-log" aria-label="Log session">${icon('plus')}</button>`;
   const list = $('#s-list');
   const dayMin = new Map(); // minutes shown in each day header
-  const dayHead = (grp) => `<div class="day-h" data-day="${grp.day}"><span>${dayLabel(grp.day)}</span><span>${fmtMin(grp.minutes)}</span></div>`;
+  const weeks = new Map(); // week -> { minutes, n } shown in its subtotal row
+  const range = () => periodRange(f.period, f);
+  // a week subtotal row ahead of each week, once the period is longer than a week
+  const spansWeeks = () => { const r = range(); return !r.from || !r.to || (new Date(`${r.to}T12:00`) - new Date(`${r.from}T12:00`)) / D >= 7; };
+  const weekText = (w) => `Week of ${fmtDate(w)} · ${plural(weeks.get(w).n, 'session')} · ${fmtMin(weeks.get(w).minutes)}`;
+  const dayHead = (grp) => `<div class="day-h" data-day="${grp.day}">${selecting ? `<input type="checkbox" class="check" data-day-sel="${grp.day}" aria-label="Select every session of ${esc(dayLabel(grp.day))}">` : ''}<span class="grow">${dayLabel(grp.day)}</span><span>${fmtMin(grp.minutes)}</span></div>`;
   const rows = (items) => items.map((s) => sessionItem(s, { selectable: selecting, selected: sel.has(s.id) })).join('');
+  const html = (groups) => {
+    let out = '';
+    for (const grp of groups) {
+      const w = weekOf(grp.day);
+      if (spansWeeks() && !list.querySelector(`.week-h[data-week="${w}"]`) && !out.includes(`data-week="${w}"`)) out += `<div class="week-h" data-week="${w}">${weekText(w)}</div>`;
+      out += dayHead(grp) + rows(grp.items);
+    }
+    return out;
+  };
+  const count = (items) => { for (const s of items) { const w = weekOf(s.ended_at || s.window_end || s.created_at); const x = weeks.get(w) || { minutes: 0, n: 0 }; x.minutes += s.minutes; x.n++; weeks.set(w, x); } };
   const draw = () => {
     const groups = groupByDay(all);
-    dayMin.clear();
+    dayMin.clear(); weeks.clear(); count(all);
     for (const grp of groups) dayMin.set(grp.day, grp.minutes);
-    list.innerHTML = all.length ? groups.map((grp) => dayHead(grp) + rows(grp.items)).join('')
-      : emptyState('sessions', 'No sessions', f.kind === 'baseline' ? 'No imported history.' : 'Sessions appear when a sync detects new playtime, or when you log one.');
+    list.innerHTML = '';
+    list.innerHTML = all.length ? html(groups)
+      : f.kind === 'baseline' ? emptyState('history', 'No pre-tracking history', 'Playtime from before tracking began, and sessions you exclude from stats, show up here.')
+        : f.period !== 'all' || f.q || f.platform || f.source ? emptyState('sessions', 'No sessions in this view', 'Nothing matches this period and these filters.', '<button class="btn" data-s-reset>Show all sessions</button>')
+          : emptyState('sessions', 'No sessions yet', 'They appear after a sync spots new playtime — or log one yourself.', `<button class="btn primary" data-s-log>${icon('plus')}Log session</button>`);
     drawFoot();
   };
-  // "Load more" appends the next page instead of redrawing the list: the cost stays flat at thousands of rows
+  // the next page is appended, not redrawn: the cost stays flat at thousands of rows
   const drawMore = (items) => {
+    count(items);
+    for (const w of new Set(items.map((s) => weekOf(s.ended_at || s.window_end || s.created_at)))) { const h = list.querySelector(`.week-h[data-week="${w}"]`); if (h) h.textContent = weekText(w); }
     for (const grp of groupByDay(items)) {
       const head = dayMin.has(grp.day) && list.querySelector(`.day-h[data-day="${grp.day}"]`); // the last day continues
       dayMin.set(grp.day, (dayMin.get(grp.day) || 0) + grp.minutes);
-      if (head) head.lastElementChild.textContent = fmtMin(dayMin.get(grp.day));
-      list.insertAdjacentHTML('beforeend', (head ? '' : dayHead(grp)) + rows(grp.items));
+      if (head) { head.lastElementChild.textContent = fmtMin(dayMin.get(grp.day)); list.insertAdjacentHTML('beforeend', rows(grp.items)); } else list.insertAdjacentHTML('beforeend', html([grp]));
     }
     drawFoot();
   };
-  const drawFoot = () => {
-    $('#s-more').innerHTML = cursor && all.length < total ? `<button class="btn" id="s-load">Load more</button>` : (all.length ? '<span class="tiny dim">That’s everything</span>' : '');
-    $('#s-load')?.addEventListener('click', () => load(false));
-    $('#s-count').innerHTML = `${total.toLocaleString()} session${total === 1 ? '' : 's'} · ${fmtMin(totalMin, { short: true })}${f.game_id && all[0] ? ` · ${esc(all[0].title)} <a href="/sessions" data-link class="link">show all games</a>` : ''}`;
-    $('#s-bulk-n').textContent = `${sel.size} selected`;
+  const periodName = () => {
+    if (f.period === 'custom') { const r = range(); return r.from || r.to ? `${r.from ? fmtDate(new Date(`${r.from}T12:00`)) : '…'} – ${r.to ? fmtDate(new Date(`${r.to}T12:00`)) : 'today'}` : 'All time'; }
+    return PERIODS_S.find(([k]) => k === f.period)[1].replace(/^All$/, 'All time');
   };
-  let seq = 0;
+  const drawFoot = () => {
+    $('#s-more').innerHTML = cursor && all.length < total ? '<span class="tiny dim">Loading more…</span>' : (all.length > 20 ? '<span class="tiny dim">That’s everything</span>' : '');
+    $('#s-count').innerHTML = `${esc(periodName())} · ${plural(total, 'session')} · ${fmtMin(totalMin, { short: totalMin >= 6000 })}${f.game_id && all[0] ? ` · ${esc(all[0].title)} <a href="/sessions" data-link class="link">show all games</a>` : ''}`;
+    $('#s-bulk-n').textContent = `${sel.size} selected`;
+    // after the new rows have painted: a short list asks for the next page at once
+    requestAnimationFrame(() => setTimeout(checkMore));
+  };
+  let seq = 0; let loading = false;
   const load = async (reset = true) => {
     // only the latest request may draw (fast filter clicks / typing overlap)
     const my = ++seq;
     const p = new URLSearchParams({ limit: '150', kind: f.kind });
     if (!reset && cursor) p.set('before', cursor);
+    const r0 = range();
+    if (r0.from) p.set('from', r0.from);
+    if (r0.to) p.set('to', r0.to);
     if (f.platform) p.set('platform', f.platform);
     if (f.source) p.set('source', f.source);
     if (f.q) p.set('q', f.q);
     if (f.game_id) p.set('game_id', f.game_id);
-    const r = await api(`/sessions?${p}`);
+    loading = true;
+    let r;
+    try { r = await api(`/sessions?${p}`); } finally { if (my === seq) loading = false; }
     if (my !== seq || stale()) return;
     const more = !reset && all.length;
     all = (reset ? [] : all).concat(r.items); total = r.total; totalMin = r.total_minutes; cursor = r.next;
     if (more) drawMore(r.items); else draw();
   };
+  // the next page loads as the end of the list comes near
+  const checkMore = () => {
+    const el = $('#s-more');
+    if (!loading && cursor && all.length < total && el && !view.hidden && el.getBoundingClientRect().top < innerHeight + 600) load(false);
+  };
+  const io = new IntersectionObserver((es) => { if (es[0].isIntersecting) checkMore(); }, { rootMargin: '600px' });
+  io.observe($('#s-more'));
+  const syncUrl = () => {
+    const p = new URLSearchParams();
+    if (f.game_id) p.set('game_id', f.game_id);
+    if (f.period !== 'all') p.set('period', f.period);
+    if (f.period === 'custom') { if (f.from) p.set('from', f.from); if (f.to) p.set('to', f.to); }
+    history.replaceState({}, '', `/sessions${p.toString() ? `?${p}` : ''}`);
+  };
   let t;
   $('#s-q').addEventListener('input', (e) => { clearTimeout(t); t = setTimeout(() => { f.q = e.target.value.trim(); load(); }, 200); });
+  // a segment on wide screens, a select on a phone; both stay in step
+  const setPeriod = (k) => {
+    f.period = k;
+    $$('#s-period button').forEach((x) => x.classList.toggle('on', x.dataset.period === k));
+    $('#s-period-sel').value = k;
+    $('#s-custom').classList.toggle('hide', f.period !== 'custom');
+    if (f.period === 'custom' && !f.from && !f.to) { const w = periodRange('month'); f.from = w.from; f.to = w.to; $('#s-from').value = f.from; $('#s-to').value = f.to; }
+    syncUrl(); load();
+  };
+  $('#s-period').addEventListener('click', (e) => { const b = e.target.closest('[data-period]'); if (b) setPeriod(b.dataset.period); });
+  $('#s-period-sel').addEventListener('change', (e) => setPeriod(e.target.value));
+  for (const [id, k] of [['#s-from', 'from'], ['#s-to', 'to']]) $(id).addEventListener('change', (e) => { f[k] = e.target.value; syncUrl(); load(); });
   $('#s-chips').addEventListener('click', (e) => {
     const c = e.target.closest('.chip'); if (!c) return;
     if ('p' in c.dataset) { f.platform = c.dataset.p; $$('[data-p]', view).forEach((x) => x.classList.toggle('on', x === c)); }
@@ -1050,10 +1579,51 @@ async function sessions(view, stale) {
     if (c.dataset.kind) { f.kind = f.kind === 'baseline' ? 'play' : 'baseline'; c.classList.toggle('on', f.kind === 'baseline'); }
     load();
   });
-  const toggleSelect = (on) => { selecting = on; sel.clear(); $('#s-bulk').classList.toggle('hide', !on); draw(); };
+  view.addEventListener('click', (e) => {
+    if (e.target.closest('[data-s-log]')) logSessionModal(null, () => load());
+    if (e.target.closest('[data-s-reset]')) {
+      Object.assign(f, { q: '', platform: '', source: '' });
+      $('#s-q').value = '';
+      $$('#s-chips .chip').forEach((x) => x.classList.toggle('on', x.dataset.p === '' || (x.dataset.kind && f.kind === 'baseline')));
+      setPeriod('all');
+    }
+  });
+  const toggleSelect = (on) => { selecting = on; sel.clear(); lastPick = null; $('#s-bulk').classList.toggle('hide', !on); draw(); };
   $('#s-select').addEventListener('click', () => toggleSelect(!selecting));
   $('#s-bulk-x').addEventListener('click', () => toggleSelect(false));
-  list.addEventListener('change', (e) => { const id = Number(e.target.dataset.sel); if (!id) return; e.target.checked ? sel.add(id) : sel.delete(id); e.target.closest('.item').classList.toggle('sel', e.target.checked); $('#s-bulk-n').textContent = `${sel.size} selected`; });
+  const mark = (id, on) => {
+    if (on) sel.add(id); else sel.delete(id);
+    const box = list.querySelector(`[data-sel="${id}"]`);
+    if (box) { box.checked = on; box.closest('.item').classList.toggle('sel', on); }
+  };
+  const dayBoxes = () => list.querySelectorAll('[data-day-sel]').forEach((b) => {
+    const ids = all.filter((s) => groupByDay([s])[0].day === Number(b.dataset.daySel)).map((s) => s.id);
+    b.checked = ids.length > 0 && ids.every((x) => sel.has(x));
+    b.indeterminate = !b.checked && ids.some((x) => sel.has(x));
+  });
+  // shift-click: everything between the last ticked row and this one takes this one's state
+  list.addEventListener('click', (e) => {
+    const box = e.target.closest('[data-sel]');
+    if (!box) return;
+    const id = Number(box.dataset.sel);
+    if (e.shiftKey && lastPick != null) {
+      const ids = all.map((s) => s.id);
+      const [a, b] = [ids.indexOf(lastPick), ids.indexOf(id)].sort((x, y) => x - y);
+      if (a >= 0 && b >= 0) for (const x of ids.slice(a, b + 1)) mark(x, box.checked);
+    }
+    lastPick = id;
+  });
+  list.addEventListener('change', (e) => {
+    const day = e.target.dataset.daySel;
+    if (day) {
+      for (const s of all) if (groupByDay([s])[0].day === Number(day)) mark(s.id, e.target.checked);
+    } else {
+      const id = Number(e.target.dataset.sel); if (!id) return;
+      mark(id, e.target.checked);
+    }
+    dayBoxes();
+    $('#s-bulk-n').textContent = `${sel.size} selected`;
+  });
   $('#s-bulk').addEventListener('click', async (e) => {
     const b = e.target.closest('[data-bulk]'); if (!b || !sel.size) return;
     const action = b.dataset.bulk;
@@ -1078,7 +1648,7 @@ async function sessions(view, stale) {
         }, () => load());
       } else {
         const from = action === 'baseline' ? 'play' : 'baseline';
-        const msg = action === 'baseline' ? `Moved ${n} to history` : `Counting ${n} in stats`;
+        const msg = action === 'baseline' ? `Excluded ${n} from stats` : `Included ${n} in stats`;
         if (picked.every((x) => x.kind === from)) undoToast(msg, () => api('/sessions/bulk', { method: 'POST', body: { ids, action: from } }), () => load());
         else toast(msg);
       }
@@ -1101,9 +1671,16 @@ async function stats(view, stale) {
   const [years, lt] = await Promise.all([api('/stats/years'), api('/stats/lifetime')]);
   if (stale()) return;
   let heatYear = years[0];
+  if (!lt.total_minutes) {
+    // nothing played at all: no zero KPIs or blank charts
+    view.innerHTML = `<div class="page-h"><div><h1>Stats</h1><p>Playtime, sessions and streaks, once there is play to count.</p></div></div>
+      <div class="card">${emptyState('stats', 'No play to chart yet', lt.games ? 'Your library is in, but nothing has been played or dated yet. Sessions appear after a sync spots new playtime — or log one yourself.' : 'Connect Steam, Xbox or PlayStation and Vestigo picks up your library — and every hour you’ve already played.', `${lt.games ? '' : `<a class="btn primary" href="/accounts?add=1" data-link>${icon('plus')}Connect an account</a>`}<button class="btn${lt.games ? ' primary' : ''}" id="st-log">${icon('clock')}Log a session</button>`)}</div>`;
+    $('#st-log').addEventListener('click', () => logSessionModal());
+    return;
+  }
   view.innerHTML = `
     <div class="page-h"><div><h1>Stats</h1><p title="Tracked = observed between syncs. Estimated = playtime from before tracking, dated from first/last played, achievements and release dates. Undated = no dates available (lifetime only).">Lifetime ${fmtHours(lt.total_minutes)}h · ${fmtHours(lt.tracked_minutes)}h tracked · ${fmtHours(lt.estimated_minutes || 0)}h estimated history · ${fmtHours(lt.baseline_minutes)}h undated</p></div>
-      <a class="btn" href="/wrapped/${years[0]}" data-link>${icon('trail')}${years[0]} in review</a></div>
+      <div class="row wrap"><a class="btn" href="/insights" data-link>${icon('insights')}Insights</a><a class="btn" href="/wrapped/${years[0]}" data-link>${icon('trail')}${years[0]} in review</a></div></div>
     <div class="toolbar"><div class="row wrap">
       <div class="row" style="gap:8px">
         <div class="seg" id="st-range" aria-label="Range">${[['7d', '7 days', '7d'], ['30d', '30 days', '30d'], ['90d', '90 days', '90d'], ['365d', '12 months', '12m']].map(([v, l, sh]) => `<button data-r="${v}" class="${range === v ? 'on' : ''}" title="Last ${l}"><span class="lg">${l}</span><span class="sm">${sh}</span></button>`).join('')}</div>
@@ -1123,6 +1700,12 @@ async function stats(view, stale) {
     const maxWd = Math.max(1, ...s.weekday);
     const order = [1, 2, 3, 4, 5, 6, 0];
     const hasHours = s.hours.some((h) => h > 0);
+    if (!s.total_minutes) {
+      body.innerHTML = `<div class="card">${emptyState('stats', 'Nothing played in this range', `${esc(s.range.label)}${platform ? ` on ${esc(plat(platform).label)}` : ''}${estimates === 'exclude' ? ', tracked play only' : ''}: no sessions and no dated history.`, `<button class="btn" data-r-all>Show all time</button><button class="btn" data-st-log>${icon('clock')}Log a session</button>`)}</div>`;
+      body.querySelector('[data-r-all]').addEventListener('click', () => { range = 'all'; $$('#st-range button').forEach((x) => x.classList.remove('on')); $('#st-year').value = 'all'; load(); });
+      body.querySelector('[data-st-log]').addEventListener('click', () => logSessionModal());
+      return;
+    }
     body.innerHTML = `
       <div class="kpis fade-in">
         ${kpi('Played', hoursVal(s.total_minutes), s.estimated_minutes ? `${fmtHours(s.tracked_minutes)}h tracked + ${fmtHours(s.estimated_minutes)}h estimated` : s.range.label, sparkline(s.series.map((x) => x.minutes)), 'feature')}
@@ -1160,26 +1743,72 @@ async function stats(view, stale) {
 }
 
 async function wrapped(view, year, stale) {
-  const w = await api(`/stats/year/${year}`);
+  const est = new URLSearchParams(location.search).get('estimates') === 'exclude' ? 'exclude' : 'include';
+  const y = Number(year);
+  const opt = (u) => api(u).catch(() => null);
+  const [w, years, ach, tl, pc, rec] = await Promise.all([
+    api(`/stats/year/${y}?estimates=${est}`), opt('/stats/years'),
+    opt(`/stats/achievements?range=year:${y}&limit=5`), opt(`/stats/timeline?range=year:${y}&group=month&estimates=${est}`),
+    opt(`/stats/punchcard?range=year:${y}`), opt(`/stats/records?range=year:${y}&estimates=${est}`),
+  ]);
   if (stale()) return;
+  const ys = (years || [y]).slice().sort((a, b) => a - b);
+  const i = ys.indexOf(y);
+  const prev = i > 0 ? ys[i - 1] : i < 0 ? ys.filter((x) => x < y).pop() : null;
+  const next = i >= 0 && i < ys.length - 1 ? ys[i + 1] : i < 0 ? ys.find((x) => x > y) : null;
+  const q = est === 'exclude' ? '?estimates=exclude' : '';
+  const step = (to, dir) => (to ? `<a class="btn icon ghost" href="/wrapped/${to}${q}" data-link aria-label="${to} in review" title="${to}">${icon(dir === 'prev' ? 'back' : 'chevR')}</a>` : `<span class="btn icon ghost" aria-hidden="true" style="visibility:hidden">${icon('back')}</span>`);
   const top = w.top_games[0];
-  const maxM = Math.max(1, ...w.months.map((m) => m.minutes));
-  view.innerHTML = `
-    <div class="page-h"><div><h1>${w.year} in review</h1><p>The trail you left in ${w.year}${w.estimated_minutes ? ' — tracked sessions plus dated history' : ''}.</p></div><a class="btn ghost" href="/stats" data-link>${icon('back')}Stats</a></div>
-    ${!w.total_minutes ? emptyState('trail', 'Nothing tracked yet', `No play is recorded for ${w.year} — neither tracked sessions nor dated history.`) : `
+  const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const months12 = MONTHS.map((m) => w.months.find((x) => x.month === m) || { month: m, minutes: 0 }); // the year so far: the rest are empty
+  const maxM = Math.max(1, ...months12.map((m) => m.minutes));
+  const L = rec?.longest_session || null;
+  const busyDay = pc?.busiest_weekday;
+  const tod = rec?.highlights?.find((h) => h.id === 'time_of_day');
+  const parts = [w.tracked_minutes && `${fmtHours(w.tracked_minutes)}h tracked`, w.estimated_minutes && `${fmtHours(w.estimated_minutes)}h estimated history`].filter(Boolean);
+  const rarest = ach?.rarest?.[0];
+  const head = `<div class="wr-top"><a href="/stats" data-link class="btn ghost sm" onclick="if(history.length>1){event.preventDefault();event.stopPropagation();history.back()}">${icon('back')}Back</a></div>
+    <div class="wr-head">
+      <span class="brand-mark wr-mark">${MARK}</span>
+      <div class="grow"><h1>Your ${y} trail</h1>
+        <p>${w.total_minutes ? `The trail you left in ${y}: <b>${fmtHours(w.total_minutes)}h</b>${parts.length > 1 ? ` · ${parts.join(' + ')}` : parts.length ? ` · ${parts[0]}` : ''}.` : `Nothing recorded for ${y} yet.`}</p></div>
+      <div class="wr-ctl">
+        <nav class="row wr-years" aria-label="Year">${step(prev, 'prev')}<span class="wr-y" aria-current="page">${y}</span>${step(next, 'next')}</nav>
+        <label class="row small" style="gap:8px;cursor:pointer" title="Playtime from before tracking began, dated by inference"><span class="switch"><input type="checkbox" id="wr-est" ${est === 'include' ? 'checked' : ''}><span></span></span>Estimated history</label>
+      </div>
+    </div>`;
+  if (!w.total_minutes) {
+    view.innerHTML = `<div class="wr">${head}<div class="card">${emptyState('trail', `No tracks in ${y}`, est === 'exclude' ? `No tracked play in ${y}. Turn estimated history on to see play dated from before tracking began.` : `Nothing is dated in ${y} — neither tracked sessions nor history from before tracking. Dating old playtime can fill the trail in.`, `<a class="btn primary" href="/history" data-link>${icon('history')}Improve history</a>`)}</div></div>`;
+    bindWrapped();
+    return;
+  }
+  const L1 = (m) => new Date(2024, ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'].indexOf(m), 15);
+  view.innerHTML = `<div class="wr">${head}
     <div class="wrapped fade-in">
-      <div class="wcard g1"><div class="muted">You played</div><div class="big">${fmtHours(w.total_minutes)} hours</div><div class="muted">${w.sessions ? `across ${w.sessions} tracked sessions on ${w.days_played} days` : 'before tracking began'}${w.estimated_minutes ? ` · ${fmtHours(w.estimated_minutes)}h estimated from your history` : ''}</div></div>
-      ${top ? `<a class="wcard g2" href="/game/${top.game_id}" data-link style="display:flex;gap:16px;align-items:center">${cover(top, '', 'width:90px;')}<div><div class="muted">Game of the year</div><div style="font-size:24px;font-weight:800;line-height:1.1;margin:6px 0">${esc(top.title)}</div><div class="muted">${fmtMin(top.minutes)} · ${top.sessions} sessions</div></div></a>` : ''}
-      <div class="wcard g3"><div class="muted">Longest streak</div><div class="big">${w.longest_streak} days</div><div class="muted">${w.busiest_day ? `Biggest day: ${fmtDate(new Date(`${w.busiest_day.day}T12:00`).getTime(), { month: 'long', day: 'numeric' })} (${fmtMin(w.busiest_day.minutes)})` : ''}</div></div>
+      <div class="wcard g1"><div class="muted">You played</div><div class="big">${fmtHours(w.total_minutes)} hours</div><div class="muted">${w.sessions ? `across ${plural(w.sessions, 'tracked session')} on ${plural(w.days_played, 'day')}` : 'before tracking began'}${w.estimated_minutes ? ` · ${fmtHours(w.estimated_minutes)}h estimated from your history` : ''}</div></div>
+      ${top ? `<a class="wcard g2" href="/game/${top.game_id}" data-link style="display:flex;gap:16px;align-items:center">${cover(top, '', 'width:90px;')}<div style="min-width:0"><div class="muted">Game of the year</div><div class="wr-gotm">${esc(top.title)}</div><div class="muted">${fmtMin(top.minutes)}${top.sessions ? ` · ${plural(top.sessions, 'session')}` : ''}</div></div></a>` : ''}
+      <div class="wcard g3"><div class="muted">Longest streak</div><div class="big">${plural(w.longest_streak, 'day')}</div><div class="muted">${w.busiest_day ? `Biggest day: ${fmtDate(new Date(`${w.busiest_day.day}T12:00`).getTime(), { month: 'long', day: 'numeric' })} (${fmtMin(w.busiest_day.minutes)})` : ''}</div></div>
       <div class="wcard"><div class="muted">Games played</div><div class="big">${w.games_played}</div><div class="muted">${w.new_games} started fresh this year · ${w.completed} completed</div></div>
-      <div class="wcard"><div class="muted">Best month</div><div class="big">${w.best_month ? w.best_month.month : '—'}</div><div class="muted">${w.best_month ? fmtMin(w.best_month.minutes) : ''}</div>
-        <div class="row" style="align-items:flex-end;height:50px;gap:3px;margin-top:10px">${w.months.map((m) => `<div title="${m.month}: ${fmtMin(m.minutes)}" style="flex:1;height:${Math.max(4, (m.minutes / maxM) * 100)}%;background:${m.month === w.best_month?.month ? 'var(--accent-mark)' : 'var(--line)'};border-radius:3px"></div>`).join('')}</div></div>
-      <div class="wcard"><div class="muted">Favorite day</div><div class="big">${['Sundays', 'Mondays', 'Tuesdays', 'Wednesdays', 'Thursdays', 'Fridays', 'Saturdays'][w.weekday.indexOf(Math.max(...w.weekday))]}</div><div class="muted">${w.longest_session ? `Longest session: ${fmtMin(w.longest_session.minutes)} of ${esc(w.longest_session.title)}` : ''}</div></div>
+      <div class="wcard"><div class="muted">Best month</div><div class="big">${w.best_month ? L1(w.best_month.month).toLocaleDateString(undefined, { month: 'long' }) : '—'}</div><div class="muted">${w.best_month ? fmtMin(w.best_month.minutes) : ''}</div>
+        <div class="wr-months" aria-hidden="true">${months12.map((m) => `<div title="${m.month}: ${fmtMin(m.minutes)}"><i style="height:${m.minutes ? Math.max(4, (m.minutes / maxM) * 46) : 0}px" class="${m.month === w.best_month?.month ? 'best' : ''}"></i><span>${L1(m.month).toLocaleDateString(undefined, { month: 'narrow' })}</span></div>`).join('')}</div></div>
+      <div class="wcard"><div class="muted">Favourite time</div><div class="big wr-mid">${busyDay ? `${dayName(busyDay.weekday, 'long')}s` : ['Sundays', 'Mondays', 'Tuesdays', 'Wednesdays', 'Thursdays', 'Fridays', 'Saturdays'][w.weekday.indexOf(Math.max(...w.weekday))]}</div><div class="muted">${tod ? `${tod.value}% of timed play in the ${esc(tod.part)} (${hourLabel(tod.from_hour)}–${hourLabel(tod.to_hour % 24)})` : pc?.busiest_hour ? `Busiest hour ${hourLabel(pc.busiest_hour.hour)}–${hourLabel((pc.busiest_hour.hour + 1) % 24)}` : 'No sessions with exact times this year'}</div></div>
+      ${L ? `<a class="wcard" href="/game/${L.game_id}" data-link><div class="muted">Longest session</div><div class="big">${fmtMin(L.minutes)}</div><div class="muted">${esc(L.title)} · ${fmtDate(new Date(`${L.day}T12:00`).getTime(), { month: 'long', day: 'numeric' })}</div></a>` : ''}
+      ${w.platforms?.length ? `<div class="wcard"><div class="muted">Played on</div><div class="big wr-mid">${esc(plat(w.platforms[0].platform).label)}</div><div class="muted">${Math.round((w.platforms[0].minutes / Math.max(1, w.total_minutes)) * 100)}% of the year</div>
+        <div class="split-bar" style="margin-top:14px" aria-hidden="true">${w.platforms.map((p) => `<i style="width:${(p.minutes / Math.max(1, w.total_minutes)) * 100}%;background:${plat(p.platform).color}"></i>`).join('')}</div>
+        <div class="legend">${w.platforms.slice(0, 4).map((p) => `<span><i class="dot" style="background:${plat(p.platform).color}"></i>${esc(plat(p.platform).label)} ${fmtHours(p.minutes)}h</span>`).join('')}</div></div>` : ''}
+      ${ach && (ach.unlocked || ach.completed_count) ? `<div class="wcard wr-ach"><div class="muted">Achievements</div><div class="big">${ach.unlocked.toLocaleString()}</div><div class="muted">unlocked${ach.points ? ` · ${ach.points.toLocaleString()}G` : ''}${ach.grades?.platinum ? ` · ${plural(ach.grades.platinum, 'platinum')}` : ''} · ${plural(ach.completed_count, 'game')} completed</div>
+        ${rarest ? `<div class="wr-rare">${achIcon(rarest, { size: 30 })}<div style="min-width:0"><div class="ellipsis"><b>${esc(rarest.name || 'Hidden achievement')}</b></div><div class="small muted">${esc(rarest.title)} · the rarest, ${fmtRarity(rarest.rarity ?? 0)} of players</div></div></div>` : ''}</div>` : ''}
     </div>
+    ${tl?.eras?.length ? `<div class="card" style="margin-top:16px"><div class="card-h"><h2>The eras of ${y}</h2><span class="tiny muted">the most played game of each month</span></div>${eraStrip(tl)}</div>` : ''}
+    ${ach?.completed?.length ? `<div class="card" style="margin-top:16px"><div class="card-h"><h2>Completed in ${y}</h2></div><div class="list">${ach.completed.map((x) => `<a class="item" href="/game/${x.game_id}" data-link>${cover(x)}<div class="grow"><div class="ttl ellipsis">${esc(x.title)}</div><div class="sub">${platDot(x.platform)}${x.platinum ? 'Platinum' : `${x.unlocked} of ${x.total}`} · ${fmtDate(x.completed_at, { month: 'long', day: 'numeric' })}</div></div><span class="badge good">${x.platinum ? 'Platinum' : '100%'}</span></a>`).join('')}</div></div>` : ''}
     <div class="grid grid-2" style="margin-top:16px">
       <div class="card"><div class="card-h"><h2>Top 10</h2></div>${topList(w.top_games, { coverFn: (g) => cover(g), limit: 10 })}</div>
       <div class="card"><div class="card-h"><h2>New this year</h2></div><div class="list">${w.new_game_list.map((g) => `<a class="item" href="/game/${g.game_id}" data-link>${cover(g)}<div class="grow ttl ellipsis">${esc(g.title)}</div><span class="small muted">${fmtDate(g.first)}</span></a>`).join('') || '<p class="muted">—</p>'}</div></div>
-    </div>`}`;
+    </div></div>`;
+  bindWrapped();
+  function bindWrapped() {
+    $('#wr-est').addEventListener('change', (e) => navigate(`/wrapped/${y}${e.target.checked ? '' : '?estimates=exclude'}`, { replace: true }));
+  }
 }
 
 // =====================================================================
@@ -1469,12 +2098,12 @@ async function settings(view, stale) {
           <h3 style="margin:16px 0 8px" id="lay-h">Home sections</h3>
           <div id="set-layout"></div>
         </div>
-        <div class="card"><div class="card-h"><h2>Sync schedule</h2><span class="badge accent" id="sched-label">${esc(s.schedule_label)}</span></div>
+        <div class="card" id="schedule"><div class="card-h"><h2>Sync schedule</h2><span class="badge accent" id="sched-label">${esc(s.schedule_label)}</span></div>
           <p class="small muted" style="margin-top:-6px">How often Vestigo snapshots your playtime. Shorter intervals = more precise sessions; the difference between two snapshots becomes a session. Accounts can override this.</p>
           <form class="stack" id="sched-f">${scheduleFields(s)}</form>
           <div class="row" style="margin-top:14px"><button class="btn primary" id="sched-save">Save schedule</button></div>
         </div>
-        <div class="card"><div class="card-h"><h2>Session detection</h2></div>
+        <div class="card" id="detection"><div class="card-h"><h2>Session detection</h2></div>
           <div class="setting"><div><div class="t">Minimum session</div><div class="d">Smaller deltas accumulate until they reach this many minutes</div></div><input class="input" type="number" min="0" max="120" data-num="min_session_minutes" value="${s.min_session_minutes}" style="width:90px"></div>
           <div class="setting"><div><div class="t">Wall-clock tolerance</div><div class="d">If a platform reports more playtime than time elapsed since the last sync (+ this many minutes), the excess is filed as history</div></div><input class="input" type="number" min="0" max="600" data-num="max_overage_minutes" value="${s.max_overage_minutes}" style="width:90px"></div>
           ${sw('use_recent_on_import', 'Use Steam “last 2 weeks” on import', 'On a first import, Steam’s two-week playtime becomes a real session instead of history')}
@@ -1491,21 +2120,21 @@ async function settings(view, stale) {
           <details style="margin-top:12px"><summary class="small muted" style="cursor:pointer">…or paste</summary><textarea class="input mono" id="imp-text" aria-label="CSV or JSON to import" placeholder="title,platform,playtime_hours,status&#10;Hades,switch,42,completed" style="margin-top:8px"></textarea><button class="btn sm" id="imp-go" style="margin-top:8px">Import pasted data</button></details>
           <div id="imp-r" class="small" style="margin-top:10px" aria-live="polite"></div>
         </div>
-        <div class="card"><div class="card-h"><h2>Export & backup</h2></div>
+        <div class="card" id="export"><div class="card-h"><h2>Export & backup</h2></div>
           <div class="row wrap"><a class="btn" href="/api/v1/export" download>${icon('download')}JSON</a><a class="btn" href="/api/v1/export?format=csv" download>${icon('download')}CSV</a><a class="btn" href="/api/v1/backup" download>${icon('download')}SQLite backup</a></div>
           <p class="small muted">Everything is stored in the container’s <code>/data</code> volume — on Unraid, map it to a folder under <code>/mnt/user/appdata</code>. <a href="/system" data-link class="link">System</a> shows the database file in use.</p>
         </div>
-        <div class="card"><div class="card-h"><h2>Notifications</h2></div>
+        <div class="card" id="notifications"><div class="card-h"><h2>Notifications</h2></div>
           <div class="field"><label>Webhook URL</label><input class="input" data-str="webhook_url" value="${esc(s.webhook_url)}" placeholder="https://discord.com/api/webhooks/…"><div class="help">Discord and Slack get a formatted message; anything else gets JSON. Works with ntfy, Gotify bridges, Home Assistant, n8n…</div></div>
           <div class="setting"><div class="t">Send when</div><select class="input" data-str="webhook_on" style="width:auto"><option value="sessions" ${s.webhook_on === 'sessions' ? 'selected' : ''}>New sessions or errors</option><option value="always" ${s.webhook_on === 'always' ? 'selected' : ''}>Every sync</option><option value="errors" ${s.webhook_on === 'errors' ? 'selected' : ''}>Errors only</option></select></div>
         </div>
-        <div class="card"><div class="card-h"><h2>Security</h2></div>
+        <div class="card" id="security"><div class="card-h"><h2>Security</h2></div>
           ${auth.password_source === 'env' ? `<p class="small muted">Password is set with <code>${esc(auth.password_env || 'VESTIGO_PASSWORD')}</code> and can’t be changed here.</p>` : `
           <form class="stack" id="pw-f">${auth.auth_enabled ? '<div class="field"><label>Current password</label><input class="input" type="password" name="current" autocomplete="current-password"></div>' : '<p class="small muted" style="margin:0">No password set — anyone on your network can open Vestigo. Set one before exposing it through a reverse proxy.</p>'}
             <div class="field"><label>${auth.auth_enabled ? 'New password (empty = remove)' : 'Password'}</label><input class="input" type="password" name="password" autocomplete="new-password"></div>
             <div><button class="btn">${auth.auth_enabled ? 'Update password' : 'Set password'}</button></div></form>`}
         </div>
-        <div class="card"><div class="card-h"><h2>API tokens</h2><button class="btn sm" id="tok-new">${icon('key')}New token</button></div>
+        <div class="card" id="tokens"><div class="card-h"><h2>API tokens</h2><button class="btn sm" id="tok-new">${icon('key')}New token</button></div>
           <div class="list">${tokens.map((t) => `<div class="item"><div class="grow"><div class="ttl">${esc(t.name)}</div><div class="sub"><span class="mono">${esc(t.prefix)}…</span> · created ${fmtDate(t.created_at)} · ${t.last_used_at ? `used ${ago(t.last_used_at)}` : 'never used'}</div></div><button class="btn sm ghost danger" data-revoke="${t.id}">Revoke</button></div>`).join('') || '<p class="small muted">Tokens let scripts, Home Assistant, Homepage widgets or Playnite call the API. <a href="/api" data-link class="link">API docs</a></p>'}</div>
         </div>
       </div>
@@ -1630,7 +2259,7 @@ async function settings(view, stale) {
     if (!(await confirmBox('Anything using this token will stop working. This cannot be undone.', { ok: 'Revoke', danger: true, title: 'Revoke token?' }))) return;
     await api(`/tokens/${b.dataset.revoke}`, { method: 'DELETE' }); rerender();
   });
-  if (['#import', '#appearance'].includes(location.hash)) setTimeout(() => $(location.hash).scrollIntoView({ behavior: scrollMotion() }), 100);
+  if (/^#(appearance|schedule|detection|import|export|notifications|security|tokens)$/.test(location.hash)) setTimeout(() => $(location.hash)?.scrollIntoView({ behavior: scrollMotion() }), 100);
 }
 
 // =====================================================================
@@ -1853,7 +2482,7 @@ async function historyPage(view, stale) {
 // More (mobile)
 // =====================================================================
 const MORE_DESC = {
-  '/duplicates': 'Merge editions, fix double counting', '/history': 'Date play from before tracking', '/accounts': 'Steam, Xbox, PlayStation, custom',
+  '/insights': 'When, what and how you play', '/duplicates': 'Merge editions, fix double counting', '/history': 'Date play from before tracking', '/accounts': 'Steam, Xbox, PlayStation, custom',
   '/settings': 'Schedule, import/export, security', '/system': 'Error log, API usage, diagnostics', '/api': 'Tokens, push endpoint, docs',
 };
 /** The phone's More tab: the sidebar's groups (minus the tabs), Year in review on top, and what needs a look counted on each row. */
@@ -1877,4 +2506,4 @@ async function more(view, stale) {
   applyBadges();
 }
 
-export const pages = { dashboard, library, game, sessions, stats, wrapped, duplicates, accounts, settings, apidocs, more, system, history: historyPage };
+export const pages = { dashboard, library, game, sessions, stats, insights, wrapped, duplicates, accounts, settings, apidocs, more, system, history: historyPage };

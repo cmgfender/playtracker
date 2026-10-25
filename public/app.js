@@ -1,4 +1,4 @@
-import { pages } from './pages.js';
+import { pages, logSessionModal, layoutModal } from './pages.js';
 
 // ---------- tiny helpers ----------
 export const $ = (sel, root = document) => root.querySelector(sel);
@@ -156,6 +156,14 @@ const P = {
   info: '<circle cx="12" cy="12" r="9"/><path d="M12 16v-4M12 8h.01"/>',
   chevR: '<path d="m9 18 6-6-6-6"/>',
   offline: '<path d="M2 2l20 20M8.5 16.4a5 5 0 0 1 7 0M5 12.9a10 10 0 0 1 4.2-2.4M19 12.9a10 10 0 0 0-2.3-1.6M1.4 9a15 15 0 0 1 4.5-2.9M22.6 9A15 15 0 0 0 10.7 5.1M12 20h.01"/>',
+  // Insights: a trend over an axis (Stats is plain bars)
+  insights: '<path d="M3 3v18h18"/><path d="m7 15 4-4 3 3 5-6"/>',
+  trophy: '<path d="M8 21h8M12 17v4M7 4h10v5a5 5 0 0 1-10 0z"/><path d="M17 5h3a3 3 0 0 1-3 4M7 5H4a3 3 0 0 0 3 4"/>',
+  lock: '<rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/>',
+  keyboard: '<rect x="2" y="6" width="20" height="12" rx="2"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M7 14h10"/>',
+  filter: '<path d="M3 5h18l-7 8.5V19l-4 2v-7.5z"/>',
+  chevD: '<path d="m6 9 6 6 6-6"/>',
+  theme: '<circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 0 0 18z" fill="currentColor"/>',
 };
 export function icon(name, cls = '') {
   return `<svg class="${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${P[name] || ''}</svg>`;
@@ -270,12 +278,12 @@ let modalSeq = 0;
  * inside, Escape closes the top dialog only, and focus returns to what opened it. It focuses its
  * first field, but on a touch screen its title (no keyboard popping up) unless `autofocus`.
  */
-export function modal({ title, body, foot = '', onMount, wide = false, autofocus = false }) {
+export function modal({ title, body, foot = '', onMount, wide = false, autofocus = false, cls = '' }) {
   const opener = document.activeElement;
   const hid = `mh-${++modalSeq}`;
   const ov = document.createElement('div');
-  ov.className = 'overlay';
-  ov.innerHTML = `<div class="modal" role="dialog" aria-modal="true" aria-labelledby="${hid}" ${wide ? 'style="width:min(820px,100%)"' : ''}>
+  ov.className = `overlay${cls ? ` ov-${cls}` : ''}`;
+  ov.innerHTML = `<div class="modal${cls ? ` ${cls}` : ''}" role="dialog" aria-modal="true" aria-labelledby="${hid}" ${wide ? 'style="width:min(820px,100%)"' : ''}>
     <div class="mh"><h2 id="${hid}" tabindex="-1">${title}</h2><button class="btn ghost icon" data-close aria-label="Close">${icon('x')}</button></div>
     <div class="mb">${body}</div>${foot ? `<div class="mf">${foot}</div>` : ''}</div>`;
   const m = ov.querySelector('.modal');
@@ -383,6 +391,7 @@ const NAV = [
   { path: '/library', label: 'Library', icon: 'library', tab: true, group: 'Track' },
   { path: '/sessions', label: 'Sessions', icon: 'sessions', tab: true, group: 'Track' },
   { path: '/stats', label: 'Stats', icon: 'stats', tab: true, group: 'Track' },
+  { path: '/insights', label: 'Insights', icon: 'insights', group: 'Track' },
   { path: '/wrapped', href: () => `/wrapped/${state.latestYear}`, label: 'Year in review', icon: 'trail', group: 'Track' },
   { path: '/duplicates', label: 'Duplicates', icon: 'dupes', group: 'Tidy up', badge: 'dupes' },
   { path: '/history', label: 'Improve history', icon: 'history', group: 'Tidy up' },
@@ -392,6 +401,8 @@ const NAV = [
   { path: '/api', label: 'API', icon: 'code', group: 'Advanced' },
 ];
 export const NAV_GROUPS = ['Track', 'Tidy up', 'Setup', 'Advanced'];
+/** The palette's modifier key as the keyboard shows it. */
+const MOD = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent) ? '⌘' : 'Ctrl ';
 /** The navigation entries with their current links (the More page lists them too). */
 export const navItems = () => NAV.map((n) => ({ ...n, href: typeof n.href === 'function' ? n.href() : n.path }));
 
@@ -430,6 +441,7 @@ function shell() {
     <a class="skip" href="#view">Skip to content</a>
     <aside class="side">
       ${brand({ sub: true })}
+      <button class="side-search" data-action="palette" aria-keyshortcuts="${MOD === '⌘' ? 'Meta+K' : 'Control+K'}">${icon('search')}<span class="grow">Search games…</span><kbd>${MOD}K</kbd></button>
       <nav class="side-nav" aria-label="Main">
         ${NAV_GROUPS.map((g, i) => `<div class="nav-sec" role="group" aria-labelledby="ng-${i}"><div class="nav-group" id="ng-${i}">${g}</div>
           ${items.filter((n) => n.group === g).map((n) => link(n, 'nav-link', `${icon(n.icon)}${n.label}${badge(n)}`)).join('')}</div>`).join('')}
@@ -440,6 +452,7 @@ function shell() {
     </aside>
     <header class="topbar">
       ${brand({ cls: 'grow' })}
+      <button class="btn icon ghost" data-action="palette" aria-label="Search" title="Search">${icon('search')}</button>
       <button class="btn icon ghost" data-action="sync-all" aria-label="Sync all" title="Sync all">${icon('sync')}</button>
     </header>
     <div class="offline-bar" id="offline-bar" role="status"></div>
@@ -464,7 +477,7 @@ function syncShell() {
 
 // tab titles; game and wrapped pages set their own once they know the title / year
 const PAGE_TITLES = {
-  dashboard: '', library: 'Library', game: '', sessions: 'Sessions', stats: 'Stats', duplicates: 'Duplicates', history: 'Improve history',
+  dashboard: '', library: 'Library', game: '', sessions: 'Sessions', stats: 'Stats', insights: 'Insights', duplicates: 'Duplicates', history: 'Improve history',
   accounts: 'Accounts', settings: 'Settings', apidocs: 'API', system: 'System', more: 'More',
 };
 
@@ -474,6 +487,7 @@ const ROUTES = [
   [/^\/game\/(\d+)$/, 'game'],
   [/^\/sessions$/, 'sessions'],
   [/^\/stats$/, 'stats'],
+  [/^\/insights$/, 'insights'],
   [/^\/wrapped\/(\d{4})$/, 'wrapped'],
   [/^\/duplicates$/, 'duplicates'],
   [/^\/accounts$/, 'accounts'],
@@ -823,10 +837,164 @@ document.addEventListener('click', (e) => {
   const act = e.target.closest('[data-action]');
   if (!act) return;
   if (act.dataset.action === 'sync-all') syncAll();
+  if (act.dataset.action === 'palette') palette();
   if (act.dataset.action === 'retry') rerender();
   if (act.dataset.action === 'logout') api('/auth/logout', { method: 'POST' }).then(() => { state.needLogin = true; render(); });
 });
 window.addEventListener('popstate', () => route({ focus: true }));
+
+// ---------- command palette and keyboard shortcuts ----------
+const SETTINGS_SECTIONS = [['Appearance', 'appearance'], ['Sync schedule', 'schedule'], ['Session detection', 'detection'], ['Import', 'import'], ['Export & backup', 'export'], ['Notifications', 'notifications'], ['Security', 'security'], ['API tokens', 'tokens']];
+const kbd = (k) => `<kbd>${k}</kbd>`;
+
+async function toggleTheme() {
+  const now = document.documentElement.dataset.theme;
+  const theme = now === 'light' ? 'dark' : 'light';
+  try {
+    const r = await api('/settings', { method: 'PUT', body: { theme } });
+    state.settings = { ...state.settings, ...r };
+    applyTheme(state.settings);
+    toast(`Theme: ${theme === 'light' ? 'Light' : 'Dark'}`);
+  } catch (e) { fail(e); }
+}
+function download(href) {
+  const a = document.createElement('a');
+  a.href = href; a.download = '';
+  document.body.append(a); a.click(); a.remove();
+}
+const ACTIONS = () => [
+  { label: 'Log session', icon: 'clock', keys: 'N', run: () => logSessionModal() },
+  { label: 'Sync all', icon: 'sync', run: () => syncAll() },
+  { label: 'Customize home', icon: 'settings', run: () => layoutModal() },
+  { label: 'Connect an account', icon: 'plus', run: () => navigate('/accounts?add=1') },
+  { label: 'Toggle theme', icon: 'theme', sub: document.documentElement.dataset.theme === 'light' ? 'Switch to dark' : 'Switch to light', run: toggleTheme },
+  { label: 'Export JSON', icon: 'download', sub: 'Every game and session', run: () => download('/api/v1/export') },
+  { label: 'Keyboard shortcuts', icon: 'keyboard', keys: '?', run: () => shortcutSheet() },
+];
+const PAGES = () => [
+  ...navItems().map((n) => ({ label: n.label, icon: n.icon, href: n.href, sub: n.group })),
+  ...SETTINGS_SECTIONS.map(([label, id]) => ({ label: `Settings: ${label}`, icon: 'settings', href: `/settings#${id}`, sub: 'Setup' })),
+];
+/** Does every word of the query start a word of `text` (or appear in it)? */
+const matches = (text, q) => { const t = text.toLowerCase(); return q.toLowerCase().split(/\s+/).filter(Boolean).every((w) => t.includes(w)); };
+
+let paletteOpen = null;
+/**
+ * Search games, pages and actions in one box (a dialog; a full-height sheet on a phone). A combobox
+ * over a listbox of three groups: arrow keys move the active option, Enter opens it, Shift+Enter
+ * on a game logs a session for it.
+ */
+export function palette() {
+  if (paletteOpen) return paletteOpen;
+  let seq = 0; let timer = null; let active = 0; let opts = []; let pending = Promise.resolve();
+  const m = modal({
+    title: 'Search',
+    cls: 'palette',
+    autofocus: true,
+    body: `<div class="pal-q"><div class="search grow">${icon('search')}<input class="input" id="pal-q" type="text" placeholder="Search games, pages and actions" aria-label="Search games, pages and actions" autocomplete="off" spellcheck="false" role="combobox" aria-expanded="true" aria-controls="pal-list" aria-autocomplete="list"></div><button class="btn ghost sm" data-close>Cancel</button></div>
+      <div class="pal-list" id="pal-list" role="listbox" aria-label="Results"></div>
+      <div class="pal-foot tiny muted" aria-hidden="true"><span>${kbd(icon('up', 'ic-inline'))}${kbd(icon('down', 'ic-inline'))} move</span><span>${kbd('Enter')} open</span><span>${kbd('Shift')}+${kbd('Enter')} log a session</span><span>${kbd('Esc')} close</span></div>
+      <div class="vh" aria-live="polite" id="pal-live"></div>`,
+    onMount(el, close) {
+      el.querySelector('.mh [data-close]')?.remove(); // Cancel sits beside the field
+      const input = el.querySelector('#pal-q');
+      const list = el.querySelector('#pal-list');
+      const option = (o, i) => `<div class="item pal-opt" role="option" id="pal-o-${i}" data-i="${i}" aria-selected="false">${o.game ? cover(o.game) : `<span class="mi">${icon(o.icon, 'ic-16')}</span>`}<span class="grow"><span class="ttl ellipsis">${esc(o.label)}</span>${o.sub ? `<span class="sub">${o.sub}</span>` : ''}</span>${o.keys ? kbd(o.keys) : ''}</div>`;
+      const draw = (groups) => {
+        opts = groups.flatMap((g) => g.items);
+        let i = 0;
+        list.innerHTML = groups.filter((g) => g.items.length).map((g) => `<div role="group" aria-labelledby="pal-g-${g.id}"><div class="pal-gh" id="pal-g-${g.id}">${g.title}</div>${g.items.map((o) => option(o, i++)).join('')}</div>`).join('')
+          || `<div class="pal-none">No games, pages or actions match “${esc(input.value.trim())}”</div>`;
+        setActive(0);
+        const n = (k) => groups.find((g) => g.id === k)?.items.length || 0;
+        el.querySelector('#pal-live').textContent = opts.length ? [n('games') && plural(n('games'), 'game'), n('pages') && plural(n('pages'), 'page'), n('actions') && plural(n('actions'), 'action')].filter(Boolean).join(', ') : 'No results';
+      };
+      const setActive = (i) => {
+        const nodes = [...list.querySelectorAll('[role=option]')];
+        active = nodes.length ? (i + nodes.length) % nodes.length : -1;
+        nodes.forEach((x, j) => { x.classList.toggle('sel', j === active); x.setAttribute('aria-selected', String(j === active)); });
+        if (active >= 0) { input.setAttribute('aria-activedescendant', nodes[active].id); nodes[active].scrollIntoView({ block: 'nearest' }); } else input.removeAttribute('aria-activedescendant');
+      };
+      const search = () => {
+        const q = input.value.trim();
+        const my = ++seq;
+        const pagesHit = (q ? PAGES().filter((p) => matches(`${p.label} ${p.sub}`, q)) : navItems().slice(0, 6).map((n) => ({ label: n.label, icon: n.icon, href: n.href, sub: n.group }))).slice(0, 6);
+        const actionsHit = q ? ACTIONS().filter((a) => matches(a.label, q)) : ACTIONS().slice(0, 4);
+        const gameItem = (g) => ({ game: g, label: g.title, sub: `${g.platforms.map(platDot).join('')}${g.minutes ? fmtMin(g.minutes, { short: g.minutes >= 600 }) : 'Unplayed'}${g.status !== 'unset' ? ` · ${esc(STATUSES[g.status]?.label || '')}` : ''}` });
+        pending = api(`/games?${new URLSearchParams({ ...(q ? { q } : {}), limit: '6', hidden: 'all', sort: 'recent' })}`).then((r) => {
+          if (my !== seq || !el.isConnected) return;
+          draw([{ id: 'games', title: q ? 'Games' : 'Recently played', items: r.items.map(gameItem) }, { id: 'pages', title: 'Pages', items: pagesHit }, { id: 'actions', title: 'Actions', items: actionsHit }]);
+        }).catch(() => { if (my === seq) draw([{ id: 'pages', title: 'Pages', items: pagesHit }, { id: 'actions', title: 'Actions', items: actionsHit }]); });
+        return pending;
+      };
+      const run = async (o, shift = false) => {
+        if (!o) return;
+        close();
+        if (o.game) {
+          if (shift) logSessionModal(await api(`/games/${o.game.id}`).catch(() => o.game));
+          else navigate(`/game/${o.game.id}`);
+        } else if (o.href) navigate(o.href);
+        else o.run();
+      };
+      input.addEventListener('input', () => { clearTimeout(timer); const t = new Promise((r) => { timer = setTimeout(() => r(search()), 120); }); pending = t; });
+      input.addEventListener('keydown', async (e) => {
+        if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); setActive(active + (e.key === 'ArrowDown' ? 1 : -1)); } else if (e.key === 'Enter') {
+          e.preventDefault();
+          const shift = e.shiftKey;
+          const typed = input.value;
+          await pending; // results for what was typed, even when Enter came first
+          if (input.value === typed) run(opts[Math.max(0, active)], shift);
+        }
+      });
+      list.addEventListener('mousedown', (e) => e.preventDefault()); // the field keeps focus
+      list.addEventListener('click', (e) => { const o = e.target.closest('[role=option]'); if (o) run(opts[Number(o.dataset.i)], e.shiftKey); });
+      list.addEventListener('mousemove', (e) => { const o = e.target.closest('[role=option]'); if (o && Number(o.dataset.i) !== active) setActive(Number(o.dataset.i)); });
+      search();
+    },
+  });
+  paletteOpen = m;
+  m.el.querySelector('#pal-q').focus(); // at once: what is typed right after Ctrl+K lands in the field
+  const obs = new MutationObserver(() => { if (!m.el.isConnected) { obs.disconnect(); paletteOpen = null; } });
+  obs.observe(document.body, { childList: true });
+  return m;
+}
+
+/** The keyboard shortcuts, as a dialog (?). */
+function shortcutSheet() {
+  const rows = [
+    [`${kbd(MOD.trim())} ${kbd('K')}`, 'Search games, pages and actions'], [kbd('/'), 'Search this page (or everything)'], [kbd('N'), 'Log a session'],
+    [`${kbd('G')} ${kbd('H')}`, 'Go to Home'], [`${kbd('G')} ${kbd('L')}`, 'Go to Library'], [`${kbd('G')} ${kbd('S')}`, 'Go to Sessions'], [`${kbd('G')} ${kbd('T')}`, 'Go to Stats'],
+    [`${kbd('G')} ${kbd('I')}`, 'Go to Insights'], [`${kbd('G')} ${kbd('A')}`, 'Go to Accounts'], [kbd('?'), 'This list'],
+  ];
+  modal({ title: 'Keyboard shortcuts', body: `<table class="tbl keys">${rows.map(([k, d]) => `<tr><td class="nowrap">${k}</td><td>${d}</td></tr>`).join('')}</table><p class="tiny muted" style="margin:10px 0 0">Shortcuts wait while you type in a field or a dialog is open.</p>` });
+}
+
+let gAt = 0; // "g" was pressed at this time: the next key picks a page
+const GO = { h: '/', l: '/library', s: '/sessions', t: '/stats', i: '/insights', a: '/accounts' };
+document.addEventListener('keydown', (e) => {
+  if (state.needLogin || !$('#app .shell') || e.isComposing) return;
+  const k = e.key;
+  if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && k.toLowerCase() === 'k') {
+    e.preventDefault();
+    if (paletteOpen) paletteOpen.close(); else if (!$('.overlay')) palette();
+    return;
+  }
+  if (e.ctrlKey || e.metaKey || e.altKey || e.defaultPrevented) return;
+  // never while typing, or with a dialog open
+  if (e.target.closest?.('input, textarea, select, [contenteditable]:not([contenteditable="false"])') || $('.overlay')) { gAt = 0; return; }
+  if (gAt && Date.now() - gAt < 1500) {
+    gAt = 0;
+    const to = GO[k.toLowerCase()];
+    if (to) { e.preventDefault(); if (current() !== to) navigate(to); }
+    return;
+  }
+  if (k === 'g') gAt = Date.now();
+  else if (k === '/') {
+    e.preventDefault();
+    const s = $('#view input[type=search]');
+    if (s && visible(s)) s.focus(); else palette();
+  } else if (k === 'n') { e.preventDefault(); logSessionModal(); } else if (k === '?') { e.preventDefault(); shortcutSheet(); }
+});
 // install: the browser's prompt is kept for the Install button in Settings
 window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); state.installPrompt = e; });
 

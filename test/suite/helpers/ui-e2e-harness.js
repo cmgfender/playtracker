@@ -436,6 +436,33 @@ export const inkContrast = async (page, sel, opts = {}) => (await sampleContrast
 /** One focus-ring sample of sampleContrasts(): { focusVisible, style, width, ratio, fg, bg }. */
 export const ringContrast = async (page, sel) => (await sampleContrasts(page, [{ sel, ring: true }]))[0];
 
+/**
+ * Achievements for an entry, as a provider would store them (there is no API to push them): two
+ * unlocked during the game's latest tracked session (one rare), one during its estimated history
+ * when it has some, one without a session, one locked and one locked and hidden. Returns what was
+ * stored and when the session-bound ones were unlocked.
+ */
+export async function seedAchievements(ok, db, gameId) {
+  const g = await ok(`/games/${gameId}`);
+  const entry = g.entries.find((e) => e.account_id) || g.entries[0];
+  const play = (await ok(`/sessions?game_id=${gameId}&limit=1`)).items[0];
+  const est = (await ok(`/sessions?game_id=${gameId}&kind=estimate&limit=1`)).items[0];
+  const mid = (s) => { const a = s.started_at ?? s.window_start ?? s.window_end; const b = s.ended_at ?? s.window_end; return Math.round((a + b) / 2); };
+  const t = play ? mid(play) : Date.now() - HOUR;
+  const items = [
+    { id: 'A1', name: 'Shrine Seeker', description: 'Clear your first shrine', unlocked: true, unlocked_at: t - 60_000, rarity: 4.2, points: null },
+    { id: 'A2', name: 'Paraglider', description: 'Leave the Great Sky Island', unlocked: true, unlocked_at: t, rarity: 61.5 },
+    ...(est ? [{ id: 'A3', name: 'Old Friend', description: 'Before tracking began', unlocked: true, unlocked_at: mid(est), rarity: 33 }] : []),
+    { id: 'A4', name: 'Undated', description: 'The platform kept no time', unlocked: true, unlocked_at: null, rarity: 80 },
+    { id: 'A5', name: 'Master Sword', description: 'Pull the sword', unlocked: false, rarity: 12.3 },
+    { id: 'A6', name: 'Secret Ending', description: 'What happens after the credits', unlocked: false, hidden: true, rarity: 1.1 },
+  ];
+  const { storeAchievements, ACH_VERSION } = await import('../../../src/services/achievements.js');
+  storeAchievements(db, entry.id, items);
+  db.prepare('UPDATE entries SET ach_v = ?, ach_at = ? WHERE id = ?').run(ACH_VERSION, Date.now(), entry.id);
+  return { entryId: entry.id, sessionId: play?.id ?? null, items, unlockedAt: t };
+}
+
 /** Seed a realistic library through the public API. Returns ids and expected totals. */
 export async function seed(ok, now) {
   const celeste = await ok('/games', { method: 'POST', body: { title: 'Celeste', status: 'playing', cover_url: 'https://cdn.example.invalid/celeste.jpg' } });
@@ -462,4 +489,43 @@ export async function seed(ok, now) {
     ids: { celeste: celeste.id, hollow: hollow.id, ori: ori.id, zelda: id('Zelda: TotK'), mk8: id('Mario Kart 8 Deluxe'), hades: id('Hades'), stardew: id('Stardew Valley') },
     minutes: { celeste: 135, hollow: 120, ori: 0, zelda: 5012, mk8: 600, hades: 2520, stardew: 4800 },
   };
+}
+
+/** Every chart on the page: its SVG's role, label and scale, and the boxes of its axis text (CSS px). */
+export const chartReport = (page) => page.evaluate(() => [...document.querySelectorAll('#view .chart > svg, #view .donut-wrap > svg')].map((svg) => {
+  const host = svg.closest('.chart') || svg.parentElement;
+  const vb = svg.viewBox.baseVal;
+  const r = svg.getBoundingClientRect();
+  const hb = host.getBoundingClientRect();
+  const scale = r.width / vb.width;
+  return {
+    kind: String(host.className), role: svg.getAttribute('role'), label: svg.getAttribute('aria-label') || '', hostW: host.clientWidth, svgW: r.width,
+    heat: host.classList.contains('heat'), donut: !host.classList.contains('chart'), box: { l: hb.left, r: hb.right },
+    texts: host.classList.contains('chart') ? [...svg.querySelectorAll('.axis text')].map((t) => {
+      const b = t.getBoundingClientRect();
+      return { s: t.textContent, px: parseFloat(getComputedStyle(t).fontSize) * scale, l: b.left, r: b.right, t: b.top, b: b.bottom };
+    }) : [],
+  };
+}));
+/** What is wrong with the charts of chartReport(): role / label, a stretched drawing, text size, text leaving the box, overlaps. */
+export function chartProblems(where, charts) {
+  const out = [];
+  for (const c of charts) {
+    const id = `${where} ${c.kind}`;
+    if (c.role !== 'img') out.push(`${id}: role=${c.role}`);
+    if (!/\w{3,}.*: \S/.test(c.label) || /undefined|NaN/.test(c.label)) out.push(`${id}: aria-label ${JSON.stringify(c.label)}`);
+    if (c.donut) continue;
+    if (!c.heat && Math.abs(c.svgW - c.hostW) > 1) out.push(`${id}: drawn ${c.svgW}px wide in a ${c.hostW}px box`);
+    for (const t of c.texts) {
+      if (Math.abs(t.px - 11) > 1) out.push(`${id}: "${t.s}" renders at ${t.px.toFixed(1)}px`);
+      if (!c.heat && (t.l < c.box.l - 1 || t.r > c.box.r + 1)) out.push(`${id}: "${t.s}" leaves the chart (${Math.round(t.l)}-${Math.round(t.r)} of ${Math.round(c.box.l)}-${Math.round(c.box.r)})`);
+    }
+    for (let i = 0; i < c.texts.length; i++) {
+      for (let j = i + 1; j < c.texts.length; j++) {
+        const a = c.texts[i]; const b = c.texts[j];
+        if (Math.min(a.r, b.r) - Math.max(a.l, b.l) > 0.5 && Math.min(a.b, b.b) - Math.max(a.t, b.t) > 0.5) out.push(`${id}: "${a.s}" and "${b.s}" overlap`);
+      }
+    }
+  }
+  return out;
 }
