@@ -14,15 +14,16 @@ export function dayKey(t) {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
-const parseDay = (k) => new Date(`${k}T12:00:00`).getTime();
+/** A YYYY-MM-DD local day -> its local noon (safe from DST shifts when stepping by days). */
+export const parseDay = (k) => new Date(`${k}T12:00:00`).getTime();
 
-function startOfDay(t) {
+export function startOfDay(t) {
   const d = new Date(t);
   d.setHours(0, 0, 0, 0);
   return d.getTime();
 }
 
-function nextDay(t) {
+export function nextDay(t) {
   const d = new Date(t);
   d.setDate(d.getDate() + 1);
   d.setHours(0, 0, 0, 0);
@@ -125,7 +126,7 @@ export function emptySeries(from, to, group, weekStartsOn) {
 
 /** WHERE fragment + args shared by every play_days / play_hours query (covering indexes, no joins). */
 // estimates: 'include' (tracked + inferred history, default), 'exclude' (tracked only), 'only'
-function filter(alias, { fromDay, toDay, gameId, platform, accountId, estimates = 'include' }) {
+export function filter(alias, { fromDay, toDay, gameId, platform, accountId, estimates = 'include' }) {
   const est = estimates === 'exclude' ? '= 0' : estimates === 'only' ? '= 1' : 'IN (0, 1)';
   const where = [`${alias}.excluded = 0`, `${alias}.estimated ${est}`];
   const args = [];
