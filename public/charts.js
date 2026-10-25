@@ -11,10 +11,16 @@ function niceMax(v) {
   return Math.ceil(h / 1000) * 1000 * 60;
 }
 
+// Stack order, bottom up: neighbours differ in lightness (Steam and PlayStation 2.7:1 apart in dark),
+// other keys follow in their own order, estimated history always on top.
+const STACK_ORDER = ['steam', 'psn', 'xbox', 'custom', 'manual', 'import'];
+const stackRank = (k) => (k === 'estimated' ? 99 : STACK_ORDER.includes(k) ? STACK_ORDER.indexOf(k) : 50);
+
 /**
  * Bar chart. data: [{ label, value, stack?: [{ key, value, color }], tip? }]
+ * Stacked segments are split by a 1px line in the card colour.
  */
-export function barChart(data, { height = 200, width = 640, color = 'var(--accent)', labelEvery, formatTick } = {}) {
+export function barChart(data, { height = 200, width = 640, color = 'var(--accent-mark)', labelEvery, formatTick } = {}) {
   const H = height;
   const W = width;
   const padL = 34; const padB = 22; const padT = 8;
@@ -33,12 +39,12 @@ export function barChart(data, { height = 200, width = 640, color = 'var(--accen
     const tip = d.tip || `${d.label}: ${fmtMin(d.value)}`;
     if (d.stack && d.stack.length) {
       let y = padT + ih;
-      d.stack.forEach((s, j) => {
+      const segs = d.stack.filter((z) => z.value > 0).sort((p, q) => stackRank(p.key) - stackRank(q.key));
+      segs.forEach((s, j) => {
         const h = (s.value / max) * ih;
-        if (h <= 0) return;
         y -= h;
-        const top = j === d.stack.filter((z) => z.value > 0).length - 1;
-        bars += `<rect x="${x}" y="${y}" width="${w}" height="${h}" fill="${s.color}" ${top ? `rx="${Math.min(4, w / 2)}"` : ''}/>`;
+        const top = j === segs.length - 1;
+        bars += `<rect x="${x}" y="${y}" width="${w}" height="${h}" fill="${s.color}" stroke="var(--panel)" stroke-width="1" vector-effect="non-scaling-stroke" ${top ? `rx="${Math.min(4, w / 2)}"` : ''}/>`;
       });
     } else if (d.value > 0) {
       const h = Math.max(2, (d.value / max) * ih);
@@ -55,10 +61,10 @@ export function barChart(data, { height = 200, width = 640, color = 'var(--accen
 }
 
 // Hatched fill used for estimated (inferred) history.
-const HATCH = '<defs><pattern id="pt-hatch" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="6" height="6" fill="color-mix(in srgb, var(--accent) 22%, transparent)"/><line x1="0" y1="0" x2="0" y2="6" stroke="color-mix(in srgb, var(--accent) 70%, transparent)" stroke-width="2.2"/></pattern>'
+const HATCH = '<defs><pattern id="pt-hatch" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="6" height="6" fill="color-mix(in srgb, var(--accent-mark) 22%, transparent)"/><line x1="0" y1="0" x2="0" y2="6" stroke="color-mix(in srgb, var(--accent-mark) 70%, transparent)" stroke-width="2.2"/></pattern>'
   + '<pattern id="pt-hatch-ov" width="4" height="4" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><line x1="0" y1="0" x2="0" y2="4" stroke="var(--panel)" stroke-opacity=".55" stroke-width="1.6"/></pattern></defs>';
 
-export function sparkline(values, { color = 'var(--accent)' } = {}) {
+export function sparkline(values, { color = 'var(--accent-mark)' } = {}) {
   const n = values.length;
   if (n < 2) return '';
   const max = Math.max(1, ...values);
@@ -94,7 +100,7 @@ export function heatmap(year, days, { weekStartsOn = 1, estimated = {} } = {}) {
     const f = m / max;
     const lvl = levels.findIndex((l) => f <= l);
     const pct = [0, 30, 50, 75, 100][lvl < 0 ? 4 : lvl];
-    return `color-mix(in srgb, var(--accent) ${pct}%, var(--bg2))`;
+    return `color-mix(in srgb, var(--accent-mark) ${pct}%, var(--bg2))`;
   };
   let rects = '';
   let months = '';
@@ -135,8 +141,8 @@ export function topList(games, { coverFn, limit = 10 } = {}) {
   return games.slice(0, limit).map((g, i) => `
     <a class="hbar" href="/game/${g.game_id}" data-link>
       ${coverFn(g)}
-      <div style="min-width:0"><div class="ellipsis" style="font-weight:620">${esc(g.title)}</div>
-        <div class="track" style="display:flex"><i style="width:${((g.minutes - (g.estimated_minutes || 0)) / max) * 100}%;background:${i === 0 ? 'linear-gradient(90deg,var(--accent),var(--accent2))' : 'var(--accent)'};opacity:${1 - i * 0.05}"></i>${g.estimated_minutes ? `<i class="hatch-bg" style="width:${(g.estimated_minutes / max) * 100}%" title="${fmtMin(g.estimated_minutes)} estimated from history"></i>` : ''}</div></div>
+      <div style="min-width:0"><div class="ellipsis" style="font-weight:600">${esc(g.title)}</div>
+        <div class="track" style="display:flex"><i style="width:${((g.minutes - (g.estimated_minutes || 0)) / max) * 100}%;background:${i === 0 ? 'var(--accent-grad)' : 'var(--accent-mark)'};opacity:${1 - i * 0.05}"></i>${g.estimated_minutes ? `<i class="hatch-bg" style="width:${(g.estimated_minutes / max) * 100}%" title="${fmtMin(g.estimated_minutes)} estimated from history"></i>` : ''}</div></div>
       <div class="nowrap" style="font-weight:700;font-variant-numeric:tabular-nums">${fmtMin(g.minutes, { short: g.minutes > 600 })}<div class="tiny muted" style="text-align:right">${g.sessions ? `${g.sessions} sess.` : g.estimated_minutes ? 'est.' : ''}</div></div>
     </a>`).join('');
 }

@@ -96,10 +96,11 @@ export function invariantViolations(db) {
  * external resources, which are blocked on purpose), failed local requests, dialogs and
  * external requests. `settle()` waits until no local request is in flight.
  */
-export async function openPage(browser, origin, { viewport = DESKTOP, colorScheme = 'dark', storage } = {}) {
+export async function openPage(browser, origin, { viewport = DESKTOP, colorScheme = 'dark', storage, reducedMotion } = {}) {
   const phone = viewport.width < 600;
   const ctx = await browser.newContext({
     viewport, colorScheme, locale: 'en-US', timezoneId: TZ, acceptDownloads: true,
+    ...(reducedMotion ? { reducedMotion } : {}),
     ...(phone ? { isMobile: true, hasTouch: true, deviceScaleFactor: 2 } : {}),
     ...(storage ? { storageState: storage } : {}),
   });
@@ -218,13 +219,161 @@ export async function modalReady(page) {
 /** Mark every toast currently on screen as seen (call before an action whose toast text repeats). */
 export const markToasts = (page) => page.evaluate(() => document.querySelectorAll('#toasts .toast').forEach((x) => x.setAttribute('data-e2e-seen', ''))).catch(() => {});
 
-/** WCAG contrast ratio of two CSS rgb()/rgba() colors. */
+/**
+ * WCAG contrast ratio of two sRGB colours: [r, g, b] arrays (0-255) or rgb() / rgba() strings.
+ * Anything else (oklab(), color(srgb …), what color-mix() computes to) must be resolved with srgb()
+ * first: reading its numbers as RGB gives nonsense, so it throws instead.
+ */
 export function contrast(a, b) {
-  const parse = (c) => (c.match(/[\d.]+/g) || []).slice(0, 3).map(Number);
-  const lum = (rgb) => { const [r, g, b2] = rgb.map((v) => { v /= 255; return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; }); return 0.2126 * r + 0.7152 * g + 0.0722 * b2; };
+  const parse = (c) => {
+    if (Array.isArray(c)) return c.slice(0, 3);
+    if (!/^rgba?\(/.test(String(c).trim())) throw new Error(`contrast(): ${c} is not sRGB, resolve it with srgb() first`);
+    return (String(c).match(/[\d.]+/g) || []).slice(0, 3).map(Number);
+  };
+  const lum = (rgb) => { const [r, g, b2] = rgb.map((v) => { v /= 255; return v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; }); return 0.2126 * r + 0.7152 * g + 0.0722 * b2; };
   const [l1, l2] = [lum(parse(a)), lum(parse(b))].sort((x, y) => y - x);
   return (l1 + 0.05) / (l2 + 0.05);
 }
+
+/** Resolve CSS colours of any syntax to sRGB [r, g, b, a] (0-255, alpha 0-1) the way a canvas paints them. */
+export function srgb(page, colors) {
+  return page.evaluate((list) => {
+    const ctx = document.createElement('canvas').getContext('2d', { willReadFrequently: true });
+    return list.map((c) => {
+      ctx.clearRect(0, 0, 1, 1);
+      ctx.fillStyle = c;
+      ctx.fillRect(0, 0, 1, 1);
+      const [r, g, b, a] = ctx.getImageData(0, 0, 1, 1).data;
+      return [r, g, b, a / 255];
+    });
+  }, colors);
+}
+
+// While sampling: no transitions or animations; a sampled element's ink (text, icons) or fill is hidden.
+const PROBE_CSS = `*,*::before,*::after{transition:none!important;animation:none!important;caret-color:transparent!important}
+[data-e2e-hide],[data-e2e-hide] *{color:transparent!important;-webkit-text-fill-color:transparent!important;text-shadow:none!important;text-decoration-color:transparent!important}
+svg[data-e2e-hide],[data-e2e-hide] svg,[data-e2e-fill]{visibility:hidden!important}`;
+const probeStyle = (page) => page.evaluate((css) => {
+  if (document.getElementById('e2e-probe')) return;
+  const s = document.createElement('style');
+  s.id = 'e2e-probe'; s.textContent = css;
+  document.head.append(s);
+}, PROBE_CSS);
+
+/**
+ * Contrast of what elements draw against the pixels actually painted behind them, so gradients,
+ * accent tints, translucent bars and blur count as painted. `specs`: [{ sel, fill?, ring? }], the
+ * first match of each selector.
+ * - text: the element's own text box (an SVG: the icon's box) with its ink hidden; the worst pixel counts
+ * - fill: the element itself (e.g. a switch track) against what is around it
+ * - ring: the element is focused to read its focus ring (outline on the element, a switch's track or
+ *   a tile's cover), then the band the ring covers is measured unfocused
+ * All samples on screen together share one screenshot. Returns [{ ratio, fg, bg, … } | null if absent].
+ */
+export async function sampleContrasts(page, specs) {
+  await probeStyle(page);
+  // 1. colours and focus rings of everything, before any ink is hidden (computed styles are live)
+  const info = await page.evaluate((list) => list.map((s) => {
+    const el = document.querySelector(s.sel);
+    if (!el) return null;
+    if (!s.ring) return { color: getComputedStyle(el)[s.fill ? 'backgroundColor' : 'color'] };
+    el.focus({ preventScroll: true });
+    const ringEl = el.matches('.switch input') ? el.nextElementSibling : el.matches('.tile') ? el.querySelector('.cover') : el;
+    const cs = getComputedStyle(ringEl);
+    const out = { color: cs.outlineColor, focusVisible: el.matches(':focus-visible'), style: cs.outlineStyle, width: parseFloat(cs.outlineWidth) || 0, offset: parseFloat(cs.outlineOffset) || 0 };
+    el.blur();
+    return out;
+  }), specs);
+  const results = info.map((x) => (x && x.style === 'none' ? { ...x, ratio: 0, fg: '', bg: '' } : null));
+  let pending = info.map((x, i) => i).filter((i) => info[i] && !results[i]);
+  try {
+    for (let round = 0; pending.length && round <= specs.length; round++) {
+      // 2. the boxes on screen now; hide their ink (scroll to the next one when none is)
+      const batch = await page.evaluate(([list, todo]) => {
+        const box = (s) => {
+          const el = document.querySelector(s.sel);
+          const target = s.ring ? (el.matches('.switch input') ? el.nextElementSibling : el.matches('.tile') ? el.querySelector('.cover') : el) : el;
+          let r = target.getBoundingClientRect();
+          if (!s.ring && !s.fill && !(el instanceof SVGElement)) {
+            // the element's own text, not its icons or differently coloured children
+            let l = Infinity; let t = Infinity; let rt = -Infinity; let b = -Infinity;
+            const range = document.createRange();
+            for (const n of el.childNodes) {
+              if (n.nodeType !== 3 || !n.textContent.trim()) continue;
+              range.selectNodeContents(n);
+              for (const q of range.getClientRects()) { l = Math.min(l, q.left); t = Math.min(t, q.top); rt = Math.max(rt, q.right); b = Math.max(b, q.bottom); }
+            }
+            if (rt > l) r = { left: l, top: t, width: rt - l, height: b - t };
+          }
+          return { el, x: r.left, y: r.top, w: r.width, h: r.height };
+        };
+        const ready = [];
+        const later = [];
+        for (const i of todo) {
+          const s = list[i];
+          const b = box(s);
+          const pad = s.ring ? s.offset + s.width : 0;
+          const onScreen = b.w > 0 && b.x - pad >= 0 && b.y - pad >= 0 && b.x + b.w + pad <= innerWidth && b.y + b.h + pad <= innerHeight;
+          (onScreen ? ready : later).push([i, b]);
+        }
+        if (!ready.length) { later[0][1].el.scrollIntoView({ block: 'center' }); return { ready: [] }; }
+        for (const [i, b] of ready) if (!list[i].ring) b.el.setAttribute(list[i].fill ? 'data-e2e-fill' : 'data-e2e-hide', '');
+        return { ready: ready.map(([i, b]) => ({ i, x: b.x, y: b.y, w: b.w, h: b.h })) };
+      }, [specs.map((s, i) => ({ ...s, ...(info[i] || {}) })), pending]);
+      if (!batch.ready.length) continue;
+      // 3. one screenshot of the area they cover, judged in the page (pixels never leave it)
+      const reach = (b) => { const s = specs[b.i]; const p = s.ring ? info[b.i].offset + info[b.i].width : 0; return [b.x - p, b.y - p, b.x + b.w + p, b.y + b.h + p]; };
+      const edges = batch.ready.map(reach);
+      const clip = { x: Math.max(0, Math.floor(Math.min(...edges.map((e) => e[0])))), y: Math.max(0, Math.floor(Math.min(...edges.map((e) => e[1])))) };
+      clip.width = Math.ceil(Math.max(...edges.map((e) => e[2]))) - clip.x;
+      clip.height = Math.ceil(Math.max(...edges.map((e) => e[3]))) - clip.y;
+      const png = await page.screenshot({ clip, scale: 'css', animations: 'disabled', caret: 'hide' });
+      const judged = await page.evaluate(async ([b64, at, items]) => {
+        const bmp = await createImageBitmap(await (await fetch(`data:image/png;base64,${b64}`)).blob());
+        const cv = new OffscreenCanvas(bmp.width, bmp.height);
+        const cx = cv.getContext('2d', { willReadFrequently: true });
+        cx.drawImage(bmp, 0, 0);
+        const px = cx.getImageData(0, 0, bmp.width, bmp.height).data;
+        const k = bmp.width / at.width; // device pixels per CSS pixel
+        const probe = new OffscreenCanvas(1, 1).getContext('2d', { willReadFrequently: true });
+        const rgba = (c) => { probe.clearRect(0, 0, 1, 1); probe.fillStyle = c; probe.fillRect(0, 0, 1, 1); const d = probe.getImageData(0, 0, 1, 1).data; return [d[0], d[1], d[2], d[3] / 255]; };
+        const lum = (c) => { const [r, g, b] = c.map((v) => { v /= 255; return v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; }); return 0.2126 * r + 0.7152 * g + 0.0722 * b; };
+        const ratio = (a, b) => { const [x, y] = [lum(a), lum(b)].sort((p, q) => q - p); return (x + 0.05) / (y + 0.05); };
+        const hex = (c) => `#${c.map((v) => Math.round(v).toString(16).padStart(2, '0')).join('')}`;
+        return items.map(({ i, x, y, w, h, color, ring, offset, width }) => {
+          const fg = rgba(color);
+          const p = ring ? offset + width : 0;
+          const inside = (cxp, cyp, d) => cxp > x - d && cxp < x + w + d && cyp > y - d && cyp < y + h + d;
+          let best = null;
+          for (let py = Math.floor((y - p - at.y) * k); py < Math.ceil((y + h + p - at.y) * k); py++) {
+            for (let pxx = Math.floor((x - p - at.x) * k); pxx < Math.ceil((x + w + p - at.x) * k); pxx++) {
+              if (pxx < 0 || py < 0 || pxx >= bmp.width || py >= bmp.height) continue;
+              const cxp = at.x + (pxx + 0.5) / k; const cyp = at.y + (py + 0.5) / k;
+              if (ring ? !(inside(cxp, cyp, offset + width) && !inside(cxp, cyp, offset)) : !inside(cxp, cyp, 0)) continue;
+              const o = (py * bmp.width + pxx) * 4;
+              const bg = [px[o], px[o + 1], px[o + 2]];
+              const f = bg.map((v, j) => fg[j] * fg[3] + v * (1 - fg[3]));
+              const r = ratio(f, bg);
+              if (!best || r < best.ratio) best = { ratio: r, fg: hex(f), bg: hex(bg) };
+            }
+          }
+          return { i, ...(best || { ratio: Infinity, fg: hex(fg), bg: '' }) };
+        });
+      }, [png.toString('base64'), clip, batch.ready.map((b) => ({ ...b, ...info[b.i], ring: !!specs[b.i].ring }))]);
+      for (const j of judged) results[j.i] = { ...info[j.i], ...j };
+      const done = new Set(judged.map((j) => j.i));
+      pending = pending.filter((i) => !done.has(i));
+    }
+  } finally {
+    await page.evaluate(() => document.querySelectorAll('[data-e2e-hide],[data-e2e-fill]').forEach((el) => { el.removeAttribute('data-e2e-hide'); el.removeAttribute('data-e2e-fill'); }));
+  }
+  return results;
+}
+
+/** One sample of sampleContrasts(): the element's ink (or `fill`) against what is painted behind it. */
+export const inkContrast = async (page, sel, opts = {}) => (await sampleContrasts(page, [{ sel, ...opts }]))[0];
+/** One focus-ring sample of sampleContrasts(): { focusVisible, style, width, ratio, fg, bg }. */
+export const ringContrast = async (page, sel) => (await sampleContrasts(page, [{ sel, ring: true }]))[0];
 
 /** Seed a realistic library through the public API. Returns ids and expected totals. */
 export async function seed(ok, now) {

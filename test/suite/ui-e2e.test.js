@@ -14,7 +14,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   chromium, installFetchGuard, startApp, seed, openPage, waitView, overflow, waitUntil, toast, markToasts, modalReady, contrast,
-  invariantViolations, DESKTOP, PHONE, PHONE_SMALL, MIN, HOUR, DAY, skipReason,
+  srgb, sampleContrasts, ringContrast, invariantViolations, DESKTOP, PHONE, PHONE_SMALL, MIN, HOUR, DAY, skipReason,
 } from './helpers/ui-e2e-harness.js';
 const UI = { skip: skipReason || false };
 
@@ -384,9 +384,14 @@ describe('Vestigo web UI (no password)', UI, () => {
       assert.equal(await page.locator('#g-stars button.on').count(), 4, '4 of 5 stars lit for 8/10');
       await page.locator('#g-stars [data-r="8"]').click(); // same star again clears it
       await waitUntil(async () => (await game(g0.id)).rating === null, { message: 'rating cleared' });
+      const fav = await page.$('#g-fav');
+      assert.equal(await fav.getAttribute('aria-pressed'), 'false');
       await page.locator('#g-fav').click();
       await toast(page, 'Added to favorites');
       await waitUntil(async () => (await game(g0.id)).favorite === 1 || (await game(g0.id)).favorite === true, { message: 'favorite saved' });
+      assert.equal(await fav.getAttribute('aria-pressed'), 'true');
+      assert.ok(await page.evaluate((b) => b === document.querySelector('#g-fav') && !!b.querySelector('path[fill="currentColor"]'), fav),
+        'the same button (no re-render, focus kept) now shows the filled heart');
       await waitView(page);
       await page.locator('#g-notes').fill('Stuck on the second boss');
       await page.locator('#g-notes-st', { hasText: 'Saved' }).waitFor();
@@ -922,7 +927,7 @@ describe('Vestigo web UI (no password)', UI, () => {
       clean(h);
     } finally {
       await h.close();
-      await S.ok('/settings', { method: 'PUT', body: { theme: 'dark', ui_density: 'comfortable', cover_size: 'm', cover_titles: 'auto', time_format: 'hm', accent: '#7c5cff' } });
+      await S.ok('/settings', { method: 'PUT', body: { theme: 'dark', ui_density: 'comfortable', cover_size: 'm', cover_titles: 'auto', time_format: 'hm', accent: '#7656ff' } });
       await S.ok(`/games/${fmt.id}`, { method: 'DELETE' });
     }
   });
@@ -989,6 +994,361 @@ describe('Vestigo web UI (no password)', UI, () => {
         }
       }
     } finally { await S.ok('/settings', { method: 'PUT', body: { theme: 'dark' } }); }
+  });
+
+  // ------------------------------------------------------------------ readable in every theme, accent and input mode
+  const PRESETS = [['Violet', '#7656ff'], ['Cyan', '#22d3ee'], ['Mint', '#34d399'], ['Rose', '#f472b6'], ['Ember', '#fb923c'], ['Gold', '#facc15'], ['Red', '#ef4444'], ['Sky', '#60a5fa']];
+  // a dark custom accent: mixed toward white like the presets its link colour would be 3.3:1 on a dark card
+  const ODD_ACCENT = ['Navy (custom)', '#1e3a8a'];
+  /** Theme + accent applied in the open page the way Settings applies them (applyTheme), without a reload. */
+  const paint = (page, theme, accent) => page.evaluate(async ([th, ac]) => {
+    const app = await import('/app.js');
+    app.applyTheme({ ...app.state.settings, theme: th, accent: ac });
+  }, [theme, accent]);
+
+  test('contrast: text reaches 4.5:1, icons and focus rings 3:1, in dark, black and light with all 8 accent presets and a custom accent', async (t) => {
+    // [what, selector, minimum, depends on the accent?, options]; measured against the pixels painted behind each
+    const CHECKS = {
+      desktop: {
+        home: [
+          ['body text (h1)', '#view h1', 4.5, false],
+          ['muted text', '#view .page-h p', 4.5, false],
+          ['card link', '#view .card-h a', 4.5, false],
+          ['KPI value', '#view .kpis .kpi:nth-child(2) .value', 4.5, false],
+          ['KPI sub', '#view .kpis .kpi:nth-child(2) .sub', 4.5, false],
+          ['feature KPI label', '#view .kpi.feature .label', 4.5, true],
+          ['feature KPI value', '#view .kpi.feature .value', 4.5, true],
+          ['feature KPI unit', '#view .kpi.feature .value small', 4.5, true],
+          ['feature KPI sub', '#view .kpi.feature .sub', 4.5, true],
+          ['platform chip', '#view .plat-ic', 4.5, false],
+          ['badge.accent', '#dash-recent .badge.accent', 4.5, true],
+          ['chart bar (top games)', '#view .hbar ~ .hbar .track i', 3, true, { fill: true }],
+          ['active nav label', '.side .nav-link.active', 4.5, true],
+          ['active nav icon', '.side .nav-link.active svg', 3, true],
+          ['focus ring: nav link', '.side .nav-link.active', 3, true, { ring: true }],
+          ['focus ring: button', '#dash-log', 3, true, { ring: true }],
+        ],
+        settings: [
+          ['primary button', '#sched-save', 4.5, true],
+          ['link (.link)', '#view a.link', 4.5, true],
+          ['badge.accent', '#sched-label', 4.5, true],
+          ['dim text', '#view .field .help', 4.5, false],
+          ['switch track (off)', '#view .switch input:not(:checked) + span', 3, false, { fill: true }],
+          ['toast.bad', '#toasts .toast.bad', 4.5, false, { toast: true }],
+          ['focus ring: input', '#view [data-num="min_session_minutes"]', 3, true, { ring: true }],
+          ['focus ring: switch', '#view .switch input', 3, true, { ring: true }],
+        ],
+        library: [
+          ['.chip.on', '#lib-chips .chip.on', 4.5, true],
+          ['chip', '#lib-chips .chip:not(.on)', 4.5, false],
+          ['focus ring: tile', '#lib-items .tile', 3, true, { ring: true }],
+        ],
+        game: [
+          ['rated star', '#g-stars button.on svg', 3, false],
+          ['unrated star', '#g-stars button:not(.on) svg', 3, false],
+          ['platform chip', '#view .plat-ic', 4.5, false],
+          ['KPI value', '#view .kpis.k4 .kpi .value', 4.5, false],
+        ],
+        wrapped: [
+          ['Year in review g1 number', '#view .wcard.g1 .big', 4.5, true],
+          ['Year in review g1 line', '#view .wcard.g1 .muted', 4.5, true],
+          ['Year in review g2 line', '#view .wcard.g2 .muted', 4.5, false],
+          ['Year in review g3 line', '#view .wcard.g3 .muted', 4.5, false],
+        ],
+      },
+      phone: {
+        home: [
+          ['FAB icon', '#fab-log svg', 3, true],
+          ['tab bar active label', '.tabbar a.active', 4.5, true],
+          ['tab bar active icon', '.tabbar a.active svg', 3, true],
+          ['tab bar label', '.tabbar a:not(.active)', 4.5, false],
+        ],
+      },
+    };
+    const PATHS = { home: '/', settings: '/settings', library: '/library', game: `/game/${D.ids.zelda}`, wrapped: `/wrapped/${YEAR}` };
+    const rows = [];
+    const missing = [];
+    await S.ok(`/games/${D.ids.zelda}`, { method: 'PATCH', body: { rating: 6 } }); // 3 stars lit, 2 not
+    try {
+      for (const theme of ['dark', 'black', 'light']) {
+        await S.ok('/settings', { method: 'PUT', body: { theme, accent: '#7656ff' } });
+        for (const [vp, viewport] of [['desktop', DESKTOP], ['phone', PHONE]]) {
+          const h = await openPage(browser, S.origin, { viewport });
+          try {
+            for (const [key, checks] of Object.entries(CHECKS[vp])) {
+              await h.page.goto(`${S.origin}${PATHS[key]}`);
+              await waitView(h.page);
+              await h.settle();
+              if (checks.some((c) => c[4]?.toast)) await h.page.evaluate(async () => (await import('/app.js')).toast('Sync failed: example', { bad: true, ms: 60_000 }));
+              for (const [i, [accentName, accent]] of [...PRESETS, ODD_ACCENT].entries()) {
+                await paint(h.page, theme, accent);
+                const now = checks.filter((c) => c[3] || i === 0);
+                const measured = await sampleContrasts(h.page, now.map(([, sel, , , opts = {}]) => ({ sel, fill: !!opts.fill, ring: !!opts.ring })));
+                now.forEach(([what, sel, min, perAccent, opts = {}], j) => {
+                  const r = measured[j];
+                  if (!r) { missing.push(`${theme} ${vp} ${key}: nothing matches ${sel}`); return; }
+                  if (opts.ring && !(r.focusVisible && r.style !== 'none' && r.width >= 2)) missing.push(`${theme} ${key}: no 2px focus ring on ${sel} (${JSON.stringify(r)})`);
+                  rows.push({ theme, vp, page: key, accent: perAccent ? accentName : 'any', what, min, ratio: r.ratio, fg: r.fg, bg: r.bg });
+                });
+              }
+            }
+            clean(h);
+          } finally { await h.close(); }
+        }
+      }
+    } finally {
+      await S.ok('/settings', { method: 'PUT', body: { theme: 'dark', accent: '#7656ff' } });
+      await S.ok(`/games/${D.ids.zelda}`, { method: 'PATCH', body: { rating: null } });
+    }
+    // the worst sample of each check, per theme
+    const fmt = (r) => `${r.what} ${r.ratio.toFixed(2)} (${r.accent}; ${r.fg} on ${r.bg})`;
+    for (const theme of ['dark', 'black', 'light']) {
+      const worst = new Map();
+      for (const r of rows.filter((x) => x.theme === theme)) if (!worst.has(r.what) || r.ratio < worst.get(r.what).ratio) worst.set(r.what, r);
+      t.diagnostic(`${theme}: ${[...worst.values()].sort((a, b) => a.ratio / a.min - b.ratio / b.min).map(fmt).join(' | ')}`);
+    }
+    if (process.env.E2E_CONTRAST_REPORT) fs.writeFileSync(process.env.E2E_CONTRAST_REPORT, JSON.stringify(rows, null, 1));
+    assert.deepEqual(missing, [], 'every sampled element exists and draws a focus ring');
+    assert.ok(rows.length > 400, `${rows.length} samples`);
+    assert.deepEqual(rows.filter((r) => r.ratio < r.min).map((r) => `${r.theme} ${r.vp} ${r.page}: ${fmt(r)} < ${r.min}`), []);
+  });
+
+  test('accent: a stored #7c5cff (the old default) shows as #7656ff, other custom accents are kept, and the on-accent ink applies before the first paint', async () => {
+    const root = (page) => page.evaluate(() => {
+      const d = document.documentElement;
+      return { accent: d.style.getPropertyValue('--accent').trim(), on: d.dataset.onAccent, onAccent: getComputedStyle(d).getPropertyValue('--on-accent').trim(), ink: d.style.getPropertyValue('--accent-ink').trim() };
+    });
+    try {
+      await S.ok('/settings', { method: 'PUT', body: { accent: '#7c5cff' } });
+      const h = await visit('/settings');
+      const { page } = h;
+      try {
+        assert.deepEqual({ ...(await root(page)), ink: '' }, { accent: '#7656ff', on: 'light', onAccent: '#fff', ink: '' });
+        const swatches = page.locator('[data-accent]');
+        assert.deepEqual(await swatches.evaluateAll((els) => els.map((e) => [e.getAttribute('aria-label'), e.getAttribute('title'), e.getAttribute('aria-pressed')])), [
+          ['Violet (default)', 'Violet (default)', 'true'], ['Cyan', 'Cyan', 'false'], ['Mint', 'Mint', 'false'], ['Rose', 'Rose', 'false'],
+          ['Ember', 'Ember', 'false'], ['Gold', 'Gold', 'false'], ['Red', 'Red', 'false'], ['Sky', 'Sky', 'false']]);
+        assert.equal(await page.locator('#accent-custom').inputValue(), '#7656ff');
+        const ring = await page.locator('[data-accent="#7656ff"]').evaluate((e) => getComputedStyle(e).boxShadow);
+        assert.match(ring, /0px 0px 0px 4px/, 'the chosen swatch carries a ring');
+        // cyan: white would be 1.8:1, so accent fills switch to dark ink, live
+        await page.locator('[data-accent="#22d3ee"]').click();
+        await toast(page, 'Accent updated');
+        assert.equal(await page.locator('[data-accent="#22d3ee"]').getAttribute('aria-pressed'), 'true');
+        assert.equal(await page.locator('[data-accent="#7656ff"]').getAttribute('aria-pressed'), 'false');
+        assert.equal(await page.evaluate(() => getComputedStyle(document.querySelector('#sched-save')).color), 'rgb(11, 13, 18)', 'dark text on a cyan button');
+        clean(h);
+        // reload with app.js blocked: only the pre-paint script in index.html runs, and it already has the dark ink
+        await page.route('**/app.js', (r) => r.abort());
+        await page.reload();
+        const pre = await root(page);
+        assert.deepEqual({ ...pre, ink: /^#[0-9a-f]{6}$/.test(pre.ink) }, { accent: '#22d3ee', on: 'dark', onAccent: '#0b0d12', ink: true }, 'no white flash before the app starts');
+        // and a browser still holding the old default paints the new one straight away
+        await page.evaluate(() => localStorage.setItem('pt-accent', '#7c5cff'));
+        await page.reload();
+        assert.equal((await root(page)).accent, '#7656ff');
+      } finally { await h.close(); }
+      // any other custom accent is kept as it is
+      await S.ok('/settings', { method: 'PUT', body: { accent: '#1e3a8a' } });
+      const c = await visit('/settings');
+      try {
+        assert.equal((await root(c.page)).accent, '#1e3a8a');
+        assert.equal(await c.page.locator('#accent-custom').inputValue(), '#1e3a8a');
+        assert.equal(await c.page.locator('[data-accent][aria-pressed="true"]').count(), 0);
+        clean(c);
+      } finally { await c.close(); }
+      assert.equal((await S.ok('/settings')).accent, '#1e3a8a', 'the API keeps what was stored');
+    } finally { await S.ok('/settings', { method: 'PUT', body: { accent: '#7656ff' } }); }
+  });
+
+  test('keyboard: the first Tab offers "Skip to content", which moves focus into the page without rebuilding it; the next stops are the brand and the Main navigation', async () => {
+    const h = await visit('/');
+    const { page } = h;
+    const focused = () => page.evaluate(() => {
+      const a = document.activeElement;
+      const r = a.getBoundingClientRect();
+      return { id: a.id, cls: String(a.className), text: a.textContent.trim().slice(0, 30), inSide: !!a.closest('.side'), inNav: !!a.closest('nav[aria-label="Main"]'), current: a.getAttribute('aria-current'), top: r.top, bottom: r.bottom };
+    });
+    try {
+      const box = await page.locator('a.skip').boundingBox();
+      assert.ok(box.y + box.height <= 0, `the skip link is out of view until focused (${JSON.stringify(box)})`);
+      await page.keyboard.press('Tab');
+      let f = await focused();
+      assert.equal(f.text, 'Skip to content', 'the first Tab stop');
+      assert.ok(f.top >= 0, 'it shows when focused');
+      const side = await page.$('.side');
+      const url = page.url();
+      await page.keyboard.press('Enter');
+      f = await focused();
+      assert.equal(f.id, 'view', 'Enter moves focus to the content');
+      assert.equal(page.url(), url, 'no navigation and no #view in the URL');
+      assert.ok(await page.evaluate((s) => s.isConnected && s === document.querySelector('.side'), side), 'the shell was not rebuilt');
+      await page.keyboard.press('Tab');
+      assert.ok(await page.evaluate(() => !!document.activeElement.closest('#view')), 'the next Tab continues inside the content');
+      await page.reload();
+      await waitView(page);
+      await page.keyboard.press('Tab');
+      assert.equal((await focused()).text, 'Skip to content');
+      await page.keyboard.press('Tab');
+      f = await focused();
+      assert.ok(f.inSide && /\bbrand\b/.test(f.cls), `then the Vestigo home link (${JSON.stringify(f)})`);
+      await page.keyboard.press('Tab');
+      f = await focused();
+      assert.ok(f.inNav && f.text === 'Home' && f.current === 'page', `then the Main navigation, at the current page (${JSON.stringify(f)})`);
+      assert.equal(await page.locator('nav[aria-label="Main"] [aria-current="page"]').count(), 1);
+      clean(h);
+    } finally { await h.close(); }
+    const p = await visit('/library', { viewport: PHONE });
+    try {
+      assert.equal(await p.page.locator('nav.tabbar').getAttribute('aria-label'), 'Tabs');
+      assert.deepEqual((await p.page.locator('.tabbar [aria-current="page"]').allInnerTexts()).map((x) => x.trim()), ['Library']);
+      clean(p);
+    } finally { await p.close(); }
+  });
+
+  test('keyboard: every focusable control on Settings shows a 2px focus ring (switches, segments, swatches, inputs, links); chips, tiles and buttons on Library too', async () => {
+    const h = await visit('/settings');
+    const { page } = h;
+    try {
+      const stops = [];
+      for (let i = 0; i < 300; i++) {
+        await page.keyboard.press('Tab');
+        const s = await page.evaluate(() => {
+          const el = document.activeElement;
+          if (!el || el === document.body) return null;
+          // a switch draws its ring on the track, the hidden file input on its label button
+          const ringEl = el.matches('.switch input') ? el.nextElementSibling : el.matches('input.vh') ? el.closest('label') : el;
+          const cs = getComputedStyle(ringEl);
+          const kind = el.matches('.switch input') ? 'switch' : el.matches('.seg button') ? 'segment' : el.matches('.swatch') ? 'swatch'
+            : el.matches('.btn, label.btn input') ? 'button' : el.matches('a') ? 'link' : el.matches('select') ? 'select' : el.matches('.input') ? 'input' : el.tagName.toLowerCase();
+          return {
+            kind, skip: el.matches('a.skip'), name: `${kind} "${(el.getAttribute('aria-label') || el.textContent || el.name || el.id || '').trim().slice(0, 30)}"`,
+            ring: cs.outlineStyle !== 'none' && parseFloat(cs.outlineWidth) >= 2 && cs.outlineColor !== 'rgba(0, 0, 0, 0)',
+          };
+        });
+        if (!s || (s.skip && stops.length)) break; // past the last control
+        stops.push(s);
+      }
+      assert.ok(stops.length > 40, `tabbed through ${stops.length} controls`);
+      for (const kind of ['switch', 'segment', 'swatch', 'button', 'link', 'input', 'select']) assert.ok(stops.some((s) => s.kind === kind), `reached a ${kind}`);
+      assert.deepEqual(stops.filter((s) => !s.ring).map((s) => s.name), [], 'every stop shows a ring');
+      await page.goto(`${S.origin}/library`);
+      await waitView(page);
+      await h.settle();
+      for (const sel of ['#lib-chips .chip.on', '#lib-chips .chip:not(.on)', '#lib-items .tile', '#lib-q', '#view .seg [data-view="list"]', '#lib-add']) {
+        const r = await ringContrast(page, sel);
+        assert.ok(r.focusVisible && r.style !== 'none' && r.width >= 2, `${sel}: a 2px focus ring (${JSON.stringify(r)})`);
+        assert.ok(r.ratio >= 3, `${sel}: ring contrast ${r.ratio.toFixed(2)} (${r.fg} on ${r.bg})`);
+      }
+      clean(h);
+    } finally { await h.close(); }
+  });
+
+  test('reduced motion: nothing keeps animating on Home, on Library while it loads, or during a sync, and sync buttons say "Syncing…"', async () => {
+    // two frames first: an animation started in this frame is still "running" until the timeline moves on
+    const running = (page) => page.evaluate(async () => {
+      await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      return document.getAnimations().filter((a) => a.playState === 'running').map((a) => a.animationName || a.transitionProperty || 'animation');
+    });
+    // one account reported as syncing, whatever the server says
+    const syncing = (page) => page.route('**/api/v1/accounts', async (route) => {
+      const res = await route.fetch();
+      const list = await res.json();
+      await route.fulfill({ response: res, json: list.map((a, i) => (i ? a : { ...a, syncing: true })) });
+    });
+    const h = await openPage(browser, S.origin, { reducedMotion: 'reduce' });
+    const { page } = h;
+    try {
+      await page.goto(`${S.origin}/`);
+      await waitView(page);
+      await h.settle();
+      assert.deepEqual(await running(page), [], 'Home');
+      assert.ok(await page.evaluate(() => parseFloat(getComputedStyle(document.querySelector('.btn')).transitionDuration) < 0.001), 'transitions are instant');
+      // Library while its data is still on the way: the skeleton stands still
+      let release;
+      const gate = new Promise((r) => { release = r; });
+      await page.route('**/api/v1/stats/lifetime', async (route) => { await gate; await route.continue(); });
+      await page.goto(`${S.origin}/library`);
+      await page.locator('#view .skel').first().waitFor();
+      assert.deepEqual(await running(page), [], 'Library while it loads');
+      assert.equal(await page.evaluate(() => getComputedStyle(document.querySelector('.skel')).animationName), 'none');
+      release();
+      await waitView(page);
+      await page.unroute('**/api/v1/stats/lifetime');
+      // a sync in progress: the label says so, the spinner does not spin
+      await syncing(page);
+      await page.goto(`${S.origin}/accounts`);
+      await waitView(page);
+      await page.locator('#sync-all-btn.loading').waitFor();
+      assert.equal((await page.locator('#sync-all-btn').innerText()).trim(), 'Syncing…');
+      assert.equal(await page.locator('.topbar [data-action="sync-all"]').getAttribute('aria-label'), 'Syncing…');
+      assert.deepEqual(await running(page), [], 'during a sync');
+      await page.unrouteAll({ behavior: 'ignoreErrors' });
+      clean(h);
+    } finally { await h.close(); }
+    // the same sync state with motion allowed does spin, so the check above is not vacuous
+    const m = await openPage(browser, S.origin);
+    try {
+      await syncing(m.page);
+      await m.page.goto(`${S.origin}/accounts`);
+      await waitView(m.page);
+      await m.page.locator('#sync-all-btn.loading').waitFor();
+      assert.ok((await running(m.page)).includes('spin'), 'the spinner turns when motion is allowed');
+      await m.page.unrouteAll({ behavior: 'ignoreErrors' });
+    } finally { await m.close(); }
+  });
+
+  test('phone 390px with touch: tab bar, top bar, FAB, chips, buttons, segments, swatches and stars are at least 40x40 px', async () => {
+    const h = await openPage(browser, S.origin, { viewport: PHONE });
+    try {
+      const small = [];
+      for (const path of ['/', '/library', `/game/${D.ids.zelda}`, '/sessions', '/settings']) {
+        await h.page.goto(`${S.origin}${path}`);
+        await waitView(h.page);
+        await h.settle();
+        small.push(...await h.page.evaluate((p) => {
+          const out = [];
+          for (const el of document.querySelectorAll('.tabbar a, .topbar a, .topbar button, .fab, .chip, #view .btn, #view .seg button, #view .swatch, #view .stars button, #view .card-h a')) {
+            const r = el.getBoundingClientRect();
+            if (!r.width || !r.height) continue; // not shown on a phone
+            if (r.width < 39.5 || r.height < 39.5) out.push(`${p}: ${el.tagName.toLowerCase()}.${String(el.className).trim().replace(/\s+/g, '.')} "${(el.getAttribute('aria-label') || el.textContent).trim().slice(0, 30)}" is ${Math.round(r.width)}x${Math.round(r.height)}`);
+          }
+          return out;
+        }, path));
+      }
+      assert.ok(await h.page.evaluate(() => matchMedia('(pointer: coarse)').matches), 'the phone is emulated with a touch screen');
+      assert.deepEqual(small, []);
+      clean(h);
+    } finally { await h.close(); }
+  });
+
+  test('charts and icons: stacks go Steam, PlayStation, Xbox, custom, manual with a 1px gap; the sidebar and More page show distinct stroke-2 icons', async () => {
+    const h = await visit('/');
+    try {
+      const segs = await h.page.evaluate(async () => {
+        const { barChart } = await import('/charts.js');
+        const div = document.createElement('div');
+        div.innerHTML = barChart([{ label: 'x', value: 60, stack: [['manual', 'm'], ['estimated', 'e'], ['custom', 'c'], ['xbox', 'x'], ['psn', 'p'], ['steam', 's']].map(([key, color]) => ({ key, value: 10, color })) }]);
+        return [...div.querySelectorAll('svg > rect:not(.hit)')].map((r) => ({ fill: r.getAttribute('fill'), stroke: r.getAttribute('stroke'), width: r.getAttribute('stroke-width'), y: Number(r.getAttribute('y')) }));
+      });
+      assert.deepEqual(segs.map((s) => s.fill), ['s', 'p', 'x', 'c', 'm', 'e'], 'bottom to top, estimated history last');
+      assert.ok(segs.every((s, i) => s.stroke === 'var(--panel)' && s.width === '1' && (!i || s.y < segs[i - 1].y)), 'stacked upward, split by a 1px card-coloured line');
+      const [steam, psn] = await srgb(h.page, await h.page.evaluate(() => ['--steam', '--psn'].map((k) => getComputedStyle(document.documentElement).getPropertyValue(k).trim())));
+      assert.ok(contrast(steam, psn) >= 2.7, `Steam and PlayStation are ${contrast(steam, psn).toFixed(2)}:1 apart in dark`);
+      const side = await h.page.locator('.side-nav svg').evaluateAll((els) => els.map((e) => [e.innerHTML, e.getAttribute('stroke-width')]));
+      assert.equal(side.length, 10);
+      assert.equal(new Set(side.map((x) => x[0])).size, 10, 'ten distinct sidebar icons');
+      assert.ok(side.every((x) => x[1] === '2'), 'all drawn at stroke 2');
+      clean(h);
+    } finally { await h.close(); }
+    const p = await visit('/more', { viewport: PHONE });
+    try {
+      const more = await p.page.locator('#view .item svg').evaluateAll((els) => els.map((e) => [e.innerHTML, e.getAttribute('stroke-width'), e.getBoundingClientRect().width]));
+      assert.equal(more.length, 7);
+      assert.equal(new Set(more.map((x) => x[0])).size, 7, 'seven distinct icons');
+      assert.ok(more.every((x) => x[1] === '2' && x[2] === 18), 'stroke 2 at 18px (.ic-18)');
+      clean(p);
+    } finally { await p.close(); }
   });
 
   // ------------------------------------------------------------------ improve history
@@ -1566,6 +1926,16 @@ describe('Vestigo web assets', () => {
     for (const f of ['index.html', 'app.js', 'pages.js', 'charts.js']) {
       assert.deepEqual([...read(f).matchAll(/\p{Extended_Pictographic}/gu)].map((m) => m[0]), [], f);
     }
+  });
+
+  test('one design system: no fixed `.hex` platform colours, icons instead of → ↗ ↑ ↓ ♥ glyphs, five font weights, reduced-motion and touch rules', () => {
+    for (const f of fs.readdirSync(PUBLIC).filter((x) => /\.(js|css|html)$/.test(x))) assert.ok(!/\.hex\b/.test(read(f)), `${f} uses theme colours, not .hex`);
+    assert.deepEqual([...read('pages.js').matchAll(/[→↗↑↓♥]/gu)].map((m) => m[0]), [], 'pages.js draws arrows and hearts with icon()');
+    const css = read('app.css');
+    assert.deepEqual([...new Set([...css.matchAll(/font-weight: ?(\d+)/g)].map((m) => m[1]))].sort(), ['400', '500', '600', '700', '800']);
+    assert.match(css, /@media \(prefers-reduced-motion: ?reduce\)/);
+    assert.match(css, /@media \(pointer: ?coarse\)/);
+    assert.match(css, /:focus-visible \{ outline: 2px solid var\(--accent-ink\)/);
   });
 
   test('index.html: Vestigo title and meta; the favicon and a full-bleed 180px apple-touch-icon exist', () => {

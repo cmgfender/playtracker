@@ -1,7 +1,9 @@
 import {
-  $, $$, esc, fmtMin, fmtHours, ago, fmtDate, fmtTime, dayLabel, plat, platDot, platTag, STATUSES, cover, icon,
-  api, toast, fail, modal, confirmBox, navigate, rerender, state, watchSync, applyTheme, plural, setTitle, MARK, tagline,
+  $, $$, esc, fmtMin, fmtHours, ago, fmtDate, fmtTime, dayLabel, plat, platDot, platTag, platIcon, STATUSES, cover, icon,
+  api, toast, fail, modal, confirmBox, navigate, rerender, state, watchSync, applyTheme, paintAccent, accentOf, scrollMotion, plural, setTitle, MARK, tagline,
 } from './app.js';
+
+const arrow = () => icon('arrowR', 'ic-inline'); // trailing "go there" arrow on links
 import { barChart, sparkline, donut, heatmap, topList, platformLegend, bindTips } from './charts.js';
 
 const WD = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -151,7 +153,7 @@ export function logSessionModal(game = null, onDone = rerender) {
       <div class="field"><label>Duration</label>
         <div class="row"><input class="input" type="number" min="0" max="168" name="h" value="1" style="width:90px"> <span class="muted">h</span>
         <input class="input" type="number" min="0" max="59" name="m" value="0" style="width:90px"> <span class="muted">m</span></div>
-        <div class="chips" style="margin-top:4px">${[15, 30, 60, 90, 120, 180].map((m) => `<button type="button" class="chip" data-quick="${m}">${fmtMin(m)}</button>`).join('')}</div>
+        <div class="chips" style="margin-top:0">${[15, 30, 60, 90, 120, 180].map((m) => `<button type="button" class="chip" data-quick="${m}">${fmtMin(m)}</button>`).join('')}</div>
       </div>
       <div class="field"><label>Ended at</label><input class="input" type="datetime-local" name="ended" value="${localInput(now)}"></div>
       <div class="field"><label>Note <span class="dim">(optional)</span></label><input class="input" name="note" placeholder="Beat the first boss…"></div>
@@ -283,21 +285,21 @@ async function dashboard(view, stale) {
     live: () => (d.playing_now?.length ? `<div class="card live-card"><div class="row wrap">${d.playing_now.map((p) => `<a class="row" href="${p.game_id ? `/game/${p.game_id}` : '/accounts'}" data-link style="min-width:0;flex:1">${cover({ title: p.title, cover_url: p.cover_url }, '', 'width:44px;')}<div style="min-width:0"><div class="small" style="color:var(--good);font-weight:700"><span class="live-dot"></span>Playing now · ${esc(plat(p.platform).label)}</div><div class="ttl ellipsis" style="font-weight:700">${esc(p.title)}</div><div class="tiny muted">for ${fmtMin(Math.max(1, p.minutes))}</div></div></a>`).join('')}</div></div>` : ''),
     jump: () => (d.now_playing.length ? `<div class="card"><div class="card-h"><h2>Jump back in</h2><a href="/library?sort=trending" data-link>See all</a></div>
       <div class="carousel">${d.now_playing.map((g) => `<a class="tile" href="/game/${g.id}" data-link>${cover(g)}<div class="t">${esc(g.title)}</div><div class="m">${g.platforms.map(platDot).join('')} ${fmtMin(g.recent_minutes)} · 2 wks</div></a>`).join('')}</div></div>` : ''),
-    chart: () => `<div class="card"><div class="card-h"><h2>Last 30 days</h2><a href="/stats" data-link>Stats →</a></div>
+    chart: () => `<div class="card"><div class="card-h"><h2>Last 30 days</h2><a href="/stats" data-link>Stats${arrow()}</a></div>
         ${barChart(stackedSeries(mo), { height: 210 })}${platformLegend(mo.platforms, estimatedLegend(mo))}</div>`,
     top: () => `<div class="card"><div class="card-h"><h2>Top this month</h2></div>
         ${mo.top_games.length ? topList(mo.top_games, { coverFn: (g) => cover(g), limit: 6 }) : '<p class="muted">No play in the last 30 days.</p>'}</div>`,
-    recent: () => `<div class="card"><div class="card-h"><h2>Recent sessions</h2><a href="/sessions" data-link>All sessions →</a></div>
+    recent: () => `<div class="card"><div class="card-h"><h2>Recent sessions</h2><a href="/sessions" data-link>All sessions${arrow()}</a></div>
         <div class="list" id="dash-recent">${d.recent_sessions.length ? d.recent_sessions.map((s) => sessionItem(s)).join('') : '<p class="muted">No sessions yet — they appear after the next sync detects new playtime.</p>'}</div></div>`,
-    accounts: () => `<div class="card"><div class="card-h"><h2>Accounts</h2><a href="/accounts" data-link>Manage →</a></div>
-        <div class="list">${d.accounts.map((a) => `<div class="item"><span class="plat-ic" style="width:34px;height:34px;border-radius:10px;display:grid;place-items:center;background:${plat(a.platform).hex};color:#fff;font-weight:800">${plat(a.platform).short}</span>
+    accounts: () => `<div class="card"><div class="card-h"><h2>Accounts</h2><a href="/accounts" data-link>Manage${arrow()}</a></div>
+        <div class="list">${d.accounts.map((a) => `<div class="item">${platIcon(a.platform)}
           <div class="grow"><div class="ttl ellipsis">${esc(a.name)}</div><div class="sub">${a.syncing ? '<span class="pulse">Syncing…</span>' : a.last_status === 'error' ? `<span style="color:var(--bad)">Error · ${esc(a.last_error || '')}</span>`
             : a.push ? (a.last_sync_at ? `Last report ${ago(a.last_sync_at)}` : 'No reports yet') : a.last_sync_at ? `Synced ${ago(a.last_sync_at)}` : 'Not synced yet'}</div></div>
           ${!a.enabled ? '<span class="badge">Paused</span>' : a.push ? '<span class="badge" title="Totals are pushed through the API">API</span>' : `<span class="tiny muted nowrap">${a.next_sync_at ? `next ${ago(a.next_sync_at)}` : 'Manual'}</span>`}</div>`).join('') || '<p class="muted">No accounts linked.</p>'}
         </div>
-        <div class="row" style="margin-top:12px"><button class="btn sm" data-action="sync-all">${icon('sync')}Sync now</button><a class="btn sm ghost" href="/accounts?add=1" data-link>${icon('plus')}Add</a></div></div>`,
-    heatmap: () => (heat ? `<div class="card"><div class="card-h"><h2>${year} at a glance</h2><a href="/stats" data-link>Stats →</a></div><div class="scroll-x">${heatmap(year, heat.days, { weekStartsOn: state.settings?.week_starts_on ?? 1, estimated: heat.estimated_days || {} })}</div></div>` : ''),
-    backlog: () => (upNext ? `<div class="card"><div class="card-h"><h2>Up next</h2><a href="/library?status=playing" data-link>Library →</a></div>
+        <div class="row" style="margin-top:12px"><button class="btn sm" data-action="sync-all">${icon('sync')}<span class="lbl">Sync now</span></button><a class="btn sm ghost" href="/accounts?add=1" data-link>${icon('plus')}Add</a></div></div>`,
+    heatmap: () => (heat ? `<div class="card"><div class="card-h"><h2>${year} at a glance</h2><a href="/stats" data-link>Stats${arrow()}</a></div><div class="scroll-x">${heatmap(year, heat.days, { weekStartsOn: state.settings?.week_starts_on ?? 1, estimated: heat.estimated_days || {} })}</div></div>` : ''),
+    backlog: () => (upNext ? `<div class="card"><div class="card-h"><h2>Up next</h2><a href="/library?status=playing" data-link>Library${arrow()}</a></div>
       ${upNext.items.length ? `<div class="carousel">${upNext.items.map((g) => `<a class="tile" href="/game/${g.id}" data-link>${cover(g)}<div class="t">${esc(g.title)}</div><div class="m">${g.platforms.map(platDot).join('')} ${STATUSES[g.status]?.label || ''}</div></a>`).join('')}</div>`
         : '<p class="muted small" style="margin:0">Mark games as <b>Playing</b> or <b>Backlog</b> on their page and they show up here.</p>'}</div>` : ''),
   };
@@ -313,8 +315,8 @@ async function dashboard(view, stale) {
     <div class="page-h"><div><h1>${greeting}</h1><p>${d.new_sessions_24h ? `${d.new_sessions_24h} new session${d.new_sessions_24h > 1 ? 's' : ''} in the last day · ` : ''}Last sync ${ago(lastSync)}${Number.isFinite(nextSync) ? ` · next ${ago(nextSync)}` : ''}</p></div>
       <div class="row"><button class="btn ghost sm" id="dash-custom">${icon('settings')}Customize</button><button class="btn desk-only" id="dash-log">${icon('plus')}Log session</button></div></div>
     <div class="dash">
-    ${d.errors_24h ? `<a class="card row" href="/system" data-link style="border-color:color-mix(in srgb,var(--bad) 45%,var(--line));padding:12px 16px">${icon('info')}<span class="grow"><b>${d.errors_24h} error${d.errors_24h > 1 ? 's' : ''}</b> in the last 24 hours</span><span class="small muted">View log →</span></a>` : ''}
-    ${blocks.join('\n') || `<div class="card muted">Every section is hidden. <a href="#" id="dash-custom2" style="color:var(--accent)">Customize</a> to bring some back.</div>`}
+    ${d.errors_24h ? `<a class="card row" href="/system" data-link style="border-color:color-mix(in srgb,var(--bad) 45%,var(--line));padding:12px 16px">${icon('info')}<span class="grow"><b>${d.errors_24h} error${d.errors_24h > 1 ? 's' : ''}</b> in the last 24 hours</span><span class="small muted">View log${arrow()}</span></a>` : ''}
+    ${blocks.join('\n') || `<div class="card muted">Every section is hidden. <a href="#" id="dash-custom2" class="link">Customize</a> to bring some back.</div>`}
     </div>
     <button class="fab" id="fab-log" aria-label="Log session">${icon('plus')}</button>`;
   bindTips(view);
@@ -355,7 +357,7 @@ function layoutEditor(host, layout, onChange) {
     host.innerHTML = `<div class="layout-list">${list.map((x, i) => `<div class="layout-row ${x.on ? '' : 'off'}" data-i="${i}">
       <label class="switch"><input type="checkbox" data-on ${x.on ? 'checked' : ''} aria-label="Show ${esc(DASH_SECTIONS[x.key].label)}"><span></span></label>
       <div class="grow">${esc(DASH_SECTIONS[x.key].label)}${DASH_SECTIONS[x.key].desc ? ` <span class="d">· ${esc(DASH_SECTIONS[x.key].desc)}</span>` : ''}${DASH_SECTIONS[x.key].half ? ' <span class="d">· half width</span>' : ''}</div>
-      <button class="btn icon ghost sm" data-up ${i === 0 ? 'disabled' : ''} aria-label="Move up">↑</button><button class="btn icon ghost sm" data-down ${i === list.length - 1 ? 'disabled' : ''} aria-label="Move down">↓</button></div>`).join('')}</div>
+      <button class="btn icon ghost sm" data-up ${i === 0 ? 'disabled' : ''} aria-label="Move up">${icon('up')}</button><button class="btn icon ghost sm" data-down ${i === list.length - 1 ? 'disabled' : ''} aria-label="Move down">${icon('down')}</button></div>`).join('')}</div>
       <p class="tiny muted" style="margin:8px 0 0">Two half-width sections next to each other share a row.</p>`;
   };
   host.addEventListener('click', (e) => {
@@ -431,9 +433,9 @@ async function library(view, stale) {
       <div class="row" style="margin-bottom:10px">
         <div class="search grow">${icon('search')}<input class="input" id="lib-q" type="search" placeholder="Search ${platforms.games} games…" value="${esc(st.q)}"></div>
         <select class="input" id="lib-sort" style="width:auto">
-          ${[['recent', 'Recently played'], ['trending', 'Trending (2 wks)'], ['playtime', 'Most played'], ['title', 'A → Z'], ['added', 'Recently added'], ['rating', 'Top rated']].map(([v, l]) => `<option value="${v}" ${st.sort === v ? 'selected' : ''}>${l}</option>`).join('')}
+          ${[['recent', 'Recently played'], ['trending', 'Trending (2 wks)'], ['playtime', 'Most played'], ['title', 'A–Z'], ['added', 'Recently added'], ['rating', 'Top rated']].map(([v, l]) => `<option value="${v}" ${st.sort === v ? 'selected' : ''}>${l}</option>`).join('')}
         </select>
-        <div class="seg desk-only"><button data-view="grid" class="${st.view === 'grid' ? 'on' : ''}" aria-label="Grid">${icon('grid', '').replace('<svg', '<svg width="16" height="16"')}</button><button data-view="list" class="${st.view === 'list' ? 'on' : ''}" aria-label="List">${icon('list', '').replace('<svg', '<svg width="16" height="16"')}</button></div>
+        <div class="seg desk-only"><button data-view="grid" class="${st.view === 'grid' ? 'on' : ''}" aria-label="Grid" aria-pressed="${st.view === 'grid'}">${icon('grid', 'ic-16')}</button><button data-view="list" class="${st.view === 'list' ? 'on' : ''}" aria-label="List" aria-pressed="${st.view === 'list'}">${icon('list', 'ic-16')}</button></div>
       </div>
       <div class="chips" id="lib-chips">
         <button class="chip ${!st.platform ? 'on' : ''}" data-plat="">All</button>
@@ -442,7 +444,7 @@ async function library(view, stale) {
         ${Object.entries(STATUSES).filter(([k]) => k !== 'unset').map(([k, v]) => `<button class="chip ${st.status === k ? 'on' : ''}" data-status="${k}">${v.label}</button>`).join('')}
         <button class="chip ${st.played === 'false' ? 'on' : ''}" data-played="false">Never played</button>
         ${state.settings?.library_hide_unplayed ? `<button class="chip ${st.played === '' ? 'on' : ''}" data-played="all">Include unplayed</button>` : ''}
-        <button class="chip ${st.hidden === 'only' ? 'on' : ''}" data-hidden="only">${icon('eyeoff', '').replace('<svg', '<svg width="14" height="14"')}Hidden</button>
+        <button class="chip ${st.hidden === 'only' ? 'on' : ''}" data-hidden="only">${icon('eyeoff', 'ic-14')}Hidden</button>
       </div>
     </div>
     <div id="lib-items"></div>
@@ -457,7 +459,7 @@ async function library(view, stale) {
   const render = (items) => {
     const host = box.firstElementChild;
     host.insertAdjacentHTML('beforeend', items.map((g) => st.view === 'grid'
-      ? `<a class="tile" href="/game/${g.id}" data-link><div style="position:relative">${cover(g)}<div class="flags">${g.favorite ? `<span class="badge" title="Favorite">${icon('heart', 'fill')}</span>` : '<span></span>'}${g.status !== 'unset' ? `<span class="badge">${STATUSES[g.status]?.label || g.status}</span>` : ''}</div>${g.minutes ? `<div class="bar"><i style="width:${Math.max(3, Math.sqrt(g.minutes / maxMin) * 100)}%"></i></div>` : ''}</div>
+      ? `<a class="tile" href="/game/${g.id}" data-link><div style="position:relative">${cover(g)}<div class="flags">${g.favorite ? `<span class="badge" title="Favorite">${icon('heartFill')}</span>` : '<span></span>'}${g.status !== 'unset' ? `<span class="badge">${STATUSES[g.status]?.label || g.status}</span>` : ''}</div>${g.minutes ? `<div class="bar"><i style="width:${Math.max(3, Math.sqrt(g.minutes / maxMin) * 100)}%"></i></div>` : ''}</div>
           <div class="t">${esc(g.title)}</div><div class="m">${g.platforms.filter((p) => p !== 'manual' || g.platforms.length === 1).map(platDot).join('')}<span>${g.minutes ? fmtMin(g.minutes, { short: g.minutes >= 600 }) : 'Unplayed'}</span>${g.entry_count > 1 ? `<span class="dim">· ${g.entry_count}×</span>` : ''}</div></a>`
       : `<a class="li" href="/game/${g.id}" data-link>${cover(g)}<div class="grow"><div class="ellipsis" style="font-weight:620">${esc(g.title)}</div><div class="small muted row" style="gap:6px">${g.platforms.map(platDot).join('')}${g.last_played_at ? `Played ${ago(g.last_played_at)}` : 'Never played'}${g.status !== 'unset' ? ` · ${STATUSES[g.status]?.label}` : ''}</div></div><div class="amt" style="font-weight:700">${fmtMin(g.minutes, { short: g.minutes >= 600 })}</div></a>`).join(''));
   };
@@ -517,7 +519,7 @@ async function library(view, stale) {
   $('#lib-q').addEventListener('input', (e) => { clearTimeout(t); t = setTimeout(() => { st.q = e.target.value.trim(); sync(); }, 180); });
   $('#lib-sort').addEventListener('change', (e) => { st.sort = e.target.value; sync(); });
   $$('[data-view]', view).forEach((b) => b.addEventListener('click', () => {
-    st.view = b.dataset.view; $$('[data-view]', view).forEach((x) => x.classList.toggle('on', x === b)); sync();
+    st.view = b.dataset.view; $$('[data-view]', view).forEach((x) => { x.classList.toggle('on', x === b); x.setAttribute('aria-pressed', String(x === b)); }); sync();
     if (state.settings?.library_view !== st.view) saveSettings({ library_view: st.view }).catch(() => {}); // remembered on every device
   }));
   $('#lib-chips').addEventListener('click', (e) => {
@@ -590,7 +592,7 @@ async function game(view, id, stale) {
             <div class="seg" id="g-status">${Object.entries(STATUSES).map(([k, v]) => `<button data-st="${k}" class="${g.status === k ? 'on' : ''}">${v.label}</button>`).join('')}</div>
             <div class="row">
               <div class="stars" id="g-stars">${[1, 2, 3, 4, 5].map((i) => `<button data-r="${i * 2}" class="${rating >= i * 2 ? 'on' : ''}" aria-label="${i} stars">${icon('star')}</button>`).join('')}</div>
-              <button class="btn icon ghost" id="g-fav" aria-label="Favorite" style="color:${g.favorite ? '#f472b6' : 'inherit'}">${icon('heart').replace('fill="none"', g.favorite ? 'fill="currentColor"' : 'fill="none"')}</button>
+              <button class="btn icon ghost${g.favorite ? ' fav-on' : ''}" id="g-fav" aria-label="Favorite" aria-pressed="${!!g.favorite}">${icon(g.favorite ? 'heartFill' : 'heart')}</button>
             </div>
           </div>
           <div class="kpis k4">
@@ -600,14 +602,14 @@ async function game(view, id, stale) {
             ${kpi('First tracked', s.first_tracked_at ? fmtDate(s.first_tracked_at) : '—', s.tracking_since ? `owned since ${fmtDate(s.tracking_since)}` : '')}
           </div>
           <div style="margin-top:14px">
-            <div class="split-bar"><i style="width:${pct(s.tracked_minutes)}%;background:var(--accent)"></i><i class="hatch-bg" style="width:${pct(s.estimated_minutes || 0)}%"></i><i style="width:${pct(s.baseline_minutes)}%;background:var(--line)"></i></div>
-            <div class="legend"><span><i class="dot" style="background:var(--accent)"></i>Tracked ${fmtMin(s.tracked_minutes)}</span>${s.estimated_minutes ? `<span><i class="dot hatch-dot"></i>Estimated history ${fmtMin(s.estimated_minutes)}</span>` : ''}${s.baseline_minutes ? `<span><i class="dot" style="background:var(--line)"></i>Undated ${fmtMin(s.baseline_minutes)}</span>` : ''}</div>
+            <div class="split-bar"><i style="width:${pct(s.tracked_minutes)}%;background:var(--accent-mark)"></i><i class="hatch-bg" style="width:${pct(s.estimated_minutes || 0)}%"></i><i style="width:${pct(s.baseline_minutes)}%;background:var(--line)"></i></div>
+            <div class="legend"><span><i class="dot" style="background:var(--accent-mark)"></i>Tracked ${fmtMin(s.tracked_minutes)}</span>${s.estimated_minutes ? `<span><i class="dot hatch-dot"></i>Estimated history ${fmtMin(s.estimated_minutes)}</span>` : ''}${s.baseline_minutes ? `<span><i class="dot" style="background:var(--line)"></i>Undated ${fmtMin(s.baseline_minutes)}</span>` : ''}</div>
           </div>
         </div>
-        ${hasSeries ? `<div class="card"><div class="card-h"><h2>Playtime by month</h2></div>${barChart(g.series.slice(-24).map((x) => ({ label: seriesLabel(x.key, 'month'), value: x.minutes, tip: seriesTip(x.key, 'month', x.minutes) + (x.estimated ? ` (${fmtMin(x.estimated)} estimated)` : ''), stack: [{ value: x.minutes - (x.estimated || 0), color: 'var(--accent)' }, { value: x.estimated || 0, color: 'url(#pt-hatch)' }] })), { height: 180 })}</div>` : ''}
+        ${hasSeries ? `<div class="card"><div class="card-h"><h2>Playtime by month</h2></div>${barChart(g.series.slice(-24).map((x) => ({ label: seriesLabel(x.key, 'month'), value: x.minutes, tip: seriesTip(x.key, 'month', x.minutes) + (x.estimated ? ` (${fmtMin(x.estimated)} estimated)` : ''), stack: [{ value: x.minutes - (x.estimated || 0), color: 'var(--accent-mark)' }, { value: x.estimated || 0, color: 'url(#pt-hatch)' }] })), { height: 180 })}</div>` : ''}
         <div class="card"><div class="card-h"><h2>Sessions</h2><button class="btn sm" id="g-log">${icon('plus')}Log session</button></div>
           <div class="list" id="g-sessions">${g.sessions.length ? groupByDay(g.sessions.filter((x) => x.kind === 'play')).map((grp, i) => (i === 25 ? '<button class="btn sm" id="g-more" style="margin:12px auto">Show all sessions</button><div id="g-rest" class="hide">' : '') + `<div class="day-h"><span>${dayLabel(grp.day)}</span><span>${fmtMin(grp.minutes)}</span></div>${grp.items.map((x) => sessionItem(x, { showGame: false })).join('')}`).join('') + (groupByDay(g.sessions.filter((x) => x.kind === 'play')).length > 25 ? '</div>' : '') : '<p class="muted">No sessions yet.</p>'}
-          ${g.sessions_truncated ? `<a class="btn sm" href="/sessions?game_id=${g.id}" data-link style="margin:12px 0">All ${s.sessions.toLocaleString()} sessions →</a>` : ''}
+          ${g.sessions_truncated ? `<a class="btn sm" href="/sessions?game_id=${g.id}" data-link style="margin:12px 0">All ${s.sessions.toLocaleString()} sessions${arrow()}</a>` : ''}
           ${g.sessions.filter((x) => x.kind === 'baseline' && x.source !== 'inferred').map((x) => `<div class="item"><span class="dot" style="background:var(--line);width:10px;height:10px"></span><div class="grow"><div class="sub"><b style="color:var(--text)">${esc(plat(x.platform).label)}</b> ${esc(x.note || 'History')} · ${fmtDate(x.window_end)}</div></div><div class="amt muted">${fmtMin(x.minutes)}</div><button class="btn ghost sm icon" data-edit-session="${x.id}">${icon('edit')}</button></div>`).join('')}
           </div>
         </div>
@@ -615,7 +617,7 @@ async function game(view, id, stale) {
       <div class="stack">
         <div class="card"><div class="card-h"><h2>Platforms & accounts</h2><button class="btn sm ghost" id="g-merge">${icon('merge')}Merge</button></div>
           <div class="list">${g.entries.map((e) => `<div class="item" style="${e.excluded ? 'opacity:.55' : ''}">
-              ${e.icon_url ? `<img src="${esc(e.icon_url)}" width="32" height="32" style="border-radius:8px" loading="lazy" onerror="this.style.visibility='hidden'">` : `<span style="width:32px;height:32px;border-radius:8px;display:grid;place-items:center;background:${plat(e.platform).hex};color:#fff;font-weight:800">${plat(e.platform).short}</span>`}
+              ${e.icon_url ? `<img src="${esc(e.icon_url)}" width="32" height="32" style="border-radius:8px" loading="lazy" onerror="this.style.visibility='hidden'">` : platIcon(e.platform, 32)}
               <div class="grow"><div class="ttl ellipsis">${esc(e.account_name || plat(e.platform).label)}</div>
                 <div class="sub">${platDot(e.platform)}${esc(e.title !== g.title ? e.title : plat(e.platform).label)}${e.excluded ? ' · <b>excluded</b>' : ''}</div>
                 <div class="sub">${e.last_played_at ? `Played ${ago(e.last_played_at)}` : ''}${e.meta?.devices?.deck ? ` · Deck ${fmtMin(e.meta.devices.deck)}` : ''}${e.play_count ? ` · ${e.play_count} launches` : ''}${e.missing_since ? ` · <span style="color:var(--warn)">no longer in library since ${fmtDate(e.missing_since)}</span>` : ''}</div></div>
@@ -647,7 +649,14 @@ async function game(view, id, stale) {
     $$('#g-stars button').forEach((x) => x.classList.toggle('on', r && Number(x.dataset.r) <= r));
     await patch({ rating: r });
   });
-  $('#g-fav').addEventListener('click', async () => { g.favorite = !g.favorite; await patch({ favorite: g.favorite }, g.favorite ? 'Added to favorites' : 'Removed from favorites'); rerender(); });
+  $('#g-fav').addEventListener('click', async (e) => {
+    const b = e.currentTarget; // swapped in place: no re-render, keyboard focus stays on the button
+    g.favorite = !g.favorite;
+    b.innerHTML = icon(g.favorite ? 'heartFill' : 'heart');
+    b.classList.toggle('fav-on', g.favorite);
+    b.setAttribute('aria-pressed', String(g.favorite));
+    await patch({ favorite: g.favorite }, g.favorite ? 'Added to favorites' : 'Removed from favorites');
+  });
   $('#g-hidden').addEventListener('change', (e) => patch({ hidden: e.target.checked }, e.target.checked ? 'Hidden from library' : 'Visible in library'));
   $('#g-lock').addEventListener('change', (e) => patch({ merge_locked: e.target.checked }));
   let nt;
@@ -800,7 +809,7 @@ async function sessions(view, stale) {
       : emptyState('sessions', 'No sessions', f.kind === 'baseline' ? 'No imported history.' : 'Sessions appear when a sync detects new playtime, or when you log one.');
     $('#s-more').innerHTML = cursor && all.length < total ? `<button class="btn" id="s-load">Load more</button>` : (all.length ? '<span class="tiny dim">That’s everything</span>' : '');
     $('#s-load')?.addEventListener('click', () => load(false));
-    $('#s-count').innerHTML = `${total.toLocaleString()} session${total === 1 ? '' : 's'} · ${fmtMin(totalMin, { short: true })}${f.game_id && all[0] ? ` · ${esc(all[0].title)} <a href="/sessions" data-link style="color:var(--accent)">show all games</a>` : ''}`;
+    $('#s-count').innerHTML = `${total.toLocaleString()} session${total === 1 ? '' : 's'} · ${fmtMin(totalMin, { short: true })}${f.game_id && all[0] ? ` · ${esc(all[0].title)} <a href="/sessions" data-link class="link">show all games</a>` : ''}`;
     $('#s-bulk-n').textContent = `${sel.size} selected`;
   };
   let seq = 0;
@@ -921,7 +930,7 @@ async function wrapped(view, year, stale) {
       <div class="wcard g3"><div class="muted">Longest streak</div><div class="big">${w.longest_streak} days</div><div class="muted">${w.busiest_day ? `Biggest day: ${fmtDate(new Date(`${w.busiest_day.day}T12:00`).getTime(), { month: 'long', day: 'numeric' })} (${fmtMin(w.busiest_day.minutes)})` : ''}</div></div>
       <div class="wcard"><div class="muted">Games played</div><div class="big">${w.games_played}</div><div class="muted">${w.new_games} started fresh this year · ${w.completed} completed</div></div>
       <div class="wcard"><div class="muted">Best month</div><div class="big">${w.best_month ? w.best_month.month : '—'}</div><div class="muted">${w.best_month ? fmtMin(w.best_month.minutes) : ''}</div>
-        <div class="row" style="align-items:flex-end;height:50px;gap:3px;margin-top:10px">${w.months.map((m) => `<div title="${m.month}: ${fmtMin(m.minutes)}" style="flex:1;height:${Math.max(4, (m.minutes / maxM) * 100)}%;background:${m.month === w.best_month?.month ? 'var(--accent)' : 'var(--line)'};border-radius:3px"></div>`).join('')}</div></div>
+        <div class="row" style="align-items:flex-end;height:50px;gap:3px;margin-top:10px">${w.months.map((m) => `<div title="${m.month}: ${fmtMin(m.minutes)}" style="flex:1;height:${Math.max(4, (m.minutes / maxM) * 100)}%;background:${m.month === w.best_month?.month ? 'var(--accent-mark)' : 'var(--line)'};border-radius:3px"></div>`).join('')}</div></div>
       <div class="wcard"><div class="muted">Favorite day</div><div class="big">${['Sundays', 'Mondays', 'Tuesdays', 'Wednesdays', 'Thursdays', 'Fridays', 'Saturdays'][w.weekday.indexOf(Math.max(...w.weekday))]}</div><div class="muted">${w.longest_session ? `Longest session: ${fmtMin(w.longest_session.minutes)} of ${esc(w.longest_session.title)}` : ''}</div></div>
     </div>
     <div class="grid grid-2" style="margin-top:16px">
@@ -1044,7 +1053,7 @@ async function accountModal(platforms, existing = null) {
           ${f.type === 'select' ? `<select class="input" name="cfg_${f.key}">${f.options.map((o) => `<option value="${esc(o)}" ${(a.config[f.key] ?? f.options[0]) === o ? 'selected' : ''}>${esc(o)}</option>`).join('')}</select>`
             : `<input class="input" name="cfg_${f.key}" type="${f.type === 'password' ? 'password' : f.type === 'number' ? 'number' : 'text'}" value="${esc(a.config[f.key] ?? '')}" placeholder="${esc(f.placeholder || '')}" autocomplete="off" spellcheck="false">`}
           ${f.help ? `<div class="help">${esc(f.help).replace(/(https?:\/\/[^\s)]+)/g, '<a href="$1" target="_blank" rel="noopener">$1</a>')}</div>` : ''}</div>`).join('')}
-        ${info.push ? `<div class="card small" style="padding:12px">Push totals with <code>POST /api/v1/accounts/${existing ? existing.id : ':id'}/report</code> — see the <a href="/api" data-link style="color:var(--accent)">API page</a>.</div>` : `
+        ${info.push ? `<div class="card small" style="padding:12px">Push totals with <code>POST /api/v1/accounts/${existing ? existing.id : ':id'}/report</code> — see the <a href="/api" data-link class="link">API page</a>.</div>` : `
         <div class="setting" style="padding:0;border:0"><div><div class="t">Custom schedule</div><div class="d">Override the global sync schedule for this account</div></div><label class="switch"><input type="checkbox" id="acc-own" ${a.schedule ? 'checked' : ''}><span></span></label></div>
         <div id="acc-sched" class="stack ${a.schedule ? '' : 'hide'}">${scheduleFields(a.schedule || state.settings || {}, 'a_')}</div>`}
         <div id="acc-test-r" class="small"></div>
@@ -1098,7 +1107,7 @@ async function accountModal(platforms, existing = null) {
   if (existing) return pick(existing.platform);
   modal({
     title: 'Connect an account',
-    body: `<div class="plat-pick">${platforms.map((p) => `<button data-p="${p.id}"><span class="ic" style="background:${plat(p.id).hex}">${plat(p.id).short}</span><div><b>${esc(p.label)}</b><div class="tiny muted">${p.push ? 'Push via API' : 'Automatic sync'}</div></div></button>`).join('')}</div>
+    body: `<div class="plat-pick">${platforms.map((p) => `<button data-p="${p.id}">${platIcon(p.id, 38)}<div><b>${esc(p.label)}</b><div class="tiny muted">${p.push ? 'Push via API' : 'Automatic sync'}</div></div></button>`).join('')}</div>
       <p class="small muted">Nintendo, Epic, GOG, emulators? Use a <b>Custom</b> account with the push API, or add games manually and log sessions.</p>`,
     onMount(el, close) { el.querySelectorAll('[data-p]').forEach((b) => b.addEventListener('click', () => { close(); pick(b.dataset.p); })); },
   });
@@ -1108,10 +1117,10 @@ async function accounts(view, stale) {
   const [accs, platforms, syncs] = await Promise.all([api('/accounts'), api('/platforms'), api('/syncs?limit=40')]);
   if (stale()) return;
   view.innerHTML = `
-    <div class="page-h"><div><h1>Accounts</h1><p>Global schedule: ${esc(state.settings?.schedule_label || '')} · <a href="/settings" data-link style="color:var(--accent)">change</a></p></div>
-      <div class="row"><button class="btn" data-action="sync-all">${icon('sync')}Sync all</button><button class="btn primary" id="acc-add">${icon('plus')}Connect</button></div></div>
+    <div class="page-h"><div><h1>Accounts</h1><p>Global schedule: ${esc(state.settings?.schedule_label || '')} · <a href="/settings" data-link class="link">change</a></p></div>
+      <div class="row"><button class="btn" data-action="sync-all">${icon('sync')}<span class="lbl">Sync all</span></button><button class="btn primary" id="acc-add">${icon('plus')}Connect</button></div></div>
     ${accs.length ? `<div class="grid grid-2">${accs.map((a) => `<div class="card acct">
-      <div class="row"><span class="ic" style="background:${plat(a.platform).hex}">${plat(a.platform).short}</span>
+      <div class="row">${platIcon(a.platform, 44)}
         <div class="grow"><h2 class="ellipsis">${esc(a.name)}</h2><div class="small muted">${esc(plat(a.platform).label)} · ${a.push ? 'API push' : esc(a.schedule_label)}${a.schedule ? ' <span class="badge">custom</span>' : ''}</div></div>
         ${a.syncing ? '<span class="badge accent pulse">Syncing</span>' : a.last_status === 'error' ? '<span class="badge bad">Error</span>' : a.last_status === 'warning' ? '<span class="badge warn">Warning</span>' : !a.enabled ? '<span class="badge">Paused</span>' : a.last_sync_at ? '<span class="badge good">OK</span>' : '<span class="badge">New</span>'}</div>
       ${a.last_error ? `<div class="small" style="color:${a.last_status === 'error' ? 'var(--bad)' : 'var(--warn)'}">${esc(a.last_error)}</div>` : ''}
@@ -1120,7 +1129,7 @@ async function accounts(view, stale) {
       ${a.hourly_limit ? `<div class="small muted">API this hour: ${a.api_usage_hour.calls}/${a.hourly_limit}<div class="meter" style="margin-top:4px"><i class="${a.api_usage_hour.calls > a.hourly_limit * 0.8 ? 'hot' : ''}" style="width:${Math.min(100, (a.api_usage_hour.calls / a.hourly_limit) * 100)}%"></i></div></div>` : ''}
       <div class="meta"><div><b>${a.games ?? 0}</b><span>games</span></div><div><b>${fmtHours(a.minutes ?? 0)}h</b><span>lifetime</span></div><div><b>${a.last_sync_at ? ago(a.last_sync_at) : 'never'}</b><span>${a.push ? 'last report' : a.next_sync_at && a.enabled ? `next ${ago(a.next_sync_at)}` : 'last sync'}</span></div></div>
       <div class="row wrap">
-        ${a.push ? '' : `<button class="btn sm" data-sync="${a.id}" ${a.syncing ? 'disabled' : ''}>${icon('sync')}Sync now</button>`}
+        ${a.push ? '' : `<button class="btn sm${a.syncing ? ' loading' : ''}" data-sync="${a.id}" ${a.syncing ? 'disabled' : ''}>${icon('sync')}${a.syncing ? 'Syncing…' : 'Sync now'}</button>`}
         <button class="btn sm ghost" data-edit="${a.id}">${icon('edit')}Edit</button>
         <button class="btn sm ghost" data-toggle="${a.id}">${a.enabled ? 'Pause' : 'Resume'}</button>
         <a class="btn sm ghost" href="/library?platform=${a.platform}" data-link>Games</a>
@@ -1134,7 +1143,7 @@ async function accounts(view, stale) {
       ${syncs.map((s) => `<tr><td class="nowrap">${fmtDate(s.started_at)} ${fmtTime(s.started_at)}<div class="tiny dim">${esc(s.trigger)}${s.initial ? ' · initial import' : ''}</div></td>
         <td class="nowrap">${platDot(s.platform || 'custom')} ${esc(s.account_name || '—')}</td>
         <td>${s.status === 'ok' ? '<span class="badge good">ok</span>' : s.status === 'running' ? '<span class="badge accent pulse">running</span>' : `<span class="badge ${s.status === 'warning' ? 'warn' : 'bad'}">${esc(s.status)}</span>`}${s.error ? `<div class="tiny muted" style="max-width:260px">${esc(s.error)}</div>` : ''}</td>
-        <td>${s.games_seen}${s.games_new ? ` <span class="tiny muted">(+${s.games_new})</span>` : ''}${s.details?.api ? `<div class="tiny dim">${s.details.api.calls} calls${s.details.api.rate_limited ? ` · ${s.details.api.rate_limited} rate-limited` : ''} · ${((s.duration_ms || 0) / 1000).toFixed(1)}s</div>` : ''}</td><td>${s.sessions_created ? `<a href="/sessions" data-link style="color:var(--accent)">${s.sessions_created}</a>` : 0}</td><td>${fmtMin(s.minutes_added)}</td><td class="muted">${s.baseline_minutes ? fmtMin(s.baseline_minutes, { short: true }) : '—'}</td></tr>`).join('') || '<tr><td colspan="7" class="muted">No syncs yet.</td></tr>'}
+        <td>${s.games_seen}${s.games_new ? ` <span class="tiny muted">(+${s.games_new})</span>` : ''}${s.details?.api ? `<div class="tiny dim">${s.details.api.calls} calls${s.details.api.rate_limited ? ` · ${s.details.api.rate_limited} rate-limited` : ''} · ${((s.duration_ms || 0) / 1000).toFixed(1)}s</div>` : ''}</td><td>${s.sessions_created ? `<a href="/sessions" data-link class="link">${s.sessions_created}</a>` : 0}</td><td>${fmtMin(s.minutes_added)}</td><td class="muted">${s.baseline_minutes ? fmtMin(s.baseline_minutes, { short: true }) : '—'}</td></tr>`).join('') || '<tr><td colspan="7" class="muted">No syncs yet.</td></tr>'}
       </tbody></table></div></div>`;
   $('#acc-add')?.addEventListener('click', () => accountModal(platforms));
   $('#acc-add2')?.addEventListener('click', () => accountModal(platforms));
@@ -1153,7 +1162,7 @@ async function accounts(view, stale) {
 // =====================================================================
 // Settings
 // =====================================================================
-const ACCENTS = ['#7c5cff', '#22d3ee', '#34d399', '#f472b6', '#fb923c', '#facc15', '#ef4444', '#60a5fa'];
+const ACCENTS = [['#7656ff', 'Violet (default)'], ['#22d3ee', 'Cyan'], ['#34d399', 'Mint'], ['#f472b6', 'Rose'], ['#fb923c', 'Ember'], ['#facc15', 'Gold'], ['#ef4444', 'Red'], ['#60a5fa', 'Sky']];
 function segSetting(key, title, opts, s, desc = '') {
   return `<div class="setting"><div><div class="t">${title}</div>${desc ? `<div class="d">${desc}</div>` : ''}</div><div class="seg" data-seg="${key}">${opts.map(([v, l]) => `<button data-v="${v}" class="${String(s[key]) === v ? 'on' : ''}">${l}</button>`).join('')}</div></div>`;
 }
@@ -1161,15 +1170,16 @@ function segSetting(key, title, opts, s, desc = '') {
 async function settings(view, stale) {
   const [s, tokens, auth] = await Promise.all([api('/settings'), api('/tokens'), api('/auth/status')]);
   if (stale()) return;
-  const sw = (key, title, desc) => `<div class="setting"><div><div class="t">${title}</div><div class="d">${desc}</div></div><label class="switch"><input type="checkbox" data-set="${key}" ${s[key] ? 'checked' : ''}><span></span></label></div>`;
+  const sw = (key, title, desc) => `<div class="setting"><div><div class="t">${title}</div><div class="d">${desc}</div></div><label class="switch"><input type="checkbox" data-set="${key}" ${s[key] ? 'checked' : ''} aria-label="${esc(title)}"><span></span></label></div>`;
+  const accent = accentOf(s);
   view.innerHTML = `
     <div class="page-h"><div><h1>Settings</h1></div></div>
     <div class="grid grid-2">
       <div class="stack">
         <div class="card" id="appearance"><div class="card-h"><h2>Appearance</h2><span class="tiny muted">saved for every device</span></div>
           ${segSetting('theme', 'Theme', [['dark', 'Dark'], ['black', 'Black'], ['light', 'Light'], ['auto', 'Auto']], s, 'Black is pure black for OLED screens')}
-          <div class="setting"><div><div class="t">Accent</div></div><div class="row wrap" style="justify-content:flex-end">${ACCENTS.map((c) => `<button class="btn icon sm" data-accent="${c}" style="background:${c};border-color:${s.accent === c ? 'var(--text)' : 'transparent'}" aria-label="${c}"></button>`).join('')}
-            <input type="color" class="swatch" id="accent-custom" value="${esc(s.accent)}" title="Custom color" aria-label="Custom accent color"></div></div>
+          <div class="setting"><div><div class="t" id="accent-t">Accent</div></div><div class="row wrap" role="group" aria-labelledby="accent-t">${ACCENTS.map(([c, name]) => `<button class="swatch" data-accent="${c}" style="--c:${c}" aria-label="${name}" title="${name}" aria-pressed="${accent === c}"></button>`).join('')}
+            <input type="color" class="swatch" id="accent-custom" value="${esc(accent)}" title="Custom color" aria-label="Custom accent color"></div></div>
           ${segSetting('ui_density', 'Density', [['comfortable', 'Comfortable'], ['compact', 'Compact']], s, 'Compact fits more on screen')}
           ${segSetting('time_format', 'Time format', [['hm', '1h 5m'], ['decimal', '1.1h']], s)}
           <div class="setting"><div><div class="t">Start page</div><div class="d">What opens when you launch Vestigo</div></div><select class="input" data-str="start_page" style="width:auto">${[['home', 'Home'], ['library', 'Library'], ['sessions', 'Sessions'], ['stats', 'Stats']].map(([v, l]) => `<option value="${v}" ${s.start_page === v ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
@@ -1177,7 +1187,7 @@ async function settings(view, stale) {
           ${segSetting('library_view', 'Default view', [['grid', 'Covers'], ['list', 'List']], s)}
           ${segSetting('cover_size', 'Cover size', [['s', 'Small'], ['m', 'Medium'], ['l', 'Large']], s)}
           ${segSetting('cover_titles', 'Titles on covers', [['auto', 'No art'], ['always', 'Always'], ['never', 'Never']], s, '“No art” only labels games without a cover image')}
-          <div class="setting"><div class="t">Default sort</div><select class="input" data-str="default_library_sort" style="width:auto">${[['recent', 'Recently played'], ['playtime', 'Most played'], ['title', 'A → Z'], ['trending', 'Trending'], ['added', 'Recently added'], ['rating', 'Top rated']].map(([v, l]) => `<option value="${v}" ${s.default_library_sort === v ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
+          <div class="setting"><div class="t">Default sort</div><select class="input" data-str="default_library_sort" style="width:auto">${[['recent', 'Recently played'], ['playtime', 'Most played'], ['title', 'A–Z'], ['trending', 'Trending'], ['added', 'Recently added'], ['rating', 'Top rated']].map(([v, l]) => `<option value="${v}" ${s.default_library_sort === v ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
           ${sw('library_hide_unplayed', 'Hide never-played games', 'Owned games you have never launched stay out of the library unless you ask for them')}
           <h3 style="margin:16px 0 8px">Home sections</h3>
           <div id="set-layout"></div>
@@ -1199,14 +1209,14 @@ async function settings(view, stale) {
       <div class="stack">
         <div class="card" id="import"><div class="card-h"><h2>Import</h2></div>
           <p class="small muted" style="margin-top:-6px">Bring history from spreadsheets, other trackers, Switch, etc. CSV columns: <code>title</code>, <code>platform</code>, <code>playtime_hours</code> or <code>playtime_minutes</code>, <code>last_played</code>, <code>status</code>, <code>rating</code>, <code>notes</code>. JSON may include per-game <code>sessions</code>. Totals without sessions become <b>history</b> — counted in lifetime, never as a burst in your charts.</p>
-          <label class="btn" style="cursor:pointer">${icon('upload')}Choose CSV / JSON / GameTrack .zip<input type="file" id="imp-file" accept=".csv,.json,.txt,.zip,text/csv,application/json,application/zip" hidden></label>
-          <p class="tiny muted" style="margin:8px 0 0">GameTrack: in GameTrack choose Settings → Export, then pick the .zip here. Unlock times date your synced games' history; hours no account here tracks are added as history; nothing is counted twice.</p>
+          <label class="btn" style="cursor:pointer">${icon('upload')}Choose CSV / JSON / GameTrack .zip<input type="file" id="imp-file" class="vh" accept=".csv,.json,.txt,.zip,text/csv,application/json,application/zip"></label>
+          <p class="tiny muted" style="margin:8px 0 0">GameTrack: in GameTrack choose Settings › Export, then pick the .zip here. Unlock times date your synced games' history; hours no account here tracks are added as history; nothing is counted twice.</p>
           <details style="margin-top:12px"><summary class="small muted" style="cursor:pointer">…or paste</summary><textarea class="input mono" id="imp-text" placeholder="title,platform,playtime_hours,status&#10;Hades,switch,42,completed" style="margin-top:8px"></textarea><button class="btn sm" id="imp-go" style="margin-top:8px">Import pasted data</button></details>
           <div id="imp-r" class="small" style="margin-top:10px"></div>
         </div>
         <div class="card"><div class="card-h"><h2>Export & backup</h2></div>
           <div class="row wrap"><a class="btn" href="/api/v1/export" download>${icon('download')}JSON</a><a class="btn" href="/api/v1/export?format=csv" download>${icon('download')}CSV</a><a class="btn" href="/api/v1/backup" download>${icon('download')}SQLite backup</a></div>
-          <p class="small muted">Everything is stored in the container’s <code>/data</code> volume — on Unraid, map it to a folder under <code>/mnt/user/appdata</code>. <a href="/system" data-link style="color:var(--accent)">System</a> shows the database file in use.</p>
+          <p class="small muted">Everything is stored in the container’s <code>/data</code> volume — on Unraid, map it to a folder under <code>/mnt/user/appdata</code>. <a href="/system" data-link class="link">System</a> shows the database file in use.</p>
         </div>
         <div class="card"><div class="card-h"><h2>Notifications</h2></div>
           <div class="field"><label>Webhook URL</label><input class="input" data-str="webhook_url" value="${esc(s.webhook_url)}" placeholder="https://discord.com/api/webhooks/…"><div class="help">Discord and Slack get a formatted message; anything else gets JSON. Works with ntfy, Gotify bridges, Home Assistant, n8n…</div></div>
@@ -1219,7 +1229,7 @@ async function settings(view, stale) {
             <div><button class="btn">${auth.auth_enabled ? 'Update password' : 'Set password'}</button></div></form>`}
         </div>
         <div class="card"><div class="card-h"><h2>API tokens</h2><button class="btn sm" id="tok-new">${icon('key')}New token</button></div>
-          <div class="list">${tokens.map((t) => `<div class="item"><div class="grow"><div class="ttl">${esc(t.name)}</div><div class="sub"><span class="mono">${esc(t.prefix)}…</span> · created ${fmtDate(t.created_at)} · ${t.last_used_at ? `used ${ago(t.last_used_at)}` : 'never used'}</div></div><button class="btn sm ghost danger" data-revoke="${t.id}">Revoke</button></div>`).join('') || '<p class="small muted">Tokens let scripts, Home Assistant, Homepage widgets or Playnite call the API. <a href="/api" data-link style="color:var(--accent)">API docs →</a></p>'}</div>
+          <div class="list">${tokens.map((t) => `<div class="item"><div class="grow"><div class="ttl">${esc(t.name)}</div><div class="sub"><span class="mono">${esc(t.prefix)}…</span> · created ${fmtDate(t.created_at)} · ${t.last_used_at ? `used ${ago(t.last_used_at)}` : 'never used'}</div></div><button class="btn sm ghost danger" data-revoke="${t.id}">Revoke</button></div>`).join('') || '<p class="small muted">Tokens let scripts, Home Assistant, Homepage widgets or Playnite call the API. <a href="/api" data-link class="link">API docs</a></p>'}</div>
         </div>
       </div>
     </div>`;
@@ -1239,13 +1249,13 @@ async function settings(view, stale) {
     if (r) applyTheme(state.settings);
   }));
   const setAccent = async (c) => {
-    $$('[data-accent]', view).forEach((x) => { x.style.borderColor = x.dataset.accent === c ? 'var(--text)' : 'transparent'; });
+    $$('[data-accent]', view).forEach((x) => x.setAttribute('aria-pressed', String(x.dataset.accent === c)));
     $('#accent-custom').value = c;
     const r = await save({ accent: c }, 'Accent updated');
     if (r) applyTheme(state.settings);
   };
   $$('[data-accent]', view).forEach((b) => b.addEventListener('click', () => setAccent(b.dataset.accent)));
-  $('#accent-custom').addEventListener('input', (e) => document.documentElement.style.setProperty('--accent', e.target.value)); // live preview
+  $('#accent-custom').addEventListener('input', (e) => paintAccent(e.target.value)); // live preview, with its readable ink
   $('#accent-custom').addEventListener('change', (e) => setAccent(e.target.value));
   let layoutTimer;
   layoutEditor($('#set-layout'), parseLayout(s.dashboard_layout), (v) => { clearTimeout(layoutTimer); layoutTimer = setTimeout(() => save({ dashboard_layout: v }, 'Home layout saved'), 400); });
@@ -1335,7 +1345,7 @@ async function settings(view, stale) {
     if (!(await confirmBox('Revoke this token? Anything using it will stop working.', { ok: 'Revoke', danger: true }))) return;
     await api(`/tokens/${b.dataset.revoke}`, { method: 'DELETE' }); rerender();
   });
-  if (['#import', '#appearance'].includes(location.hash)) setTimeout(() => $(location.hash).scrollIntoView({ behavior: 'smooth' }), 100);
+  if (['#import', '#appearance'].includes(location.hash)) setTimeout(() => $(location.hash).scrollIntoView({ behavior: scrollMotion() }), 100);
 }
 
 // =====================================================================
@@ -1349,9 +1359,9 @@ async function apidocs(view, stale) {
   const groups = {};
   for (const [p, ops] of Object.entries(spec.paths)) for (const [m, op] of Object.entries(ops)) (groups[op.tags[0]] ||= []).push({ p, m, op });
   view.innerHTML = `
-    <div class="page-h"><div><h1>API</h1><p>Everything in the UI is available over a JSON REST API. <a href="/api/openapi.json" target="_blank" style="color:var(--accent)">OpenAPI spec${icon('external', 'ic-inline')}</a></p></div></div>
+    <div class="page-h"><div><h1>API</h1><p>Everything in the UI is available over a JSON REST API. <a href="/api/openapi.json" target="_blank" class="link">OpenAPI spec${icon('external', 'ic-inline')}</a></p></div></div>
     <div class="grid grid-2">
-      <div class="card"><h2>Authentication</h2><p class="small muted">Create a token under Settings → API tokens and send it as a header (or <code>?api_key=</code> for simple widgets). Without a UI password the API is open on your LAN.</p>
+      <div class="card"><h2>Authentication</h2><p class="small muted">Create a token under Settings › API tokens and send it as a header (or <code>?api_key=</code> for simple widgets). Without a UI password the API is open on your LAN.</p>
         <pre class="code">curl -H "Authorization: Bearer vg_…" ${esc(origin)}/api/v1/widget</pre></div>
       <div class="card"><h2>Push playtime (custom accounts)</h2><p class="small muted">Send lifetime totals from Playnite, a Switch spreadsheet or a script. Vestigo diffs them like any other sync.</p>
         <pre class="code">curl -X POST ${esc(origin)}/api/v1/accounts/ID/report \\
@@ -1394,7 +1404,7 @@ async function system(view, stale) {
       ${kpi('Memory', `${sys.memory_mb}<small>MB</small>`, `heap ${sys.heap_mb} MB`)}
       ${kpi('Library', sys.counts.games.toLocaleString(), `${sys.counts.entries.toLocaleString()} entries`)}
     </div>
-    <div class="card" style="margin-top:16px"><div class="card-h"><h2>Accounts &amp; API usage</h2><a href="/accounts" data-link>Manage →</a></div>
+    <div class="card" style="margin-top:16px"><div class="card-h"><h2>Accounts &amp; API usage</h2><a href="/accounts" data-link>Manage${arrow()}</a></div>
       <div class="scroll-x"><table class="tbl"><thead><tr><th>Account</th><th>Last sync</th><th>Next</th><th>API calls (1h / 24h)</th><th>Rate limited</th><th>Reporting model</th><th>Presence</th><th>History dating</th></tr></thead><tbody>
       ${sys.accounts.map((a) => `<tr>
         <td class="nowrap">${platDot(a.platform)} <b>${esc(a.name)}</b>${a.last_status === 'error' ? `<div class="tiny" style="color:var(--bad);max-width:260px;white-space:normal">${esc(a.last_error || '')}</div>` : ''}${a.failed_syncs_7d ? `<div class="tiny muted">${a.failed_syncs_7d} failed syncs in 7 days</div>` : ''}</td>
@@ -1408,7 +1418,7 @@ async function system(view, stale) {
         <td class="nowrap small">${a.presence ? (a.presence.enabled ? (a.presence.error ? `<span style="color:var(--warn)">${esc(a.presence.error)}</span>` : a.presence.last_poll ? `ok · ${ago(a.presence.last_poll)}` : 'waiting') : 'off') : '—'}</td>
         <td class="small">${!a.can_enrich ? '<span class="muted">from platform dates</span>' : a.enrichment_pending ? `${a.enrichment_pending} titles queued` : 'up to date'}</td></tr>`).join('') || '<tr><td colspan="8" class="muted">No accounts.</td></tr>'}
       </tbody></table></div>
-      <div class="row wrap" style="margin-top:12px"><button class="btn sm" id="sys-reinfer">Re-date all history</button><a class="btn sm ghost" href="/history" data-link>Improve history →</a>${sys.accounts.filter((a) => a.enrichment_pending && a.can_enrich).map((a) => `<button class="btn sm ghost" data-enrich="${a.id}">Fetch history dates for ${esc(a.name)}</button>`).join('')}</div>
+      <div class="row wrap" style="margin-top:12px"><button class="btn sm" id="sys-reinfer">Re-date all history</button><a class="btn sm ghost" href="/history" data-link>Improve history${icon('arrowR')}</a>${sys.accounts.filter((a) => a.enrichment_pending && a.can_enrich).map((a) => `<button class="btn sm ghost" data-enrich="${a.id}">Fetch history dates for ${esc(a.name)}</button>`).join('')}</div>
     </div>
     <div class="card" style="margin-top:16px"><div class="card-h"><h2>Error log</h2><div class="row wrap">
         <div class="seg" id="log-lvl"><button data-l="error,warn" class="on">Errors &amp; warnings</button><button data-l="error">Errors</button><button data-l="warn">Warnings</button></div>
@@ -1420,7 +1430,7 @@ async function system(view, stale) {
       <div class="card"><div class="card-h"><h2>Recent console output</h2><span class="tiny muted">same as docker logs</span></div><div class="console">${sys.console.map(esc).join('\n') || 'Nothing yet.'}</div></div>
       <div class="card"><div class="card-h"><h2>Storage</h2></div>
         <div class="scroll-x"><table class="tbl cap-table">${[['Database file', sys.data_dir || 'in-memory'], ['Size (incl. WAL)', mb(sys.db_bytes)], ['Tracked sessions', sys.counts.sessions_tracked.toLocaleString()], ['Estimated history chunks', sys.counts.sessions_estimated.toLocaleString()], ['Rollup rows', sys.counts.rollup_rows.toLocaleString()], ['Pending rollups', sys.counts.rollup_queue], ['Snapshots', sys.counts.snapshots.toLocaleString()], ['Presence spans', sys.counts.presence_spans.toLocaleString()], ['Stored log entries', sys.counts.logs.toLocaleString()], ['Running as uid', sys.uid ?? '—'], ['UI password', sys.auth_enabled ? 'on' : 'off']].map(([k, v]) => `<tr><td>${k}</td><td>${esc(v)}</td></tr>`).join('')}</table></div>
-        <p class="tiny muted">Logs are also written to stdout (Unraid: container → Logs). Set <code>LOG_LEVEL=debug</code>, <code>LOG_FORMAT=json</code> or <code>VESTIGO_LOG_FILE=/data/vestigo.log</code> for more.</p></div>
+        <p class="tiny muted">Logs are also written to stdout (Unraid: container › Logs). Set <code>LOG_LEVEL=debug</code>, <code>LOG_FORMAT=json</code> or <code>VESTIGO_LOG_FILE=/data/vestigo.log</code> for more.</p></div>
     </div>`;
   let level = 'error,warn'; let q = '';
   const drawLogs = (items) => {
@@ -1459,7 +1469,7 @@ async function historyPage(view, stale) {
   const steam = (accts.items || accts).filter((a) => a.platform === 'steam');
   const m = rev.meter;
   const all = Object.values(m).reduce((a, x) => a + x, 0) || 1;
-  const seg = [['high', 'var(--good)', 'High confidence'], ['manual', 'var(--accent)', 'Set by you'], ['medium', 'var(--warn)', 'Medium'], ['low', 'var(--bad)', 'Low'], ['undated', 'var(--line)', 'Undated']];
+  const seg = [['high', 'var(--good)', 'High confidence'], ['manual', 'var(--accent-mark)', 'Set by you'], ['medium', 'var(--warn)', 'Medium'], ['low', 'var(--bad)', 'Low'], ['undated', 'var(--line)', 'Undated']];
   const sure = Math.round(((m.high + m.manual + m.medium * 0.5) / all) * 100);
   const yearOpts = (it) => {
     const hi = new Date(Math.min(Date.now(), it.evidence.tracking_start || Date.now())).getFullYear();
@@ -1492,7 +1502,7 @@ async function historyPage(view, stale) {
       <div class="meter" style="height:12px;display:flex">${seg.map(([k, c]) => (m[k] ? `<i style="width:${(m[k] / all) * 100}%;background:${c}" title="${k}"></i>` : '')).join('')}</div>
       <div class="row wrap" style="margin-top:10px;gap:14px">${seg.map(([k, c, l]) => `<span class="tiny"><span class="dot" style="background:${c}"></span> ${l} ${fmtHours(m[k], 0)}h</span>`).join('')}</div>
       <p class="tiny muted" style="margin-bottom:0">${rev.style ? `Dating uses your own play pattern, learned from ${rev.style.games} games tracked from start to finish.` : 'Once a few games have been tracked from first session to last, Vestigo learns how you spread play over a game and dates history the same way.'}</p></div>
-    ${steam.length ? `<div class="card" style="margin-top:16px"><div class="card-h"><h2>Steam purchase dates</h2><a class="small" href="https://store.steampowered.com/account/licenses/" target="_blank" rel="noopener">Open your licenses page${icon('external', 'ic-inline')}</a></div>
+    ${steam.length ? `<div class="card" style="margin-top:16px"><div class="card-h"><h2>Steam purchase dates</h2><a class="small link" href="https://store.steampowered.com/account/licenses/" target="_blank" rel="noopener">Open your licenses page${icon('external', 'ic-inline')}</a></div>
       <p class="small muted" style="margin-top:0">Steam never shares when you got a game, but its licenses page lists it. Select the whole table there (Ctrl+A works), copy, and paste it here — every matched game gets a start date for its history.</p>
       <div class="field"><textarea class="input" id="lic-text" rows="4" style="height:auto;padding:10px 12px;font-family:var(--mono, monospace);font-size:12.5px" placeholder="20 Nov, 2015	Counter-Strike: Global Offensive	Steam Store"></textarea></div>
       <div class="row wrap" style="margin-top:10px">${steam.length > 1 ? `<select class="input sm" id="lic-acc" style="width:auto">${steam.map((a) => `<option value="${a.id}">${esc(a.name)}</option>`).join('')}</select>` : `<input type="hidden" id="lic-acc" value="${steam[0].id}">`}
@@ -1558,8 +1568,8 @@ async function historyPage(view, stale) {
 // More (mobile)
 // =====================================================================
 async function more(view) {
-  const links = [['/duplicates', 'dupes', 'Duplicates', 'Merge editions, fix double counting'], ['/accounts', 'accounts', 'Accounts', 'Steam, Xbox, PlayStation, custom'], ['/history', 'clock', 'Improve history', 'Date play from before tracking'], ['/system', 'info', 'System', 'Error log, API usage, diagnostics'], ['/settings', 'settings', 'Settings', 'Schedule, import/export, security'], ['/api', 'code', 'API', 'Tokens, push endpoint, docs'], [`/wrapped/${new Date().getFullYear()}`, 'trail', 'Year in review', 'The trail you left this year']];
-  view.innerHTML = `<div class="page-h"><h1>More</h1></div><div class="card pad-0">${links.map(([href, ic, t, d]) => `<a class="item" href="${href}" data-link style="padding:14px 16px"><span style="width:36px;height:36px;border-radius:10px;background:var(--panel2);display:grid;place-items:center">${icon(ic).replace('<svg', '<svg width="19" height="19"')}</span><div class="grow"><div class="ttl">${t}</div><div class="sub">${d}</div></div></a>`).join('')}</div>
+  const links = [['/duplicates', 'dupes', 'Duplicates', 'Merge editions, fix double counting'], ['/accounts', 'accounts', 'Accounts', 'Steam, Xbox, PlayStation, custom'], ['/history', 'history', 'Improve history', 'Date play from before tracking'], ['/system', 'system', 'System', 'Error log, API usage, diagnostics'], ['/settings', 'settings', 'Settings', 'Schedule, import/export, security'], ['/api', 'code', 'API', 'Tokens, push endpoint, docs'], [`/wrapped/${new Date().getFullYear()}`, 'trail', 'Year in review', 'The trail you left this year']];
+  view.innerHTML = `<div class="page-h"><h1>More</h1></div><div class="card pad-0">${links.map(([href, ic, t, d]) => `<a class="item" href="${href}" data-link style="padding:14px 16px"><span style="width:36px;height:36px;border-radius:10px;background:var(--panel2);display:grid;place-items:center">${icon(ic, 'ic-18')}</span><div class="grow"><div class="ttl">${t}</div><div class="sub">${d}</div></div></a>`).join('')}</div>
     ${state.authEnabled ? `<button class="btn" style="margin-top:16px;width:100%" data-action="logout">${icon('logout')}Log out</button>` : ''}`;
 }
 
