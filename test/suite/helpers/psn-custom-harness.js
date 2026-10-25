@@ -2,10 +2,10 @@
 //
 //  - clock:    Date.now is replaced by a controllable, frozen clock (tests move time explicitly)
 //  - FakePSN:  in-memory Sony endpoints (NPSSO -> code -> tokens, refresh, gamelist v2,
-//              basicPresences, trophyTitles / trophies) answering exactly what PlayTracker asks
+//              basicPresences, trophyTitles / trophies) answering exactly what Vestigo asks
 //  - fetch:    127.0.0.1 goes to the real network stack; Sony hosts go to the fake; Discord /
 //              Slack webhook hosts are forwarded to a local sink server; anything else fails
-//  - startApp: PlayTracker in-process on :memory:, called over real HTTP
+//  - startApp: Vestigo in-process on :memory:, called over real HTTP
 //  - checks:   invariants that must hold after any sync / report
 import http from 'node:http';
 import { performance } from 'node:perf_hooks';

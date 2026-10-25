@@ -7,7 +7,7 @@
 //    present, absent (empty Hero group) or present without a value
 //  - a fetch router: 127.0.0.1 goes to the real network stack, xbl.io to the fake that owns the
 //    API key, anything else fails like a missing DNS entry (and is recorded)
-//  - setup(): PlayTracker in-process on :memory:, called over plain node:http
+//  - setup(): Vestigo in-process on :memory:, called over plain node:http
 //  - invariant checks that must hold after anything the app does
 import http from 'node:http';
 import { createApp } from '../../../src/server.js';
@@ -264,7 +264,7 @@ const quietLog = (sink) => ({
   error(m) { sink?.push(['error', String(m)]); }, debug() {},
 });
 
-/** Start PlayTracker in-process with the virtual clock and the fetch router installed. */
+/** Start Vestigo in-process with the virtual clock and the fetch router installed. */
 export async function setup({ now = T0, dbFile = ':memory:', scheduler = false } = {}) {
   clock.install(now);
   installFetch();

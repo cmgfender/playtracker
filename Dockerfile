@@ -1,7 +1,9 @@
-# PlayTracker - zero-dependency Node app (built-in SQLite, bundled ICU time zones).
+# Vestigo Media Tracker (formerly PlayTracker) - zero-dependency Node app (built-in SQLite, bundled ICU time zones).
 # No packages are installed: the image builds offline and starts with no configuration.
 FROM node:22-alpine
 
+# The data folder default keeps its PlayTracker name on purpose: the app reads VESTIGO_DATA first,
+# so a VESTIGO_DATA baked in here would silently beat the PLAYTRACKER_DATA of an existing install.
 ENV NODE_ENV=production \
     PORT=7720 \
     PLAYTRACKER_DATA=/data \
@@ -21,8 +23,8 @@ EXPOSE 7720
 HEALTHCHECK --interval=60s --timeout=5s --start-period=60s --retries=3 \
   CMD node -e "fetch('http://127.0.0.1:'+(process.env.PORT||7720)+'/api/v1/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 
-LABEL org.opencontainers.image.title="PlayTracker" \
-      org.opencontainers.image.description="Self-hosted game playtime & session tracker for Steam, Xbox and PlayStation" \
+LABEL org.opencontainers.image.title="Vestigo" \
+      org.opencontainers.image.description="Vestigo Media Tracker (formerly PlayTracker) - self-hosted playtime and session tracker for Steam, Xbox and PlayStation" \
       org.opencontainers.image.source="https://github.com/cmgfender/playtracker" \
       org.opencontainers.image.licenses="MIT" \
       net.unraid.docker.webui="http://[IP]:[PORT:7720]/" \
@@ -30,7 +32,7 @@ LABEL org.opencontainers.image.title="PlayTracker" \
 
 # the commit the image was built from (set by CI), shown in health, diagnostics and the startup log
 ARG REVISION=
-ENV PLAYTRACKER_REVISION=$REVISION
+ENV VESTIGO_REVISION=$REVISION
 
 STOPSIGNAL SIGTERM
 CMD ["node", "--disable-warning=ExperimentalWarning", "src/server.js"]

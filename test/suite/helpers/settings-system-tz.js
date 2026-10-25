@@ -3,7 +3,8 @@
 // "TZ") and clears environment switches that would change app behaviour, so the suite is
 // deterministic wherever it runs.
 process.env.TZ = 'America/New_York';
+// (the app reads its settings as VESTIGO_X, else PLAYTRACKER_X: both names are cleared)
 for (const k of [
-  'PLAYTRACKER_CORS_ORIGIN', 'PLAYTRACKER_SECURE_COOKIE', 'PLAYTRACKER_PASSWORD', 'PLAYTRACKER_LOG_FILE',
+  ...['CORS_ORIGIN', 'SECURE_COOKIE', 'PASSWORD', 'LOG_FILE'].flatMap((x) => [`VESTIGO_${x}`, `PLAYTRACKER_${x}`]),
   'LOG_REQUESTS', 'LOG_FORMAT', 'LOG_LEVEL',
 ]) delete process.env[k];

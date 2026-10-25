@@ -80,7 +80,7 @@ let app; let base;
 const quiet = { info() {}, warn() {}, error() {} };
 before(async () => {
   globalThis.fetch = mockFetch;
-  app = createApp({ dbFile: ':memory:', log: quiet, scheduler: false });
+  app = createApp({ dbFile: ':memory:', password: '', log: quiet, scheduler: false });
   await new Promise((r) => app.server.listen(0, '127.0.0.1', r));
   base = `http://127.0.0.1:${app.server.address().port}/api/v1`;
 });

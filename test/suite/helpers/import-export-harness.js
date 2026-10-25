@@ -1,5 +1,5 @@
 // Harness for test/suite/import-export.test.js (own helpers; nothing shared with other suites).
-// - startApp(): an in-process PlayTracker on 127.0.0.1 with an in-memory database
+// - startApp(): an in-process Vestigo on 127.0.0.1 with an in-memory database
 // - installFetchMock(): replaces globalThis.fetch for every non-127.0.0.1 host (no real network)
 // - SteamMock: a fake Steam Web API / store for one API key
 // - buildZip(): a small ZIP writer (deflate or stored) for GameTrack exports

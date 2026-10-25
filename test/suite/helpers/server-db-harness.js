@@ -45,7 +45,8 @@ export function holdPort(port) {
   });
 }
 
-const STRIP = /^(PORT$|PLAYTRACKER_|TZ$|PUID$|PGID$|LOG_|NODE_ENV$|NODE_TEST_CONTEXT$|NODE_OPTIONS$)/;
+// the app's own settings (under both names: a stray VESTIGO_X would beat a test's PLAYTRACKER_X)
+const STRIP = /^(PORT$|VESTIGO_|PLAYTRACKER_|TZ$|PUID$|PGID$|LOG_|NODE_ENV$|NODE_TEST_CONTEXT$|NODE_OPTIONS$)/;
 export function childEnv(extra = {}) {
   const env = {};
   for (const [k, v] of Object.entries(process.env)) if (!STRIP.test(k)) env[k] = v;

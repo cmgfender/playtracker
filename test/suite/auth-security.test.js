@@ -18,8 +18,9 @@ const EVIL = 'http://evil.example';
 const PASSWORD = 'correct horse battery';
 const sha256 = (s) => crypto.createHash('sha256').update(s).digest('hex');
 
-// make sure ambient configuration cannot leak into these tests
-const restoreAmbient = setEnv({ PLAYTRACKER_PASSWORD: undefined, PLAYTRACKER_CORS_ORIGIN: undefined, PLAYTRACKER_SECURE_COOKIE: undefined, PLAYTRACKER_LOG_FILE: undefined, LOG_REQUESTS: undefined });
+// make sure ambient configuration cannot leak into these tests (under either name: VESTIGO_X wins over PLAYTRACKER_X)
+const AMBIENT = ['PASSWORD', 'CORS_ORIGIN', 'SECURE_COOKIE', 'LOG_FILE'].flatMap((k) => [`VESTIGO_${k}`, `PLAYTRACKER_${k}`]);
+const restoreAmbient = setEnv({ ...Object.fromEntries(AMBIENT.map((k) => [k, undefined])), LOG_REQUESTS: undefined });
 after(() => restoreAmbient());
 
 async function setPassword(s, password, { current, cookie, token } = {}) {
@@ -64,7 +65,8 @@ describe('open mode (no password configured)', () => {
     }
     const m = await call(`${s.origin}/metrics`);
     assert.equal(m.status, 200);
-    assert.match(m.text, /playtracker_/);
+    assert.match(m.text, /^vestigo_/m);
+    assert.match(m.text, /^playtracker_/m, 'the old metric names are still published');
   });
 
   test('login without a configured password is a no-op and issues no session cookie', async () => {
@@ -103,7 +105,7 @@ describe('open mode (no password configured)', () => {
   test('cross-site GETs are not granted a CORS read permission', async () => {
     const r = await call(`${s.api}/games`, { origin: EVIL });
     assert.equal(r.status, 200);
-    assert.equal(r.headers.get('access-control-allow-origin'), null, 'no ACAO header without PLAYTRACKER_CORS_ORIGIN');
+    assert.equal(r.headers.get('access-control-allow-origin'), null, 'no ACAO header without VESTIGO_CORS_ORIGIN');
     const pre = await fetch(`${s.api}/games`, { method: 'OPTIONS', headers: { Origin: EVIL, 'Access-Control-Request-Method': 'POST' } });
     assert.ok(pre.status < 500);
     assert.equal(pre.headers.get('access-control-allow-origin'), null, 'preflight grants nothing');
@@ -222,7 +224,7 @@ describe('settings-stored password lifecycle', () => {
     assert.match(String(c.attrs.samesite), /^(lax|strict)$/i, 'SameSite Lax/Strict');
     assert.equal(c.attrs.path, '/');
     assert.ok(Number(c.attrs['max-age']) > 0, 'persistent session with a Max-Age');
-    assert.ok(!c.attrs.secure, 'no Secure flag unless PLAYTRACKER_SECURE_COOKIE=true (plain HTTP would drop it)');
+    assert.ok(!c.attrs.secure, 'no Secure flag unless VESTIGO_SECURE_COOKIE=true (plain HTTP would drop it)');
     assert.equal((await call(`${s.api}/games`, { cookie: `${c.name}=${c.value}` })).status, 200);
     // the session id is stored hashed
     assert.equal(s.db.prepare('SELECT COUNT(*) n FROM login_sessions WHERE token_hash = ?').get(c.value).n, 0, 'raw session id not stored');
@@ -298,17 +300,20 @@ describe('settings-stored password lifecycle', () => {
     assert.equal((await call(`${s.api}/games`)).status, 200, 'open again');
   });
 
-  test('Secure cookie flag is set when PLAYTRACKER_SECURE_COOKIE=true', async () => {
-    const restore = setEnv({ PLAYTRACKER_SECURE_COOKIE: 'true' });
-    let t;
-    try { t = await startApp({ password: PASSWORD }); } finally { restore(); }
-    try {
-      const r = await login(t, PASSWORD);
-      assert.equal(r.status, 200);
-      assert.equal(cookieAttrs(r.setCookie).attrs.secure, true);
-      assert.equal(cookieAttrs(r.setCookie).attrs.httponly, true);
-    } finally { t.close(); }
-  });
+  for (const name of ['VESTIGO_SECURE_COOKIE', 'PLAYTRACKER_SECURE_COOKIE']) {
+    test(`Secure cookie flag is set when ${name}=true`, async () => {
+      const restore = setEnv({ [name]: 'true' });
+      let t;
+      try { t = await startApp({ password: PASSWORD }); } finally { restore(); }
+      try {
+        const r = await login(t, PASSWORD);
+        assert.equal(r.status, 200);
+        assert.equal(cookieAttrs(r.setCookie).attrs.secure, true);
+        assert.equal(cookieAttrs(r.setCookie).attrs.httponly, true);
+        assert.equal(cookieAttrs(r.setCookie).name, 'pt_session', 'the login cookie keeps its name: nobody is signed out by an update');
+      } finally { t.close(); }
+    });
+  }
 
   test('a non-string password value is rejected instead of being coerced', async () => {
     const t = await startApp({ password: '' });
@@ -322,7 +327,7 @@ describe('settings-stored password lifecycle', () => {
 });
 
 // ---------------------------------------------------------------------------------------------
-describe('PLAYTRACKER_PASSWORD from the environment', () => {
+describe('VESTIGO_PASSWORD / PLAYTRACKER_PASSWORD from the environment', () => {
   let dir; let dbFile; let token;
   before(async () => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pt-auth-sec-'));
@@ -338,9 +343,9 @@ describe('PLAYTRACKER_PASSWORD from the environment', () => {
   after(() => { fs.rmSync(dir, { recursive: true, force: true }); });
 
   test('the environment password takes precedence and cannot be changed or removed through the API', async () => {
-    const restore = setEnv({ PLAYTRACKER_PASSWORD: 'env-secret-9' });
+    const restore = setEnv({ VESTIGO_PASSWORD: 'env-secret-9' });
     let s;
-    try { s = await startApp({ dbFile }); } finally { restore(); } // createApp reads PLAYTRACKER_PASSWORD
+    try { s = await startApp({ dbFile }); } finally { restore(); } // createApp reads VESTIGO_PASSWORD
     try {
       const st = await call(`${s.api}/auth/status`);
       assert.equal(st.json.auth_enabled, true);
@@ -354,6 +359,7 @@ describe('PLAYTRACKER_PASSWORD from the environment', () => {
       assert.equal((await call(`${s.api}/games`, { token })).status, 200, 'tokens survive a restart');
       const ch = await setPassword(s, 'another-pass', { current: 'env-secret-9', cookie: ck });
       assert.equal(ch.status, 400, 'env-managed password cannot be changed via API');
+      assert.match(ch.json.error, /VESTIGO_PASSWORD/, 'the error names the variable that sets it');
       const rm = await setPassword(s, '', { current: 'env-secret-9', cookie: ck });
       assert.equal(rm.status, 400, 'env-managed password cannot be removed via API');
       assert.equal((await call(`${s.api}/auth/status`)).json.auth_enabled, true);
@@ -364,6 +370,67 @@ describe('PLAYTRACKER_PASSWORD from the environment', () => {
       assert.ok(!('password_hash' in settings.json));
       const sys = await call(`${s.api}/system`, { cookie: ck });
       assert.ok(!sys.text.includes('env-secret-9'), 'env password not in diagnostics');
+    } finally { s.close(); }
+  });
+
+  /** Start on the shared database with these variables set (createApp reads them), then restore. */
+  async function withEnv(vars) {
+    const restore = setEnv(vars);
+    try { return await startApp({ dbFile }); } finally { restore(); }
+  }
+
+  test('an existing install with only PLAYTRACKER_PASSWORD still requires that password', async () => {
+    const s = await withEnv({ PLAYTRACKER_PASSWORD: 'legacy-secret-1' });
+    try {
+      const st = await call(`${s.api}/auth/status`);
+      assert.equal(st.json.auth_enabled, true);
+      assert.equal(st.json.authenticated, false);
+      assert.equal(st.json.password_source, 'env');
+      assert.ok(!('password_env' in st.json), 'which variable sets the password is not told to anonymous callers');
+      assert.equal((await call(`${s.api}/games`)).status, 401);
+      assert.equal((await login(s, 'settings-pass1')).status, 401);
+      const ok = await login(s, 'legacy-secret-1');
+      assert.equal(ok.status, 200);
+      const ck = cookiePair(ok.setCookie);
+      assert.equal((await call(`${s.api}/games`, { cookie: ck })).status, 200);
+      assert.equal((await call(`${s.api}/auth/status`, { cookie: ck })).json.password_env, 'PLAYTRACKER_PASSWORD');
+      assert.equal((await call(`${s.api}/auth/status`, { token })).json.password_env, 'PLAYTRACKER_PASSWORD');
+      const ch = await setPassword(s, 'another-pass', { current: 'legacy-secret-1', cookie: ck });
+      assert.equal(ch.status, 400);
+      assert.match(ch.json.error, /PLAYTRACKER_PASSWORD/, 'the error names the variable actually in use');
+    } finally { s.close(); }
+  });
+
+  test('with both names set, VESTIGO_PASSWORD wins', async () => {
+    const s = await withEnv({ VESTIGO_PASSWORD: 'new-name-secret', PLAYTRACKER_PASSWORD: 'old-name-secret' });
+    try {
+      assert.equal((await login(s, 'old-name-secret')).status, 401);
+      const ok = await login(s, 'new-name-secret');
+      assert.equal(ok.status, 200);
+      assert.equal((await call(`${s.api}/auth/status`, { cookie: cookiePair(ok.setCookie) })).json.password_env, 'VESTIGO_PASSWORD');
+    } finally { s.close(); }
+  });
+
+  test('an empty VESTIGO_PASSWORD (Unraid passes empty fields) falls back to PLAYTRACKER_PASSWORD', async () => {
+    const s = await withEnv({ VESTIGO_PASSWORD: '', PLAYTRACKER_PASSWORD: 'x' });
+    try {
+      assert.equal((await call(`${s.api}/auth/status`)).json.password_source, 'env');
+      assert.equal((await call(`${s.api}/games`)).status, 401, 'not opened up by the empty variable');
+      assert.equal((await login(s, '')).status, 401);
+      const ok = await login(s, 'x');
+      assert.equal(ok.status, 200);
+      assert.equal((await call(`${s.api}/auth/status`, { cookie: cookiePair(ok.setCookie) })).json.password_env, 'PLAYTRACKER_PASSWORD');
+    } finally { s.close(); }
+  });
+
+  test('empty values under both names leave the stored settings password in charge', async () => {
+    const s = await withEnv({ VESTIGO_PASSWORD: '', PLAYTRACKER_PASSWORD: '' });
+    try {
+      assert.equal((await call(`${s.api}/auth/status`)).json.password_source, 'settings');
+      assert.equal((await call(`${s.api}/games`)).status, 401);
+      const ok = await login(s, 'settings-pass1');
+      assert.equal(ok.status, 200);
+      assert.equal((await call(`${s.api}/auth/status`, { cookie: cookiePair(ok.setCookie) })).json.password_env, null);
     } finally { s.close(); }
   });
 
@@ -400,7 +467,7 @@ describe('API tokens', () => {
     const r = await call(`${s.api}/tokens`, { body: { name: 'ci' }, cookie });
     assert.equal(r.status, 200, r.text);
     t1 = r.json;
-    assert.match(t1.token, /^pt_[A-Za-z0-9_-]{20,}$/);
+    assert.match(t1.token, /^vg_[A-Za-z0-9_-]{20,}$/);
     assert.ok(Number.isInteger(t1.id));
     const list = await call(`${s.api}/tokens`, { cookie });
     assert.equal(list.status, 200);
@@ -431,6 +498,23 @@ describe('API tokens', () => {
     assert.equal(st.json.via, 'token');
   });
 
+  test('a pt_ token minted by PlayTracker (stored the old way) still authenticates and can be revoked', async () => {
+    const legacy = `pt_${crypto.randomBytes(24).toString('base64url')}`;
+    const id = Number(s.db.prepare('INSERT INTO api_tokens(name, token_hash, prefix, created_at) VALUES (?, ?, ?, ?)').run('Home Assistant', sha256(legacy), legacy.slice(0, 7), Date.now()).lastInsertRowid);
+    for (const v of [{ token: legacy }, { headers: { 'X-API-Key': legacy } }]) assert.equal((await call(`${s.api}/games`, v)).status, 200, JSON.stringify(v));
+    assert.equal((await call(`${s.api}/games?api_key=${encodeURIComponent(legacy)}`)).status, 200);
+    assert.equal((await call(`${s.origin}/metrics`, { token: legacy })).status, 200);
+    const st = await call(`${s.api}/auth/status`, { token: legacy });
+    assert.equal(st.json.authenticated, true);
+    assert.equal(st.json.via, 'token');
+    const item = (await call(`${s.api}/tokens`, { cookie })).json.find((x) => x.id === id);
+    assert.equal(item.prefix, legacy.slice(0, 7), 'listed with its own pt_ prefix');
+    assert.ok(item.last_used_at > 0, 'use is recorded');
+    assert.equal((await call(`${s.api}/games`, { token: `vg_${legacy.slice(3)}` })).status, 401, 'the prefix is part of the secret');
+    assert.equal((await call(`${s.api}/tokens/${id}`, { method: 'DELETE', cookie })).status, 200);
+    assert.equal((await call(`${s.api}/games`, { token: legacy })).status, 401, 'revoked');
+  });
+
   test('last_used_at is recorded when a token is used', async () => {
     const t = await call(`${s.api}/tokens`, { body: { name: 'usage' }, cookie });
     const before_ = Date.now();
@@ -441,7 +525,7 @@ describe('API tokens', () => {
   });
 
   test('wrong, truncated, padded, prefix-only or hash-valued tokens are rejected', async () => {
-    const bad = [t1.token.slice(0, -1), `${t1.token}x`, t1.token.slice(0, 7), 'pt_', sha256(t1.token), t1.token.toUpperCase(), 'Bearer'];
+    const bad = [t1.token.slice(0, -1), `${t1.token}x`, t1.token.slice(0, 7), 'vg_', 'pt_', `pt_${t1.token.slice(3)}`, sha256(t1.token), t1.token.toUpperCase(), 'Bearer'];
     for (const b of bad) {
       assert.equal((await call(`${s.api}/games`, { token: b })).status, 401, `Bearer ${b.slice(0, 10)}`);
       assert.equal((await call(`${s.api}/games`, { headers: { 'X-API-Key': b } })).status, 401);
@@ -631,7 +715,7 @@ describe('/metrics', () => {
     for (const o of [{}, { token: 'pt_wrong' }, { headers: { 'X-API-Key': 'nope' } }, { cookie: 'pt_session=forged' }]) {
       const r = await call(`${s.origin}/metrics`, o);
       assert.equal(r.status, 401, JSON.stringify(o));
-      assert.ok(!r.text.includes('playtracker_'), 'no metric data in the 401');
+      assert.ok(!r.text.includes('playtracker_') && !r.text.includes('vestigo_'), 'no metric data in the 401');
     }
     const q = await call(`${s.origin}/metrics?api_key=wrong`);
     assert.equal(q.status, 401);
@@ -642,6 +726,7 @@ describe('/metrics', () => {
       const r = await call(`${s.origin}/metrics`, o);
       assert.equal(r.status, 200, JSON.stringify(o));
       assert.match(r.headers.get('content-type'), /text\/plain/);
+      assert.match(r.text, /^vestigo_playtime_minutes_total \d+$/m);
       assert.match(r.text, /^playtracker_playtime_minutes_total \d+$/m);
     }
     assert.equal((await call(`${s.origin}/metrics?api_key=${encodeURIComponent(token)}`)).status, 200);
@@ -654,17 +739,30 @@ describe('/metrics', () => {
       assert.ok(line.startsWith('# ') || sample.test(line), `malformed line: ${JSON.stringify(line)}`);
     }
     assert.ok(!/^fake_metric/m.test(r.text), 'no injected metric');
-    const total = Number(/^playtracker_playtime_minutes_total (\d+)$/m.exec(r.text)[1]);
-    assert.equal(total, 60, 'the imported hour is counted once');
+    for (const p of ['vestigo', 'playtracker']) {
+      const total = Number(new RegExp(`^${p}_playtime_minutes_total (\\d+)$`, 'm').exec(r.text)[1]);
+      assert.equal(total, 60, `${p}_: the imported hour is counted once`);
+    }
   });
 });
 
 // ---------------------------------------------------------------------------------------------
-describe('configured PLAYTRACKER_CORS_ORIGIN', () => {
+describe('configured VESTIGO_CORS_ORIGIN', () => {
   const DASH = 'https://dash.example:8443';
   let s; let restore;
-  before(async () => { s = await startApp({ password: '' }); restore = setEnv({ PLAYTRACKER_CORS_ORIGIN: DASH }); });
+  before(async () => { s = await startApp({ password: '' }); restore = setEnv({ VESTIGO_CORS_ORIGIN: DASH }); });
   after(() => { restore(); s.close(); });
+
+  test('an existing PLAYTRACKER_CORS_ORIGIN still grants its origin; VESTIGO_CORS_ORIGIN wins when both are set', async () => {
+    const back = setEnv({ VESTIGO_CORS_ORIGIN: undefined, PLAYTRACKER_CORS_ORIGIN: 'https://old.example' });
+    try {
+      assert.equal((await call(`${s.api}/games`, { origin: 'https://old.example' })).headers.get('access-control-allow-origin'), 'https://old.example');
+      assert.equal((await call(`${s.api}/games`, { body: { title: 'From Old Dashboard' }, origin: 'https://old.example' })).status, 200);
+      process.env.VESTIGO_CORS_ORIGIN = DASH;
+      assert.equal((await call(`${s.api}/games`, { origin: DASH })).headers.get('access-control-allow-origin'), DASH);
+      assert.equal((await call(`${s.api}/games`, { body: { title: 'x' }, origin: 'https://old.example' })).status, 403, 'the old name no longer applies');
+    } finally { back(); }
+  });
 
   test('preflight from the configured origin is answered with a scoped grant', async () => {
     const r = await fetch(`${s.api}/games`, { method: 'OPTIONS', headers: { Origin: DASH, 'Access-Control-Request-Method': 'POST', 'Access-Control-Request-Headers': 'authorization,content-type' } });
@@ -942,7 +1040,7 @@ describe('static files and path traversal', () => {
   before(async () => {
     s = await startApp({ password: PASSWORD });
     index = fs.readFileSync(path.join(ROOT, 'public', 'index.html'), 'utf8');
-    markers.push(['src/auth.js', 'export class Auth'], ['package.json', '"name": "playtracker"'], ['README.md', '# PlayTracker']);
+    markers.push(['src/auth.js', 'export class Auth'], ['package.json', '"name": "vestigo"'], ['README.md', '# Vestigo']);
     if (fs.existsSync('/etc/passwd')) markers.push(['/etc/passwd', 'root:']);
     if (fs.existsSync(path.join(ROOT, '.git', 'config'))) markers.push(['.git/config', '[core]']);
   });
@@ -953,7 +1051,7 @@ describe('static files and path traversal', () => {
     '/..%2f..%2f..%2f..%2fetc%2fpasswd', '/%2e%2e%2f%2e%2e%2f%2e%2e%2f%2e%2e%2fetc%2fpasswd', '/....//....//etc/passwd',
     '/%252e%252e%252fsrc%252fauth.js', '/..%5csrc%5cauth.js', '/..\\src\\auth.js', '/index.html%00.js', '/%00../package.json',
     '/../package.json', '/..%2fpackage.json', '/%2e%2e/README.md', '/./.%2e/.git/config', '/..%2f.git%2fconfig', '//etc/passwd',
-    '/%2fetc%2fpasswd', '/..%c0%afpackage.json', '/..%2f..%2fdata%2fplaytracker.db', '/api/../../package.json',
+    '/%2fetc%2fpasswd', '/..%c0%afpackage.json', '/..%2f..%2fdata%2fvestigo.db', '/..%2f..%2fdata%2fplaytracker.db', '/api/../../package.json',
   ];
 
   test('traversal attempts never serve files outside public/', async () => {
@@ -1138,15 +1236,15 @@ describe('platform credentials are never disclosed', () => {
     assert.equal(typeof bad.json.error, 'string');
   });
 
-  test('a platform rejecting credentials is never reported as a PlayTracker 401 or a 500', async () => {
+  test('a platform rejecting credentials is never reported as a Vestigo 401 or a 500', async () => {
     const results = [];
     for (const [platform, config] of [['xbox', { api_key: 'rejected-by-openxbl-000' }], ['psn', { npsso: 'rejected-npsso' }], ['steam', { api_key: 'rejected-steam-key', steam_id: '76561197960287930' }]]) {
       const r = await call(`${s.api}/accounts/test`, { body: { platform, config } });
       results.push(`${platform}:${r.status}`);
       assert.equal(typeof r.json?.error, 'string', platform);
     }
-    // the caller IS authenticated to PlayTracker; the platform said no. 401 means "log in to
-    // PlayTracker again" to every client (the bundled UI shows the login screen on any 401).
+    // the caller IS authenticated to Vestigo; the platform said no. 401 means "log in to
+    // Vestigo again" to every client (the bundled UI shows the login screen on any 401).
     for (const x of results) {
       const status = Number(x.split(':')[1]);
       const ok = status === 502 || (status >= 400 && status < 500 && status !== 401);

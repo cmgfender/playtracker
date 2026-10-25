@@ -35,10 +35,17 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      # every build goes to both names: installs that pull the old playtracker image keep getting
+      # updates. The labels set here override the Dockerfile's LABELs, so they carry the name too.
       - id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ghcr.io/${{ github.repository }}
+          images: |
+            ghcr.io/cmgfender/vestigo
+            ghcr.io/cmgfender/playtracker
+          labels: |
+            org.opencontainers.image.title=Vestigo
+            org.opencontainers.image.description=Vestigo Media Tracker (formerly PlayTracker) - self-hosted playtime and session tracker for Steam, Xbox and PlayStation
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
             type=semver,pattern={{version}}

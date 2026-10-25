@@ -13,13 +13,14 @@ import { registerRoutes } from './api/routes.js';
 import { HttpError } from './util.js';
 import { ensureRollupTimezone, flushRollups, rebuildRollups } from './services/rollup.js';
 import { createLogger, asLogger } from './logger.js';
+import { env, envSource, dataDir, resolveDbFile } from './env.js';
 import os from 'node:os';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
 const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
 // the commit the image was built from (CI sets it), so diagnostics say exactly which build runs
-const REVISION = /^[0-9a-f]{7,40}$/i.test(process.env.PLAYTRACKER_REVISION || '') ? process.env.PLAYTRACKER_REVISION.slice(0, 7) : null;
+const REVISION = /^[0-9a-f]{7,40}$/i.test(env('REVISION', '')) ? env('REVISION').slice(0, 7) : null;
 
 const MIME = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8',
@@ -110,17 +111,19 @@ function sendJson(req, res, status, data) {
 
 export const DEFAULT_PORT = 7720;
 
-export function dataDir() {
-  return process.env.PLAYTRACKER_DATA || './data';
-}
-
-export function createApp({ dbFile = process.env.PLAYTRACKER_DB || path.join(dataDir(), 'playtracker.db'), password = process.env.PLAYTRACKER_PASSWORD, log: rawLog, scheduler = true, dev = process.env.NODE_ENV === 'development' } = {}) {
+/**
+ * dbFile: undefined = from the environment and the data folder (resolveDbFile).
+ * password: undefined = VESTIGO_PASSWORD / PLAYTRACKER_PASSWORD; passwordEnv names the variable a given one stands for.
+ */
+export function createApp({ dbFile, password, passwordEnv, log: rawLog, scheduler = true, dev = process.env.NODE_ENV === 'development' } = {}) {
   const log = rawLog ? asLogger(rawLog) : createLogger();
+  if (password === undefined) { password = env('PASSWORD'); passwordEnv ??= envSource('PASSWORD'); }
+  dbFile ??= resolveDbFile({ log: log.scoped('db') });
   const db = openDb(dbFile);
   log.attachDb(db);
   const settings = new Settings(db);
   const sync = new SyncService({ db, settings, log });
-  const auth = new Auth({ db, settings, envPassword: password });
+  const auth = new Auth({ db, settings, envPassword: password, envName: passwordEnv });
   const router = new Router();
   const http_ = { requests: 0, errors: 0, client_errors: 0, started_at: Date.now(), slow: 0 };
   const app = { db, dbFile, settings, sync, auth, log, version: pkg.version, revision: REVISION, router, http: http_, rebuildRollups: () => rebuildRollups(db) };
@@ -129,9 +132,9 @@ export function createApp({ dbFile = process.env.PLAYTRACKER_DB || path.join(dat
   const rolled = ensureRollupTimezone(db, settings, log.scoped('rollup'));
   if (rolled > 1000) log.scoped('rollup').info(`Indexed ${rolled} sessions in ${Date.now() - t0}ms`);
   registerRoutes(router, app);
-  router.get('/api/openapi.json', () => router.openapi({ title: 'PlayTracker API', version: pkg.version, description: 'Self-hosted game playtime & session tracker' }), { summary: 'OpenAPI document', public: true, hidden: true });
+  router.get('/api/openapi.json', () => router.openapi({ title: 'Vestigo API', version: pkg.version, description: 'Vestigo Media Tracker — self-hosted playtime and session tracking' }), { summary: 'OpenAPI document', public: true, hidden: true });
   const serveStatic = staticServer(PUBLIC_DIR, { dev });
-  const trustProxy = process.env.PLAYTRACKER_SECURE_COOKIE === 'true';
+  const trustProxy = env('SECURE_COOKIE') === 'true';
 
   const handler = async (req, res) => {
     const url = new URL(req.url, 'http://localhost');
@@ -166,7 +169,8 @@ export function createApp({ dbFile = process.env.PLAYTRACKER_DB || path.join(dat
       const host = req.headers['x-forwarded-host'] || req.headers.host;
       let originHost = null;
       try { originHost = new URL(req.headers.origin).host; } catch { /* "null" or garbage */ }
-      const allowed = process.env.PLAYTRACKER_CORS_ORIGIN && req.headers.origin === process.env.PLAYTRACKER_CORS_ORIGIN;
+      const cors = env('CORS_ORIGIN');
+      const allowed = cors && req.headers.origin === cors;
       if (originHost !== host && !allowed) return sendJson(req, res, 403, { error: 'Cross-origin request blocked' });
     }
 
@@ -229,7 +233,7 @@ export function createApp({ dbFile = process.env.PLAYTRACKER_DB || path.join(dat
   };
 
   function corsHeaders() {
-    const origin = process.env.PLAYTRACKER_CORS_ORIGIN;
+    const origin = env('CORS_ORIGIN');
     if (!origin) return {};
     return { 'Access-Control-Allow-Origin': origin, 'Access-Control-Allow-Headers': 'Authorization, Content-Type, X-API-Key', 'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS' };
   }
@@ -238,18 +242,20 @@ export function createApp({ dbFile = process.env.PLAYTRACKER_DB || path.join(dat
     const who = auth.identify(req, parseCookies(req.headers.cookie), url);
     if (!who.ok) { res.writeHead(401); return res.end('Unauthorized'); }
     const l = lifetime(db);
-    const lines = [
-      '# HELP playtracker_playtime_minutes_total Lifetime playtime in minutes', '# TYPE playtracker_playtime_minutes_total gauge',
-      `playtracker_playtime_minutes_total ${l.total_minutes}`,
-      ...l.platforms.map((p) => `playtracker_playtime_minutes{platform="${p.platform}"} ${p.minutes}`),
-      '# TYPE playtracker_tracked_minutes_total gauge', `playtracker_tracked_minutes_total ${l.tracked_minutes}`,
-      '# TYPE playtracker_sessions_total gauge', `playtracker_sessions_total ${l.sessions}`,
-      '# TYPE playtracker_games_total gauge', `playtracker_games_total ${l.games}`,
-      '# TYPE playtracker_account_last_sync_seconds gauge',
-      ...db.prepare('SELECT id, platform, name, last_sync_at, last_status FROM accounts').all().map((a) => `playtracker_account_last_sync_seconds{id="${a.id}",platform="${a.platform}",status="${a.last_status || 'never'}"} ${Math.floor((a.last_sync_at || 0) / 1000)}`),
+    const accounts = db.prepare('SELECT id, platform, name, last_sync_at, last_status FROM accounts').all();
+    const series = (p) => [
+      `# HELP ${p}_playtime_minutes_total Lifetime playtime in minutes`, `# TYPE ${p}_playtime_minutes_total gauge`,
+      `${p}_playtime_minutes_total ${l.total_minutes}`,
+      ...l.platforms.map((x) => `${p}_playtime_minutes{platform="${x.platform}"} ${x.minutes}`),
+      `# TYPE ${p}_tracked_minutes_total gauge`, `${p}_tracked_minutes_total ${l.tracked_minutes}`,
+      `# TYPE ${p}_sessions_total gauge`, `${p}_sessions_total ${l.sessions}`,
+      `# TYPE ${p}_games_total gauge`, `${p}_games_total ${l.games}`,
+      `# TYPE ${p}_account_last_sync_seconds gauge`,
+      ...accounts.map((a) => `${p}_account_last_sync_seconds{id="${a.id}",platform="${a.platform}",status="${a.last_status || 'never'}"} ${Math.floor((a.last_sync_at || 0) / 1000)}`),
     ];
     res.writeHead(200, { 'Content-Type': 'text/plain; version=0.0.4' });
-    res.end(lines.join('\n') + '\n');
+    // the same series under the old playtracker_ names, so existing dashboards keep working (deprecated, kept until 2.0)
+    res.end([...series('vestigo'), ...series('playtracker')].join('\n') + '\n');
   }
 
   const server = http.createServer((req, res) => {
@@ -317,7 +323,7 @@ export function listen(server, port, log, { attempts = 20, host = '0.0.0.0' } = 
       server.listen(p, host, () => { server.off('error', onError); resolve(p); });
     };
     const onError = (err) => {
-      if (err.code === 'EADDRINUSE' && process.env.PLAYTRACKER_PORT_FALLBACK !== 'false' && p < port + attempts) {
+      if (err.code === 'EADDRINUSE' && env('PORT_FALLBACK') !== 'false' && p < port + attempts) {
         log.warn(`Port ${p} is already in use, trying ${p + 1}`);
         p++;
         tryListen();
@@ -342,7 +348,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   process.on('unhandledRejection', (err) => log.error('Unhandled promise rejection', err instanceof Error ? err : new Error(String(err))));
   process.on('warning', (w) => { if (w.name !== 'ExperimentalWarning') log.warn(`Node warning: ${w.message}`); });
 
-  const port = Number(process.env.PORT || process.env.PLAYTRACKER_PORT || DEFAULT_PORT);
+  const port = Number(process.env.PORT || env('PORT') || DEFAULT_PORT);
   prepareDataDir(dataDir(), log);
   let instance;
   try {
@@ -353,7 +359,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   }
   listen(instance.server, port, log).then((actual) => {
     const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
-    log.info(`PlayTracker ${pkg.version}${REVISION ? ` (${REVISION})` : ''} ready on port ${actual} (TZ=${tz}, db=${instance.app.dbFile})`);
+    log.info(`Vestigo ${pkg.version}${REVISION ? ` (${REVISION})` : ''} ready on port ${actual} (TZ=${tz}, db=${instance.app.dbFile})`);
     for (const ip of lanAddresses()) log.info(`  → http://${ip}:${actual}`);
     if (tz === 'UTC' && !process.env.TZ) log.warn('TZ is not set - daily stats use UTC. Set the TZ variable (e.g. America/New_York).');
   }).catch((err) => {

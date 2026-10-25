@@ -1,9 +1,10 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { env } from './env.js';
 
 // Structured logger:
 //  - stdout (what `docker logs` / the Unraid log viewer shows), pretty or JSON
-//  - optional rotating file (PLAYTRACKER_LOG_FILE)
+//  - optional rotating file (VESTIGO_LOG_FILE, or PLAYTRACKER_LOG_FILE)
 //  - warnings & errors persisted to the `logs` table so they can be browsed,
 //    filtered and counted in the UI / API (attach with logger.attachDb()).
 
@@ -13,7 +14,7 @@ const COLORS = { debug: '\x1b[90m', info: '\x1b[36m', warn: '\x1b[33m', error: '
 export function createLogger({
   level = process.env.LOG_LEVEL || 'info',
   json = process.env.LOG_FORMAT === 'json',
-  file = process.env.PLAYTRACKER_LOG_FILE || '',
+  file = env('LOG_FILE', ''),
   maxFileBytes = 5 * 1024 * 1024,
   quiet = false,
 } = {}) {
