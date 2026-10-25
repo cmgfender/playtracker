@@ -154,6 +154,8 @@ const P = {
   clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
   bolt: '<path d="M13 2 3 14h9l-1 8 10-12h-9z"/>',
   info: '<circle cx="12" cy="12" r="9"/><path d="M12 16v-4M12 8h.01"/>',
+  chevR: '<path d="m9 18 6-6-6-6"/>',
+  offline: '<path d="M2 2l20 20M8.5 16.4a5 5 0 0 1 7 0M5 12.9a10 10 0 0 1 4.2-2.4M19 12.9a10 10 0 0 0-2.3-1.6M1.4 9a15 15 0 0 1 4.5-2.9M22.6 9A15 15 0 0 0 10.7 5.1M12 20h.01"/>',
 };
 export function icon(name, cls = '') {
   return `<svg class="${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${P[name] || ''}</svg>`;
@@ -186,44 +188,137 @@ export async function api(path, { method = 'GET', body, raw = false, headers = {
   }
   const res = await fetch(`/api/v1${path}`, opts);
   if (res.status === 401 && !path.startsWith('/auth')) { state.needLogin = true; render(); throw new Error('Login required'); }
+  // the service worker answers from its cache when the server is out of reach, and says from when
+  const cached = res.headers.get('X-Vestigo-Offline');
+  if (cached) setOffline(Number(cached) || Date.now());
+  else if (state.offline && res.status !== 503) setOffline(null);
   if (raw) return res;
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw Object.assign(new Error(data.error || `HTTP ${res.status}`), { status: res.status, data });
+  if (!res.ok) throw Object.assign(new Error(data.error === 'offline' ? 'Offline: this page has not been saved for offline use' : data.error || `HTTP ${res.status}`), { status: res.status, data, offline: data.error === 'offline' });
   return data;
 }
 
 // ---------- toasts / modals ----------
-export function toast(msg, { bad = false, ms = 3200 } = {}) {
+/**
+ * A toast: #toasts is a polite live region, so it is announced; errors are repeated in the #alerts
+ * region (role=alert). `action` adds a button ({ label, run }), e.g. Undo; such a toast stays 6s, an
+ * error 10s with a close button, `ms: Infinity` until closed. Pointing at it or focusing it pauses the timer.
+ */
+export function toast(msg, { action = null, bad = false, ms } = {}) {
   const el = document.createElement('div');
   el.className = `toast${bad ? ' bad' : ''}`;
-  el.textContent = msg;
+  const text = document.createElement('span');
+  text.className = 'toast-msg';
+  text.textContent = msg;
+  el.append(text);
+  let timer = null;
+  let left = ms ?? (bad ? 10000 : action ? 6000 : 3200);
+  let since = 0;
+  const dismiss = () => {
+    clearTimeout(timer);
+    if (!el.isConnected) return;
+    // keyboard focus on the toast goes back into the page instead of to <body>
+    if (el.contains(document.activeElement)) ($('.overlay .modal') || $('#view h1') || $('#view'))?.focus({ preventScroll: true });
+    el.classList.add('out');
+    setTimeout(() => el.remove(), 300);
+  };
+  const start = () => { if (Number.isFinite(left)) { since = Date.now(); timer = setTimeout(dismiss, left); } };
+  const pause = () => { if (timer) { clearTimeout(timer); timer = null; left = Math.max(1500, left - (Date.now() - since)); } };
+  if (action) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'toast-act';
+    b.textContent = action.label;
+    b.addEventListener('click', () => { dismiss(); action.run(); });
+    el.append(b);
+  }
+  if (bad) {
+    const x = document.createElement('button');
+    x.type = 'button';
+    x.className = 'toast-x';
+    x.setAttribute('aria-label', 'Dismiss');
+    x.innerHTML = icon('x');
+    x.addEventListener('click', dismiss);
+    el.append(x);
+  }
+  el.addEventListener('pointerenter', pause);
+  el.addEventListener('focusin', pause);
+  el.addEventListener('pointerleave', () => { if (!timer && !el.contains(document.activeElement)) start(); });
+  el.addEventListener('focusout', (e) => { if (!timer && !el.contains(e.relatedTarget) && !el.matches(':hover')) start(); });
   $('#toasts').append(el);
-  setTimeout(() => { el.style.transition = 'opacity .3s'; el.style.opacity = '0'; setTimeout(() => el.remove(), 300); }, ms);
+  if (bad) {
+    // the same text twice in a row is still announced: clear first, fill on the next frame
+    const al = $('#alerts');
+    if (al) { al.textContent = ''; requestAnimationFrame(() => { al.textContent = msg; }); }
+  }
+  start();
+  return { el, dismiss };
 }
-export const fail = (e) => toast(e?.message || String(e), { bad: true, ms: 5000 });
+export const fail = (e) => toast(e?.message || String(e), { bad: true });
 
-export function modal({ title, body, foot = '', onMount, wide = false }) {
+/** Undo toast: `msg` with an Undo button that runs `undo` and then `after` (e.g. a reload of the list). */
+export function undoToast(msg, undo, after = () => {}) {
+  return toast(msg, { action: { label: 'Undo', run: async () => { try { await undo(); toast('Undone'); after(); } catch (e) { fail(e); } } } });
+}
+
+const FOCUSABLE = 'a[href], button:not([disabled]), input:not([type=hidden]):not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+const visible = (el) => (el.checkVisibility ? el.checkVisibility() : !!el.getClientRects().length);
+let modalSeq = 0;
+
+/**
+ * A dialog (a bottom sheet on a phone). The page behind is inert and does not scroll, Tab stays
+ * inside, Escape closes the top dialog only, and focus returns to what opened it. It focuses its
+ * first field, but on a touch screen its title (no keyboard popping up) unless `autofocus`.
+ */
+export function modal({ title, body, foot = '', onMount, wide = false, autofocus = false }) {
+  const opener = document.activeElement;
+  const hid = `mh-${++modalSeq}`;
   const ov = document.createElement('div');
   ov.className = 'overlay';
-  ov.innerHTML = `<div class="modal" role="dialog" aria-modal="true" ${wide ? 'style="width:min(820px,100%)"' : ''}>
-    <div class="mh"><h2>${title}</h2><button class="btn ghost icon" data-close aria-label="Close">${icon('x')}</button></div>
+  ov.innerHTML = `<div class="modal" role="dialog" aria-modal="true" aria-labelledby="${hid}" ${wide ? 'style="width:min(820px,100%)"' : ''}>
+    <div class="mh"><h2 id="${hid}" tabindex="-1">${title}</h2><button class="btn ghost icon" data-close aria-label="Close">${icon('x')}</button></div>
     <div class="mb">${body}</div>${foot ? `<div class="mf">${foot}</div>` : ''}</div>`;
-  const close = () => { ov.remove(); document.removeEventListener('keydown', onKey); };
-  const onKey = (e) => { if (e.key === 'Escape') close(); };
+  const m = ov.querySelector('.modal');
+  const top = () => [...document.querySelectorAll('.overlay')].pop() === ov;
+  const close = () => {
+    if (!ov.isConnected) return;
+    ov.remove();
+    document.removeEventListener('keydown', onKey);
+    if (!$('.overlay')) { $('#app').inert = false; document.documentElement.style.overflow = ''; }
+    // back to the opener; if a re-render took it, to the page heading
+    const back = opener?.isConnected && opener !== document.body ? opener : ($('.overlay .modal') || $('#view h1'));
+    back?.focus({ preventScroll: true });
+  };
+  const onKey = (e) => {
+    if (!top()) return;
+    if (e.key === 'Escape' && !e.defaultPrevented) { e.preventDefault(); close(); return; }
+    if (e.key !== 'Tab') return;
+    const f = [...m.querySelectorAll(FOCUSABLE)].filter(visible);
+    if (!f.length) { e.preventDefault(); return; }
+    const first = f[0]; const last = f[f.length - 1];
+    const a = document.activeElement;
+    if (!m.contains(a)) { if (!a?.closest('#toasts')) { e.preventDefault(); first.focus(); } return; }
+    if (e.shiftKey && (a === first || !f.includes(a))) { e.preventDefault(); last.focus(); } else if (!e.shiftKey && a === last) { e.preventDefault(); first.focus(); }
+  };
   ov.addEventListener('click', (e) => { if (e.target === ov || e.target.closest('[data-close]')) close(); });
   document.addEventListener('keydown', onKey);
   document.body.append(ov);
-  const m = ov.querySelector('.modal');
+  $('#app').inert = true;
+  document.documentElement.style.overflow = 'hidden';
   onMount?.(m, close);
-  setTimeout(() => m.querySelector('input:not([type=hidden]):not([type=checkbox]), select, textarea')?.focus({ preventScroll: true }), 50);
+  a11y(m);
+  const field = m.querySelector('input:not([type=hidden]):not([type=checkbox]), select, textarea');
+  const h2 = m.querySelector(`#${hid}`);
+  h2.focus({ preventScroll: true }); // at once: the opener is inert now
+  if (field && (autofocus || !matchMedia('(pointer: coarse)').matches)) setTimeout(() => { if (document.activeElement === h2) field.focus({ preventScroll: true }); }, 50);
   return { el: m, close };
 }
 
-export function confirmBox(message, { ok = 'Confirm', danger = false } = {}) {
+export function confirmBox(message, { ok = 'Confirm', danger = false, title = 'Are you sure?' } = {}) {
   return new Promise((resolve) => {
     let done = false;
     const m = modal({
-      title: 'Are you sure?',
+      title: esc(title),
       body: `<p class="muted" style="margin:0">${message}</p>`,
       foot: `<button class="btn" data-close>Cancel</button><button class="btn ${danger ? 'danger solid' : 'primary'}" data-ok>${esc(ok)}</button>`,
       onMount: (el, close) => el.querySelector('[data-ok]').addEventListener('click', () => { done = true; close(); resolve(true); }),
@@ -233,25 +328,77 @@ export function confirmBox(message, { ok = 'Confirm', danger = false } = {}) {
   });
 }
 
+// ---------- labels and toggle states ----------
+let uidSeq = 0;
+const uid = (el, prefix) => el.id || (el.id = `${prefix}-${++uidSeq}`);
+
+/** Every `.field > label` names the field's first control; a settings row's title names the row's control. */
+export function linkLabels(root) {
+  for (const l of root.querySelectorAll('.field > label:not([for])')) {
+    const c = l.parentElement.querySelector('input:not([type=hidden]), select, textarea');
+    if (c && !c.closest('label')) l.htmlFor = uid(c, 'f');
+  }
+  for (const row of root.querySelectorAll('.setting')) {
+    const t = row.querySelector('.t');
+    if (!t) continue;
+    for (const c of row.querySelectorAll('input:not([type=hidden]), select, textarea, .seg')) {
+      if (c.hasAttribute('aria-label') || c.hasAttribute('aria-labelledby') || c.closest('[role=group]')) continue;
+      c.setAttribute('aria-labelledby', uid(t, 'st'));
+    }
+  }
+}
+
+// chips are toggle buttons (aria-pressed), segments radio groups (aria-checked); the state follows `.on`
+const TOGGLE = '.chip:not([data-quick]), .seg > button';
+const syncToggle = (b) => b.setAttribute(b.matches('.chip') ? 'aria-pressed' : 'aria-checked', String(b.classList.contains('on')));
+function toggleStates(root) {
+  for (const s of root.querySelectorAll('.seg')) s.setAttribute('role', 'radiogroup');
+  for (const b of root.querySelectorAll(TOGGLE)) { if (b.matches('.seg > button')) b.setAttribute('role', 'radio'); syncToggle(b); }
+}
+new MutationObserver((list) => { for (const m of list) if (m.target.matches?.(TOGGLE)) syncToggle(m.target); })
+  .observe(document.documentElement, { attributes: true, attributeFilter: ['class'], subtree: true });
+/** Labels and toggle states of everything in `root` (a page or a dialog). */
+export function a11y(root) { linkLabels(root); toggleStates(root); }
+
+// arrow keys move along a segmented control, like a radio group
+document.addEventListener('keydown', (e) => {
+  const b = e.target.closest?.('.seg > [role=radio]');
+  if (!b || !['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(e.key)) return;
+  const all = [...b.parentElement.children].filter((x) => x.matches('button:not([disabled])') && visible(x));
+  const next = all[(all.indexOf(b) + (['ArrowLeft', 'ArrowUp'].includes(e.key) ? -1 : 1) + all.length) % all.length];
+  e.preventDefault();
+  next.focus();
+  next.click();
+});
+
 // ---------- state / routing ----------
-export const state = { needLogin: false, authEnabled: false, settings: null, syncing: false, view: null };
+export const state = { needLogin: false, authEnabled: false, settings: null, syncing: false, syncNames: [], view: null, offline: null, badges: {}, latestYear: new Date().getFullYear(), installPrompt: null };
 
+/**
+ * The navigation, in its groups. `path` is the prefix that marks an entry current (Year in review
+ * is current for every year); `href` can follow the data. Insights joins the Track group.
+ */
 const NAV = [
-  { path: '/', label: 'Home', icon: 'home', tab: true },
-  { path: '/library', label: 'Library', icon: 'library', tab: true },
-  { path: '/sessions', label: 'Sessions', icon: 'sessions', tab: true },
-  { path: '/stats', label: 'Stats', icon: 'stats', tab: true },
-  { path: '/duplicates', label: 'Duplicates', icon: 'dupes' },
-  { path: '/history', label: 'Improve history', icon: 'history' },
-  { path: '/accounts', label: 'Accounts', icon: 'accounts' },
-  { path: '/system', label: 'System', icon: 'system' },
-  { path: '/settings', label: 'Settings', icon: 'settings' },
-  { path: '/api', label: 'API', icon: 'code' },
+  { path: '/', label: 'Home', icon: 'home', tab: true, group: 'Track' },
+  { path: '/library', label: 'Library', icon: 'library', tab: true, group: 'Track' },
+  { path: '/sessions', label: 'Sessions', icon: 'sessions', tab: true, group: 'Track' },
+  { path: '/stats', label: 'Stats', icon: 'stats', tab: true, group: 'Track' },
+  { path: '/wrapped', href: () => `/wrapped/${state.latestYear}`, label: 'Year in review', icon: 'trail', group: 'Track' },
+  { path: '/duplicates', label: 'Duplicates', icon: 'dupes', group: 'Tidy up', badge: 'dupes' },
+  { path: '/history', label: 'Improve history', icon: 'history', group: 'Tidy up' },
+  { path: '/accounts', label: 'Accounts', icon: 'accounts', group: 'Setup' },
+  { path: '/settings', label: 'Settings', icon: 'settings', group: 'Setup' },
+  { path: '/system', label: 'System', icon: 'system', group: 'Advanced', badge: 'errors' },
+  { path: '/api', label: 'API', icon: 'code', group: 'Advanced' },
 ];
+export const NAV_GROUPS = ['Track', 'Tidy up', 'Setup', 'Advanced'];
+/** The navigation entries with their current links (the More page lists them too). */
+export const navItems = () => NAV.map((n) => ({ ...n, href: typeof n.href === 'function' ? n.href() : n.path }));
 
-export function navigate(path, { replace = false } = {}) {
+/** Go to `path`; focus moves to the new page's heading (`focus: false` leaves it, e.g. a redirect on launch). */
+export function navigate(path, { replace = false, focus = true } = {}) {
   if (replace) history.replaceState({}, '', path); else history.pushState({}, '', path);
-  route();
+  route({ focus });
   window.scrollTo({ top: 0 });
 }
 
@@ -264,7 +411,7 @@ const navActive = (p, path) => (path === '/' ? p === '/' : path === '/more' ? !N
 /** Move the highlight in the sidebar and tab bar (the shell stays: rebuilding it would drop focus and the leaving view). */
 function markNav(p) {
   $$('.side-nav a, .tabbar a').forEach((a) => {
-    const on = navActive(p, a.getAttribute('href'));
+    const on = navActive(p, a.dataset.nav);
     a.classList.toggle('active', on);
     if (on) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
   });
@@ -272,32 +419,47 @@ function markNav(p) {
 
 function shell() {
   const p = current();
-  const active = (n) => navActive(p, n.path);
-  const moreActive = navActive(p, '/more');
-  const cur = (on) => (on ? ' aria-current="page"' : '');
+  const items = navItems();
+  const link = (n, cls, inner) => {
+    const on = navActive(p, n.path);
+    return `<a class="${cls}${on ? ' active' : ''}" href="${n.href}" data-link data-nav="${n.path}"${on ? ' aria-current="page"' : ''}>${inner}</a>`;
+  };
+  const badge = (n) => (n.badge ? `<span class="badge ${n.badge === 'errors' ? 'bad' : 'accent'} hide" id="${n.badge === 'errors' ? 'err-badge' : 'dupe-badge'}"></span>` : '');
   // the skip link comes first, so the first Tab offers it; #view takes focus from script (tabindex -1)
   return `<div class="shell">
     <a class="skip" href="#view">Skip to content</a>
     <aside class="side">
       ${brand({ sub: true })}
       <nav class="side-nav" aria-label="Main">
-        ${NAV.map((n) => `<a class="nav-link ${active(n) ? 'active' : ''}" href="${n.path}" data-link${cur(active(n))}>${icon(n.icon)}${n.label}${n.path === '/duplicates' ? '<span class="badge accent hide" id="dupe-badge"></span>' : n.path === '/system' ? '<span class="badge bad hide" id="err-badge"></span>' : ''}</a>`).join('')}
+        ${NAV_GROUPS.map((g, i) => `<div class="nav-sec" role="group" aria-labelledby="ng-${i}"><div class="nav-group" id="ng-${i}">${g}</div>
+          ${items.filter((n) => n.group === g).map((n) => link(n, 'nav-link', `${icon(n.icon)}${n.label}${badge(n)}`)).join('')}</div>`).join('')}
       </nav>
       <div class="side-foot col">
         <button class="btn" data-action="sync-all" id="sync-all-btn">${icon('sync')}<span class="lbl">Sync all</span></button>
-        ${state.authEnabled ? `<button class="btn ghost sm" data-action="logout">${icon('logout')}Log out</button>` : ''}
       </div>
     </aside>
     <header class="topbar">
       ${brand({ cls: 'grow' })}
       <button class="btn icon ghost" data-action="sync-all" aria-label="Sync all" title="Sync all">${icon('sync')}</button>
     </header>
+    <div class="offline-bar" id="offline-bar" role="status"></div>
     <main class="main" id="view" tabindex="-1"></main>
     <nav class="tabbar" aria-label="Tabs">
-      ${NAV.filter((n) => n.tab).map((n) => `<a href="${n.path}" data-link class="${active(n) ? 'active' : ''}"${cur(active(n))}>${icon(n.icon)}${n.label}</a>`).join('')}
-      <a href="/more" data-link class="${moreActive ? 'active' : ''}"${cur(moreActive)}>${icon('more')}More</a>
+      ${items.filter((n) => n.tab).map((n) => link(n, '', `${icon(n.icon)}${n.label}`)).join('')}
+      ${link({ path: '/more', href: '/more' }, 'tab-more', `${icon('more')}<span>More</span><span class="pip hide" aria-hidden="true"></span>`)}
     </nav>
   </div>`;
+}
+
+/**
+ * What the shell shows of the session, updated in place (the shell is built once per sign-in, so
+ * focus, the sync spinner and the sidebar's scroll survive every navigation and a password change).
+ */
+function syncShell() {
+  const foot = $('#app .side-foot');
+  const out = foot?.querySelector('[data-action="logout"]');
+  if (state.authEnabled && !out) foot.insertAdjacentHTML('beforeend', `<button class="btn ghost sm" data-action="logout">${icon('logout')}Log out</button>`);
+  if (!state.authEnabled) out?.remove();
 }
 
 // tab titles; game and wrapped pages set their own once they know the title / year
@@ -366,18 +528,29 @@ function showView(view) {
   view.hidden = false;
 }
 
+/** After a link or Back: the new page's heading takes focus, so a screen reader starts there and Tab goes on from it. */
+function focusPage(view) {
+  const h = view.querySelector('h1');
+  if (h) h.tabIndex = -1;
+  (h || view).focus({ preventScroll: true });
+}
+
+const offlineState = () => `<div class="empty"><div class="em-ic">${icon('offline')}</div><h2>You’re offline</h2>
+  <p style="max-width:440px;margin:0 auto 16px">This page has not been saved for offline use yet. Pages you opened while online keep showing their last data.</p>
+  <button class="btn" data-action="retry">Retry</button></div>`;
+
 let renderSeq = 0;
-let shellKey = '';
-export async function route() {
+/** Render the current URL into a new #view. `focus`: move focus to its heading (links and Back, not the first load). */
+export async function route({ focus = false } = {}) {
   if (state.needLogin) return render();
   const p = current();
-  // the shell is only rebuilt when what it shows changes (the Log out button)
-  if (!$('#app .shell') || shellKey !== String(state.authEnabled)) {
+  if (!$('#app .shell')) {
     $('#app').innerHTML = shell();
-    shellKey = String(state.authEnabled);
     applyBadges();
-    if (state.syncing) $$('[data-action="sync-all"]').forEach((b) => busy(b, true));
+    paintOffline();
   } else markNav(p);
+  syncShell();
+  paintSync($('#app .shell'));
   const view = beginView();
   const seq = ++renderSeq;
   const stale = () => seq !== renderSeq;
@@ -396,19 +569,23 @@ export async function route() {
       await pages[name](view, ...m.slice(1), stale);
     } catch (e) {
       if (stale() || state.needLogin) { clearTimeout(timer); return; }
-      view.innerHTML = `<div class="empty"><div class="em-ic">${icon('info')}</div><h2>Something went wrong</h2><p>${esc(e.message)}</p><button class="btn" onclick="location.reload()">Reload</button></div>`;
+      view.innerHTML = e.offline || (e instanceof TypeError && !navigator.onLine) ? offlineState()
+        : `<div class="empty"><div class="em-ic">${icon('info')}</div><h2>Something went wrong</h2><p>${esc(e.message)}</p><button class="btn" onclick="location.reload()">Reload</button></div>`;
     }
     clearTimeout(timer);
     if (stale()) return;
     showView(view);
     view.removeAttribute('aria-busy');
     afterRender(view);
+    if (focus) focusPage(view);
     return;
   }
+  state.view = null;
   setTitle('Not found');
   view.innerHTML = `<div class="empty"><h2>Not found</h2><a class="btn" href="/" data-link>Go home</a></div>`;
   showView(view);
   view.removeAttribute('aria-busy');
+  if (focus) focusPage(view);
 }
 
 // ---------- page chrome: sticky offsets, sideways scrollers ----------
@@ -437,26 +614,53 @@ function afterRender(view) {
   const tb = view.querySelector(':scope > .toolbar');
   if (tb && toolbarRO) toolbarRO.observe(tb);
   scrollHints(view);
+  a11y(view);
+  paintSync(view);
 }
 
+/** Where focus is in the page, as a selector that finds the same control in a re-rendered page. */
+function focusKey(el) {
+  if (!el || el === document.body || !el.closest('#view')) return null;
+  if (el.id) return { sel: `#${CSS.escape(el.id)}` };
+  const data = [...el.attributes].filter((a) => a.name.startsWith('data-') || a.name === 'name' || a.name === 'href');
+  if (data.length) return { sel: `${el.tagName.toLowerCase()}${data.map((a) => `[${a.name}="${CSS.escape(a.value)}"]`).join('')}` };
+  return { sel: el.tagName.toLowerCase(), text: el.textContent.trim() };
+}
+
+/** Render the current page again in place: scroll position and keyboard focus stay where they were. */
 export function rerender() {
   const y = window.scrollY;
-  return route().then(() => window.scrollTo({ top: y }));
+  const key = focusKey(document.activeElement);
+  return route().then(() => {
+    window.scrollTo({ top: y });
+    if (!key || document.activeElement?.closest('.overlay')) return;
+    const view = $('#view');
+    const same = [...view.querySelectorAll(key.sel)].find((x) => key.text === undefined || x.textContent.trim() === key.text);
+    if (same) same.focus({ preventScroll: true }); else focusPage(view);
+  });
 }
 
 function render() {
   if (state.needLogin) {
+    // signed out: nothing of the session keeps running behind the login form
+    clearTimeout(pollTimer);
+    state.syncing = false;
+    state.badges = {};
+    $$('.overlay').forEach((o) => o.remove());
+    $('#app').inert = false;
+    document.documentElement.style.overflow = '';
     setTitle('Sign in');
     $('#app').innerHTML = `<div class="login"><form class="card stack" id="login-form">
       <div class="login-head">${brand({ stacked: true, link: false })}${tagline()}</div>
       <div class="field"><label>Password</label><input class="input" type="password" name="password" autocomplete="current-password" required autofocus></div>
       <button class="btn primary" style="width:100%">Sign in</button></form></div>`;
+    linkLabels($('#app'));
     $('#login-form').addEventListener('submit', async (e) => {
       e.preventDefault();
       try {
         await api('/auth/login', { method: 'POST', body: { password: e.target.password.value } });
         state.needLogin = false;
-        await boot();
+        await boot({ focus: true });
       } catch (err) { fail(err); }
     });
     return;
@@ -464,55 +668,129 @@ function render() {
   route();
 }
 
+// ---------- offline ----------
+/** Offline since `t` (the time of the cached data shown), or back online (null). */
+function setOffline(t) {
+  const next = t ? Math.min(state.offline || t, t) : null;
+  if (next === state.offline) return;
+  state.offline = next;
+  paintOffline();
+}
+function paintOffline() {
+  document.documentElement.classList.toggle('is-offline', !!state.offline);
+  const bar = $('#offline-bar');
+  if (!bar) return;
+  const t = state.offline;
+  const when = t && new Date(t).toDateString() !== new Date().toDateString() ? `${fmtDate(t)} ${fmtTime(t)}` : fmtTime(t);
+  bar.innerHTML = t ? `${icon('offline')}<span class="grow">Offline · showing data from ${esc(when)}</span><button class="btn sm ghost" data-action="retry">Retry</button>` : '';
+}
+window.addEventListener('online', () => { if (!state.needLogin && $('#app .shell')) rerender(); });
+
 // ---------- sync polling ----------
-/** Spinner plus a "Syncing…" label: with reduced motion the spinner stands still and says nothing. */
-export function busy(b, on) {
+const syncLabel = () => {
+  const n = state.syncNames;
+  return n.length ? `Syncing ${n.length > 2 ? `${n.slice(0, 2).join(', ')} +${n.length - 2}` : n.join(', ')}…` : 'Syncing…';
+};
+/** Spinner plus a "Syncing Steam, Xbox…" label and aria-busy; with reduced motion the spinner stands still. */
+export function busy(b, on, label = 'Syncing…') {
   b.classList.toggle('loading', on);
+  if (on) b.setAttribute('aria-busy', 'true'); else b.removeAttribute('aria-busy');
   const lbl = b.querySelector('.lbl');
   if (lbl) {
     lbl.dataset.idle ??= lbl.textContent;
-    lbl.textContent = on ? 'Syncing…' : lbl.dataset.idle;
+    lbl.textContent = on ? label : lbl.dataset.idle;
   } else if (b.hasAttribute('aria-label')) { // icon-only (phone top bar)
     b.dataset.idle ??= b.getAttribute('aria-label');
-    b.setAttribute('aria-label', on ? 'Syncing…' : b.dataset.idle);
+    b.setAttribute('aria-label', on ? label : b.dataset.idle);
     b.title = b.getAttribute('aria-label');
   }
 }
+/** Every "Sync all" button in `root` shows the sync state (pages call this for buttons they add). */
+export function paintSync(root = document) {
+  if (!root) return;
+  for (const b of root.querySelectorAll('[data-action="sync-all"]')) if (state.syncing || b.classList.contains('loading')) busy(b, state.syncing, syncLabel());
+}
 
 let pollTimer = null;
+let syncSince = 0;
+/** A sync was just started (here or by a page): the buttons say so and the summary counts from now. */
+export function syncStarted() {
+  state.syncing = true;
+  syncSince ||= Date.now();
+  paintSync();
+}
+
 export async function watchSync({ refresh = true } = {}) {
   clearTimeout(pollTimer);
-  const accounts = await api('/accounts').catch(() => []);
-  const running = accounts.some((a) => a.syncing);
-  $$('[data-action="sync-all"]').forEach((b) => busy(b, running));
-  if (running) {
+  const accounts = await api('/accounts').catch(() => null);
+  if (!accounts) {
+    if (state.syncing && !state.needLogin) pollTimer = setTimeout(() => watchSync({ refresh }), 5000);
+    return [];
+  }
+  const running = accounts.filter((a) => a.syncing);
+  if (running.length) {
+    syncSince ||= Date.now();
     state.syncing = true;
+    state.syncNames = running.map((a) => a.name);
+    paintSync();
     pollTimer = setTimeout(() => watchSync({ refresh }), 2000);
   } else if (state.syncing) {
     state.syncing = false;
-    const errs = accounts.filter((a) => a.last_status === 'error');
-    if (errs.length) toast(`Sync failed: ${errs[0].name} — ${errs[0].last_error}`, { bad: true, ms: 7000 });
-    else toast('Sync complete');
-    refreshDupeBadge();
-    if (refresh) rerender();
+    state.syncNames = [];
+    $$('[data-action="sync-all"]').forEach((b) => busy(b, false));
+    await syncDone(accounts, refresh);
   }
   return accounts;
+}
+
+/**
+ * A sync finished. Home and Accounts (pages about the sync) re-render, unless a dialog is open or a
+ * field has focus; anywhere else the page stays exactly as it is (scroll, loaded items, what you
+ * typed) and a toast sums the sync up.
+ */
+async function syncDone(accounts, refresh) {
+  const since = (syncSince || Date.now()) - 3000;
+  syncSince = 0;
+  refreshDupeBadge();
+  const runs = (await api(`/syncs?limit=${Math.max(1, accounts.length)}`).catch(() => [])).filter((s) => s.started_at >= since);
+  const inPlace = ['dashboard', 'accounts'].includes(state.view) && !$('.overlay') && !document.activeElement?.matches('input, textarea, select');
+  const failed = runs.filter((s) => s.status === 'error');
+  if (failed.length) {
+    const a = accounts.find((x) => x.id === failed[0].account_id);
+    toast(`${a?.name || failed[0].account_name || 'Sync'} sync failed${failed[0].error ? ` — ${failed[0].error}` : ''}`, { bad: true, ms: Infinity, action: { label: 'Fix', run: () => navigate('/accounts') } });
+  } else {
+    const n = runs.reduce((t, s) => t + (s.sessions_created || 0), 0);
+    const min = runs.reduce((t, s) => t + (s.minutes_added || 0), 0);
+    const show = { label: 'Show', run: () => (state.view === 'dashboard' ? rerender() : navigate('/sessions')) };
+    toast(n ? `Sync complete · ${plural(n, 'new session')} (${fmtMin(min)})` : 'Sync complete · no new play', n && !inPlace ? { action: show } : {});
+  }
+  if (refresh && inPlace) rerender();
 }
 
 async function syncAll() {
   try {
     const r = await api('/sync', { method: 'POST' });
-    if (!r.started) { toast('No accounts to sync — connect one first'); return navigate('/accounts'); }
-    toast(`Syncing ${r.started} account${r.started > 1 ? 's' : ''}…`);
-    state.syncing = true;
+    if (!r.started) { toast('No accounts to sync — connect one first', { action: { label: 'Add account', run: () => navigate('/accounts?add=1') } }); return; }
+    toast(`Syncing ${plural(r.started, 'account')}…`);
+    syncStarted();
     setTimeout(() => watchSync(), 800);
   } catch (e) { fail(e); }
 }
 
-function applyBadges() {
-  const set = (sel, n) => { const b = $(sel); if (b) { b.textContent = n > 999 ? '999+' : n; b.classList.toggle('hide', !n); } };
-  set('#dupe-badge', state.badges?.dupes || 0);
-  set('#err-badge', state.badges?.errors || 0);
+/** Sidebar badges, the phone More tab's dot and name, and the counts on the More page. */
+export function applyBadges() {
+  const b = state.badges || {};
+  const show = (n) => (n > 999 ? '999+' : String(n || 0));
+  for (const [sel, n] of [['#dupe-badge', b.dupes], ['#err-badge', b.errors], ['[data-count="dupes"]', b.dupes], ['[data-count="errors"]', b.errors]]) {
+    for (const el of $$(sel)) { el.textContent = show(n); el.classList.toggle('hide', !n); }
+  }
+  const more = $('.tabbar [data-nav="/more"]');
+  if (!more) return;
+  const parts = [b.errors && plural(b.errors, 'error'), b.dupes && plural(b.dupes, 'duplicate')].filter(Boolean);
+  const pip = more.querySelector('.pip');
+  pip.classList.toggle('hide', !parts.length);
+  pip.classList.toggle('bad', !!b.errors);
+  if (parts.length) more.setAttribute('aria-label', `More, ${parts.join(', ')}`); else more.removeAttribute('aria-label');
 }
 
 async function refreshDupeBadge() {
@@ -520,6 +798,16 @@ async function refreshDupeBadge() {
   try { state.badges.errors = (await api('/logs?level=error&limit=1')).counts_24h?.error || 0; } catch { /* ignore */ }
   try { const d = await api('/duplicates?summary=true'); state.badges.dupes = d.counts.suggestions + d.counts.double_counted; } catch { /* ignore */ }
   applyBadges();
+}
+
+/** Year in review points at the latest year with play. */
+async function refreshYear() {
+  try {
+    const y = (await api('/stats/years'))[0];
+    if (!y || y === state.latestYear) return;
+    state.latestYear = y;
+    $$('[data-nav="/wrapped"]').forEach((a) => a.setAttribute('href', `/wrapped/${y}`));
+  } catch { /* ignore */ }
 }
 
 // ---------- global events ----------
@@ -535,9 +823,12 @@ document.addEventListener('click', (e) => {
   const act = e.target.closest('[data-action]');
   if (!act) return;
   if (act.dataset.action === 'sync-all') syncAll();
+  if (act.dataset.action === 'retry') rerender();
   if (act.dataset.action === 'logout') api('/auth/logout', { method: 'POST' }).then(() => { state.needLogin = true; render(); });
 });
-window.addEventListener('popstate', () => route());
+window.addEventListener('popstate', () => route({ focus: true }));
+// install: the browser's prompt is kept for the Install button in Settings
+window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); state.installPrompt = e; });
 
 // ---------- colour: WCAG contrast from sRGB, mixing in OKLab like CSS color-mix() ----------
 const rgbOf = (hex) => {
@@ -638,25 +929,29 @@ export function applyTheme(s) {
   } catch { /* private mode */ }
 }
 
-async function boot() {
+let themeWatch = false;
+async function boot({ focus = false } = {}) {
   const st = await api('/auth/status').catch(() => ({ auth_enabled: false, authenticated: true }));
   state.authEnabled = st.auth_enabled;
   if (!st.authenticated) { state.needLogin = true; return render(); }
   state.settings = await api('/settings').catch(() => ({}));
   applyTheme(state.settings);
-  // follow the theme when it is 'auto' and the system switches
-  matchMedia('(prefers-color-scheme: light)').addEventListener?.('change', () => { if (state.settings?.theme === 'auto') applyTheme(state.settings); });
+  // follow the theme when it is 'auto' and the system switches (once, however often you sign in)
+  if (!themeWatch) matchMedia('(prefers-color-scheme: light)').addEventListener?.('change', () => { if (state.settings?.theme === 'auto') applyTheme(state.settings); });
+  themeWatch = true;
   // start page (only when opening the app at its root)
   const start = { library: '/library', sessions: '/sessions', stats: '/stats' }[state.settings.start_page];
   let started = false;
   try { started = !!sessionStorage.getItem('pt-started'); sessionStorage.setItem('pt-started', '1'); } catch { /* ignore */ }
   if (start && current() === '/' && !started) history.replaceState({}, '', start);
-  await route();
+  await route({ focus });
   watchSync({ refresh: true });
   refreshDupeBadge();
+  refreshYear();
 }
 
-if ('serviceWorker' in navigator && location.protocol === 'https:' || location.hostname === 'localhost') {
-  navigator.serviceWorker?.register('/sw.js').catch(() => {});
+// offline support needs a secure context: HTTPS, or localhost / 127.0.0.1
+if ('serviceWorker' in navigator && window.isSecureContext) {
+  navigator.serviceWorker.register('/sw.js').catch(() => {});
 }
 boot();
