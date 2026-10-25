@@ -141,15 +141,21 @@ export async function openPage(browser, origin, { viewport = DESKTOP, colorSchem
   return { ctx, page, rec, settle, unexpectedConsole, phone, close: () => ctx.close() };
 }
 
-/** Wait until the SPA finished rendering the current route (skeleton gone, heading present). */
+/**
+ * Wait until the SPA finished rendering the current route: the new #view is shown and no longer
+ * aria-busy (the page being left stays on screen, without an id, until then), no skeleton, a heading.
+ */
 export async function waitView(page, timeout = 8000) {
-  await page.waitForFunction(() => {
-    const v = document.querySelector('#view') || document.querySelector('#login-form');
-    if (!v) return false;
-    if (v.id === 'login-form') return true;
-    if (v.querySelector('.skel')) return false;
-    return !!v.querySelector('h1, .empty h2');
-  }, null, { timeout });
+  await page.waitForFunction(viewReady, null, { timeout });
+}
+/** In the page: true once the current route has rendered (see waitView). */
+export function viewReady() {
+  const v = document.querySelector('#view') || document.querySelector('#login-form');
+  if (!v) return false;
+  if (v.id === 'login-form') return true;
+  if (v.hidden || v.getAttribute('aria-busy') === 'true' || document.querySelector('.main.leaving')) return false;
+  if (v.querySelector('.skel')) return false;
+  return !!v.querySelector('h1, .empty h2');
 }
 
 /**

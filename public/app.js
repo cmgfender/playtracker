@@ -90,14 +90,23 @@ export const STATUSES = {
   wishlist: { label: 'Wishlist', cls: '' },
 };
 
-function hue(s) { let h = 0; for (const c of String(s)) h = (h * 33 + c.charCodeAt(0)) % 360; return h; }
+/** A title's placeholder hue (0-359): the same game always gets the same colours. */
+export function coverHue(s) { let h = 0; for (const c of String(s)) h = (h * 33 + c.charCodeAt(0)) % 360; return h; }
 
+const SMALL_WORDS = new Set(['of', 'the', 'a', 'an']);
+/** Two initials from the significant words: "God of War" -> "GW", "Baldur's Gate 3" -> "BG". */
+export function monogram(title) {
+  const words = String(title || '').replace(/[^\p{L}\p{N}\s]/gu, '').split(/\s+/).filter(Boolean);
+  const sig = words.filter((w) => !SMALL_WORDS.has(w.toLowerCase()));
+  return (sig.length ? sig : words).slice(0, 2).map((w) => w[0]).join('').toUpperCase();
+}
+
+/** Cover art, or a tinted placeholder (colours from app.css, per theme) with the title and a monogram. */
 export function cover(g, cls = '', style = '') {
   const title = g.title || '';
-  const h = hue(title);
-  const initials = title.length > 28 ? title.split(/\s+/).slice(0, 4).join(' ') : title;
+  const full = title.length > 28 ? title.split(/\s+/).slice(0, 4).join(' ') : title;
   const img = g.cover_url ? `<img loading="lazy" decoding="async" src="${esc(g.cover_url)}" alt="" onload="this.classList.add('ok')" onerror="this.remove()">` : '';
-  return `<div class="cover ${cls}" style="${style}background:linear-gradient(150deg,hsl(${h} 55% 38%),hsl(${(h + 50) % 360} 60% 22%))"><div class="ph"><span class="full">${esc(initials)}</span><span class="ini">${esc(title.replace(/[^\p{L}\p{N} ]/gu, '').split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0]).join('').toUpperCase())}</span></div>${img}</div>`;
+  return `<div class="cover ${cls}" style="--ph-h:${coverHue(title)};${style}"><div class="ph"><span class="full">${esc(full)}</span><span class="ini">${esc(monogram(title))}</span></div>${img}</div>`;
 }
 
 // ---------- icons (inline, stroke-based) ----------
@@ -250,10 +259,21 @@ function current() {
   return location.pathname.replace(/\/+$/, '') || '/';
 }
 
+const navActive = (p, path) => (path === '/' ? p === '/' : path === '/more' ? !NAV.filter((n) => n.tab).some((n) => navActive(p, n.path)) : p.startsWith(path) || (path === '/library' && p.startsWith('/game')));
+
+/** Move the highlight in the sidebar and tab bar (the shell stays: rebuilding it would drop focus and the leaving view). */
+function markNav(p) {
+  $$('.side-nav a, .tabbar a').forEach((a) => {
+    const on = navActive(p, a.getAttribute('href'));
+    a.classList.toggle('active', on);
+    if (on) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
+  });
+}
+
 function shell() {
   const p = current();
-  const active = (n) => (n.path === '/' ? p === '/' : p.startsWith(n.path) || (n.path === '/library' && p.startsWith('/game')));
-  const moreActive = !NAV.filter((n) => n.tab).some(active);
+  const active = (n) => navActive(p, n.path);
+  const moreActive = navActive(p, '/more');
   const cur = (on) => (on ? ' aria-current="page"' : '');
   // the skip link comes first, so the first Tab offers it; #view takes focus from script (tabindex -1)
   return `<div class="shell">
@@ -302,32 +322,121 @@ const ROUTES = [
   [/^\/more$/, 'more'],
 ];
 
+// Route skeletons, shaped like the page they stand in for; aria-hidden, and #view is aria-busy meanwhile.
+const sk = (h, style = '') => `<div class="skel" style="height:${h}px;${style}"></div>`;
+const SK_HEAD = sk(34, 'width:200px;margin-bottom:22px');
+const SKELETONS = {
+  library: () => `${SK_HEAD}${sk(40, 'margin-bottom:16px')}<div class="lib-grid">${'<div><div class="skel" style="aspect-ratio:2/3"></div></div>'.repeat(12)}</div>`,
+  sessions: () => `${SK_HEAD}<div class="col" style="gap:8px">${sk(56).repeat(8)}</div>`,
+  game: () => `${sk(200, 'margin-bottom:18px;border-radius:22px')}<div class="grid grid-main">${sk(320)}${sk(240)}</div>`,
+  settings: () => `${SK_HEAD}<div class="grid grid-2">${sk(220).repeat(4)}</div>`,
+  default: () => `${SK_HEAD}<div class="kpis">${sk(96).repeat(5)}</div>${sk(260, 'margin-top:16px')}`,
+};
+SKELETONS.system = SKELETONS.sessions;
+SKELETONS.accounts = SKELETONS.settings;
+const skeleton = (name) => `<div aria-hidden="true">${(SKELETONS[name] || SKELETONS.default)()}</div>`;
+
+/**
+ * A fresh, hidden #view for the next page. The one on screen stays (dimmed after a moment, inert, its
+ * ids dropped so the new page's lookups only find its own nodes) until the new page has rendered; a
+ * view that never showed (an earlier navigation still loading) is thrown away.
+ */
+function beginView() {
+  const prev = $('#view');
+  if (prev?.hidden) prev.remove();
+  else if (prev) {
+    prev.removeAttribute('id');
+    prev.querySelectorAll('[id]').forEach((el) => el.removeAttribute('id'));
+    prev.inert = true;
+    prev.setAttribute('aria-hidden', 'true');
+    prev.classList.add('leaving');
+  }
+  const view = document.createElement('main');
+  view.className = 'main';
+  view.id = 'view';
+  view.tabIndex = -1;
+  view.hidden = true;
+  view.setAttribute('aria-busy', 'true');
+  $('#app .tabbar').before(view);
+  return view;
+}
+function showView(view) {
+  if (!view.isConnected) return;
+  $$('#app .main.leaving').forEach((v) => v.remove());
+  view.hidden = false;
+}
+
 let renderSeq = 0;
+let shellKey = '';
 export async function route() {
   if (state.needLogin) return render();
   const p = current();
-  $('#app').innerHTML = shell();
-  applyBadges();
-  if (state.syncing) $$('[data-action="sync-all"]').forEach((b) => busy(b, true));
-  const view = $('#view');
+  // the shell is only rebuilt when what it shows changes (the Log out button)
+  if (!$('#app .shell') || shellKey !== String(state.authEnabled)) {
+    $('#app').innerHTML = shell();
+    shellKey = String(state.authEnabled);
+    applyBadges();
+    if (state.syncing) $$('[data-action="sync-all"]').forEach((b) => busy(b, true));
+  } else markNav(p);
+  const view = beginView();
   const seq = ++renderSeq;
+  const stale = () => seq !== renderSeq;
   for (const [re, name] of ROUTES) {
     const m = re.exec(p);
     if (!m) continue;
     state.view = name;
     setTitle(name === 'wrapped' ? `${m[1]} in review` : PAGE_TITLES[name]);
-    view.innerHTML = `<div class="skel" style="height:34px;width:200px;margin-bottom:22px"></div><div class="kpis">${'<div class="skel" style="height:96px"></div>'.repeat(5)}</div><div class="skel" style="height:260px;margin-top:16px"></div>`;
+    // a page that answers within 150ms replaces the old one directly: no skeleton flash
+    const timer = setTimeout(() => {
+      if (stale()) return;
+      if (!view.firstElementChild) view.innerHTML = skeleton(name);
+      showView(view);
+    }, 150);
     try {
-      await pages[name](view, ...m.slice(1), () => seq !== renderSeq);
+      await pages[name](view, ...m.slice(1), stale);
     } catch (e) {
-      if (seq !== renderSeq) return;
-      if (state.needLogin) return;
+      if (stale() || state.needLogin) { clearTimeout(timer); return; }
       view.innerHTML = `<div class="empty"><div class="em-ic">${icon('info')}</div><h2>Something went wrong</h2><p>${esc(e.message)}</p><button class="btn" onclick="location.reload()">Reload</button></div>`;
     }
+    clearTimeout(timer);
+    if (stale()) return;
+    showView(view);
+    view.removeAttribute('aria-busy');
+    afterRender(view);
     return;
   }
   setTitle('Not found');
   view.innerHTML = `<div class="empty"><h2>Not found</h2><a class="btn" href="/" data-link>Go home</a></div>`;
+  showView(view);
+  view.removeAttribute('aria-busy');
+}
+
+// ---------- page chrome: sticky offsets, sideways scrollers ----------
+// day headers and the bulk bar stick below the toolbar: --toolbar-h follows its height
+const toolbarRO = typeof ResizeObserver === 'function'
+  ? new ResizeObserver((es) => es.forEach((e) => e.target.closest('.main')?.style.setProperty('--toolbar-h', `${e.target.offsetHeight}px`))) : null;
+/** .more-r fades the right edge of a chip / segment row while more of it is off to the right. */
+const scrollHint = (el) => el.classList.toggle('more-r', el.scrollLeft + el.clientWidth < el.scrollWidth - 2);
+/** Centre the chosen chip / segment in its row and mark rows that scroll on. */
+export function scrollHints(root) {
+  for (const el of root.querySelectorAll('.chips, .seg')) {
+    const on = el.querySelector('.on');
+    if (on && el.scrollWidth > el.clientWidth) {
+      const a = el.getBoundingClientRect();
+      const b = on.getBoundingClientRect();
+      el.scrollLeft += b.left - a.left - (el.clientWidth - b.width) / 2;
+    }
+    scrollHint(el);
+  }
+}
+document.addEventListener('scroll', (e) => { if (e.target instanceof Element && e.target.matches('.chips, .seg')) scrollHint(e.target); }, true);
+window.addEventListener('resize', () => $$('#view .chips, #view .seg').forEach(scrollHint));
+
+function afterRender(view) {
+  toolbarRO?.disconnect();
+  const tb = view.querySelector(':scope > .toolbar');
+  if (tb && toolbarRO) toolbarRO.observe(tb);
+  scrollHints(view);
 }
 
 export function rerender() {

@@ -4,9 +4,12 @@ import {
 } from './app.js';
 
 const arrow = () => icon('arrowR', 'ic-inline'); // trailing "go there" arrow on links
-import { barChart, sparkline, donut, heatmap, topList, platformLegend, bindTips } from './charts.js';
+import { barChart, sparkline, donut, heatmap, topList, platformLegend, mountCharts } from './charts.js';
 
 const WD = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+// time-of-day axis: 12a / 6a / 12p / 6p, or 00 / 06 / 12 / 18 where the clock is 24-hour
+const H24 = /h2[34]/.test(new Intl.DateTimeFormat(undefined, { hour: 'numeric' }).resolvedOptions().hourCycle || '');
+const hourLabel = (h) => (H24 ? String(h).padStart(2, '0') : `${h % 12 || 12}${h < 12 ? 'a' : 'p'}`);
 // a URL safe inside CSS url('...'): quotes, parentheses, backslashes and newlines percent-encoded
 const cssUrl = (u) => String(u).replace(/['"()\\\s]/g, (c) => `%${c.charCodeAt(0).toString(16).padStart(2, '0')}`);
 
@@ -18,9 +21,17 @@ function seriesLabel(key, group) {
   return d.toLocaleDateString(undefined, { day: 'numeric' });
 }
 
+/** A bucket in words, for chart summaries: "Oct 2", "the week of Oct 2", "October 2026". */
+function seriesName(key, group) {
+  if (group === 'month') return new Date(`${key}-01T12:00`).toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
+  if (group === 'year') return key;
+  const d = new Date(`${key}T12:00`).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+  return group === 'week' ? `the week of ${d}` : d;
+}
+
 function seriesTip(key, group, minutes) {
   let label;
-  if (group === 'month') label = new Date(`${key}-01T12:00`).toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
+  if (group === 'month') label = seriesName(key, group);
   else if (group === 'year') label = key;
   else if (group === 'week') label = `Week of ${new Date(`${key}T12:00`).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}`;
   else label = new Date(`${key}T12:00`).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
@@ -33,6 +44,7 @@ function stackedSeries(stats) {
   const est = stats.series_estimated || [];
   return stats.series.map((s, i) => ({
     label: seriesLabel(s.key, stats.range.group),
+    name: seriesName(s.key, stats.range.group),
     value: s.minutes,
     tip: seriesTip(s.key, stats.range.group, s.minutes) + (est[i] ? ` (${fmtMin(est[i])} estimated from history)` : ''),
     stack: [...plats.map((p) => ({ key: p, value: stats.series_by_platform[p][i] || 0, color: plat(p).color })), ...(est[i] ? [{ key: 'estimated', value: est[i], color: 'url(#pt-hatch)' }] : [])],
@@ -68,25 +80,49 @@ function sessionWhen(s) {
   return fmtDate(s.window_end || s.created_at);
 }
 
+/** sessionWhen() for one phone line: "6:26–11:49 PM", "~" in front of times spread over a sync window. */
+function sessionWhenShort(s) {
+  const ampm = /\s?([AP]M)$/i;
+  const span = (a, b) => {
+    const x = fmtTime(a); const y = fmtTime(b);
+    return x.match(ampm)?.[1] && x.match(ampm)?.[1] === y.match(ampm)?.[1] ? `${x.replace(ampm, '')}–${y}` : `${x}–${y}`;
+  };
+  if (s.precise) return span(s.started_at, s.ended_at);
+  if (s.window_start && s.window_end) {
+    if (s.window_end - s.window_start < 36 * 3600e3) return `~${span(s.window_start, s.window_end)}`;
+    return `${fmtDate(s.window_start)}–${fmtDate(s.window_end)}`;
+  }
+  return fmtDate(s.window_end || s.created_at);
+}
+
 function sourceBadge(s) {
+  // the "≈" badges carry the session's note too: on a phone the note itself is not shown
+  const approx = (t) => esc(s.note ? `${t} · ${s.note}` : t);
   if (s.kind === 'baseline') return '<span class="badge">history</span>';
   if (s.kind === 'estimate') return `<span class="badge" title="${esc(CONF[s.confidence]?.[2] || '')}">estimated · ${esc(s.confidence || '')}</span>`;
   if (s.source === 'manual') return '<span class="badge accent">manual</span>';
   if (s.note?.startsWith('Length estimated')) return '<span class="badge" title="The platform reports no playtime for this game and live presence missed this session: it ends at the reported last-played time, with your typical session length. Edit it if you know better.">≈ length</span>';
   if (s.confidence === 'exact') return `<span class="badge good" title="${CONF.exact[2]}">● live</span>${s.device ? `<span class="badge">${esc(s.device)}</span>` : ''}`;
-  if (s.device) return `<span class="badge">${esc(s.device)}</span>${s.precise ? '' : '<span class="badge" title="Exact time unknown — spread across the sync window">≈</span>'}`;
+  if (s.device) return `<span class="badge">${esc(s.device)}</span>${s.precise ? '' : `<span class="badge" title="${approx('Exact time unknown — spread across the sync window')}">≈</span>`}`;
   if (s.source === 'import') return '<span class="badge">imported</span>';
   if (s.source === 'api') return '<span class="badge">api</span>';
-  return s.precise ? '' : '<span class="badge" title="Exact time unknown — spread across the sync window">≈</span>';
+  return s.precise ? '' : `<span class="badge" title="${approx('Exact time unknown — spread across the sync window')}">≈</span>`;
 }
 
-function sessionItem(s, { showGame = true, selectable = false, selected = false } = {}) {
-  return `<div class="item ${selected ? 'sel' : ''}" data-sid="${s.id}">
+/**
+ * A session row. On a phone line 2 is one line: platform dot, compact time, source badge (the note
+ * moves into the badge's title). platLabel: name the platform (a game page whose game has several entries);
+ * dated: that line starts with the day (a list whose day headers a phone hides).
+ */
+function sessionItem(s, { showGame = true, selectable = false, selected = false, platLabel = true, dated = false } = {}) {
+  const t = s.ended_at || s.window_end || s.created_at;
+  const day = dated ? `${['Today', 'Yesterday'].includes(dayLabel(t)) ? dayLabel(t) : fmtDate(t)} · ` : '';
+  return `<div class="item sess ${selected ? 'sel' : ''}" data-sid="${s.id}">
     ${selectable ? `<input type="checkbox" class="check" data-sel="${s.id}" ${selected ? 'checked' : ''}>` : ''}
-    ${showGame ? `<a href="/game/${s.game_id}" data-link>${cover(s)}</a>` : `<span class="dot" style="background:${plat(s.platform).color};width:10px;height:10px"></span>`}
+    ${showGame ? `<a href="/game/${s.game_id}" data-link>${cover(s)}</a>` : `<span class="dot" style="background:${plat(s.platform).color};width:10px;height:10px" title="${esc(plat(s.platform).label)}"></span>`}
     <div class="grow">
       ${showGame ? `<a href="/game/${s.game_id}" data-link class="ttl ellipsis" style="display:block">${esc(s.title)}</a>` : ''}
-      <div class="sub">${showGame ? platDot(s.platform) : `<b style="color:var(--text)">${esc(plat(s.platform).label)}</b>`}<span>${esc(sessionWhen(s))}</span>${sourceBadge(s)}${s.note ? `<span class="ellipsis" title="${esc(s.note)}">· ${esc(s.note)}</span>` : ''}</div>
+      <div class="sub">${showGame ? platDot(s.platform) : platLabel ? `<b style="color:var(--text)">${esc(plat(s.platform).label)}</b>` : ''}<span class="when">${esc(sessionWhen(s))}</span><span class="when-c">${esc(day + sessionWhenShort(s))}</span>${sourceBadge(s)}${s.note ? `<span class="note ellipsis" title="${esc(s.note)}">· ${esc(s.note)}</span>` : ''}</div>
     </div>
     <div class="amt">${fmtMin(s.minutes)}</div>
     ${selectable ? '' : `<button class="btn ghost sm icon" data-edit-session="${s.id}" aria-label="Edit session">${icon('edit')}</button>`}
@@ -286,7 +322,7 @@ async function dashboard(view, stale) {
     jump: () => (d.now_playing.length ? `<div class="card"><div class="card-h"><h2>Jump back in</h2><a href="/library?sort=trending" data-link>See all</a></div>
       <div class="carousel">${d.now_playing.map((g) => `<a class="tile" href="/game/${g.id}" data-link>${cover(g)}<div class="t">${esc(g.title)}</div><div class="m">${g.platforms.map(platDot).join('')} ${fmtMin(g.recent_minutes)} · 2 wks</div></a>`).join('')}</div></div>` : ''),
     chart: () => `<div class="card"><div class="card-h"><h2>Last 30 days</h2><a href="/stats" data-link>Stats${arrow()}</a></div>
-        ${barChart(stackedSeries(mo), { height: 210 })}${platformLegend(mo.platforms, estimatedLegend(mo))}</div>`,
+        ${barChart(stackedSeries(mo), { size: 'card', title: 'Playtime per day, last 30 days' })}${platformLegend(mo.platforms, estimatedLegend(mo))}</div>`,
     top: () => `<div class="card"><div class="card-h"><h2>Top this month</h2></div>
         ${mo.top_games.length ? topList(mo.top_games, { coverFn: (g) => cover(g), limit: 6 }) : '<p class="muted">No play in the last 30 days.</p>'}</div>`,
     recent: () => `<div class="card"><div class="card-h"><h2>Recent sessions</h2><a href="/sessions" data-link>All sessions${arrow()}</a></div>
@@ -298,7 +334,7 @@ async function dashboard(view, stale) {
           ${!a.enabled ? '<span class="badge">Paused</span>' : a.push ? '<span class="badge" title="Totals are pushed through the API">API</span>' : `<span class="tiny muted nowrap">${a.next_sync_at ? `next ${ago(a.next_sync_at)}` : 'Manual'}</span>`}</div>`).join('') || '<p class="muted">No accounts linked.</p>'}
         </div>
         <div class="row" style="margin-top:12px"><button class="btn sm" data-action="sync-all">${icon('sync')}<span class="lbl">Sync now</span></button><a class="btn sm ghost" href="/accounts?add=1" data-link>${icon('plus')}Add</a></div></div>`,
-    heatmap: () => (heat ? `<div class="card"><div class="card-h"><h2>${year} at a glance</h2><a href="/stats" data-link>Stats${arrow()}</a></div><div class="scroll-x">${heatmap(year, heat.days, { weekStartsOn: state.settings?.week_starts_on ?? 1, estimated: heat.estimated_days || {} })}</div></div>` : ''),
+    heatmap: () => (heat ? `<div class="card"><div class="card-h"><h2>${year} at a glance</h2><a href="/stats" data-link>Stats${arrow()}</a></div>${heatmap(year, heat.days, { weekStartsOn: state.settings?.week_starts_on ?? 1, estimated: heat.estimated_days || {} })}</div>` : ''),
     backlog: () => (upNext ? `<div class="card"><div class="card-h"><h2>Up next</h2><a href="/library?status=playing" data-link>Library${arrow()}</a></div>
       ${upNext.items.length ? `<div class="carousel">${upNext.items.map((g) => `<a class="tile" href="/game/${g.id}" data-link>${cover(g)}<div class="t">${esc(g.title)}</div><div class="m">${g.platforms.map(platDot).join('')} ${STATUSES[g.status]?.label || ''}</div></a>`).join('')}</div>`
         : '<p class="muted small" style="margin:0">Mark games as <b>Playing</b> or <b>Backlog</b> on their page and they show up here.</p>'}</div>` : ''),
@@ -319,7 +355,7 @@ async function dashboard(view, stale) {
     ${blocks.join('\n') || `<div class="card muted">Every section is hidden. <a href="#" id="dash-custom2" class="link">Customize</a> to bring some back.</div>`}
     </div>
     <button class="fab" id="fab-log" aria-label="Log session">${icon('plus')}</button>`;
-  bindTips(view);
+  mountCharts(view);
   $('#dash-log')?.addEventListener('click', () => logSessionModal());
   $('#fab-log').addEventListener('click', () => logSessionModal());
   const custom = (e) => { e?.preventDefault(); layoutModal(); };
@@ -504,7 +540,8 @@ async function library(view, stale) {
   // keep loading while the sentinel is on screen (tall screens / fast scrolling)
   const checkMore = () => {
     const el = $('#lib-more');
-    if (el && el.getBoundingClientRect().top < window.innerHeight + 800) more();
+    // a view still being prepared has no layout yet: the observer takes over once it shows
+    if (el && !view.hidden && el.getBoundingClientRect().top < window.innerHeight + 800) more();
   };
   const sync = () => {
     const p = new URLSearchParams();
@@ -568,6 +605,9 @@ async function game(view, id, stale) {
   const pct = (m) => (s.total_minutes ? Math.max(0, Math.min(100, (m / s.total_minutes) * 100)) : 0);
   const rating = g.rating || 0;
   const hasSeries = g.series.some((x) => x.minutes > 0);
+  // the 10 most recent sessions; the rest are a click away on Sessions, filtered to this game
+  const plays = g.sessions.filter((x) => x.kind === 'play');
+  const recent = plays.slice(0, 10);
   view.innerHTML = `
     <a href="/library" data-link class="btn ghost sm" style="margin:-4px 0 10px -6px" onclick="if(history.length>1){event.preventDefault();event.stopPropagation();history.back()}">${icon('back')}Back</a>
     <div class="hero fade-in">
@@ -589,7 +629,8 @@ async function game(view, id, stale) {
       <div class="stack">
         <div class="card">
           <div class="row wrap between" style="margin-bottom:14px">
-            <div class="seg" id="g-status">${Object.entries(STATUSES).map(([k, v]) => `<button data-st="${k}" class="${g.status === k ? 'on' : ''}">${v.label}</button>`).join('')}</div>
+            <div class="seg desk-only" id="g-status">${Object.entries(STATUSES).map(([k, v]) => `<button data-st="${k}" class="${g.status === k ? 'on' : ''}">${v.label}</button>`).join('')}</div>
+            <select class="input mob-only" id="g-status-sel" aria-label="Status" style="width:auto">${Object.entries(STATUSES).map(([k, v]) => `<option value="${k}" ${g.status === k ? 'selected' : ''}>${v.label}</option>`).join('')}</select>
             <div class="row">
               <div class="stars" id="g-stars">${[1, 2, 3, 4, 5].map((i) => `<button data-r="${i * 2}" class="${rating >= i * 2 ? 'on' : ''}" aria-label="${i} stars">${icon('star')}</button>`).join('')}</div>
               <button class="btn icon ghost${g.favorite ? ' fav-on' : ''}" id="g-fav" aria-label="Favorite" aria-pressed="${!!g.favorite}">${icon(g.favorite ? 'heartFill' : 'heart')}</button>
@@ -606,10 +647,10 @@ async function game(view, id, stale) {
             <div class="legend"><span><i class="dot" style="background:var(--accent-mark)"></i>Tracked ${fmtMin(s.tracked_minutes)}</span>${s.estimated_minutes ? `<span><i class="dot hatch-dot"></i>Estimated history ${fmtMin(s.estimated_minutes)}</span>` : ''}${s.baseline_minutes ? `<span><i class="dot" style="background:var(--line)"></i>Undated ${fmtMin(s.baseline_minutes)}</span>` : ''}</div>
           </div>
         </div>
-        ${hasSeries ? `<div class="card"><div class="card-h"><h2>Playtime by month</h2></div>${barChart(g.series.slice(-24).map((x) => ({ label: seriesLabel(x.key, 'month'), value: x.minutes, tip: seriesTip(x.key, 'month', x.minutes) + (x.estimated ? ` (${fmtMin(x.estimated)} estimated)` : ''), stack: [{ value: x.minutes - (x.estimated || 0), color: 'var(--accent-mark)' }, { value: x.estimated || 0, color: 'url(#pt-hatch)' }] })), { height: 180 })}</div>` : ''}
+        ${hasSeries ? `<div class="card"><div class="card-h"><h2>Playtime by month</h2></div>${barChart(g.series.slice(-24).map((x) => ({ label: seriesLabel(x.key, 'month'), value: x.minutes, tip: seriesTip(x.key, 'month', x.minutes) + (x.estimated ? ` (${fmtMin(x.estimated)} estimated)` : ''), name: seriesName(x.key, 'month'), stack: [{ value: x.minutes - (x.estimated || 0), color: 'var(--accent-mark)' }, { key: 'estimated', value: x.estimated || 0, color: 'url(#pt-hatch)' }] })), { size: 'card', title: `${g.title}, playtime by month` })}</div>` : ''}
         <div class="card"><div class="card-h"><h2>Sessions</h2><button class="btn sm" id="g-log">${icon('plus')}Log session</button></div>
-          <div class="list" id="g-sessions">${g.sessions.length ? groupByDay(g.sessions.filter((x) => x.kind === 'play')).map((grp, i) => (i === 25 ? '<button class="btn sm" id="g-more" style="margin:12px auto">Show all sessions</button><div id="g-rest" class="hide">' : '') + `<div class="day-h"><span>${dayLabel(grp.day)}</span><span>${fmtMin(grp.minutes)}</span></div>${grp.items.map((x) => sessionItem(x, { showGame: false })).join('')}`).join('') + (groupByDay(g.sessions.filter((x) => x.kind === 'play')).length > 25 ? '</div>' : '') : '<p class="muted">No sessions yet.</p>'}
-          ${g.sessions_truncated ? `<a class="btn sm" href="/sessions?game_id=${g.id}" data-link style="margin:12px 0">All ${s.sessions.toLocaleString()} sessions${arrow()}</a>` : ''}
+          <div class="list dated" id="g-sessions">${recent.length ? groupByDay(recent).map((grp) => `<div class="day-h"><span>${dayLabel(grp.day)}</span><span>${fmtMin(grp.minutes)}</span></div>${grp.items.map((x) => sessionItem(x, { showGame: false, platLabel: g.entries.length > 1, dated: true })).join('')}`).join('') : '<p class="muted">No sessions yet.</p>'}
+          ${Math.max(s.sessions, plays.length) > recent.length ? `<a class="btn sm" href="/sessions?game_id=${g.id}" data-link style="margin:12px 0">All ${Math.max(s.sessions, plays.length).toLocaleString()} sessions${arrow()}</a>` : ''}
           ${g.sessions.filter((x) => x.kind === 'baseline' && x.source !== 'inferred').map((x) => `<div class="item"><span class="dot" style="background:var(--line);width:10px;height:10px"></span><div class="grow"><div class="sub"><b style="color:var(--text)">${esc(plat(x.platform).label)}</b> ${esc(x.note || 'History')} · ${fmtDate(x.window_end)}</div></div><div class="amt muted">${fmtMin(x.minutes)}</div><button class="btn ghost sm icon" data-edit-session="${x.id}">${icon('edit')}</button></div>`).join('')}
           </div>
         </div>
@@ -638,10 +679,17 @@ async function game(view, id, stale) {
         </div>
       </div>
     </div>`;
-  bindTips(view);
+  mountCharts(view);
   bindSessionEdits(view);
   const patch = async (body, msg) => { try { await api(`/games/${id}`, { method: 'PATCH', body }); if (msg) toast(msg); } catch (e) { fail(e); } };
-  $('#g-status').addEventListener('click', async (e) => { const b = e.target.closest('[data-st]'); if (!b) return; $$('#g-status button').forEach((x) => x.classList.toggle('on', x === b)); await patch({ status: b.dataset.st }); });
+  // a segment on desktop, a select on a phone (eight statuses do not fit a row); both stay in step
+  const setStatus = async (st) => {
+    $$('#g-status button').forEach((x) => x.classList.toggle('on', x.dataset.st === st));
+    $('#g-status-sel').value = st;
+    await patch({ status: st });
+  };
+  $('#g-status').addEventListener('click', (e) => { const b = e.target.closest('[data-st]'); if (b) setStatus(b.dataset.st); });
+  $('#g-status-sel').addEventListener('change', (e) => setStatus(e.target.value));
   $('#g-stars').addEventListener('click', async (e) => {
     const b = e.target.closest('[data-r]'); if (!b) return;
     const r = Number(b.dataset.r) === (g.rating || 0) ? null : Number(b.dataset.r);
@@ -662,7 +710,6 @@ async function game(view, id, stale) {
   let nt;
   $('#g-notes').addEventListener('input', (e) => { $('#g-notes-st').textContent = 'Saving…'; clearTimeout(nt); nt = setTimeout(async () => { await patch({ notes: e.target.value }); $('#g-notes-st').textContent = 'Saved'; }, 600); });
   $('#g-log').addEventListener('click', () => logSessionModal(g));
-  $('#g-more')?.addEventListener('click', (e) => { e.target.remove(); $('#g-rest').classList.remove('hide'); });
   $('#g-edit').addEventListener('click', () => modal({
     title: 'Edit game',
     body: `<form class="stack" id="ge"><div class="field"><label>Title</label><input class="input" name="title" value="${esc(g.title)}"></div>
@@ -799,14 +846,33 @@ async function sessions(view, stale) {
         <button class="chip" data-kind="baseline">History / baseline</button>
       </div>
     </div>
-    <div id="s-bulk" class="card hide" style="position:sticky;top:70px;z-index:11;margin-bottom:12px;padding:10px 14px"><div class="row wrap"><b id="s-bulk-n">0 selected</b><span class="grow"></span>
+    <div id="s-bulk" class="card bulk-bar hide"><div class="row wrap"><b id="s-bulk-n">0 selected</b><span class="grow"></span>
       <button class="btn sm" data-bulk="baseline">Move to history</button><button class="btn sm" data-bulk="play">Count in stats</button><button class="btn sm danger" data-bulk="delete">${icon('trash')}Delete</button><button class="btn sm ghost" id="s-bulk-x">Done</button></div></div>
     <div class="card" style="padding-top:0"><div class="list" id="s-list"></div><div id="s-more" class="center" style="padding:14px"></div></div>
     <button class="fab" id="fab-log" aria-label="Log session">${icon('plus')}</button>`;
   const list = $('#s-list');
+  const dayMin = new Map(); // minutes shown in each day header
+  const dayHead = (grp) => `<div class="day-h" data-day="${grp.day}"><span>${dayLabel(grp.day)}</span><span>${fmtMin(grp.minutes)}</span></div>`;
+  const rows = (items) => items.map((s) => sessionItem(s, { selectable: selecting, selected: sel.has(s.id) })).join('');
   const draw = () => {
-    list.innerHTML = all.length ? groupByDay(all).map((grp) => `<div class="day-h"><span>${dayLabel(grp.day)}</span><span>${fmtMin(grp.minutes)}</span></div>${grp.items.map((s) => sessionItem(s, { selectable: selecting, selected: sel.has(s.id) })).join('')}`).join('')
+    const groups = groupByDay(all);
+    dayMin.clear();
+    for (const grp of groups) dayMin.set(grp.day, grp.minutes);
+    list.innerHTML = all.length ? groups.map((grp) => dayHead(grp) + rows(grp.items)).join('')
       : emptyState('sessions', 'No sessions', f.kind === 'baseline' ? 'No imported history.' : 'Sessions appear when a sync detects new playtime, or when you log one.');
+    drawFoot();
+  };
+  // "Load more" appends the next page instead of redrawing the list: the cost stays flat at thousands of rows
+  const drawMore = (items) => {
+    for (const grp of groupByDay(items)) {
+      const head = dayMin.has(grp.day) && list.querySelector(`.day-h[data-day="${grp.day}"]`); // the last day continues
+      dayMin.set(grp.day, (dayMin.get(grp.day) || 0) + grp.minutes);
+      if (head) head.lastElementChild.textContent = fmtMin(dayMin.get(grp.day));
+      list.insertAdjacentHTML('beforeend', (head ? '' : dayHead(grp)) + rows(grp.items));
+    }
+    drawFoot();
+  };
+  const drawFoot = () => {
     $('#s-more').innerHTML = cursor && all.length < total ? `<button class="btn" id="s-load">Load more</button>` : (all.length ? '<span class="tiny dim">That’s everything</span>' : '');
     $('#s-load')?.addEventListener('click', () => load(false));
     $('#s-count').innerHTML = `${total.toLocaleString()} session${total === 1 ? '' : 's'} · ${fmtMin(totalMin, { short: true })}${f.game_id && all[0] ? ` · ${esc(all[0].title)} <a href="/sessions" data-link class="link">show all games</a>` : ''}`;
@@ -824,8 +890,9 @@ async function sessions(view, stale) {
     if (f.game_id) p.set('game_id', f.game_id);
     const r = await api(`/sessions?${p}`);
     if (my !== seq || stale()) return;
+    const more = !reset && all.length;
     all = (reset ? [] : all).concat(r.items); total = r.total; totalMin = r.total_minutes; cursor = r.next;
-    draw();
+    if (more) drawMore(r.items); else draw();
   };
   let t;
   $('#s-q').addEventListener('input', (e) => { clearTimeout(t); t = setTimeout(() => { f.q = e.target.value.trim(); load(); }, 200); });
@@ -866,7 +933,10 @@ async function stats(view, stale) {
     <div class="page-h"><div><h1>Stats</h1><p title="Tracked = observed between syncs. Estimated = playtime from before tracking, dated from first/last played, achievements and release dates. Undated = no dates available (lifetime only).">Lifetime ${fmtHours(lt.total_minutes)}h · ${fmtHours(lt.tracked_minutes)}h tracked · ${fmtHours(lt.estimated_minutes || 0)}h estimated history · ${fmtHours(lt.baseline_minutes)}h undated</p></div>
       <a class="btn" href="/wrapped/${years[0]}" data-link>${icon('trail')}${years[0]} in review</a></div>
     <div class="toolbar"><div class="row wrap">
-      <div class="seg" id="st-range">${[['7d', '7 days'], ['30d', '30 days'], ['90d', '90 days'], ['365d', '12 months'], ...years.map((y) => [`year:${y}`, String(y)]), ['all', 'All time']].map(([v, l]) => `<button data-r="${v}" class="${range === v ? 'on' : ''}">${l}</button>`).join('')}</div>
+      <div class="row" style="gap:8px">
+        <div class="seg" id="st-range">${[['7d', '7 days', '7d'], ['30d', '30 days', '30d'], ['90d', '90 days', '90d'], ['365d', '12 months', '12m']].map(([v, l, sh]) => `<button data-r="${v}" class="${range === v ? 'on' : ''}" title="Last ${l}"><span class="lg">${l}</span><span class="sm">${sh}</span></button>`).join('')}</div>
+        <select class="input" id="st-year" aria-label="Year" style="width:auto"><option value="">Year…</option>${[...years.map((y) => [`year:${y}`, String(y)]), ['all', 'All time']].map(([v, l]) => `<option value="${v}" ${range === v ? 'selected' : ''}>${l}</option>`).join('')}</select>
+      </div>
       <label class="row small" style="gap:8px;cursor:pointer" title="Include playtime from before tracking began, dated by inference (hatched in charts)"><label class="switch"><input type="checkbox" id="st-est" ${estimates !== 'exclude' ? 'checked' : ''}><span></span></label>Estimated history</label>
       <select class="input" id="st-plat" style="width:auto"><option value="">All platforms</option>${lt.platforms.map((p) => `<option value="${esc(p.platform)}" ${platform === p.platform ? 'selected' : ''}>${esc(plat(p.platform).label)}</option>`).join('')}</select>
     </div></div>
@@ -889,27 +959,28 @@ async function stats(view, stale) {
         ${kpi('Daily avg', fmtMin(s.avg_per_day_minutes), s.busiest_day ? `best ${fmtDate(new Date(`${s.busiest_day.day}T12:00`).getTime())} · ${fmtMin(s.busiest_day.minutes)}` : '')}
         ${kpi('Streak', `${s.streaks.current}<small>d</small>`, `longest ${s.streaks.longest} days`)}
       </div>
-      <div class="card" style="margin-top:16px"><div class="card-h"><h2>Playtime per ${s.range.group}</h2></div>${barChart(stackedSeries(s), { height: 230 })}${platformLegend(s.platforms, estimatedLegend(s))}</div>
+      <div class="card" style="margin-top:16px"><div class="card-h"><h2>Playtime per ${s.range.group}</h2></div>${barChart(stackedSeries(s), { size: 'page', title: `Playtime per ${s.range.group}, ${s.range.label.toLowerCase()}` })}${platformLegend(s.platforms, estimatedLegend(s))}</div>
       <div class="grid grid-3" style="margin-top:16px">
         <div class="card"><div class="card-h"><h2>Top games</h2></div>${s.top_games.length ? topList(s.top_games, { coverFn: (g) => cover(g), limit: 10 }) : '<p class="muted">No play in this range.</p>'}</div>
         <div class="card"><div class="card-h"><h2>Platforms</h2></div>
-          ${s.platforms.length ? `<div class="donut-wrap">${donut(s.platforms.map((p) => ({ label: plat(p.platform).label, value: p.minutes, color: plat(p.platform).color })), { label: `${fmtHours(s.total_minutes)}h`, sub: 'played' })}
+          ${s.platforms.length ? `<div class="donut-wrap">${donut(s.platforms.map((p) => ({ label: plat(p.platform).label, value: p.minutes, color: plat(p.platform).color })), { label: `${fmtHours(s.total_minutes)}h`, sub: 'played', title: 'Playtime by platform' })}
           <div class="col" style="gap:8px;min-width:0">${s.platforms.map((p) => `<div class="row small"><span class="dot" style="background:${plat(p.platform).color}"></span><span class="grow ellipsis">${esc(plat(p.platform).label)}</span><b>${Math.round((p.minutes / Math.max(1, s.total_minutes)) * 100)}%</b></div>`).join('')}</div></div>` : '<p class="muted">—</p>'}
           ${s.longest_session ? `<div style="margin-top:18px" class="small muted">Longest session</div><a href="/game/${s.longest_session.game_id}" data-link><b>${fmtMin(s.longest_session.minutes)}</b> · ${esc(s.longest_session.title)}</a>` : ''}
         </div>
         <div class="card"><div class="card-h"><h2>By weekday</h2></div>
           ${order.map((d) => `<div class="row small" style="margin:7px 0"><span style="width:34px" class="muted">${WD[d]}</span><div class="grow" style="height:8px;border-radius:9px;background:var(--bg2);overflow:hidden"><i style="display:block;height:100%;width:${(s.weekday[d] / maxWd) * 100}%;background:var(--accent2);border-radius:9px"></i></div><span style="width:56px;text-align:right">${fmtMin(s.weekday[d], { short: true })}</span></div>`).join('')}
-          ${hasHours ? `<div class="card-h" style="margin-top:18px;margin-bottom:6px"><h3>Time of day</h3><span class="tiny dim">exact sessions only</span></div>${barChart(s.hours.map((m, h) => ({ label: h % 6 === 0 ? `${h}h` : '', value: m, tip: `${h}:00 – ${h + 1}:00: ${fmtMin(m)}` })), { height: 150, width: 340, color: 'var(--accent2)', labelEvery: 1 })}` : '<p class="tiny dim" style="margin-top:14px">Sync more often (or log sessions manually) to unlock time-of-day stats.</p>'}
+          ${hasHours ? `<div class="card-h" style="margin-top:18px;margin-bottom:6px"><h3>Time of day</h3><span class="tiny dim">exact sessions only</span></div>${barChart(s.hours.map((m, h) => ({ label: h % 6 === 0 ? hourLabel(h) : '', name: `${h}:00`, value: m, tip: `${h}:00 – ${h + 1}:00: ${fmtMin(m)}` })), { size: 'small', color: 'var(--accent2)', labelEvery: 1, maxBar: 14, title: 'Exact sessions by time of day' })}` : '<p class="tiny dim" style="margin-top:14px">Sync more often (or log sessions manually) to unlock time-of-day stats.</p>'}
         </div>
       </div>`;
-    bindTips(body);
+    mountCharts(body);
   };
   const loadHeat = async () => {
     const h = await api(`/stats/heatmap?year=${heatYear}&estimates=${estimates}`);
     $('#hm').innerHTML = heatmap(heatYear, h.days, { weekStartsOn: state.settings?.week_starts_on ?? 1, estimated: h.estimated_days || {} });
-    bindTips($('#hm'));
+    mountCharts($('#hm'));
   };
-  $('#st-range').addEventListener('click', (e) => { const b = e.target.closest('[data-r]'); if (!b) return; range = b.dataset.r; $$('#st-range button').forEach((x) => x.classList.toggle('on', x === b)); load(); });
+  $('#st-range').addEventListener('click', (e) => { const b = e.target.closest('[data-r]'); if (!b) return; range = b.dataset.r; $$('#st-range button').forEach((x) => x.classList.toggle('on', x === b)); $('#st-year').value = ''; load(); });
+  $('#st-year').addEventListener('change', (e) => { if (!e.target.value) return; range = e.target.value; $$('#st-range button').forEach((x) => x.classList.remove('on')); load(); });
   $('#st-plat').addEventListener('change', (e) => { platform = e.target.value; load(); });
   $('#st-est').addEventListener('change', (e) => { estimates = e.target.checked ? 'include' : 'exclude'; load(); loadHeat(); });
   $('#hm-year').addEventListener('click', (e) => { const b = e.target.closest('[data-y]'); if (!b) return; heatYear = Number(b.dataset.y); $$('#hm-year button').forEach((x) => x.classList.toggle('on', x === b)); loadHeat(); });
