@@ -30,6 +30,7 @@ export const HOUR = 3_600_000;
 export const DAY = 86_400_000;
 export const DESKTOP = { width: 1400, height: 900 };
 export const PHONE = { width: 390, height: 844 };
+export const PHONE_SMALL = { width: 360, height: 740 };
 export const TZ = Intl.DateTimeFormat().resolvedOptions().timeZone;
 
 const isLocal = (u) => { try { return new URL(u).hostname === '127.0.0.1'; } catch { return false; } };
@@ -146,10 +147,14 @@ export async function waitView(page, timeout = 8000) {
   }, null, { timeout });
 }
 
-/** Width the document needs vs. the viewport (horizontal overflow check). */
+/**
+ * Width the document needs vs. the viewport (horizontal overflow check). Compare `doc` with `client`
+ * (documentElement.clientWidth, the layout viewport): with mobile emulation an overflowing page
+ * zooms out and widens innerWidth, so `inner` grows along with the overflow and proves nothing.
+ */
 export async function overflow(page, width) {
   return page.evaluate((width) => ({
-    doc: document.documentElement.scrollWidth, body: document.body.scrollWidth, inner: window.innerWidth,
+    doc: document.documentElement.scrollWidth, client: document.documentElement.clientWidth, body: document.body.scrollWidth, inner: window.innerWidth,
     // widest offender, for a useful failure message
     culprit: (() => {
       let worst = null; const vw = width || window.innerWidth;
