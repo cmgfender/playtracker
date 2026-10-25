@@ -144,6 +144,10 @@ export function applyItems(db, account, items, { settings, now = Date.now(), syn
   const sessionMinutes = db.prepare('SELECT minutes FROM sessions WHERE id = ?');
   const spansFor = db.prepare('SELECT * FROM presence WHERE account_id = ? AND ext_id = ? AND started_at < ? AND COALESCE(ended_at, last_seen_at) > ? ORDER BY started_at');
   const linkSpan = db.prepare('UPDATE presence SET session_id = ? WHERE id = ?');
+  // finished presence spans of a title that ended in (from, to), newest first
+  const endedSpans = db.prepare('SELECT * FROM presence WHERE account_id = ? AND ext_id = ? AND ended_at IS NOT NULL AND ended_at > ? AND ended_at < ? ORDER BY ended_at DESC');
+  // when an entry's total first reached a value
+  const reachedAt = db.prepare('SELECT MIN(taken_at) t FROM snapshots WHERE entry_id = ? AND playtime_min >= ?');
   // a recorded session claims any live-presence span it covers, so a span is never used twice
   const claimSpans = db.prepare(`UPDATE presence SET session_id = ? WHERE account_id = ? AND ext_id = ? AND session_id IS NULL
     AND started_at < ? AND COALESCE(ended_at, last_seen_at) > ?`);
@@ -201,13 +205,16 @@ export function applyItems(db, account, items, { settings, now = Date.now(), syn
       .filter((sp) => model.spanReported(sp, ws, we) && (!sp.session_id || model.countsInProgress())
         // a finished span its session already fully credited is used up
         && !(sp.session_id && sp.ended_at != null && spanLen(sp) - spanUsed(sp) <= 0));
-    if (spans.length) {
-      const caps = spans.map((sp) => Math.max(1, spanLen(sp) - spanUsed(sp)));
-      const total = caps.reduce((a, x) => a + x, 0);
-      const covered = Math.min(remaining, Math.round(total * 1.25 + 5));
-      const parts = intSplit(covered, caps);
-      spans.forEach((sp, i) => {
-        const m = parts[i];
+    // Sessions presence saw before this window that the platform had not credited yet when its
+    // total last moved: a total that catches up late (an Xbox PC game uploads its minutes on its
+    // next launch) is theirs first - never stuffed into today's session beyond what it can hold.
+    const reached = entry.playtime_min > 0 ? reachedAt.get(entry.id, entry.playtime_min)?.t : null;
+    const pending = reached && reached < ws
+      ? endedSpans.all(account.id, String(it.extId), Math.max(reached, now - 7 * DAY), we)
+        .filter((sp) => !spans.some((x) => x.id === sp.id) && spanLen(sp) - spanUsed(sp) >= 1)
+      : [];
+    if (spans.length || pending.length) {
+      const credit = (sp, m, wsFor, weFor) => {
         if (m <= 0) return;
         const end = sp.ended_at ?? sp.last_seen_at;
         if (sp.session_id) {
@@ -215,10 +222,31 @@ export function applyItems(db, account, items, { settings, now = Date.now(), syn
           stats.minutes_added += m;
         } else {
           // presence is ground truth for when the session ran; minutes are what the platform credited
-          const id = play(entry, title, { minutes: m, windowStart: ws, windowEnd: we, started: sp.started_at, ended: end, confidence: 'exact', device: sp.device || device, note: baseNote });
-          if (id) linkSpan.run(id, sp.id);
+          const id = play(entry, title, { minutes: m, windowStart: wsFor, windowEnd: weFor, started: sp.started_at, ended: end, confidence: 'exact', device: sp.device || device, note: baseNote });
+          if (id) { linkSpan.run(id, sp.id); sp.session_id = id; }
         }
-      });
+      };
+      const caps = spans.map((sp) => Math.max(1, spanLen(sp) - spanUsed(sp)));
+      const total = caps.reduce((a, x) => a + x, 0);
+      let covered;
+      if (!pending.length) {
+        covered = Math.min(remaining, Math.round(total * 1.25 + 5));
+        intSplit(covered, caps).forEach((m, i) => credit(spans[i], m, ws, we));
+      } else {
+        // what presence saw in this window, then the earlier sessions (newest first, each up to
+        // what it ran), then a little slack for this window's edges
+        const now_ = Math.min(remaining, total);
+        intSplit(now_, caps).forEach((m, i) => credit(spans[i], m, ws, we));
+        covered = now_;
+        for (const sp of pending) {
+          const m = Math.min(remaining - covered, Math.floor(spanLen(sp) - spanUsed(sp)));
+          if (m <= 0) break;
+          credit(sp, m, sp.started_at, sp.ended_at);
+          covered += m;
+        }
+        const slack = spans.length ? Math.min(remaining - covered, Math.round(total * 0.25 + 5)) : 0;
+        if (slack > 0) { intSplit(slack, caps).forEach((m, i) => credit(spans[i], m, ws, we)); covered += slack; }
+      }
       // learn what this platform's last-played timestamp really marks
       if (it.lastPlayedAt) {
         const nearest = spans.reduce((best, sp) => {
