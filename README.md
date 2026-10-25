@@ -202,6 +202,7 @@ Main endpoints:
 - **Library:** `games`, `games/:id`, `games/:id/merge`, `entries/:id` (exclude, split, move, push playtime)
 - **Achievements:** `games/:id/achievements` (the full list, each with its session), summaries on `games/:id`, `achievements` on every session, `stats/achievements`
 - **Sessions and stats:** `sessions` (list, create, edit, bulk), `stats`, `stats/heatmap`, `stats/year/:year`
+- **Charts and insights:** `stats/punchcard`, `stats/session-lengths`, `stats/platforms` (or `?by=device`), `stats/timeline`, `games/:id/stats`, `stats/library`, `stats/year-over-year`, `stats/records` (tracked play and estimated history always apart; shapes in `/api/openapi.json`)
 - **Duplicates:** `duplicates`
 - **Accounts and syncing:** `accounts`, `accounts/:id/sync`, `accounts/:id/report`, `syncs`
 - **Admin:** `settings`, `tokens`, `import`, `export`, `backup`
