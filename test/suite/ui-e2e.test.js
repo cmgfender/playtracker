@@ -1,21 +1,24 @@
-// PlayTracker web UI, end to end (Playwright + in-process app, no real network).
+// Vestigo web UI, end to end (Playwright + in-process app, no real network).
 // Run: node --disable-warning=ExperimentalWarning --test test/suite/ui-e2e.test.js
 //
 // Expectations come from README.md / docs/PLATFORMS.md / the API route summaries and from what
 // a correct playtime tracker must do (totals add up, nothing lost or counted twice, bad input
 // refused, layout usable on a phone). Known app bugs are `todo` tests named "APP BUG ui-e2e-<n>".
-// Without Playwright + Chromium (e.g. CI) every suite here is skipped, with the reason.
+// Without Playwright + Chromium (e.g. CI) every browser suite here is skipped, with the reason;
+// the static checks of public/ (name, icons, manifest, service worker) always run.
 import { describe, test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   chromium, installFetchGuard, startApp, seed, openPage, waitView, overflow, waitUntil, toast, markToasts, modalReady, contrast,
-  invariantViolations, DESKTOP, PHONE, MIN, HOUR, DAY, skipReason,
+  invariantViolations, DESKTOP, PHONE, PHONE_SMALL, MIN, HOUR, DAY, skipReason,
 } from './helpers/ui-e2e-harness.js';
 const UI = { skip: skipReason || false };
 
+const PUBLIC = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'public');
 const NOW = Date.now();
 const YEAR = new Date(NOW).getFullYear();
 const DEFAULT_LAYOUT = 'kpis,live,jump,chart,top,recent,accounts,-heatmap,-backlog';
@@ -56,7 +59,7 @@ const waitH1 = (page, expected, timeout = 8000) => page.waitForFunction((e) => {
   return e.startsWith('re:') ? new RegExp(e.slice(3)).test(t) : t === e;
 }, expected instanceof RegExp ? `re:${expected.source}` : expected, { timeout });
 
-describe('PlayTracker web UI (no password)', UI, () => {
+describe('Vestigo web UI (no password)', UI, () => {
   let S; // started app
   let D; // seeded data
 
@@ -95,17 +98,20 @@ describe('PlayTracker web UI (no password)', UI, () => {
   };
 
   // ------------------------------------------------------------------ every route renders
+  // [path, highlighted nav entry, browser tab title]
   const ROUTES = () => [
-    ['/', 'Home'], ['/library', 'Library'], [`/game/${D.ids.celeste}`, 'Library'], [`/game/${D.ids.zelda}`, 'Library'],
-    ['/sessions', 'Sessions'], ['/stats', 'Stats'], [`/wrapped/${YEAR}`, null], [`/wrapped/${YEAR - 1}`, null],
-    ['/duplicates', 'Duplicates'], ['/history', 'Improve history'], ['/accounts', 'Accounts'], ['/system', 'System'],
-    ['/settings', 'Settings'], ['/api', 'API'], ['/more', null], ['/this-route-does-not-exist', null],
+    ['/', 'Home', 'Vestigo'], ['/library', 'Library', 'Library · Vestigo'], [`/game/${D.ids.celeste}`, 'Library', 'Celeste · Vestigo'],
+    [`/game/${D.ids.zelda}`, 'Library', 'Zelda: TotK · Vestigo'], ['/sessions', 'Sessions', 'Sessions · Vestigo'], ['/stats', 'Stats', 'Stats · Vestigo'],
+    [`/wrapped/${YEAR}`, null, `${YEAR} in review · Vestigo`], [`/wrapped/${YEAR - 1}`, null, `${YEAR - 1} in review · Vestigo`],
+    ['/duplicates', 'Duplicates', 'Duplicates · Vestigo'], ['/history', 'Improve history', 'Improve history · Vestigo'], ['/accounts', 'Accounts', 'Accounts · Vestigo'],
+    ['/system', 'System', 'System · Vestigo'], ['/settings', 'Settings', 'Settings · Vestigo'], ['/api', 'API', 'API · Vestigo'], ['/more', null, 'More · Vestigo'],
+    ['/this-route-does-not-exist', null, 'Not found · Vestigo'],
   ];
   async function checkRoutes(viewport) {
     const h = await openPage(browser, S.origin, { viewport });
     const problems = [];
     try {
-      for (const [path, nav] of ROUTES()) {
+      for (const [path, nav, title] of ROUTES()) {
         await h.page.goto(`${S.origin}${path}`);
         await waitView(h.page);
         await h.settle();
@@ -115,13 +121,14 @@ describe('PlayTracker web UI (no password)', UI, () => {
           if (!/Not found/.test(text)) problems.push('unknown route does not say Not found');
           if (await h.page.locator('#view a[href="/"]', { hasText: 'Go home' }).count() !== 1) problems.push('unknown route has no Go home link');
         }
+        if (await h.page.title() !== title) problems.push(`${path}: tab title ${JSON.stringify(await h.page.title())}, expected ${JSON.stringify(title)}`);
         const o = await overflow(h.page, viewport.width);
-        if (o.doc > viewport.width + 1 || o.body > viewport.width + 1) problems.push(`${path}: horizontal overflow ${o.doc}px > ${viewport.width}px, widest: ${JSON.stringify(o.culprit)}`);
+        if (o.doc > viewport.width + 1 || o.body > viewport.width + 1 || o.doc > o.client) problems.push(`${path}: horizontal overflow ${o.doc}px > ${o.client}px of ${viewport.width}px, widest: ${JSON.stringify(o.culprit)}`);
         if (nav && viewport === DESKTOP) {
           const active = (await h.page.locator('.side .nav-link.active').allInnerTexts()).map((x) => x.trim());
           if (!(active.length === 1 && active[0].startsWith(nav))) problems.push(`${path}: sidebar highlights ${JSON.stringify(active)}, expected ${nav}`);
         }
-        if (viewport === PHONE) {
+        if (viewport.width < 600) {
           const expected = ['Home', 'Library', 'Sessions', 'Stats'].includes(nav) ? nav : 'More';
           const active = (await h.page.locator('.tabbar a.active').allInnerTexts()).map((x) => x.trim());
           if (JSON.stringify(active) !== JSON.stringify([expected])) problems.push(`${path}: tab bar highlights ${JSON.stringify(active)}, expected ${expected}`);
@@ -142,16 +149,22 @@ describe('PlayTracker web UI (no password)', UI, () => {
 
   test('every route renders at desktop 1400x900 without page errors, console errors or horizontal overflow', () => checkRoutes(DESKTOP));
   test('every route renders at phone 390x844 without page errors, console errors or horizontal overflow', () => checkRoutes(PHONE));
+  test('every route renders at a small phone 360x740 without page errors, console errors or horizontal overflow', () => checkRoutes(PHONE_SMALL));
 
-  // the System error-log header and the API endpoint tables (ui-e2e-1, ui-e2e-2)
-  for (const path of ['/system', '/api']) {
-    test(`${path} fits a 390px phone screen without horizontal scrolling`, async () => {
-      const h = await visit(path, { viewport: PHONE });
-      try {
-        const o = await overflow(h.page, PHONE.width);
-        assert.ok(o.doc <= PHONE.width + 1, `document is ${o.doc}px wide on a ${PHONE.width}px screen; widest element: ${JSON.stringify(o.culprit)}`);
-      } finally { await h.close(); }
-    });
+  // the System error-log header and the API endpoint tables (ui-e2e-1, ui-e2e-2), and the platform
+  // capability tables on Accounts once "What each platform reports" is open
+  for (const vp of [PHONE, PHONE_SMALL]) {
+    for (const path of ['/system', '/api', '/accounts']) {
+      test(`${path} fits a ${vp.width}px phone screen without horizontal scrolling${path === '/accounts' ? ' (platform details open)' : ''}`, async () => {
+        const h = await visit(path, { viewport: vp });
+        try {
+          for (const d of await h.page.locator('#view details').all()) await d.locator('summary').first().click();
+          if (path === '/accounts') assert.ok(await h.page.locator('#view details .cap-table').first().isVisible(), 'platform details are open');
+          const o = await overflow(h.page, vp.width);
+          assert.ok(o.doc <= vp.width + 1 && o.doc <= o.client, `document is ${o.doc}px wide on a ${vp.width}px screen (layout viewport ${o.client}px); widest element: ${JSON.stringify(o.culprit)}`);
+        } finally { await h.close(); }
+      });
+    }
   }
 
   test('unknown game id shows a friendly error state instead of a blank page', async () => {
@@ -171,8 +184,18 @@ describe('PlayTracker web UI (no password)', UI, () => {
       assert.ok(await d.page.locator('.side').isVisible(), 'desktop shows the sidebar');
       assert.ok(!(await d.page.locator('.tabbar').isVisible()), 'desktop hides the tab bar');
       assert.ok(!(await d.page.locator('#fab-log').isVisible()), 'desktop hides the floating button');
+      // brand lockup: tile + wordmark + "Media tracker" line, a link home
+      const side = d.page.locator('.side a.brand');
+      assert.equal(await side.getAttribute('href'), '/');
+      assert.deepEqual((await side.locator('.brand-word').innerText()).split('\n').map((x) => x.trim()), ['Vestigo', 'Media tracker']);
+      assert.equal((await side.locator('.brand-mark').boundingBox()).width, 30, 'sidebar logo tile is 30px');
+      assert.equal(await d.page.title(), 'Vestigo');
       await spa(d, d.page.locator('.side a.nav-link', { hasText: 'Sessions' }), 'Sessions');
       assert.equal(new URL(d.page.url()).pathname, '/sessions');
+      assert.equal(await d.page.title(), 'Sessions · Vestigo', 'the tab title follows SPA navigation');
+      await d.page.goBack();
+      await waitH1(d.page, /Good|Late night/);
+      assert.equal(await d.page.title(), 'Vestigo', 'and back');
       clean(d);
     } finally { await d.close(); }
 
@@ -182,16 +205,28 @@ describe('PlayTracker web UI (no password)', UI, () => {
       assert.ok(await p.page.locator('.tabbar').isVisible(), 'phone shows the tab bar');
       assert.ok(await p.page.locator('#fab-log').isVisible(), 'phone shows the floating Log session button');
       assert.ok(!(await p.page.locator('#dash-log').isVisible()), 'desktop-only button is hidden on phone');
+      const top = p.page.locator('.topbar a.brand');
+      assert.equal((await top.locator('.brand-word').innerText()).trim(), 'Vestigo', 'the top bar has the wordmark without the "Media tracker" line');
+      assert.equal(await top.locator('small').count(), 0);
+      assert.equal((await top.locator('.brand-mark').boundingBox()).width, 26, 'top bar logo tile is 26px');
       await spa(p, p.page.locator('.tabbar a', { hasText: 'Library' }), 'Library');
       assert.equal(new URL(p.page.url()).pathname, '/library');
       await spa(p, p.page.locator('.tabbar a', { hasText: 'More' }), 'More');
       const links = (await p.page.locator('#view .item .ttl').allInnerTexts()).map((x) => x.trim());
       assert.deepEqual(links, ['Duplicates', 'Accounts', 'Improve history', 'System', 'Settings', 'API', 'Year in review']);
       await spa(p, p.page.locator('#view .item', { hasText: 'Accounts' }), 'Accounts');
+      assert.equal(await p.page.title(), 'Accounts · Vestigo');
       await p.page.goBack();
       await waitH1(p.page, 'More');
+      assert.equal(await p.page.title(), 'More · Vestigo');
       await p.page.goBack();
       await waitH1(p.page, 'Library');
+      assert.equal(await p.page.title(), 'Library · Vestigo');
+      // the top bar keeps its height on a short page (the grid used to stretch it)
+      await p.page.goto(`${S.origin}/wrapped/2001`);
+      await waitView(p.page);
+      const bar = Math.round((await p.page.locator('.topbar').boundingBox()).height);
+      assert.ok(bar <= 60, `top bar is ${bar}px on an empty Year in review page`);
       clean(p);
     } finally { await p.close(); }
   });
@@ -216,6 +251,10 @@ describe('PlayTracker web UI (no password)', UI, () => {
       const accounts = await h.page.locator('.card', { has: h.page.locator('h2', { hasText: 'Accounts' }) }).innerText();
       assert.match(accounts, /Switch/);
       assert.match(accounts, /API/);
+      assert.match(accounts, /Last report/, 'a push account shows when it last reported');
+      const wk = await S.ok('/summary').then((x) => x.week);
+      const plural = (n, w) => `${n} ${n === 1 ? w : `${w}s`}`;
+      assert.equal(await kpi('This week').locator('.sub').innerText(), `${plural(wk.sessions, 'session')} · ${plural(wk.games_played, 'game')}`, 'This week counts are pluralised correctly');
       clean(h);
     } finally { await h.close(); }
   });
@@ -874,6 +913,8 @@ describe('PlayTracker web UI (no password)', UI, () => {
       await page.reload();
       await waitView(page);
       assert.equal(await accent(), '#34d399', 'accent survives a reload');
+      const tile = await page.evaluate(() => getComputedStyle(document.querySelector('.side .brand-mark')).backgroundImage);
+      assert.ok(tile.includes('rgb(118, 86, 255)') && tile.includes('rgb(8, 145, 178)'), `the logo tile keeps the brand gradient whatever the accent (${tile})`);
       assert.equal((await S.ok('/settings')).accent, '#34d399');
       // invalid values are refused by the API (the UI never sends them)
       assert.equal((await S.api('/settings', { method: 'PUT', body: { theme: 'neon' } })).status, 400);
@@ -1089,7 +1130,7 @@ describe('PlayTracker web UI (no password)', UI, () => {
       await h.page.locator('#imp-go').click();
       await h.page.locator('#imp-r b', { hasText: 'Preview' }).waitFor();
       const text = await h.page.locator('#imp-r').innerText();
-      assert.match(text, /Nothing new - everything in this file is already here/, `preview says: ${text}`);
+      assert.match(text, /Nothing new — everything in this file is already here/, `preview says: ${text}`);
     } finally { await h.close(); }
   });
 
@@ -1174,7 +1215,7 @@ describe('PlayTracker web UI (no password)', UI, () => {
       assert.match(await dbl.innerText(), /Mario Kart 8 Deluxe/);
       await dbl.locator('[data-exclude]').click();
       await toast(page, 'Excluded from totals');
-      await section('Possible double counting').locator('text=Nothing double counted').waitFor();
+      await section('Possible double counting').locator('text=Nothing is counted twice.').waitFor();
       const mk = await game(D.ids.mk8);
       assert.equal(mk.minutes, D.minutes.mk8, 'Mario Kart counted once again');
       assert.equal(mk.entries.filter((e) => e.excluded).length, 1, 'exactly one copy excluded');
@@ -1217,7 +1258,7 @@ describe('PlayTracker web UI (no password)', UI, () => {
     const { page } = h;
     const kpi = (label) => page.locator('.kpi', { has: page.locator('.label', { hasText: label }) }).locator('.value');
     try {
-      assert.match(await page.locator('.page-h p').innerText(), new RegExp(`PlayTracker ${sys.version.replace(/\./g, '\\.')}`));
+      assert.match(await page.locator('.page-h p').innerText(), new RegExp(`Vestigo ${sys.version.replace(/\./g, '\\.')}`));
       assert.equal(await kpi('Library').innerText(), sys.counts.games.toLocaleString('en-US'));
       assert.equal(await kpi('Errors (24h)').innerText(), '1');
       assert.match(await page.locator('.page-h .badge').innerText(), /1 error in 24h/);
@@ -1240,7 +1281,7 @@ describe('PlayTracker web UI (no password)', UI, () => {
       await page.locator('#log-list', { hasText: 'All clear' }).waitFor();
 
       const [dl] = await Promise.all([page.waitForEvent('download'), page.locator('#sys-dl').click()]);
-      assert.match(dl.suggestedFilename(), /^playtracker-diagnostics-\d{4}-\d{2}-\d{2}\.json$/);
+      assert.match(dl.suggestedFilename(), /^vestigo-diagnostics-\d{4}-\d{2}-\d{2}\.json$/);
       const diag = JSON.parse(fs.readFileSync(await dl.path(), 'utf8'));
       assert.ok(diag.system && Array.isArray(diag.logs) && Array.isArray(diag.syncs), 'bundle has system, logs and syncs');
       assert.ok(diag.logs.some((l) => /simulated sync failure/.test(l.message)));
@@ -1318,6 +1359,29 @@ describe('PlayTracker web UI (no password)', UI, () => {
     assertInvariant('after account changes');
   });
 
+  test('service worker: installs the Vestigo shell and drops the PlayTracker cache (pt-v1) of an existing install', async () => {
+    const h = await visit('/');
+    try {
+      const r = await h.page.evaluate(async () => {
+        await (await caches.open('pt-v1')).put('/old-shell', new Response('pre-rename shell'));
+        const reg = await navigator.serviceWorker.register('/sw.js');
+        const sw = reg.installing || reg.waiting || reg.active;
+        await new Promise((ok, no) => {
+          if (sw.state === 'activated') return ok();
+          sw.addEventListener('statechange', () => { if (sw.state === 'activated') ok(); if (sw.state === 'redundant') no(new Error('service worker install failed (a shell file is missing?)')); });
+        });
+        const shell = (await (await caches.open('vestigo-v1')).keys()).map((q) => new URL(q.url).pathname);
+        const out = { keys: await caches.keys(), scope: new URL(reg.scope).pathname, shell };
+        await reg.unregister();
+        return out;
+      });
+      assert.deepEqual(r.keys, ['vestigo-v1'], 'only the new cache is left');
+      assert.equal(r.scope, '/', 'same scope as before');
+      for (const p of ['/', '/app.js', '/pages.js', '/favicon.svg', '/icon-180.png', '/manifest.webmanifest']) assert.ok(r.shell.includes(p), `${p} is in the offline shell`);
+      clean(h);
+    } finally { await h.close(); }
+  });
+
   test('"Sync all" with only push accounts explains there is nothing to sync', async () => {
     const h = await visit('/');
     try {
@@ -1330,7 +1394,7 @@ describe('PlayTracker web UI (no password)', UI, () => {
 });
 
 // ======================================================================== login
-describe('PlayTracker web UI with a password', UI, () => {
+describe('Vestigo web UI with a password', UI, () => {
   let S;
   before(async () => { S = await startApp(); await S.ok('/games', { method: 'POST', body: { title: 'Secret Game' } }); });
   after(() => S?.close());
@@ -1372,6 +1436,11 @@ describe('PlayTracker web UI with a password', UI, () => {
     try {
       await b.page.goto(`${S.origin}/library`);
       await loginForm(b.page).waitFor();
+      assert.equal(await b.page.title(), 'Sign in · Vestigo');
+      assert.equal((await loginForm(b.page).locator('.brand-word').innerText()).trim(), 'Vestigo', 'login shows the stacked lockup');
+      assert.equal((await loginForm(b.page).locator('.tagline').innerText()).trim(), 'Every session leaves a trace.');
+      assert.equal(await loginForm(b.page).locator('a').count(), 0, 'the login lockup is not a link');
+      assert.equal((await loginForm(b.page).locator('.brand-mark').boundingBox()).width, 56);
       assert.equal(await b.page.locator('.shell').count(), 0, 'no app shell before login');
       assert.ok(!(await b.page.content()).includes('Secret Game'), 'no library data leaks to the login screen');
       await login(b.page, 'wrong-password');
@@ -1379,6 +1448,7 @@ describe('PlayTracker web UI with a password', UI, () => {
       assert.equal(await loginForm(b.page).count(), 1, 'still on the login screen');
       await login(b.page, PW);
       await waitH1(b.page, 'Library');
+      assert.equal(await b.page.title(), 'Library · Vestigo');
       await b.page.locator('#lib-items .tile .t', { hasText: 'Secret Game' }).waitFor();
       const cookie = (await b.ctx.cookies()).find((c) => c.name === 'pt_session');
       assert.ok(cookie, 'session cookie set');
@@ -1432,18 +1502,109 @@ describe('PlayTracker web UI with a password', UI, () => {
     } finally { await c.close(); }
   });
 
-  test('a password from PLAYTRACKER_PASSWORD gates the UI and cannot be changed in Settings', async () => {
+  test('a password from the environment gates the UI and cannot be changed in Settings; Settings names the variable in use', async () => {
     const E = await startApp({ password: 'env-secret-77' });
     const h = await openPage(browser, E.origin);
+    const security = () => h.page.locator('.card', { has: h.page.locator('h2', { hasText: 'Security' }) }).innerText();
     try {
       await h.page.goto(`${E.origin}/settings`);
       await loginForm(h.page).waitFor();
       await login(h.page, 'env-secret-77');
       await waitH1(h.page, 'Settings');
-      const sec = await h.page.locator('.card', { has: h.page.locator('h2', { hasText: 'Security' }) }).innerText();
-      assert.match(sec, /PLAYTRACKER_PASSWORD/);
+      // the server names the variable that supplied the password (password_env); without it the UI names the default
+      const st = await (await h.page.request.get(`${E.origin}/api/v1/auth/status`)).json();
+      assert.equal(st.password_source, 'env');
+      assert.match(await security(), new RegExp(st.password_env || 'VESTIGO_PASSWORD'));
       assert.equal(await h.page.locator('#pw-f').count(), 0, 'no password form when it comes from the environment');
+      // an install that still sets the legacy PLAYTRACKER_PASSWORD sees that name, not the new one
+      for (const name of ['PLAYTRACKER_PASSWORD', 'VESTIGO_PASSWORD']) {
+        await h.page.route('**/api/v1/auth/status', (r) => r.fulfill({ contentType: 'application/json', body: JSON.stringify({ ...st, password_env: name }) }));
+        await h.page.reload();
+        await waitH1(h.page, 'Settings');
+        const sec = await security();
+        assert.match(sec, new RegExp(`Password is set with ${name}`));
+        assert.ok(!sec.includes(name === 'VESTIGO_PASSWORD' ? 'PLAYTRACKER_PASSWORD' : 'VESTIGO_PASSWORD'), `only ${name} is named`);
+        await h.page.unroute('**/api/v1/auth/status');
+      }
       assert.deepEqual(h.rec.pageErrors, []);
     } finally { await h.close(); E.close(); }
+  });
+});
+
+// ======================================================================== static assets (no browser)
+describe('Vestigo web assets', () => {
+  const read = (f) => fs.readFileSync(path.join(PUBLIC, f), 'utf8');
+  /** width, height and colour type (2 = RGB, i.e. no transparency; 6 = RGBA) from a PNG's IHDR chunk */
+  const png = (f) => {
+    const b = fs.readFileSync(path.join(PUBLIC, f));
+    assert.equal(b.toString('latin1', 12, 16), 'IHDR', `${f} is a PNG`);
+    return { w: b.readUInt32BE(16), h: b.readUInt32BE(20), type: b[25] };
+  };
+
+  test('`grep -rni playtracker public/` finds nothing; the only pt- names left are compatibility identifiers', () => {
+    // kept on purpose: renaming them would reset every browser's theme / start page or orphan the hatch patterns
+    const COMPAT = new Set(['pt-theme', 'pt-accent', 'pt-ui', 'pt-started', 'pt-hatch', 'pt-hatch-ov', 'pt-v1']);
+    const hits = [];
+    const ids = new Set();
+    for (const f of fs.readdirSync(PUBLIC)) {
+      const text = fs.readFileSync(path.join(PUBLIC, f)).toString('latin1');
+      text.split('\n').forEach((line, i) => { if (/playtracker/i.test(line)) hits.push(`${f}:${i + 1}: ${line.trim().slice(0, 120)}`); });
+      if (/\.(html|js|css|svg|webmanifest)$/.test(f)) for (const m of text.matchAll(/\bpt[-_][\w-]+/g)) ids.add(m[0]);
+    }
+    assert.deepEqual(hits, []);
+    assert.deepEqual([...ids].filter((x) => !COMPAT.has(x)), [], 'no other pt-/pt_ identifiers');
+    const app = read('app.js');
+    for (const k of ['pt-theme', 'pt-accent', 'pt-ui']) {
+      assert.ok(read('index.html').includes(`getItem('${k}')`), `the pre-paint script still reads ${k}`);
+      assert.ok(app.includes(`'${k}'`), `applyTheme() still writes ${k}`);
+    }
+    assert.ok(app.includes("'pt-started'"));
+    assert.ok(read('charts.js').includes('id="pt-hatch"'));
+  });
+
+  test('no emoji or pictographs in the UI markup', () => {
+    for (const f of ['index.html', 'app.js', 'pages.js', 'charts.js']) {
+      assert.deepEqual([...read(f).matchAll(/\p{Extended_Pictographic}/gu)].map((m) => m[0]), [], f);
+    }
+  });
+
+  test('index.html: Vestigo title and meta; the favicon and a full-bleed 180px apple-touch-icon exist', () => {
+    const html = read('index.html');
+    assert.match(html, /<title>Vestigo<\/title>/);
+    assert.match(html, /<meta name="application-name" content="Vestigo">/);
+    assert.match(html, /<meta name="apple-mobile-web-app-title" content="Vestigo">/);
+    assert.match(html, /<noscript>Vestigo needs JavaScript\.<\/noscript>/);
+    const href = (rel) => new RegExp(`rel="${rel}" href="/([^"]+)"`).exec(html)?.[1];
+    assert.ok(fs.existsSync(path.join(PUBLIC, href('icon'))), 'favicon exists');
+    assert.equal(href('apple-touch-icon'), 'icon-180.png');
+    assert.deepEqual(Object.values(png('icon-180.png')), [180, 180, 2], 'apple-touch-icon is 180x180 and full bleed (iOS shows transparent corners black)');
+    for (const f of ['favicon.svg', 'icon.svg', 'icon-maskable.svg']) {
+      const svg = read(f);
+      assert.ok(/stroke="#fff"/.test(svg) && !/currentColor/.test(svg), `${f}: an explicit white mark`);
+      assert.ok(svg.includes('#7656ff') && svg.includes('#0891b2'), `${f}: the brand gradient`);
+    }
+  });
+
+  test('manifest: same id so installed apps keep their identity, Vestigo names, separate "any" and "maskable" icons at their declared sizes', () => {
+    const m = JSON.parse(read('manifest.webmanifest'));
+    assert.equal(m.id, '/');
+    assert.equal(m.start_url, '/');
+    assert.equal(m.scope, '/');
+    assert.equal(m.name, 'Vestigo Media Tracker');
+    assert.equal(m.short_name, 'Vestigo');
+    assert.deepEqual(m.icons.map((i) => [i.src, i.purpose]), [['/icon.svg', 'any'], ['/icon-192.png', 'any'], ['/icon-512.png', 'any'], ['/icon-maskable-512.png', 'maskable']]);
+    for (const i of m.icons.filter((x) => x.type === 'image/png')) {
+      const p = png(i.src.slice(1));
+      assert.equal(`${p.w}x${p.h}`, i.sizes, `${i.src} is ${i.sizes}`);
+    }
+    assert.equal(png('icon-maskable-512.png').type, 2, 'the maskable icon is full bleed');
+  });
+
+  test('service worker: Vestigo cache name, same /sw.js path, and every shell file exists (one missing file fails the install)', () => {
+    const sw = read('sw.js');
+    assert.equal(/const VERSION = '([^']+)'/.exec(sw)[1], 'vestigo-v1');
+    const shell = JSON.parse(/const SHELL = (\[[^\]]+\])/.exec(sw)[1].replace(/'/g, '"'));
+    for (const p of shell) assert.ok(fs.existsSync(path.join(PUBLIC, p === '/' ? 'index.html' : p)), `${p} exists`);
+    assert.match(read('app.js'), /register\('\/sw\.js'\)/);
   });
 });

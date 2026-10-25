@@ -21,6 +21,9 @@ export function fmtMin(m, { short = false } = {}) {
   return r ? `${h}h ${r}m` : `${h}h`;
 }
 
+/** "1 session", "3 sessions" (or a custom plural: plural(n, 'entry', 'entries')). */
+export const plural = (n, word, many = `${word}s`) => `${n} ${n === 1 ? word : many}`;
+
 export function fmtHours(m, digits = 1) {
   const h = (Number(m) || 0) / 60;
   return h >= 100 ? Math.round(h).toLocaleString() : h.toFixed(h >= 10 ? 0 : digits).replace(/\.0$/, '');
@@ -122,18 +125,38 @@ const P = {
   download: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/>',
   key: '<circle cx="7.5" cy="15.5" r="5.5"/><path d="m21 2-9.6 9.6M15.5 7.5l3 3L22 7l-3-3"/>',
   code: '<path d="m16 18 6-6-6-6M8 6l-6 6 6 6"/>',
-  gift: '<path d="M20 12v10H4V12M2 7h20v5H2zM12 22V7M12 7H7.5a2.5 2.5 0 0 1 0-5C11 2 12 7 12 7zM12 7h4.5a2.5 2.5 0 0 0 0-5C13 2 12 7 12 7z"/>',
+  // the brand mark's dashed V as a regular stroke-2 icon (the mark itself is too heavy beside other icons)
+  trail: '<path d="M3.8 3.6 5.9 7.7M7.7 11.2l2 4M14.3 15.2l2-4M18.1 7.7l2.1-4.1"/><circle cx="12" cy="19.5" r="1.8" fill="currentColor"/>',
+  external: '<path d="M7 17 17 7M8 7h9v9"/>',
   flame: '<path d="M8.5 14.5A2.5 2.5 0 0 0 11 12c0-1.4-.5-2-1-3-1.1-2.1-.2-4 2-6 .5 2.5 2 4.9 4 6.5 2 1.6 3 3.5 3 5.5a7 7 0 1 1-14 0c0-1.2.4-2.3 1-3.3.3 1.6 1.4 2.8 2.5 2.8z"/>',
   check: '<path d="M20 6 9 17l-5-5"/>',
   back: '<path d="m15 18-6-6 6-6"/>',
   logout: '<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/>',
-  pad: '<path d="M6 11h4M8 9v4M15 12h.01M18 10h.01"/><rect x="2" y="6" width="20" height="12" rx="6"/>',
   clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
   bolt: '<path d="M13 2 3 14h9l-1 8 10-12h-9z"/>',
   info: '<circle cx="12" cy="12" r="9"/><path d="M12 16v-4M12 8h.01"/>',
 };
 export function icon(name, cls = '') {
   return `<svg class="${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${P[name] || ''}</svg>`;
+}
+
+// ---------- brand ----------
+export const APP = 'Vestigo';
+/** The Vestigo mark: a V walked in steps that meet at a dot; the oldest steps fade. Not an icon(): it has its own stroke. */
+export const MARK = "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='4.2' stroke-linecap='round' aria-hidden='true'><path d='M4.06 4.16 5.53 7.01' opacity='.55'/><path d='M7.96 11.72 9.43 14.56' opacity='.8'/><path d='M14.57 14.56 16.04 11.72M18.47 7.01 19.94 4.16'/><circle cx='12' cy='19.54' r='2.4' fill='currentColor' stroke='none'/></svg>";
+const TAGLINE = 'Every session leaves a trace.';
+
+/** Tile + wordmark. `sub` adds the "Media tracker" line (sidebar); `stacked` is the centred login / first-run lockup. */
+export function brand({ sub = false, stacked = false, link = true, cls = '' } = {}) {
+  const inner = `<span class="brand-mark">${MARK}</span><span class="brand-word">${APP}${sub ? '<small>Media tracker</small>' : ''}</span>`;
+  const c = `brand${stacked ? ' brand-stack' : ''}${cls ? ` ${cls}` : ''}`;
+  return link ? `<a class="${c}" href="/" data-link aria-label="${APP} home">${inner}</a>` : `<div class="${c}">${inner}</div>`;
+}
+export const tagline = () => `<p class="tagline">${TAGLINE}</p>`;
+
+/** Tab / history title: "Vestigo" alone, or "<page> · Vestigo". */
+export function setTitle(page = '') {
+  document.title = page ? `${page} · ${APP}` : APP;
 }
 
 // ---------- API client ----------
@@ -223,7 +246,7 @@ function shell() {
   const moreActive = !NAV.filter((n) => n.tab).some(active);
   return `<div class="shell">
     <aside class="side">
-      <a class="brand" href="/" data-link><span class="brand-mark">${icon('pad')}</span>PlayTracker</a>
+      ${brand({ sub: true })}
       ${NAV.map((n) => `<a class="nav-link ${active(n) ? 'active' : ''}" href="${n.path}" data-link>${icon(n.icon)}${n.label}${n.path === '/duplicates' ? '<span class="badge accent hide" id="dupe-badge"></span>' : n.path === '/system' ? '<span class="badge bad hide" id="err-badge"></span>' : ''}</a>`).join('')}
       <div class="side-foot col">
         <button class="btn" data-action="sync-all" id="sync-all-btn">${icon('sync')}Sync all</button>
@@ -231,7 +254,7 @@ function shell() {
       </div>
     </aside>
     <header class="topbar">
-      <a class="brand grow" href="/" data-link><span class="brand-mark">${icon('pad')}</span>PlayTracker</a>
+      ${brand({ cls: 'grow' })}
       <button class="btn icon ghost" data-action="sync-all" aria-label="Sync all">${icon('sync')}</button>
     </header>
     <main class="main" id="view"></main>
@@ -241,6 +264,12 @@ function shell() {
     </nav>
   </div>`;
 }
+
+// tab titles; game and wrapped pages set their own once they know the title / year
+const PAGE_TITLES = {
+  dashboard: '', library: 'Library', game: '', sessions: 'Sessions', stats: 'Stats', duplicates: 'Duplicates', history: 'Improve history',
+  accounts: 'Accounts', settings: 'Settings', apidocs: 'API', system: 'System', more: 'More',
+};
 
 const ROUTES = [
   [/^\/$/, 'dashboard'],
@@ -270,6 +299,7 @@ export async function route() {
     const m = re.exec(p);
     if (!m) continue;
     state.view = name;
+    setTitle(name === 'wrapped' ? `${m[1]} in review` : PAGE_TITLES[name]);
     view.innerHTML = `<div class="skel" style="height:34px;width:200px;margin-bottom:22px"></div><div class="kpis">${'<div class="skel" style="height:96px"></div>'.repeat(5)}</div><div class="skel" style="height:260px;margin-top:16px"></div>`;
     try {
       await pages[name](view, ...m.slice(1), () => seq !== renderSeq);
@@ -280,6 +310,7 @@ export async function route() {
     }
     return;
   }
+  setTitle('Not found');
   view.innerHTML = `<div class="empty"><h2>Not found</h2><a class="btn" href="/" data-link>Go home</a></div>`;
 }
 
@@ -290,8 +321,9 @@ export function rerender() {
 
 function render() {
   if (state.needLogin) {
+    setTitle('Sign in');
     $('#app').innerHTML = `<div class="login"><form class="card stack" id="login-form">
-      <div class="brand" style="padding:0;justify-content:center"><span class="brand-mark">${icon('pad')}</span>PlayTracker</div>
+      <div class="login-head">${brand({ stacked: true, link: false })}${tagline()}</div>
       <div class="field"><label>Password</label><input class="input" type="password" name="password" autocomplete="current-password" required autofocus></div>
       <button class="btn primary" style="width:100%">Sign in</button></form></div>`;
     $('#login-form').addEventListener('submit', async (e) => {
