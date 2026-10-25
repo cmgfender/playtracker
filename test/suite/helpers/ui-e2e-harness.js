@@ -48,6 +48,10 @@ export function installFetchGuard() {
   return { external, real, restore() { globalThis.fetch = real; } };
 }
 
+// environment switches that would change what the UI shows (secure cookies, CORS, a password from
+// the shell) are cleared, under both names the app reads (VESTIGO_X, else PLAYTRACKER_X)
+for (const k of ['CORS_ORIGIN', 'SECURE_COOKIE', 'PASSWORD', 'LOG_FILE'].flatMap((x) => [`VESTIGO_${x}`, `PLAYTRACKER_${x}`])) delete process.env[k];
+
 /** Start an in-memory app on a free port; `api` talks JSON to it (optionally with a cookie). */
 export async function startApp({ password = '' } = {}) {
   const inst = createApp({ dbFile: ':memory:', password, log: QUIET, scheduler: false });

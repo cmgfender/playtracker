@@ -743,15 +743,19 @@ describe('packaging: existing containers keep updating with no change', () => {
       ['PLAYTRACKER_CORS_ORIGIN', 'PLAYTRACKER_LOG_FILE', 'PLAYTRACKER_PASSWORD', 'PLAYTRACKER_SECURE_COOKIE']);
   });
 
-  test('the image keeps its defaults and CI publishes every build under both names', () => {
+  test('the image keeps its defaults and CI publishes every build under both names, the old one first', () => {
     const docker = read('Dockerfile');
     assert.match(docker, /^\s+PLAYTRACKER_DATA=\/data \\$/m, 'the baked data default keeps the old name (a baked VESTIGO_DATA would beat a user\'s PLAYTRACKER_DATA)');
     assert.doesNotMatch(docker, /VESTIGO_DATA=/);
     for (const re of [/PORT=7720/, /^VOLUME \["\/data"\]$/m, /^EXPOSE 7720$/m, /^STOPSIGNAL SIGTERM$/m, /^HEALTHCHECK /m, /PUID=99/, /PGID=100/]) assert.match(docker, re);
     const ci = read('.github/workflows/docker.yml');
-    const images = /images: \|\n((?:\s+ghcr\.io\/\S+\n)+)/.exec(ci)?.[1].trim().split(/\s+/);
-    assert.deepEqual(images, ['ghcr.io/cmgfender/vestigo', 'ghcr.io/cmgfender/playtracker']);
+    // the image existing installs pull is built and pushed on its own; the new name is a copy
+    // that can never fail that build
+    assert.match(ci, /^\s+images: ghcr\.io\/cmgfender\/playtracker$/m);
     assert.match(ci, /build-args: REVISION=\$\{\{ github\.sha \}\}/);
+    const copy = ci.slice(ci.indexOf('- name: Copy to ghcr.io/cmgfender/vestigo'));
+    assert.match(copy, /continue-on-error: true/);
+    assert.match(copy, /imagetools create --tag "ghcr\.io\/cmgfender\/vestigo:/);
   });
 });
 
