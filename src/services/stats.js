@@ -96,7 +96,12 @@ export function resolveRange(range, now = Date.now(), weekStartsOn = 1) {
 
 const GROUPS = ['day', 'week', 'month', 'year'];
 
-function groupKey(dayStart, group, weekStartsOn) {
+/** The grouping a chart of `span` days uses unless one is asked for. */
+export function groupFor(span, group) {
+  return GROUPS.includes(group) ? group : (span <= 45 ? 'day' : span <= 200 ? 'week' : span <= 1100 ? 'month' : 'year');
+}
+
+export function groupKey(dayStart, group, weekStartsOn) {
   const d = new Date(dayStart);
   if (group === 'month') return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
   if (group === 'year') return String(d.getFullYear());
@@ -108,7 +113,7 @@ function groupKey(dayStart, group, weekStartsOn) {
   return dayKey(dayStart);
 }
 
-function emptySeries(from, to, group, weekStartsOn) {
+export function emptySeries(from, to, group, weekStartsOn) {
   const keys = [];
   const seen = new Set();
   for (let d = startOfDay(from); d <= to; d = nextDay(d)) {
@@ -172,7 +177,7 @@ export function computeStats(db, opts = {}) {
       from = first ? parseDay(first) - 12 * 3600_000 : startOfDay(now);
     }
     const span = Math.max(1, (to - from) / DAY);
-    const g = GROUPS.includes(group) ? group : (span <= 45 ? 'day' : span <= 200 ? 'week' : span <= 1100 ? 'month' : 'year');
+    const g = groupFor(span, group);
     const range_ = { fromDay: dayKey(from), toDay: dayKey(to), gameId, platform, estimates };
     const f = filter('p', range_);
 

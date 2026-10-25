@@ -175,6 +175,7 @@ export class FakePSN {
       if (/^\/api\/userProfile\/v1\/internal\/users\/[^/]+\/basicPresences$/.test(p)) return 'presence';
       if (p === '/api/trophy/v1/users/me/titles/trophyTitles') return 'trophyTitles';
       if (/^\/api\/trophy\/v1\/users\/me\/npCommunicationIds\/[^/]+\/trophyGroups\/all\/trophies$/.test(p)) return 'trophies';
+      if (/^\/api\/trophy\/v1\/npCommunicationIds\/[^/]+\/trophyGroups\/all\/trophies$/.test(p)) return 'trophyList';
     }
     return 'unknown';
   }
@@ -186,7 +187,7 @@ export class FakePSN {
     const body = typeof opts.body === 'string' ? opts.body : '';
     const rec = { ep, method, path: u.pathname, params: Object.fromEntries(u.searchParams), headers: Object.fromEntries(headers), form: Object.fromEntries(new URLSearchParams(body)), redirect: opts.redirect, at: Date.now(), real: performance.now() };
     this.calls.push(rec);
-    if ((ep === 'trophyTitles' || ep === 'trophies') && this.autoAdvanceTrophyMs) clock.advance(this.autoAdvanceTrophyMs);
+    if ((ep === 'trophyTitles' || ep === 'trophies' || ep === 'trophyList') && this.autoAdvanceTrophyMs) clock.advance(this.autoAdvanceTrophyMs);
     if (this.gate?.[ep]) await this.gate[ep];
     const q = this.queued[ep];
     if (q?.length) {
@@ -261,6 +262,16 @@ export class FakePSN {
         // Sony answers 404 when the service name doesn't match the set (PS5 sets are "trophy2")
         if (rec.params.npServiceName !== set.service) return json(404, { error: { code: 2240525, message: 'Resource not found' } });
         return json(200, { trophySetVersion: '01.00', hasTrophyGroups: false, trophies: set.trophies, totalItemCount: set.trophies.length });
+      }
+      case 'trophyList': {
+        // the set's own list (names, details, icons), the same for every player
+        if (!this.bearerOk(headers)) return json(401, { error: { code: 2241025, message: 'Invalid token' } });
+        const comm = decodeURIComponent(/npCommunicationIds\/([^/]+)\//.exec(u.pathname)[1]);
+        const set = this.trophySets.get(comm);
+        if (!set || set.status || rec.params.npServiceName !== set.service) return json(404, { error: { code: 2240525, message: 'Resource not found' } });
+        const list = set.trophies.map((t) => ({ trophyId: t.trophyId, trophyHidden: !!t.trophyHidden, trophyType: t.trophyType, trophyName: `Trophy ${t.trophyId}`, trophyDetail: `Detail ${t.trophyId}`,
+          trophyIconUrl: `https://image.api.playstation.com/trophy/${comm}/${t.trophyId}.png`, trophyGroupId: t.trophyGroupId || 'default' }));
+        return json(200, { trophySetVersion: '01.00', hasTrophyGroups: false, trophies: list, totalItemCount: list.length });
       }
       default:
         return json(404, { error: 'not found' });

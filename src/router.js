@@ -44,7 +44,8 @@ export class Router {
           ...r.keys.map((k) => ({ name: k, in: 'path', required: true, schema: { type: k === 'id' || k === 'year' ? 'integer' : 'string' } })),
           ...Object.entries(r.doc.query || {}).map(([name, description]) => ({ name, in: 'query', required: false, description, schema: { type: 'string' } })),
         ],
-        responses: { 200: { description: 'OK' }, 401: { description: 'Unauthorized' } },
+        // `returns`: the response's fields, for clients (the web UI, scripts, mobile apps)
+        responses: { 200: { description: r.doc.returns || 'OK' }, 401: { description: 'Unauthorized' } },
       };
       if (r.doc.body) op.requestBody = { content: { 'application/json': { schema: { type: 'object', description: r.doc.body } } } };
       paths[p][r.method.toLowerCase()] = op;
