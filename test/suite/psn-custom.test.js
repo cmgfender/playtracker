@@ -998,6 +998,33 @@ describe('PSN trophy enrichment dates history', () => {
     assertHealthy(t);
   });
 
+  test('trophies are kept with their names (the set\'s own list, one request per set), grades and rarity; after play the earned list is read again, not the list', async (tc) => {
+    const t = await fresh(tc);
+    const psn = fakePsn(psnTitle({ id: 'PPSA74001_00', name: 'Kept Trophies', minutes: 600, first: T0 - 100 * DAY, last: T0 - 5 * DAY, count: 10, concept: 740001 }));
+    psn.trophyTitles.set('PPSA74001_00', [{ npCommunicationId: 'NPWR74001_00', npServiceName: 'trophy2' }]);
+    psn.trophySets.set('NPWR74001_00', { service: 'trophy2', trophies: [{ ...trophy(1, A1), trophyType: 'platinum', trophyEarnedRate: '2.5' }, trophy(2, A2), trophy(3, null)] });
+    const acc = await linkPsn(t);
+    assert.equal((await t.syncNow(acc.id)).status, 200);
+    assert.deepEqual([psn.count('trophies'), psn.count('trophyList')], [1, 1]);
+    const e = t.entry(acc.id, 'PPSA74001_00');
+    const sum = (await t.api('GET', `/games/${e.game_id}`)).body.achievements;
+    assert.deepEqual([sum.total, sum.unlocked, sum.grades, sum.completed, sum.completed_at], [3, 2, { platinum: 1, gold: 0, silver: 0, bronze: 1 }, true, A1], 'the platinum completes it');
+    const items = (await t.api('GET', `/games/${e.game_id}/achievements`)).body.items;
+    assert.deepEqual(items.map((i) => [i.id, i.name, i.grade, i.rarity, i.unlocked]), [
+      ['NPWR74001_00:2', 'Trophy 2', 'bronze', 50, true], ['NPWR74001_00:1', 'Trophy 1', 'platinum', 2.5, true], ['NPWR74001_00:3', 'Trophy 3', 'bronze', 50, false]]);
+    assert.equal(t.db.prepare("SELECT COUNT(*) n FROM sessions WHERE entry_id = ? AND kind = 'play'").get(e.id).n, 0);
+
+    clock.advance(DAY);
+    const end = Date.now() - 20 * MIN;
+    psn.play('PPSA74001_00', { minutes: 60, end });
+    psn.trophySets.get('NPWR74001_00').trophies[2] = trophy(3, end - 10 * MIN);
+    assert.equal((await t.syncNow(acc.id)).status, 200);
+    assert.deepEqual([psn.count('trophies'), psn.count('trophyList')], [2, 1], 'names are stored: the list is not read again');
+    const three = (await t.api('GET', `/games/${e.game_id}/achievements`)).body.items.find((i) => i.id === 'NPWR74001_00:3');
+    assert.deepEqual([three.unlocked, three.session_kind], [true, 'tracked']);
+    assertHealthy(t);
+  });
+
   test('trophy failures: a missing set completes the title without anchors; a server error leaves it pending for a retry', async (tc) => {
     const t = await fresh(tc);
     const psn = fakePsn(

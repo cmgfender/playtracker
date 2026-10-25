@@ -50,5 +50,6 @@ export function providerInfo() {
     history_model: modelFor(p).describe(), history: p.profile?.history || null,
     presence_interval_sec: p.profile?.presence?.interval_sec || null, sync_after_session_sec: p.profile?.presence?.sync_after_sec || null,
     can_enrich: !!p.enrich,
+    achievements: !!p.achievements, // achievements / trophies are read and kept for its titles
   }));
 }

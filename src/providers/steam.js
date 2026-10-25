@@ -1,4 +1,5 @@
 import { ProviderError, spacer } from './http.js';
+import { text, percent, cached } from '../services/achievements.js';
 
 // GetPlayerSummaries personastate
 const PERSONA = ['Offline', 'Online', 'Busy', 'Away', 'Snooze', 'Looking to trade', 'Looking to play'];
@@ -12,6 +13,46 @@ function parseReleaseDate(s) {
   return Number.isFinite(t) ? t : null;
 }
 
+const DAY = 86_400_000;
+
+/**
+ * Achievement rows from the player's list (GetPlayerAchievements with l=english: unlock state and
+ * time, names), the game's schema (GetSchemaForGame: full list, icons, hidden flag) and global
+ * unlock percentages (GetGlobalAchievementPercentagesForApp). Each part may be missing; a whole
+ * response or just its inner list is accepted.
+ */
+export function parseSteamAchievements(player, schema = null, percentages = null) {
+  const list = (v, inner) => (Array.isArray(v) ? v : inner(v) || []);
+  const mine = list(player, (v) => v?.playerstats?.achievements).filter((a) => a && a.apiname != null);
+  const defs = list(schema, (v) => v?.game?.availableGameStats?.achievements).filter((d) => d && d.name != null);
+  const pct = new Map(list(percentages, (v) => v?.achievementpercentages?.achievements).filter((x) => x && x.name != null).map((x) => [String(x.name), x.percent]));
+  const byId = new Map(mine.map((a) => [String(a.apiname), a]));
+  const def = new Map(defs.map((d) => [String(d.name), d]));
+  // the schema's order (it lists every achievement), then any it doesn't know
+  const ids = [...new Set([...def.keys(), ...byId.keys()])];
+  return ids.map((id, i) => {
+    const a = byId.get(id) || {};
+    const d = def.get(id) || {};
+    const unlocked = Number(a.achieved) === 1;
+    // the player's English texts first: every read has them (the schema only the first)
+    return {
+      id,
+      name: text(a.name) ?? text(d.displayName) ?? id,
+      description: text(a.description) ?? text(d.description),
+      icon_url: text(d.icon), icon_locked_url: text(d.icongray),
+      unlocked, unlocked_at: unlocked && Number(a.unlocktime) > 0 ? Number(a.unlocktime) * 1000 : null,
+      rarity: percent(pct.get(id)), points: null, grade: null,
+      hidden: d.hidden == null ? null : Number(d.hidden) === 1, group: null, sort: i,
+    };
+  });
+}
+
+/** The parts of a schema reply achievements need (kept small: it is cached per app). */
+function schemaAchievements(r) {
+  const list = r?.game?.availableGameStats?.achievements;
+  return Array.isArray(list) ? list.map((d) => ({ name: d.name, displayName: d.displayName, description: d.description, hidden: d.hidden, icon: d.icon, icongray: d.icongray })) : [];
+}
+
 export const steam = {
   id: 'steam',
   label: 'Steam',
@@ -20,7 +61,7 @@ export const steam = {
     { key: 'steam_id', label: 'SteamID64, vanity name or profile URL', type: 'text', required: true, help: 'Profile → Edit Profile → Privacy: "My profile" and "Game details" must be Public.' },
     { key: 'presence', label: 'Live presence tracking', type: 'select', options: ['on', 'off'], required: false, help: 'Polls "currently playing" every 2 minutes for exact session start/end times (720 calls/day of your 100k).' },
   ],
-  notes: 'Lifetime + last-2-weeks minutes per game, last played time, per-device minutes (Windows/Mac/Linux/Steam Deck), live "currently playing" and achievement unlock times for dating your history.',
+  notes: 'Lifetime + last-2-weeks minutes per game, last played time, per-device minutes (Windows/Mac/Linux/Steam Deck), live "currently playing", and your achievements (names, icons, rarity and unlock times, which also date your history).',
   profile: {
     history: {
       update: 'on-exit',          // playtime_forever is written when the game exits
@@ -43,6 +84,7 @@ export const steam = {
     per_device: 'playtime_windows/mac/linux/deck_forever + playtime_disconnected (offline)',
     presence: 'GetPlayerSummaries.gameid while in-game',
     history_anchors: 'GetPlayerAchievements unlock times; store release date; account creation date',
+    achievements: 'GetPlayerAchievements (unlocks, English names) + GetSchemaForGame (icons, hidden flag; cached per app) + GetGlobalAchievementPercentagesForApp (rarity)',
     rate_limit: '100,000 Web API calls per day per key; store API ~200 requests / 5 minutes',
     limitations: [
       'No session history, purchase date or "date added" - only lifetime totals.',
@@ -176,19 +218,25 @@ export const steam = {
     const storeGap = spacer(1600);
     const updates = [];
     let calls = 0;
+    // schema / rarity lookups (at most 2 per title) are capped on their own: the dating calls keep
+    // their pace, and every title of a run (at most 400 asked) gets its details
+    const details = { calls: 0, max: 800 };
     for (const e of entries) {
       if (ctx.stopped?.()) break;
       const u = { entryId: e.id, anchors: [], release_at: undefined, done: true };
       const meta = JSON.parse(e.meta || '{}');
+      if (meta.has_stats === false) u.achievements = null; // no stats, no achievements
       if (meta.has_stats !== false && steamid && calls < 400) {
         await apiGap(); calls++;
+        let r = null;
         try {
-          const r = await ctx.http(`${API}/ISteamUserStats/GetPlayerAchievements/v1/?key=${key}&steamid=${steamid}&appid=${e.ext_id}`, {}, { retries: 1 });
+          r = await ctx.http(`${API}/ISteamUserStats/GetPlayerAchievements/v1/?key=${key}&steamid=${steamid}&appid=${e.ext_id}&l=english`, {}, { retries: 1 });
           for (const a of r?.playerstats?.achievements || []) if (a.achieved && a.unlocktime > 0) u.anchors.push(a.unlocktime * 1000);
         } catch (err) {
           // 400/403 = game has no stats or stats are private: nothing to learn, not an error
-          if (!(err.status === 400 || err.status === 403)) { u.done = false; ctx.warn?.(`Achievements for ${e.title}: ${err.message}`); }
+          if (!(err.status === 400 || err.status === 403)) { u.done = false; ctx.warn?.(`Achievements for ${e.title}: ${err.message}`); } else u.achievements = null;
         }
+        if (r) u.achievements = await this.achievementDetails(account, e, r, ctx, apiGap, details);
       }
       if (calls < 400) {
         await storeGap();
@@ -201,6 +249,65 @@ export const steam = {
         }
       }
       updates.push(u);
+    }
+    return { updates };
+  },
+
+  /**
+   * Complete one title's achievements from its GetPlayerAchievements reply: the schema (icons,
+   * hidden flag, the full list) only while stored rows lack it, and global rarity - both cached
+   * per app for a day (a failed lookup for an hour). Lookups that fail are skipped quietly (games
+   * without stats answer errors or empty lists); `budget` caps them per run.
+   */
+  async achievementDetails(account, e, player, ctx, gap, budget = { calls: 0, max: Infinity }) {
+    const list = player?.playerstats?.achievements;
+    if (!Array.isArray(list) || !list.length) return []; // read: this game has none
+    const appid = encodeURIComponent(e.ext_id);
+    const lookup = async (url) => {
+      if (budget.calls >= budget.max || ctx.stopped?.()) throw Object.assign(new Error('no budget left in this run'), { skipped: true });
+      await gap(); budget.calls++;
+      return ctx.http(url, {}, { retries: 0 });
+    };
+    const known = new Map((ctx.knownAchievements?.(e.id) || []).map((k) => [k.ach_id, k]));
+    const schema = list.some((a) => !known.get(String(a.apiname))?.iconed)
+      ? await cached(ctx.cache, `steam:schema:${e.ext_id}`, DAY, async () => schemaAchievements(await lookup(`${API}/ISteamUserStats/GetSchemaForGame/v2/?key=${encodeURIComponent(account.config.api_key)}&appid=${appid}&l=english`)))
+      : null;
+    const rarity = await cached(ctx.cache, `steam:rarity:${e.ext_id}`, DAY, async () => {
+      const r = await lookup(`${API}/ISteamUserStats/GetGlobalAchievementPercentagesForApp/v2/?gameid=${appid}`);
+      return (r?.achievementpercentages?.achievements || []).map((x) => ({ name: x.name, percent: x.percent }));
+    });
+    return parseSteamAchievements(list, schema, rarity);
+  },
+
+  /**
+   * Read titles' achievements again (played since they were read, or never read): one
+   * GetPlayerAchievements call per title plus the cached schema / rarity lookups, spaced like
+   * enrichment, at most `maxCalls` requests.
+   */
+  async achievements(account, entries, ctx, { maxCalls = 400 } = {}) {
+    const key = encodeURIComponent(account.config.api_key);
+    const steamid = account.state.steamid64;
+    if (!steamid) return { updates: [] };
+    const gap = spacer(250);
+    const updates = [];
+    const details = { calls: 0, max: maxCalls };
+    let calls = 0;
+    for (const e of entries) {
+      // a title takes up to 3 requests: never start one the budget can't finish
+      if (ctx.stopped?.() || calls + details.calls + 3 > maxCalls) break;
+      if (JSON.parse(e.meta || '{}').has_stats === false) { updates.push({ entryId: e.id, achievements: null, done: true }); continue; }
+      await gap(); calls++;
+      let r;
+      try {
+        r = await ctx.http(`${API}/ISteamUserStats/GetPlayerAchievements/v1/?key=${key}&steamid=${steamid}&appid=${e.ext_id}&l=english`, {}, { retries: 1 });
+      } catch (err) {
+        if (err.status === 400 || err.status === 403) { updates.push({ entryId: e.id, achievements: null, done: true }); continue; }
+        if (err.rateLimited || err.status === 401) break;
+        updates.push({ entryId: e.id, done: false });
+        continue;
+      }
+      details.max = maxCalls - calls;
+      updates.push({ entryId: e.id, achievements: await this.achievementDetails(account, e, r, ctx, gap, details), done: true });
     }
     return { updates };
   },

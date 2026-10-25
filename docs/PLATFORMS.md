@@ -12,6 +12,7 @@ None of the platforms expose a play-session history. They only report **lifetime
 | Per-device minutes | ✅ Windows / Mac / Linux / **Steam Deck** / offline | category (PS4 / PS5 / PC) | device list only | optional | Tags each session with the device it was played on; flags offline play |
 | Live "currently playing" | ✅ `GetPlayerSummaries.gameid` | ✅ `basicPresences` | ✅ `/presence` | ✅ `POST /accounts/:id/presence` | Exact session start/end; triggers a sync when you stop playing |
 | Activity timestamps | ✅ achievement unlock times; purchase dates via the pasted licenses page | ✅ trophy earned times (plus first/last played) | ✅ achievement unlock times; screenshot / clip dates | — | Dates pre-tracking history |
+| Achievements / trophies | ✅ names, icons, hidden flag, rarity | ✅ names, icons, grade, rarity, DLC groups | ✅ names, icons, gamerscore, rarity (modern + Xbox 360) | — | Kept per game, attached to sessions by time, achievement stats |
 | Release date | ✅ store `appdetails` | — | — | — | History can't start before release |
 | Account creation date | ✅ `timecreated` | — | — | — | History can't start before the account existed |
 | Date added / purchased | ❌ | ❌ | ❌ | ✅ `date_added` (CSV/JSON) | Lower bound for history |
@@ -30,6 +31,7 @@ None of the platforms expose a play-session history. They only report **lifetime
 - `ISteamUserStats/GetPlayerAchievements` returns the unlock time of every achievement. These are real timestamps of when you were playing, and they anchor the history estimate. Calls are spaced 250 ms apart.
 - The store `appdetails` endpoint returns the release date. Calls are spaced 1.6 s apart, which is within the store's limit of about 200 requests per 5 minutes.
 - Games with the most pre-tracking hours are processed first, up to 400 games per run. Runs continue until every game is done.
+- The achievements themselves are kept too: `GetPlayerAchievements` is asked with `l=english` (names, descriptions), `GetSchemaForGame` adds icons and the hidden flag (once per app, cached for a day, skipped once stored), and `GetGlobalAchievementPercentagesForApp` the rarity (no key, cached per app for a day). Games without stats answer errors or empty lists and simply have none.
 
 **Limits:**
 - **Web API:** 100,000 calls a day per key.
@@ -59,6 +61,7 @@ None of the platforms expose a play-session history. They only report **lifetime
 **Advantages:**
 - **The best data of any platform.** First and last played plus launch count date your history with **high confidence**.
 - **Trophy earned times** fill in when play happened between first and last played. Background enrichment maps each title to its trophy set(s) (`trophy/v1/users/me/titles/trophyTitles?npTitleIds=`, 5 titles per request), then reads earned trophies per set (`npServiceName=trophy2` for PS5, `trophy` for PS4). Calls are spaced 3.2 s apart, at most 120 per run, with 15 minutes between runs, to stay well inside Sony's limits.
+- **Trophies are kept:** the earned list gives each trophy's grade and the share of players who have it; the set's own list (`trophy/v1/npCommunicationIds/{id}/trophyGroups/all/trophies`, one more request per set) gives names, details, icons and DLC groups. It is read again only when a trophy it doesn't know appears. After you play a title, its earned trophies are read again (the title's trophy sets are remembered for a day, so that is usually 1 request). The platinum counts as completing the game.
 - **Launch-count deltas** split a sync window into the right number of sessions.
 
 **Limits:** undocumented, roughly 300 requests per 15 minutes. A sync is cheap: 1 request per 200 titles.
@@ -89,7 +92,9 @@ Microsoft has no public consumer API, so Vestigo uses [OpenXBL](https://xbl.io).
 - Syncs, presence and enrichment share the plan's limit: **150 requests an hour on the free plan**. Set your plan's limit on the account if it's different.
 - Syncs keep 15% of the budget in reserve.
 - Presence checks every 5 minutes (12 requests an hour) and pauses when the budget runs low.
-- Enrichment, which reads achievement unlock times from `achievements/player/{xuid}/{titleId}`, only uses budget while more than 30% is left.
+- Enrichment, which reads achievement unlock times from `achievements/player/{xuid}/{titleId}`, only uses budget while more than 30% is left. The same reply carries the achievements (names, icons, gamerscore, rarity; Xbox 360 titles too), so keeping them costs nothing extra.
+- A title played since its achievements were read is read again after the sync (1 request, at most 5 titles per run), also only above that 30% reserve.
+- Titles read before achievements were kept are back-filled once: at most a quarter of the hourly limit per clock hour, never into the reserve, so presence and syncs always have room.
 
 **Large first import:**
 - Titles that don't fit in the hour's budget are **deferred** to the next sync.

@@ -12,6 +12,7 @@ Steam, Xbox and PlayStation tell you **how long you've played in total**, but no
   - A sync runs right after you stop playing.
   - The dashboard shows a "Playing now" card.
 - **Smart history:** existing hours are dated from first/last played, launch counts, achievement times and release dates, instead of spiking on import day. See below.
+- **Achievements and trophies:** names, icons, rarity, gamerscore and trophy grades from Steam, Xbox and PlayStation, with progress and 100% / platinum per game. Each unlock is shown in the session it happened in (or the dated history), and stats show unlocks over time, the rarest ones and completed games. They are read with the requests that date your history and again after you play.
 - **Session detection:**
   - Deltas between syncs become sessions.
   - When a platform reports a "last played" time (Steam, Xbox, PSN), the session is pinned to it.
@@ -199,6 +200,7 @@ curl -X POST "http://host:7720/api/v1/accounts/1/sync?wait=true" -H "Authorizati
 
 Main endpoints:
 - **Library:** `games`, `games/:id`, `games/:id/merge`, `entries/:id` (exclude, split, move, push playtime)
+- **Achievements:** `games/:id/achievements` (the full list, each with its session), summaries on `games/:id`, `achievements` on every session, `stats/achievements`
 - **Sessions and stats:** `sessions` (list, create, edit, bulk), `stats`, `stats/heatmap`, `stats/year/:year`
 - **Duplicates:** `duplicates`
 - **Accounts and syncing:** `accounts`, `accounts/:id/sync`, `accounts/:id/report`, `syncs`

@@ -407,6 +407,12 @@ export function* exportChunks(db, format = 'json') {
     ORDER BY g.title COLLATE NOCASE, e.id`);
   const sessions = db.prepare("SELECT started_at, ended_at, window_start, window_end, minutes, source, note FROM sessions WHERE entry_id = ? AND kind = 'play' ORDER BY sort_time");
   const count = db.prepare("SELECT COUNT(*) n FROM sessions WHERE entry_id = ? AND kind = 'play'");
+  // achievements / trophies, compact (empty fields left out). For the record: an import reads
+  // nothing from them (they come back from the platform once its account is linked).
+  const achievements = db.prepare('SELECT ach_id, name, unlocked, unlocked_at, rarity, points, grade FROM achievements WHERE entry_id = ? ORDER BY sort, id');
+  const achievementsOf = (entryId) => achievements.all(entryId).map((a) => Object.fromEntries(Object.entries({
+    id: a.ach_id, name: a.name, unlocked: !!a.unlocked, unlocked_at: iso(a.unlocked_at), rarity: a.rarity, points: a.points, grade: a.grade,
+  }).filter(([, v]) => v != null)));
   // the dates history is dated from, and your choice for it (Don't chart / window / confirmed)
   const historyOf = (r) => {
     const h = JSON.parse(r.hist || '{}');
@@ -446,6 +452,8 @@ export function* exportChunks(db, format = 'json') {
         minutes: s.minutes, source: s.source, note: s.note,
       })),
     };
+    const ach = achievementsOf(r.id);
+    if (ach.length) rec.achievements = ach;
     buf += (first ? '\n' : ',\n') + JSON.stringify(rec);
     first = false;
     if (buf.length > 64_000) { yield buf; buf = ''; }

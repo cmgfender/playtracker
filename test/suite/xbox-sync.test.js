@@ -1200,6 +1200,38 @@ describe('enrichment: achievements, screenshots and clips date history once the 
     } finally { await h.close(); }
   });
 
+  test('the same achievements replies are kept (names, gamerscore, unlock times); a title played later is read again after its sync, nothing else', async () => {
+    const h = await setup();
+    try {
+      const x = new FakeXbl();
+      x.title('91', { name: 'Halo Infinite', minutes: 3000, lastPlayed: T0 - 3 * DAY, achievements: [T0 - 100 * DAY, null, T0 - 30 * DAY] });
+      x.title('92', { name: 'Hi-Fi Rush', minutes: 600, lastPlayed: T0 - 20 * DAY, achievements: [] });
+      const acc = await h.link(x);
+      await h.sync(acc.id);
+      assert.equal(x.count('achievements'), 2, 'one request per title, as enrichment always made');
+      const g = (await h.get('/games?q=Halo')).items[0];
+      const sum = (await h.get(`/games/${g.id}`)).achievements;
+      assert.deepEqual([sum.total, sum.unlocked, sum.percent, sum.points, sum.points_total, sum.completed], [3, 2, 66.6, 20, 30, false]);
+      const list = await h.get(`/games/${g.id}/achievements`);
+      assert.deepEqual(list.items.map((i) => [i.name, i.unlocked, i.unlocked_at, i.points]), [
+        ['Achievement 3', true, T0 - 30 * DAY, 10], ['Achievement 1', true, T0 - 100 * DAY, 10], ['Achievement 2', false, null, 10]]);
+      assert.equal((await h.get(`/games/${(await h.get('/games?q=Hi-Fi')).items[0].id}`)).achievements.total, 0);
+
+      // played: the sync after it reads that title again, and its new unlock belongs to the session
+      clock.advance(2 * HOUR);
+      const end = Date.now() - 5 * MIN;
+      x.title('91').achievements[1] = end - 15 * MIN;
+      x.play('91', { end, minutes: 60 });
+      const before = x.calls.length;
+      await h.sync(acc.id);
+      assert.deepEqual(x.callsSince(before).filter((c) => c.ep === 'achievements').map((c) => c.titleId), ['91']);
+      const it = (await h.get(`/games/${g.id}/achievements`)).items.find((i) => i.name === 'Achievement 2');
+      assert.deepEqual([it.unlocked, it.session_kind, it.session?.id], [true, 'tracked', h.sessions(h.entry(acc.id, '91').id)[0].id]);
+      assert.equal((await h.get(`/games/${g.id}`)).achievements.completed, true);
+      await invariants(h);
+    } finally { await h.close(); }
+  });
+
   test('no xuid yet: enrichment sends nothing; once presence reveals the xuid it runs', async () => {
     const h = await setup();
     try {

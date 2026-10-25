@@ -4,6 +4,44 @@ import { openDb, tx } from './db.js';
 import { resolveDbFile } from './env.js';
 import { Settings } from './services/settings.js';
 import { applyItems, parseAccount } from './services/sync.js';
+import { storeAchievements, ACH_VERSION } from './services/achievements.js';
+import { sessionInterval } from './services/stats.js';
+
+const ACH_NAMES = ['First Steps', 'Explorer', 'Collector', 'Night Owl', 'Sharpshooter', 'Survivor', 'Treasure Hunter', 'Untouchable', 'Lorekeeper', 'Daredevil',
+  'Pacifist', 'Globetrotter', 'Speedrunner', 'Master Tactician', 'Big Spender', 'Champion', 'Perfectionist', 'Secret Keeper', 'Legend', 'Completionist'];
+const COMPLETE = new Set(['Hades', 'Astro Bot', 'Halo Infinite']);
+
+/** Demo achievements / trophies: unlocked during the entries' sessions (tracked or dated history). */
+function seedAchievements(db, rand, now) {
+  for (const e of db.prepare('SELECT e.id, e.platform, g.title FROM entries e JOIN games g ON g.id = e.game_id WHERE e.account_id IS NOT NULL AND e.playtime_min > 0').all()) {
+    const sessions = db.prepare("SELECT kind, minutes, started_at, ended_at, window_start, window_end, created_at FROM sessions WHERE entry_id = ? AND kind IN ('play', 'estimate')").all(e.id);
+    if (!sessions.length) continue;
+    const n = 12 + Math.floor(rand() * 28);
+    const reach = COMPLETE.has(e.title) ? 1 : rand() * 0.9;
+    const items = Array.from({ length: n }, (_, i) => {
+      const s = rand() < reach ? sessions[Math.floor(rand() * sessions.length)] : null;
+      const [a, b] = s ? sessionInterval(s) : [0, 0];
+      return {
+        id: e.platform === 'psn' ? `NPWR9${String(e.id).padStart(4, '0')}_00:${i}` : e.platform === 'xbox' ? String(i + 1) : `ACH_${i}`,
+        name: `${ACH_NAMES[i % ACH_NAMES.length]}${i >= ACH_NAMES.length ? ` ${Math.floor(i / ACH_NAMES.length) + 1}` : ''}`,
+        description: `Demo achievement ${i + 1} of ${e.title}`,
+        unlocked: !!s, unlocked_at: s ? Math.round(a + rand() * (b - a)) : null,
+        rarity: Math.round((0.4 + rand() ** 2 * 85) * 10) / 10,
+        points: e.platform === 'xbox' ? [5, 10, 15, 20, 25, 50, 100][Math.floor(rand() * 7)] : null,
+        grade: e.platform === 'psn' ? ['bronze', 'bronze', 'bronze', 'silver', 'silver', 'gold'][Math.floor(rand() * 6)] : null,
+        hidden: rand() < 0.1,
+      };
+    });
+    if (e.platform === 'psn') {
+      // the platinum: earned with the last of the others
+      const all = items.every((x) => x.unlocked);
+      items.push({ id: `NPWR9${String(e.id).padStart(4, '0')}_00:${n}`, name: `${e.title} Platinum`, description: 'Earn every other trophy', grade: 'platinum', rarity: 2.1,
+        unlocked: all, unlocked_at: all ? Math.max(...items.map((x) => x.unlocked_at)) : null });
+    }
+    storeAchievements(db, e.id, items, { now });
+    db.prepare('UPDATE entries SET ach_v = ?, ach_at = ? WHERE id = ?').run(ACH_VERSION, now, e.id);
+  }
+}
 
 const LIB = {
   steam: [
@@ -71,6 +109,7 @@ export function seedDemo(db, { days = 120, now = Date.now() } = {}) {
   db.prepare("UPDATE games SET status = 'playing' WHERE title IN ('Balatro', 'Baldur''s Gate 3', 'Final Fantasy VII Rebirth')").run();
   db.prepare("UPDATE games SET status = 'completed', rating = 10, favorite = 1 WHERE title IN ('Hades', 'Hollow Knight', 'Astro Bot')").run();
   db.prepare("UPDATE games SET status = 'backlog' WHERE title = 'Outer Wilds'").run();
+  seedAchievements(db, rand, now);
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
