@@ -14,7 +14,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   chromium, installFetchGuard, startApp, seed, openPage, waitView, overflow, waitUntil, toast, markToasts, modalReady, contrast,
-  srgb, sampleContrasts, ringContrast, invariantViolations, DESKTOP, PHONE, PHONE_SMALL, MIN, HOUR, DAY, skipReason,
+  srgb, sampleContrasts, ringContrast, invariantViolations, viewReady, DESKTOP, PHONE, PHONE_SMALL, MIN, HOUR, DAY, skipReason,
 } from './helpers/ui-e2e-harness.js';
 const UI = { skip: skipReason || false };
 
@@ -54,10 +54,49 @@ function assertHours(text, minutes, label) {
 const localInput = (t) => { const d = new Date(t); const p = (n) => String(n).padStart(2, '0'); return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`; };
 const waitH1 = (page, expected, timeout = 8000) => page.waitForFunction((e) => {
   const v = document.querySelector('#view');
-  if (!v || v.querySelector('.skel')) return false;
+  if (!v || v.hidden || v.getAttribute('aria-busy') === 'true' || v.querySelector('.skel')) return false;
   const t = v.querySelector('h1')?.textContent.trim() || '';
   return e.startsWith('re:') ? new RegExp(e.slice(3)).test(t) : t === e;
 }, expected instanceof RegExp ? `re:${expected.source}` : expected, { timeout });
+
+/** Every chart on the page: its SVG's role, label and scale, and the boxes of its axis text (CSS px). */
+const chartReport = (page) => page.evaluate(() => [...document.querySelectorAll('#view .chart > svg, #view .donut-wrap > svg')].map((svg) => {
+  const host = svg.closest('.chart') || svg.parentElement;
+  const vb = svg.viewBox.baseVal;
+  const r = svg.getBoundingClientRect();
+  const hb = host.getBoundingClientRect();
+  const scale = r.width / vb.width;
+  return {
+    kind: String(host.className), role: svg.getAttribute('role'), label: svg.getAttribute('aria-label') || '', hostW: host.clientWidth, svgW: r.width,
+    heat: host.classList.contains('heat'), donut: !host.classList.contains('chart'), box: { l: hb.left, r: hb.right },
+    texts: host.classList.contains('chart') ? [...svg.querySelectorAll('.axis text')].map((t) => {
+      const b = t.getBoundingClientRect();
+      return { s: t.textContent, px: parseFloat(getComputedStyle(t).fontSize) * scale, l: b.left, r: b.right, t: b.top, b: b.bottom };
+    }) : [],
+  };
+}));
+/** What is wrong with the charts of chartReport(): role / label, a stretched drawing, text size, text leaving the box, overlaps. */
+function chartProblems(where, charts) {
+  const out = [];
+  for (const c of charts) {
+    const id = `${where} ${c.kind}`;
+    if (c.role !== 'img') out.push(`${id}: role=${c.role}`);
+    if (!/\w{3,}.*: \S/.test(c.label) || /undefined|NaN/.test(c.label)) out.push(`${id}: aria-label ${JSON.stringify(c.label)}`);
+    if (c.donut) continue;
+    if (!c.heat && Math.abs(c.svgW - c.hostW) > 1) out.push(`${id}: drawn ${c.svgW}px wide in a ${c.hostW}px box`);
+    for (const t of c.texts) {
+      if (Math.abs(t.px - 11) > 1) out.push(`${id}: "${t.s}" renders at ${t.px.toFixed(1)}px`);
+      if (!c.heat && (t.l < c.box.l - 1 || t.r > c.box.r + 1)) out.push(`${id}: "${t.s}" leaves the chart (${Math.round(t.l)}-${Math.round(t.r)} of ${Math.round(c.box.l)}-${Math.round(c.box.r)})`);
+    }
+    for (let i = 0; i < c.texts.length; i++) {
+      for (let j = i + 1; j < c.texts.length; j++) {
+        const a = c.texts[i]; const b = c.texts[j];
+        if (Math.min(a.r, b.r) - Math.max(a.l, b.l) > 0.5 && Math.min(a.b, b.b) - Math.max(a.t, b.t) > 0.5) out.push(`${id}: "${a.s}" and "${b.s}" overlap`);
+      }
+    }
+  }
+  return out;
+}
 
 describe('Vestigo web UI (no password)', UI, () => {
   let S; // started app
@@ -1326,13 +1365,19 @@ describe('Vestigo web UI (no password)', UI, () => {
     const h = await visit('/');
     try {
       const segs = await h.page.evaluate(async () => {
-        const { barChart } = await import('/charts.js');
+        const { barChart, mountCharts } = await import('/charts.js');
         const div = document.createElement('div');
+        div.style.width = '300px';
+        document.body.append(div);
         div.innerHTML = barChart([{ label: 'x', value: 60, stack: [['manual', 'm'], ['estimated', 'e'], ['custom', 'c'], ['xbox', 'x'], ['psn', 'p'], ['steam', 's']].map(([key, color]) => ({ key, value: 10, color })) }]);
-        return [...div.querySelectorAll('svg > rect:not(.hit)')].map((r) => ({ fill: r.getAttribute('fill'), stroke: r.getAttribute('stroke'), width: r.getAttribute('stroke-width'), y: Number(r.getAttribute('y')) }));
+        mountCharts(div);
+        const out = [...div.querySelectorAll('svg .mk')].map((r) => ({ fill: r.getAttribute('fill'), stroke: r.getAttribute('stroke'), width: r.getAttribute('stroke-width'), y: r.getBBox().y, rounded: r.tagName === 'path' }));
+        div.remove();
+        return out;
       });
       assert.deepEqual(segs.map((s) => s.fill), ['s', 'p', 'x', 'c', 'm', 'e'], 'bottom to top, estimated history last');
       assert.ok(segs.every((s, i) => s.stroke === 'var(--panel)' && s.width === '1' && (!i || s.y < segs[i - 1].y)), 'stacked upward, split by a 1px card-coloured line');
+      assert.deepEqual(segs.map((s) => s.rounded), [false, false, false, false, false, true], 'only the top segment is rounded');
       const [steam, psn] = await srgb(h.page, await h.page.evaluate(() => ['--steam', '--psn'].map((k) => getComputedStyle(document.documentElement).getPropertyValue(k).trim())));
       assert.ok(contrast(steam, psn) >= 2.7, `Steam and PlayStation are ${contrast(steam, psn).toFixed(2)}:1 apart in dark`);
       const side = await h.page.locator('.side-nav svg').evaluateAll((els) => els.map((e) => [e.innerHTML, e.getAttribute('stroke-width')]));
@@ -1349,6 +1394,317 @@ describe('Vestigo web UI (no password)', UI, () => {
       assert.ok(more.every((x) => x[1] === '2' && x[2] === 18), 'stroke 2 at 18px (.ic-18)');
       clean(p);
     } finally { await p.close(); }
+  });
+
+  // ------------------------------------------------------------------ charts, phone layout and perceived speed
+  test('charts are drawn at their real size: 11px axis text, labels neither overlap nor leave the chart at 360, 390 and 1400px, heights by role, each an img with a summary', async () => {
+    await S.ok('/settings', { method: 'PUT', body: { dashboard_layout: DEFAULT_LAYOUT.replace('-heatmap', 'heatmap') } });
+    const problems = [];
+    let counted = 0;
+    try {
+      for (const viewport of [PHONE_SMALL, PHONE, DESKTOP]) {
+        const h = await openPage(browser, S.origin, { viewport });
+        try {
+          for (const path of ['/', '/stats?range=7d', '/stats?range=30d', '/stats?range=90d', '/stats?range=365d', `/stats?range=year:${YEAR}`, '/stats?range=all', `/game/${D.ids.zelda}`, `/game/${D.ids.celeste}`]) {
+            await h.page.goto(`${S.origin}${path}`);
+            await waitView(h.page);
+            await h.settle();
+            const charts = await chartReport(h.page);
+            counted += charts.length;
+            problems.push(...chartProblems(`${viewport.width}px ${path}`, charts));
+            // 220px page charts, 180px card charts, 150px time of day; 180 / 160 / 130 on a phone
+            const want = { page: [220, 180], card: [180, 160], small: [150, 130] };
+            for (const [size, height] of await h.page.locator('#view .chart.bar').evaluateAll((els) => els.map((e) => [e.dataset.size, e.clientHeight]))) {
+              if (height !== want[size][viewport.width <= 600 ? 1 : 0]) problems.push(`${viewport.width}px ${path}: a ${size} chart is ${height}px tall`);
+            }
+          }
+          clean(h);
+        } finally { await h.close(); }
+      }
+    } finally { await S.ok('/settings', { method: 'PUT', body: { dashboard_layout: DEFAULT_LAYOUT } }); }
+    assert.deepEqual(problems, []);
+    assert.ok(counted >= 3 * 20, `${counted} charts checked`);
+    // a chart of nothing: round ticks, no label twice (it used to read 0h, 1h, 1h)
+    const h = await visit('/stats');
+    try {
+      const empty = await h.page.evaluate(async () => {
+        const { barChart, mountCharts } = await import('/charts.js');
+        const div = document.createElement('div');
+        div.style.width = '600px';
+        document.querySelector('#view').append(div);
+        div.innerHTML = barChart(Array.from({ length: 30 }, (_, i) => ({ label: String(i + 1), value: 0 })), { size: 'page', title: 'Playtime per day, last 30 days' });
+        mountCharts(div);
+        const out = { ticks: [...div.querySelectorAll('.axis text[text-anchor="end"]')].map((t) => t.textContent), label: div.querySelector('svg').getAttribute('aria-label') };
+        div.remove();
+        return out;
+      });
+      assert.deepEqual(empty, { ticks: ['0', '30m', '1h'], label: 'Playtime per day, last 30 days: nothing played' });
+      const tickSets = await h.page.evaluate(async () => {
+        const { niceScale } = await import('/charts.js');
+        return [5, 59, 61, 125, 600, 1000, 3000, 20000, 200000].map((m) => niceScale(m).ticks.map(niceScale(m).fmt));
+      });
+      for (const t of tickSets) assert.equal(new Set(t).size, t.length, `distinct ticks: ${t}`);
+      assert.deepEqual(tickSets[4], ['0', '4h', '8h', '12h'], '10 hours: 4h steps');
+      clean(h);
+    } finally { await h.close(); }
+  });
+
+  test('heatmap: at 390px it opens on the current week, is a labelled keyboard scroller, and its tooltip names the day', async () => {
+    const h = await visit('/stats', { viewport: PHONE });
+    const { page } = h;
+    try {
+      const heat = page.locator('#hm .chart.heat');
+      const st = await heat.evaluate((el) => {
+        const name = new Date().toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
+        const cell = [...el.querySelectorAll('rect[data-tip]')].find((r) => r.dataset.tip.startsWith(`${name}:`));
+        const a = el.getBoundingClientRect();
+        const b = cell.getBoundingClientRect();
+        return { tabIndex: el.tabIndex, label: el.getAttribute('aria-label'), svg: el.querySelector('svg').getAttribute('aria-label'), role: el.querySelector('svg').getAttribute('role'), scrollLeft: el.scrollLeft, scrolls: el.scrollWidth > el.clientWidth + 50, todayShown: b.left >= a.left - 1 && b.right <= a.right + 1 };
+      });
+      assert.equal(st.tabIndex, 0, 'focusable');
+      assert.equal(st.label, `Activity in ${YEAR}, by day`);
+      assert.equal(st.role, 'img');
+      assert.match(st.svg, new RegExp(`^${YEAR}: .+ total|^${YEAR}: \\d+h? .*|^${YEAR}: `));
+      assert.ok(st.scrolls && st.scrollLeft > 0, `the year is wider than the phone and starts scrolled to the end (${st.scrollLeft}px)`);
+      assert.ok(st.todayShown, "today's cell is in view");
+      // Tab from the year buttons lands on the heatmap; arrow keys scroll it
+      await page.locator('#hm-year button').last().focus();
+      await page.keyboard.press('Tab');
+      assert.ok(await heat.evaluate((el) => el === document.activeElement && el.matches(':focus-visible')), 'the heatmap is the next Tab stop and shows a focus ring');
+      await page.keyboard.press('ArrowLeft');
+      await page.keyboard.press('ArrowLeft');
+      await waitUntil(async () => (await heat.evaluate((el) => el.scrollLeft)) < st.scrollLeft, { message: 'arrow keys scroll the heatmap' });
+      clean(h);
+    } finally { await h.close(); }
+  });
+
+  test('charts redraw when their box resizes and are let go when they leave the page', async () => {
+    const h = await visit('/stats?range=30d');
+    const { page } = h;
+    const fit = () => page.evaluate(() => [...document.querySelectorAll('#view .chart.bar')].map((c) => { const vb = c.querySelector('svg').viewBox.baseVal; return [c.clientWidth, vb.width, c.clientHeight, vb.height]; }));
+    const fitted = (f) => f.length >= 2 && f.every(([w, vw, hh, vh]) => w === vw && hh === vh);
+    try {
+      const wide = await fit();
+      assert.ok(fitted(wide), `drawn at their box size: ${JSON.stringify(wide)}`);
+      await page.setViewportSize({ width: 390, height: 844 });
+      await waitUntil(async () => { const f = await fit(); return fitted(f) && f[0][0] < wide[0][0] && f; }, { message: 'redrawn for the narrow window' });
+      assert.deepEqual(chartProblems('390px after a resize', await chartReport(page)), []);
+      await page.setViewportSize(DESKTOP);
+      await waitUntil(async () => { const f = await fit(); return fitted(f) && f[0][0] === wide[0][0]; }, { message: 'and back' });
+      // around the app a few times: only the charts on screen are kept
+      for (let i = 0; i < 3; i++) for (const nav of ['Home', 'Stats', 'Sessions', 'Library']) await spa(h, page.locator('.side a.nav-link', { hasText: nav }));
+      await spa(h, page.locator('.side a.nav-link', { hasText: 'Stats' }));
+      const [live, onPage] = await page.evaluate(async () => [(await import('/charts.js')).liveCharts(), document.querySelectorAll('[data-chart]').length]);
+      assert.ok(onPage >= 3, `Stats shows its charts (${onPage})`);
+      assert.equal(live, onPage, 'no chart is kept after its page is gone');
+      clean(h);
+    } finally { await h.close(); }
+  });
+
+  test('navigation: no skeleton when the page answers within 150ms, nothing of a page navigated past, and the route\'s ready signal is reliable', async () => {
+    const h = await visit('/');
+    const { page } = h;
+    try {
+      const res = await page.evaluate(async (paths) => {
+        const app = await import('/app.js');
+        const frames = [];
+        let on = true;
+        const tick = () => {
+          if (!on) return;
+          const shown = [...document.querySelectorAll('#app main')].filter((m) => !m.hidden);
+          frames.push({ t: performance.now(), shown: shown.map((m) => ({ h1: m.querySelector('h1')?.textContent.trim() || '', skel: !!m.querySelector('.skel'), empty: !m.firstElementChild })) });
+          requestAnimationFrame(tick);
+        };
+        requestAnimationFrame(tick);
+        const ready = () => new Promise((r) => { const f = () => { const v = document.querySelector('#view'); if (v && !v.hidden && !v.hasAttribute('aria-busy')) r(); else requestAnimationFrame(f); }; f(); });
+        const navs = [];
+        for (const p of paths) { const t0 = performance.now(); app.navigate(p); await ready(); navs.push({ p, t0, t1: performance.now() }); }
+        // three navigations at once: only the last one is ever shown
+        const t0 = performance.now();
+        app.navigate('/library'); app.navigate('/sessions'); app.navigate('/stats');
+        await ready();
+        await new Promise((r) => setTimeout(r, 200));
+        on = false;
+        return { frames, navs, burst: { t0, t1: performance.now() } };
+      }, ['/library', '/sessions', '/stats', '/', `/game/${D.ids.zelda}`, '/accounts', '/settings', '/library', '/stats', '/']);
+      const fast = res.navs.filter((n) => n.t1 - n.t0 < 140);
+      assert.ok(fast.length >= 3, `most navigations answer quickly against the local server (${res.navs.map((n) => Math.round(n.t1 - n.t0)).join(', ')} ms)`);
+      const during = (a, b) => res.frames.filter((f) => f.t >= a && f.t <= b);
+      for (const n of fast) assert.deepEqual(during(n.t0, n.t1 + 50).filter((f) => f.shown.some((s) => s.skel)).length, 0, `no skeleton frame while ${n.p} loaded in ${Math.round(n.t1 - n.t0)}ms`);
+      assert.deepEqual(res.frames.filter((f) => f.shown.length !== 1 || f.shown[0].empty).map((f) => JSON.stringify(f.shown)).slice(0, 3), [], 'every frame shows exactly one page with content');
+      const burst = [...new Set(during(res.burst.t0, res.burst.t1).flatMap((f) => f.shown.map((s) => s.h1)))];
+      assert.ok(burst.every((t) => /Good|Late night|Stats/.test(t)) && burst.includes('Stats'), `only the page being left and the last target are shown: ${burst}`);
+      clean(h);
+
+      // a slow server: the page being left stays (inert) for 150ms, then a skeleton in the new page's shape
+      await page.route('**/api/v1/**', async (route) => { await new Promise((r) => setTimeout(r, 800)); await route.continue().catch(() => {}); });
+      await page.locator('.side a.nav-link', { hasText: 'Library' }).click();
+      assert.equal(await page.evaluate(viewReady), false, 'ready is false the moment a navigation starts, although the old page is still on screen');
+      assert.ok(await page.locator('main.leaving').count() === 1 && await page.locator('main.leaving').evaluate((m) => m.inert && !m.querySelector('[id]')), 'the page being left is inert and has given up its ids');
+      await page.locator('#view .lib-grid .skel').first().waitFor({ timeout: 3000 });
+      const sk = await page.evaluate(() => ({
+        tiles: document.querySelectorAll('#view .lib-grid .skel').length, kpis: document.querySelectorAll('#view .kpis .skel').length, busy: document.querySelector('#view').getAttribute('aria-busy'),
+        hidden: !!document.querySelector('#view .skel').closest('[aria-hidden="true"]'), leaving: document.querySelectorAll('main.leaving').length,
+      }));
+      assert.deepEqual(sk, { tiles: 12, kpis: 0, busy: 'true', hidden: true, leaving: 0 }, 'Library waits behind a grid of 12 tiles, not KPI blocks');
+      await waitView(page, 15000);
+      assert.equal((await page.locator('#view h1').innerText()).trim(), 'Library', 'waitView returned on the new page');
+      assert.ok(await page.locator('#lib-items .tile').count() > 0, 'with its games');
+      await page.unrouteAll({ behavior: 'ignoreErrors' });
+      assert.deepEqual(h.rec.pageErrors, [], 'pages navigated past finish quietly');
+    } finally { await h.close(); }
+  });
+
+  test('phone 390px: the floating button never covers an edit pencil or tile once scrolled to the bottom; KPIs compact; "Jump back in" on the first screen', async () => {
+    const h = await openPage(browser, S.origin, { viewport: PHONE });
+    const { page } = h;
+    try {
+      const covered = [];
+      let checked = 0;
+      for (const path of ['/', '/library', '/sessions']) {
+        await page.goto(`${S.origin}${path}`);
+        await waitView(page);
+        await h.settle();
+        if (path === '/') {
+          const top = await page.locator('#view .card-h h2', { hasText: 'Jump back in' }).evaluate((e) => e.getBoundingClientRect().top + scrollY);
+          assert.ok(top < PHONE.height, `"Jump back in" starts at ${top}px`);
+          const k = await page.evaluate(() => ({ pad: getComputedStyle(document.querySelector('.kpi')).padding, value: getComputedStyle(document.querySelector('.kpi .value')).fontSize, spark: getComputedStyle(document.querySelector('.kpi .spark')).display, feature: document.querySelector('.kpi.feature').getBoundingClientRect().width > innerWidth / 2 }));
+          assert.deepEqual(k, { pad: '10px 12px', value: '22px', spark: 'none', feature: true });
+        }
+        await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
+        await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+        const r = await page.evaluate((p) => {
+          const out = { bad: [], n: 0 };
+          const bar = document.querySelector('.tabbar').getBoundingClientRect();
+          const top = document.querySelector('.topbar').getBoundingClientRect();
+          for (const el of document.querySelectorAll('#view [data-edit-session], #view .carousel .tile, #view .lib-grid .tile')) {
+            const b = el.getBoundingClientRect();
+            const x = b.left + b.width / 2; const y = b.top + b.height / 2;
+            if (y < top.bottom || y > bar.top || x < 0 || x > innerWidth) continue; // off screen, or scrolled under the top or tab bar
+            out.n++;
+            const hit = document.elementFromPoint(x, y);
+            if (!el.contains(hit)) out.bad.push(`${p}: ${el.className || el.tagName} at ${Math.round(x)},${Math.round(y)} is under ${hit?.className || hit?.tagName}`);
+          }
+          return out;
+        }, path);
+        covered.push(...r.bad);
+        checked += r.n;
+      }
+      assert.deepEqual(covered, []);
+      assert.ok(checked >= 8, `${checked} controls checked`);
+      clean(h);
+    } finally { await h.close(); }
+  });
+
+  test('chips and segments: every Library chip shows at 1400px; on a phone a row that scrolls fades its edge, Stats ranges fit 360px and all 8 statuses are one select away', async () => {
+    const d = await visit('/library');
+    try {
+      const chips = await d.page.evaluate(() => {
+        const row = document.querySelector('#lib-chips');
+        const a = row.getBoundingClientRect();
+        return { wrap: getComputedStyle(row).flexWrap, hidden: [...row.querySelectorAll('.chip')].filter((c) => { const b = c.getBoundingClientRect(); return b.right > a.right + 1 || b.left < a.left - 1 || b.right > innerWidth; }).map((c) => c.textContent.trim()), n: row.querySelectorAll('.chip').length };
+      });
+      assert.equal(chips.wrap, 'wrap');
+      assert.deepEqual(chips.hidden, [], 'no chip is cut off');
+      assert.ok(chips.n >= 10);
+      clean(d);
+    } finally { await d.close(); }
+
+    const p = await visit('/library', { viewport: PHONE });
+    try {
+      const row = p.page.locator('#lib-chips');
+      assert.ok(await row.evaluate((el) => el.scrollWidth > el.clientWidth && el.classList.contains('more-r')), 'more chips off to the right: the row fades out');
+      await row.evaluate((el) => { el.scrollLeft = el.scrollWidth; });
+      await waitUntil(() => row.evaluate((el) => !el.classList.contains('more-r')), { message: 'scrolled to the end, no fade' });
+      await p.page.goto(`${S.origin}/library?status=wishlist`);
+      await waitView(p.page);
+      const on = await p.page.locator('#lib-chips').evaluate((el) => { const a = el.getBoundingClientRect(); const b = el.querySelector('.chip.on').getBoundingClientRect(); return b.left >= a.left && b.right <= a.right; });
+      assert.ok(on, 'the chosen chip is scrolled into view');
+      clean(p);
+    } finally { await p.close(); }
+
+    const s = await visit('/stats?range=30d', { viewport: PHONE_SMALL });
+    try {
+      const seg = await s.page.locator('#st-range').evaluate((el) => ({ fits: el.scrollWidth <= el.clientWidth + 1 && el.getBoundingClientRect().right <= innerWidth, labels: [...el.querySelectorAll('button')].map((b) => b.innerText.trim()) }));
+      assert.deepEqual(seg, { fits: true, labels: ['7d', '30d', '90d', '12m'] });
+      const years = await s.page.locator('#st-year option').allInnerTexts();
+      assert.ok(years.includes(String(YEAR)) && years.includes('All time'), `years and All time in the select: ${years}`);
+      await s.page.locator('#st-year').selectOption('all');
+      await waitUntil(() => new URL(s.page.url()).searchParams.get('range') === 'all', { message: 'range=all' });
+      assert.equal(await s.page.locator('#st-range button.on').count(), 0, 'no rolling range is marked');
+      await s.page.locator('#st-range [data-r="7d"]').click();
+      await waitUntil(() => new URL(s.page.url()).searchParams.get('range') === '7d', { message: 'range=7d' });
+      assert.equal(await s.page.locator('#st-year').inputValue(), '');
+      clean(s);
+    } finally { await s.close(); }
+
+    const g0 = await S.ok('/games', { method: 'POST', body: { title: 'Status Lab' } });
+    const g = await visit(`/game/${g0.id}`, { viewport: PHONE });
+    try {
+      assert.ok(!(await g.page.locator('#g-status').isVisible()), 'the segment is for wider screens');
+      const sel = g.page.locator('#g-status-sel');
+      assert.ok(await sel.isVisible());
+      assert.deepEqual(await sel.locator('option').allInnerTexts(), ['No status', 'Playing', 'Backlog', 'Paused', 'Beaten', 'Completed', 'Dropped', 'Wishlist']);
+      await sel.selectOption('dropped');
+      await waitUntil(async () => (await game(g0.id)).status === 'dropped', { message: 'status saved from the select' });
+      const o = await overflow(g.page, PHONE.width);
+      assert.ok(o.doc <= PHONE.width + 1, `no side-scrolling (${o.doc}px)`);
+      clean(g);
+    } finally { await g.close(); await S.ok(`/games/${g0.id}`, { method: 'DELETE' }); }
+  });
+
+  test('home at 1400px: half-width cards are as tall as their content; the weekly sparkline is 7 mini bars', async () => {
+    const h = await visit('/');
+    try {
+      const m = await h.page.evaluate(() => {
+        const card = (t) => [...document.querySelectorAll('#view .card')].find((c) => c.querySelector('.card-h h2')?.textContent.trim() === t);
+        const slack = (c, inner) => c.getBoundingClientRect().bottom - inner.getBoundingClientRect().bottom - parseFloat(getComputedStyle(c).paddingBottom);
+        const chart = card('Last 30 days');
+        const acc = card('Accounts');
+        return { band: slack(chart, chart.querySelector('.legend')), acc: slack(acc, acc.lastElementChild), bars: document.querySelectorAll('#view .kpi.feature .spark-bars i').length, area: document.querySelectorAll('#view .kpi.feature svg.spark').length };
+      });
+      assert.ok(m.band <= 24, `empty band under the Last 30 days legend: ${m.band}px`);
+      assert.ok(m.acc <= 1, `Accounts card slack: ${m.acc}px`);
+      assert.deepEqual([m.bars, m.area], [7, 0]);
+      clean(h);
+    } finally { await h.close(); }
+  });
+
+  test('cover placeholders: a monogram plus the caption (each title once), light tints in the light theme, and "No art" differs from "Never"', async () => {
+    const h = await visit('/library');
+    const { page } = h;
+    try {
+      const r = await page.evaluate(async () => {
+        const app = await import('/app.js');
+        const tiles = [...document.querySelectorAll('#lib-items .tile')].map((t) => {
+          const title = t.querySelector('.t').textContent.trim();
+          return { title, times: t.innerText.split(title).length - 1, ini: getComputedStyle(t.querySelector('.cover .ini')).display !== 'none' && t.querySelector('.cover .ini').textContent };
+        });
+        return { tiles, mono: ['God of War', "Baldur's Gate 3", 'The Witness', 'A Short Hike', 'Zelda: TotK', '!!!'].map(app.monogram) };
+      });
+      assert.deepEqual(r.mono, ['GW', 'BG', 'W', 'SH', 'ZT', '']);
+      assert.ok(r.tiles.length >= 7);
+      for (const t of r.tiles) {
+        assert.equal(t.times, 1, `${t.title} is written once in its tile`);
+        assert.ok(t.ini, `${t.title} shows its monogram`);
+      }
+      const colours = async () => {
+        const c = await page.locator('#lib-items .tile .cover').first().evaluate((el) => ({ bg: getComputedStyle(el).backgroundImage, ink: getComputedStyle(el.querySelector('.ph')).color }));
+        const stops = c.bg.match(/rgba?\([^)]+\)/g);
+        return { stops, ink: c.ink };
+      };
+      const dark = await colours();
+      assert.ok(dark.stops.every((x) => contrast(x, 'rgb(255,255,255)') >= 4.5), `dark placeholder: white ink reads (${dark.stops})`);
+      await paint(page, 'light', '#7656ff');
+      const light = await colours();
+      assert.ok(light.stops.every((x) => contrast(x, 'rgb(0,0,0)') >= 9), `light placeholder is a light tint (${light.stops})`);
+      assert.ok(light.stops.every((x) => contrast(x, light.ink) >= 4.5), `its ink reads (${light.ink} on ${light.stops})`);
+      const shown = (mode) => page.evaluate((m) => { document.documentElement.dataset.coverTitles = m; const t = document.querySelector('#lib-items .tile .cover .ph'); return ['full', 'ini'].filter((k) => getComputedStyle(t.querySelector(`.${k}`)).display !== 'none'); }, mode);
+      assert.deepEqual(await shown('auto'), ['ini'], 'No art: the monogram');
+      assert.deepEqual(await shown('never'), [], 'Never: a plain tint');
+      assert.deepEqual(await shown('always'), ['full'], 'Always: the title on the cover (the caption is hidden)');
+      clean(h);
+    } finally { await h.close(); }
   });
 
   // ------------------------------------------------------------------ improve history
@@ -1550,6 +1906,8 @@ describe('Vestigo web UI (no password)', UI, () => {
       await waitView(page);
       await page.locator('#s-chips [data-src="import"]').click();
       await page.locator('#s-list .item', { hasText: 'Inscryption' }).waitFor();
+      // rows off screen are not rendered (content-visibility: auto), so innerText needs it on screen
+      await page.locator('#s-list .item', { hasText: 'Inscryption' }).scrollIntoViewIfNeeded();
       assert.match(await page.locator('#s-list .item', { hasText: 'Inscryption' }).innerText(), /imported/);
       clean(h);
     } finally { await h.close(); fs.rmSync(dir, { recursive: true, force: true }); }
@@ -1754,6 +2112,136 @@ describe('Vestigo web UI (no password)', UI, () => {
 });
 
 // ======================================================================== login
+// A long history: 20 games x 150 sessions. The Sessions page draws 150 rows at a time and appends the
+// next 150 on "Load more"; rows off screen skip layout and paint (content-visibility: auto).
+describe('Vestigo web UI with a long history (3,000 sessions)', UI, () => {
+  let S;
+  let first; // the first game
+  const ymd = (t) => { const d = new Date(t); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
+
+  before(async () => {
+    S = await startApp();
+    const games = Array.from({ length: 20 }, (_, g) => {
+      const sessions = Array.from({ length: 150 }, (__, i) => ({ date: ymd(NOW - (2 * i + (g % 2) + 1) * DAY), minutes: 30 + ((g * 7 + i * 13) % 60) }));
+      return { title: `Long Game ${g + 1}`, platform: 'switch', playtime_minutes: sessions.reduce((a, s) => a + s.minutes, 0) + 60, sessions };
+    });
+    await S.ok('/import', { method: 'POST', body: { games } });
+    first = (await S.ok('/games?q=Long%20Game%201&sort=title&limit=1')).items[0];
+  });
+  after(() => S?.close());
+  const clean = (h) => {
+    assert.deepEqual(h.rec.pageErrors, [], 'no uncaught page errors');
+    assert.deepEqual(h.unexpectedConsole(), [], 'no unexpected console errors');
+  };
+
+  test('seeded: 3,000 tracked sessions', async () => {
+    assert.equal((await S.ok('/sessions?limit=1')).total, 3000);
+  });
+
+  // Budget: the first 150 rows within 1,500 ms of opening the page (boot, two API calls, one render:
+  // ~350 ms here, the rest is headroom for a loaded CI machine), and each "Load more" within 300 ms
+  // (~70-120 ms here, flat). "Load more" appends 150 rows to a list whose off-screen rows skip layout;
+  // redrawing the whole list instead grew linearly, to 1.4 s at 3,000 rows.
+  test('Sessions with 3,000 sessions: first rows within 1.5s, every "Load more" up to all 3,000 within 300ms', async (t) => {
+    const h = await openPage(browser, S.origin);
+    const { page } = h;
+    try {
+      await page.goto(`${S.origin}/sessions`);
+      await page.waitForFunction(viewReady, null, { timeout: 8000, polling: 'raf' });
+      const firstMs = await page.evaluate(() => performance.now());
+      assert.equal(await page.locator('#s-list .item').count(), 150);
+      assert.equal(await page.locator('#s-list .item').first().evaluate((e) => getComputedStyle(e).contentVisibility), 'auto');
+      const loads = [];
+      while (await page.locator('#s-load').count()) {
+        loads.push(await page.evaluate(() => new Promise((res) => {
+          const n0 = document.querySelectorAll('#s-list .item').length;
+          const t0 = performance.now();
+          document.querySelector('#s-load').click();
+          const f = () => (document.querySelectorAll('#s-list .item').length > n0 ? requestAnimationFrame(() => res(performance.now() - t0)) : requestAnimationFrame(f));
+          f();
+        })));
+      }
+      assert.equal(await page.locator('#s-list .item').count(), 3000, 'all 3,000 rows');
+      t.diagnostic(`first rows after ${Math.round(firstMs)}ms; load more: ${loads.map(Math.round).join(', ')} ms`);
+      assert.ok(firstMs < 1500, `first rows after ${Math.round(firstMs)}ms`);
+      assert.ok(Math.max(...loads) < 300, `slowest "Load more": ${Math.round(Math.max(...loads))}ms`);
+      // and the long page still scrolls to its end
+      await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
+      await page.locator('#s-more', { hasText: 'That’s everything' }).waitFor();
+      clean(h);
+    } finally { await h.close(); }
+  });
+
+  test('phone 390px Sessions: top bar, toolbar, day headers and the bulk bar stack without hiding each other while scrolling; rows at most 64px', async () => {
+    const h = await openPage(browser, S.origin, { viewport: PHONE });
+    const { page } = h;
+    const geo = () => page.evaluate(() => {
+      const r = (el) => el.getBoundingClientRect();
+      const bulk = document.querySelector('#s-bulk');
+      return {
+        bar: r(document.querySelector('.topbar')), tb: r(document.querySelector('#view .toolbar')),
+        heads: [...document.querySelectorAll('#s-list .day-h')].map((e) => ({ t: r(e).top, b: r(e).bottom })),
+        bulk: bulk.classList.contains('hide') ? null : r(bulk),
+      };
+    });
+    const frame = () => page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+    try {
+      await page.goto(`${S.origin}/sessions`);
+      await waitView(page);
+      await h.settle();
+      // the rows on screen (rows off screen are placeholders until they come into view)
+      const rows = await page.locator('#s-list .item').evaluateAll((els) => els.map((e) => e.getBoundingClientRect()).filter((r) => r.top >= 0 && r.bottom <= innerHeight).map((r) => r.height));
+      assert.ok(rows.length >= 6, `${rows.length} rows on screen`);
+      assert.ok(Math.max(...rows) <= 64.5, `session rows are ${Math.max(...rows)}px at most`);
+      const problems = [];
+      const check = async (label) => {
+        const g = await geo();
+        if (g.tb.top < g.bar.bottom - 0.5) problems.push(`${label}: toolbar (top ${g.tb.top}) under the top bar (bottom ${g.bar.bottom})`);
+        const stuck = g.heads.filter((x) => Math.abs(x.t - g.tb.bottom) < 1.5);
+        const hidden = g.heads.filter((x) => x.b > g.bar.top + 0.5 && x.t < g.tb.bottom - 1.5);
+        if (!stuck.length) problems.push(`${label}: no day header right under the toolbar (toolbar bottom ${g.tb.bottom}, headers ${g.heads.slice(0, 3).map((x) => Math.round(x.t))})`);
+        if (hidden.length) problems.push(`${label}: ${hidden.length} day header(s) partly under the toolbar`);
+        if (g.bulk && g.bulk.top < g.tb.bottom - 0.5) problems.push(`${label}: bulk bar (top ${g.bulk.top}) covers the toolbar (bottom ${g.tb.bottom})`);
+      };
+      for (let y = 600; y <= 6000; y += 700) {
+        await page.evaluate((v) => window.scrollTo(0, v), y);
+        await frame();
+        await check(`scrolled ${y}px`);
+      }
+      await page.evaluate(() => window.scrollTo(0, 0));
+      await page.locator('#s-select').click();
+      for (let y = 600; y <= 3000; y += 800) {
+        await page.evaluate((v) => window.scrollTo(0, v), y);
+        await frame();
+        await check(`selecting, scrolled ${y}px`);
+      }
+      assert.deepEqual(problems, []);
+      clean(h);
+    } finally { await h.close(); }
+  });
+
+  test('game page: the 10 most recent sessions and a link to all of them; under 3,000px tall on a 390px phone', async () => {
+    const h = await openPage(browser, S.origin, { viewport: PHONE });
+    const { page } = h;
+    try {
+      await page.goto(`${S.origin}/game/${first.id}`);
+      await waitView(page);
+      await h.settle();
+      assert.equal(await page.locator('#g-sessions .item').count(), 10);
+      const rows = await page.locator('#g-sessions .item').evaluateAll((els) => els.map((e) => e.getBoundingClientRect().height));
+      assert.ok(Math.max(...rows) <= 64.5, `rows ${Math.max(...rows)}px`);
+      const tall = await page.evaluate(() => document.documentElement.scrollHeight);
+      assert.ok(tall < 3000, `the game page is ${tall}px tall`);
+      const all = page.locator('#view a', { hasText: 'All 150 sessions' });
+      assert.equal(await all.getAttribute('href'), `/sessions?game_id=${first.id}`);
+      await all.click();
+      await waitH1(page, 'Sessions');
+      assert.match(await page.locator('#s-count').innerText(), /^150 sessions/);
+      clean(h);
+    } finally { await h.close(); }
+  });
+});
+
 describe('Vestigo web UI with a password', UI, () => {
   let S;
   before(async () => { S = await startApp(); await S.ok('/games', { method: 'POST', body: { title: 'Secret Game' } }); });
