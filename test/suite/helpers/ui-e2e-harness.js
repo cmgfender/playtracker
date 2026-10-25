@@ -24,6 +24,57 @@ function loadChromium() {
 }
 export const { chromium, skipReason } = loadChromium();
 
+/** axe-core's browser bundle (a local or global `axe-core` install), or null: the built-in check stands in. */
+function loadAxe() {
+  if (process.env.VESTIGO_E2E_NO_AXE) return null; // try the built-in check
+  for (const from of [() => require.resolve('axe-core/axe.min.js'), () => `${execSync('npm root -g', { stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim()}/axe-core/axe.min.js`]) {
+    try { const f = from(); if (fs.existsSync(f)) return fs.readFileSync(f, 'utf8'); } catch { /* not installed */ }
+  }
+  return null;
+}
+const AXE = loadAxe();
+
+/**
+ * Form controls without an accessible name ('label', 'select-name', toggles and comboboxes) and
+ * interactive elements nested in one another ('nested-interactive'), in the page as it is now
+ * (open dialogs included). axe-core when installed, else an equivalent built-in check.
+ * Returns ['rule: element html', …].
+ */
+export async function labelViolations(page) {
+  if (AXE) {
+    if (!(await page.evaluate(() => !!window.axe))) await page.addScriptTag({ content: AXE });
+    return page.evaluate(async () => {
+      const r = await window.axe.run(document, { runOnly: ['label', 'select-name', 'nested-interactive', 'aria-toggle-field-name', 'aria-input-field-name', 'button-name', 'aria-allowed-attr', 'aria-required-attr', 'aria-valid-attr-value', 'aria-required-children'] });
+      return r.violations.flatMap((v) => v.nodes.map((n) => `${v.id}: ${n.html.slice(0, 140)}`));
+    });
+  }
+  return page.evaluate(() => {
+    const out = [];
+    const name = (el) => {
+      if (el.getAttribute('aria-label')?.trim()) return true;
+      const by = el.getAttribute('aria-labelledby');
+      if (by && by.split(/\s+/).some((id) => document.getElementById(id)?.textContent.trim())) return true;
+      if ([...(el.labels || [])].some((l) => l.textContent.trim())) return true;
+      return !!(el.getAttribute('title')?.trim() || el.getAttribute('placeholder')?.trim());
+    };
+    for (const el of document.querySelectorAll('input:not([type=hidden]):not([type=button]):not([type=submit]), select, textarea, [role=combobox], [role=radiogroup]')) {
+      if (el.closest('[inert], [aria-hidden="true"]')) continue;
+      if (!name(el)) out.push(`label: ${el.outerHTML.slice(0, 140)}`);
+    }
+    for (const el of document.querySelectorAll('button, [role=button], [role=radio], [role=option]')) {
+      if (el.closest('[inert], [aria-hidden="true"]')) continue;
+      if (!(el.getAttribute('aria-label')?.trim() || el.textContent.trim() || el.getAttribute('title'))) out.push(`button-name: ${el.outerHTML.slice(0, 140)}`);
+    }
+    const interactive = 'a[href], button, input:not([type=hidden]), select, textarea, [role=button], [role=radio], [role=option], [tabindex]:not([tabindex="-1"])';
+    for (const el of document.querySelectorAll('a[href], button, [role=button], [role=option]')) {
+      if (el.closest('[inert], [aria-hidden="true"]')) continue;
+      if (el.querySelector(interactive)) out.push(`nested-interactive: ${el.outerHTML.slice(0, 140)}`);
+    }
+    return out;
+  });
+}
+export const axeLoaded = !!AXE;
+
 export const QUIET = { info() {}, warn() {}, error() {}, debug() {} };
 export const MIN = 60_000;
 export const HOUR = 3_600_000;
@@ -96,10 +147,11 @@ export function invariantViolations(db) {
  * external resources, which are blocked on purpose), failed local requests, dialogs and
  * external requests. `settle()` waits until no local request is in flight.
  */
-export async function openPage(browser, origin, { viewport = DESKTOP, colorScheme = 'dark', storage, reducedMotion } = {}) {
+export async function openPage(browser, origin, { viewport = DESKTOP, colorScheme = 'dark', storage, reducedMotion, serviceWorkers = 'block' } = {}) {
   const phone = viewport.width < 600;
+  // the app registers its service worker on 127.0.0.1 (a secure context): blocked unless a test is about it
   const ctx = await browser.newContext({
-    viewport, colorScheme, locale: 'en-US', timezoneId: TZ, acceptDownloads: true,
+    viewport, colorScheme, locale: 'en-US', timezoneId: TZ, acceptDownloads: true, serviceWorkers,
     ...(reducedMotion ? { reducedMotion } : {}),
     ...(phone ? { isMobile: true, hasTouch: true, deviceScaleFactor: 2 } : {}),
     ...(storage ? { storageState: storage } : {}),
@@ -212,6 +264,7 @@ export async function toast(page, text, timeout = 5000) {
 /**
  * Wait until the newest dialog has taken its initial focus. The app focuses the first field ~50 ms
  * after a dialog opens; typing before that lets the late focus move keystrokes into another field.
+ * On a touch screen a dialog keeps focus on its title (no keyboard popping up) unless it opts in.
  */
 export async function modalReady(page) {
   await page.locator('.modal').last().waitFor();
@@ -219,6 +272,8 @@ export async function modalReady(page) {
     const m = [...document.querySelectorAll('.modal')].pop();
     if (!m) return false;
     const first = m.querySelector('input:not([type=hidden]):not([type=checkbox]), select, textarea');
+    const title = m.querySelector('.mh h2');
+    if (matchMedia('(pointer: coarse)').matches && document.activeElement === title) return new Promise((r) => setTimeout(() => r(document.activeElement === title || document.activeElement === first), 80));
     return !first || document.activeElement === first;
   }, null, { timeout: 3000 });
 }

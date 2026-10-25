@@ -45,7 +45,9 @@
   --safe-b: env(safe-area-inset-bottom, 0px);
   /* the phone top bar; --chrome-top is what sticky page bars sit under (nothing on desktop) */
   --topbar-h: 56px;
-  --chrome-top: 0px;
+  /* the offline banner, while it shows, sits under the top bar and pushes sticky bars down */
+  --offline-h: 0px;
+  --chrome-top: var(--offline-h);
   --font: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, "Helvetica Neue", Arial, sans-serif;
   --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   color-scheme: dark;
@@ -104,6 +106,8 @@ h3 { font-size: 15px; font-weight: 600; }
 /* ---------- keyboard focus ---------- */
 :focus-visible { outline: 2px solid var(--accent-ink); outline-offset: 2px; }
 .main:focus { outline: none; } /* the skip link's target, not a control */
+/* a page or dialog heading takes focus after navigation so reading starts there; it is not a control */
+h1[tabindex="-1"]:focus, .modal .mh h2:focus { outline: none; }
 .tile:focus-visible { outline: none; }
 .tile:focus-visible .cover { outline: 2px solid var(--accent-ink); outline-offset: 3px; }
 /* inside scrollers, the fixed tab bar and clipped cards the ring is drawn inside the control */
@@ -115,8 +119,10 @@ label.btn:has(input:focus-visible) { outline: 2px solid var(--accent-ink); outli
 
 /* ---------- shell ---------- */
 .shell { display: grid; grid-template-columns: 240px minmax(0, 1fr); min-height: 100dvh; }
-.side { position: sticky; top: 0; height: 100dvh; padding: 22px 14px; border-right: 1px solid var(--line); background: var(--bg2); display: flex; flex-direction: column; gap: 4px; }
-.side-nav { display: flex; flex-direction: column; gap: 4px; }
+.side { position: sticky; top: 0; height: 100dvh; overflow-y: auto; padding: 22px 14px; border-right: 1px solid var(--line); background: var(--bg2); display: flex; flex-direction: column; gap: 4px; }
+.side-nav, .nav-sec { display: flex; flex-direction: column; gap: 2px; }
+.nav-group { margin: 0; font-size: 11px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: var(--dim); padding: 14px 12px 4px; }
+.side-nav .nav-sec:first-child .nav-group { padding-top: 0; }
 .brand { display: flex; align-items: center; gap: 10px; padding: 4px 10px 20px; }
 .brand-word { font-weight: 800; font-size: 19px; letter-spacing: -.035em; line-height: 1; }
 .brand-word small { display: block; margin-top: 4px; font-size: 11px; font-weight: 500; letter-spacing: 0; line-height: 1.2; color: var(--muted); }
@@ -135,27 +141,40 @@ label.btn:has(input:focus-visible) { outline: 2px solid var(--accent-ink); outli
 .nav-link.active svg { color: var(--accent-ink); }
 .nav-link .badge { margin-left: auto; }
 .side-foot { margin-top: auto; padding: 10px; }
+/* "Syncing Steam, Xbox…" fits the sidebar */
+.side-foot .btn { min-width: 0; }
+.side-foot .btn .lbl { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .main { min-width: 0; padding: 28px clamp(16px, 3vw, 40px) 60px; max-width: 1400px; width: 100%; }
 .tabbar { display: none; }
 .topbar { display: none; }
 /* the page being left stays until the next one has rendered; it only dims if that takes a moment */
 .main.leaving { opacity: .6; transition: opacity .2s 80ms; pointer-events: none; }
+:root.is-offline { --offline-h: 40px; }
+:root.is-offline .main { padding-top: calc(28px + var(--offline-h)); }
+.offline-bar { position: fixed; z-index: 21; top: 0; left: 240px; right: 0; height: var(--offline-h); display: flex; align-items: center; gap: 10px; padding: 0 clamp(16px, 3vw, 40px); font-size: 13px; font-weight: 600; background: color-mix(in srgb, var(--warn) 16%, var(--bg2)); border-bottom: 1px solid color-mix(in srgb, var(--warn) 40%, var(--line)); }
+.offline-bar:empty { display: none; }
+.offline-bar svg { width: 17px; height: 17px; flex: none; color: var(--warn-ink); }
 
 @media (max-width: 860px) {
   /* align-content: the grid's min-height must not stretch the sticky top bar on short pages */
   .shell { grid-template-columns: minmax(0, 1fr); align-content: start; }
   .side { display: none; }
-  :root { --chrome-top: calc(var(--topbar-h) + env(safe-area-inset-top, 0px)); }
+  :root { --chrome-top: calc(var(--topbar-h) + env(safe-area-inset-top, 0px) + var(--offline-h)); }
   .main { padding: 14px max(14px, env(safe-area-inset-right)) calc(var(--nav-h) + var(--safe-b) + 24px) max(14px, env(safe-area-inset-left)); }
+  :root.is-offline .main { padding-top: calc(14px + var(--offline-h)); }
+  .offline-bar { left: 0; top: calc(var(--topbar-h) + env(safe-area-inset-top, 0px)); padding: 0 max(14px, env(safe-area-inset-left)); }
   /* the floating button never covers the last rows: they can scroll clear of it */
   .main:has(.fab) { padding-bottom: calc(var(--nav-h) + var(--safe-b) + 96px); }
-  .topbar { display: flex; position: sticky; top: 0; z-index: 20; align-items: center; gap: 10px; height: var(--chrome-top); padding: env(safe-area-inset-top, 0px) max(14px, env(safe-area-inset-right)) 0 max(14px, env(safe-area-inset-left)); background: color-mix(in srgb, var(--bg) 82%, transparent); backdrop-filter: blur(16px) saturate(1.4); -webkit-backdrop-filter: blur(16px) saturate(1.4); border-bottom: 1px solid color-mix(in srgb, var(--line) 60%, transparent); }
+  .topbar { display: flex; position: sticky; top: 0; z-index: 20; align-items: center; gap: 10px; height: calc(var(--topbar-h) + env(safe-area-inset-top, 0px)); padding: env(safe-area-inset-top, 0px) max(14px, env(safe-area-inset-right)) 0 max(14px, env(safe-area-inset-left)); background: color-mix(in srgb, var(--bg) 82%, transparent); backdrop-filter: blur(16px) saturate(1.4); -webkit-backdrop-filter: blur(16px) saturate(1.4); border-bottom: 1px solid color-mix(in srgb, var(--line) 60%, transparent); }
   .topbar .brand { padding: 0; }
   .topbar .brand-word { font-size: 17px; }
   .topbar .brand-mark { width: 26px; height: 26px; border-radius: 8px; }
   .topbar .brand-mark svg { width: 17px; height: 17px; }
   .tabbar { display: grid; grid-template-columns: repeat(5, 1fr); position: fixed; inset: auto 0 0 0; z-index: 30; height: calc(var(--nav-h) + var(--safe-b)); padding-bottom: var(--safe-b); background: color-mix(in srgb, var(--bg2) 88%, transparent); backdrop-filter: blur(18px) saturate(1.5); -webkit-backdrop-filter: blur(18px) saturate(1.5); border-top: 1px solid var(--line); }
-  .tabbar a { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; font-size: 11px; font-weight: 600; color: var(--muted); -webkit-tap-highlight-color: transparent; }
+  .tabbar a { position: relative; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; font-size: 11px; font-weight: 600; color: var(--muted); -webkit-tap-highlight-color: transparent; }
+  /* the More tab's dot: something to look at behind it (errors in the bad colour) */
+  .tabbar .pip { position: absolute; top: 10px; left: calc(50% + 7px); width: 8px; height: 8px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 2px var(--bg2); }
+  .tabbar .pip.bad { background: var(--bad); }
   .tabbar a svg { width: 23px; height: 23px; }
   /* light: the translucent bar takes on colourful covers scrolling under it, so its labels need more weight than --muted */
   :root[data-theme="light"] .tabbar a:not(.active) { color: color-mix(in srgb, var(--muted) 75%, var(--text)); }
@@ -423,13 +442,16 @@ a > svg.ic-inline:last-child { margin-left: .25em; }
 
 /* ---------- modal / sheet / toast ---------- */
 .overlay { position: fixed; inset: 0; z-index: 100; background: rgba(4, 6, 10, .6); backdrop-filter: blur(4px); display: grid; place-items: center; padding: 20px; animation: fade .15s ease-out; }
-.modal { width: min(560px, 100%); max-height: min(86dvh, 900px); overflow: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 22px; box-shadow: 0 30px 80px -20px rgba(0,0,0,.8); animation: pop .18s cubic-bezier(.2,.9,.3,1.2); }
+.modal { width: min(560px, 100%); max-height: min(86dvh, 900px); overflow: auto; overscroll-behavior: contain; background: var(--panel); border: 1px solid var(--line); border-radius: 22px; box-shadow: 0 30px 80px -20px rgba(0,0,0,.8); animation: pop .18s cubic-bezier(.2,.9,.3,1.2); }
 .modal .mh { position: sticky; top: 0; z-index: 2; display: flex; align-items: center; justify-content: space-between; padding: 18px 20px 12px; background: var(--panel); }
 .modal .mb { padding: 4px 20px 20px; }
 .modal .mf { position: sticky; bottom: 0; display: flex; gap: 10px; justify-content: flex-end; padding: 14px 20px; border-top: 1px solid var(--line); background: var(--panel); }
 @media (max-width: 600px) {
   .overlay { place-items: end stretch; padding: 0; }
-  .modal { width: 100%; border-radius: 22px 22px 0 0; max-height: 92dvh; animation: up .22s cubic-bezier(.2,.9,.3,1); padding-bottom: var(--safe-b); }
+  .modal { width: 100%; border-radius: 22px 22px 0 0; max-height: calc(100dvh - env(safe-area-inset-top, 0px) - 8px); animation: up .22s cubic-bezier(.2,.9,.3,1); }
+  /* the home indicator's inset goes under the buttons (or the body of a sheet without them) */
+  .modal .mf { padding-bottom: calc(14px + var(--safe-b)); }
+  .modal:not(:has(.mf)) .mb { padding-bottom: calc(20px + var(--safe-b)); }
   .modal .mh::before { content: ''; position: absolute; left: 50%; top: 7px; width: 38px; height: 4px; margin-left: -19px; border-radius: 9px; background: var(--line); }
 }
 @keyframes fade { from { opacity: 0; } }
@@ -437,8 +459,18 @@ a > svg.ic-inline:last-child { margin-left: .25em; }
 @keyframes up { from { transform: translateY(40%); opacity: .5; } }
 .toasts { position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(var(--nav-h) + var(--safe-b) + 16px); z-index: 200; display: flex; flex-direction: column; gap: 8px; align-items: center; pointer-events: none; width: max-content; max-width: calc(100vw - 32px); }
 @media (min-width: 861px) { .toasts { bottom: 24px; } }
-.toast { pointer-events: auto; background: var(--text); color: var(--bg); padding: 10px 16px; border-radius: 12px; font-weight: 600; font-size: 14px; box-shadow: var(--shadow); animation: up .2s ease-out; display: flex; gap: 10px; align-items: center; }
+/* on a phone page with the floating button, toasts sit above it instead of covering it */
+@media (max-width: 860px) { body:has(#view .fab) .toasts { bottom: calc(var(--nav-h) + var(--safe-b) + 84px); } }
+.toast { pointer-events: auto; background: var(--text); color: var(--bg); padding: 10px 16px; border-radius: 12px; font-weight: 600; font-size: 14px; box-shadow: var(--shadow); animation: up .2s ease-out; display: flex; gap: 10px; align-items: center; transition: opacity .3s; }
+.toast.out { opacity: 0; }
 .toast.bad { background: var(--bad-solid); color: #fff; }
+.toast:has(button) { padding-right: 6px; }
+/* Undo, Show, Fix: outlined in the toast's own ink, so they read on every theme */
+.toast-act { flex: none; min-height: 32px; padding: 0 12px; border-radius: 9px; border: 1.5px solid currentColor; background: transparent; color: inherit; font-weight: 700; font-size: 13.5px; cursor: pointer; }
+.toast-act:hover { background: color-mix(in srgb, currentColor 14%, transparent); }
+.toast-x { flex: none; width: 44px; height: 44px; margin: -8px -2px -8px -6px; display: grid; place-items: center; border: 0; border-radius: 10px; background: transparent; color: inherit; cursor: pointer; }
+.toast-x svg { width: 18px; height: 18px; }
+.toast :focus-visible { outline-color: currentColor; }
 
 /* platform picker */
 .plat-pick { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
@@ -573,6 +605,54 @@ select.input.sm { padding-right: 26px; }
 .dash { display: flex; flex-direction: column; gap: 16px; }
 .dash > .grid { margin: 0; }
 
+/* ---------- home: tracking health and what needs attention ---------- */
+.dash-h .eyebrow { margin-bottom: 4px; }
+.dash-act { align-items: center; }
+@media (max-width: 860px) { .dash-act { flex-wrap: nowrap; width: 100%; } .dash-act .health { flex: 0 1 auto; min-width: 0; } .dash-act #dash-custom { margin-left: auto; } }
+.health { display: inline-flex; align-items: center; gap: 8px; min-height: 34px; padding: 6px 13px; border-radius: 18px; font-size: 13px; font-weight: 600; color: var(--text); border: 1px solid var(--line); background: var(--panel); }
+.health .hdot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--good); }
+.health.h-warn { background: color-mix(in srgb, var(--warn) 14%, var(--panel)); border-color: color-mix(in srgb, var(--warn) 45%, var(--line)); }
+.health.h-warn .hdot { background: var(--warn); }
+.health.h-bad { background: color-mix(in srgb, var(--bad) 14%, var(--panel)); border-color: color-mix(in srgb, var(--bad) 50%, var(--line)); }
+.health.h-bad .hdot { background: var(--bad); }
+.health u { text-underline-offset: 2px; }
+.health:hover { border-color: color-mix(in srgb, var(--text) 30%, var(--line)); }
+.attn { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; }
+.attn-card { display: flex; align-items: center; gap: 12px; padding: 12px 16px; }
+.attn-card:hover { border-color: color-mix(in srgb, var(--text) 25%, var(--line)); }
+.attn-card > svg:first-child { width: 20px; height: 20px; flex: none; color: var(--accent-ink); }
+.attn-card.bad { border-color: color-mix(in srgb, var(--bad) 45%, var(--line)); }
+.attn-card.bad > svg:first-child { color: var(--bad-ink); }
+.attn-card .grow { display: flex; flex-direction: column; }
+.attn-card > svg:last-child { color: var(--dim); flex: none; }
+
+/* ---------- Log session: the game picker ---------- */
+.gp-list { padding: 4px 6px; margin-top: 6px; max-height: 260px; overflow: auto; }
+.gp-list > .gp-opt { width: 100%; min-height: 52px; margin: 0; padding: 6px 8px; text-align: left; border: 0; border-top: 1px solid var(--line); border-radius: 0; background: none; color: inherit; cursor: pointer; }
+.gp-list > .gp-opt:first-child { border-top: 0; }
+.gp-opt .ttl { display: block; }
+@media (hover: hover) { .gp-opt:hover { background: var(--panel2); } }
+/* the active option: a tint plus a ring, not colour alone */
+.gp-opt.active { background: color-mix(in srgb, var(--accent) 14%, transparent); box-shadow: inset 0 0 0 2px var(--accent-ink); border-radius: 10px; }
+
+/* ---------- settings: a "Saved" tick instead of a toast ---------- */
+.saved { display: inline-flex; align-items: center; gap: 4px; margin-left: 8px; font-size: 12px; font-weight: 600; color: var(--good-ink); vertical-align: middle; transition: opacity .3s; }
+.saved svg { width: 13px; height: 13px; }
+.saved.gone { opacity: 0; }
+
+/* ---------- More (phone) ---------- */
+.mi { width: 36px; height: 36px; flex: none; border-radius: 10px; background: var(--panel2); display: grid; place-items: center; }
+.more-row { padding: 14px 16px; }
+.more-row .ttl, .more-row .sub, .more-feature .ttl, .more-feature .sub { display: block; }
+.more-row .chev, .more-feature .chev { flex: none; color: var(--dim); }
+.more-sec .nav-group { padding: 18px 4px 8px; }
+/* the featured card: the Year in review gradient (its ink reaches 4.5:1 for every accent) */
+.more-feature { display: flex; align-items: center; gap: 12px; padding: 16px; border-radius: var(--radius); background: linear-gradient(140deg in oklab, var(--accent), color-mix(in oklab, var(--accent) 55%, #db2777)); color: var(--on-accent); box-shadow: 0 12px 28px -16px var(--accent); }
+.more-feature .ttl { font-weight: 700; font-size: 16px; }
+.more-feature .sub { font-size: 13px; }
+.more-feature .mi { background: color-mix(in srgb, var(--on-accent) 16%, transparent); }
+.more-feature .chev { color: inherit; }
+
 /* ---------- home layout editor ---------- */
 .layout-list { display: flex; flex-direction: column; gap: 6px; }
 .layout-row { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--bg2); }
@@ -603,6 +683,7 @@ input[type="color"].swatch::-webkit-color-swatch { border: 0; border-radius: 6px
   .stars button { padding: 9px; }
   .card-h a { padding: 12px 10px; margin: -12px -10px; }
   .check { width: 22px; height: 22px; }
+  .toast-act { min-height: 44px; margin-block: -6px; }
   .swatch { width: 40px; height: 40px; }
   /* the 44px sync button and the brand link fit the bar's 56px */
   .topbar .brand { min-height: 44px; }

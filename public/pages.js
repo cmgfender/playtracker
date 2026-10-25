@@ -1,6 +1,7 @@
 import {
   $, $$, esc, fmtMin, fmtHours, ago, fmtDate, fmtTime, dayLabel, plat, platDot, platTag, platIcon, STATUSES, cover, icon,
-  api, toast, fail, modal, confirmBox, navigate, rerender, state, watchSync, applyTheme, paintAccent, accentOf, scrollMotion, plural, setTitle, MARK, tagline,
+  api, toast, undoToast, fail, modal, confirmBox, navigate, rerender, state, watchSync, syncStarted, applyTheme, paintAccent, accentOf, scrollMotion, plural, setTitle, MARK, tagline,
+  NAV_GROUPS, navItems, applyBadges,
 } from './app.js';
 
 const arrow = () => icon('arrowR', 'ic-inline'); // trailing "go there" arrow on links
@@ -118,7 +119,7 @@ function sessionItem(s, { showGame = true, selectable = false, selected = false,
   const t = s.ended_at || s.window_end || s.created_at;
   const day = dated ? `${['Today', 'Yesterday'].includes(dayLabel(t)) ? dayLabel(t) : fmtDate(t)} · ` : '';
   return `<div class="item sess ${selected ? 'sel' : ''}" data-sid="${s.id}">
-    ${selectable ? `<input type="checkbox" class="check" data-sel="${s.id}" ${selected ? 'checked' : ''}>` : ''}
+    ${selectable ? `<input type="checkbox" class="check" data-sel="${s.id}" ${selected ? 'checked' : ''} aria-label="Select ${esc(s.title)}, ${esc(fmtMin(s.minutes))}">` : ''}
     ${showGame ? `<a href="/game/${s.game_id}" data-link>${cover(s)}</a>` : `<span class="dot" style="background:${plat(s.platform).color};width:10px;height:10px" title="${esc(plat(s.platform).label)}"></span>`}
     <div class="grow">
       ${showGame ? `<a href="/game/${s.game_id}" data-link class="ttl ellipsis" style="display:block">${esc(s.title)}</a>` : ''}
@@ -146,32 +147,74 @@ function emptyState(ic, title, text, actions = '') {
 }
 
 // ---------- session edit / log ----------
-async function gamePicker(input, onPick) {
-  let timer;
+/**
+ * The Log session game search: a combobox over a listbox of games. Arrow keys move the active
+ * option (aria-activedescendant), Enter picks it, Escape closes the list (not the dialog); a hidden
+ * live line says how many games were found and which one was picked.
+ */
+function gamePicker(input, onPick) {
+  let timer; let seq = 0; let active = -1;
   const box = document.createElement('div');
-  box.className = 'list card';
-  box.style.cssText = 'padding:4px 12px;margin-top:6px;max-height:260px;overflow:auto';
+  box.className = 'list card gp-list';
+  box.id = 'gp-list';
+  box.setAttribute('role', 'listbox');
+  box.setAttribute('aria-label', 'Games');
   box.hidden = true;
-  input.after(box);
-  input.addEventListener('input', () => {
-    clearTimeout(timer);
-    timer = setTimeout(async () => {
-      const q = input.value.trim();
-      if (!q) { box.hidden = true; return; }
-      const r = await api(`/games?q=${encodeURIComponent(q)}&limit=8&sort=recent&hidden=all`);
-      box.hidden = false;
-      box.innerHTML = r.items.map((g) => `<div class="item" style="cursor:pointer" data-pick="${g.id}">${cover(g)}<div class="grow"><div class="ttl ellipsis">${esc(g.title)}</div><div class="sub">${g.platforms.map(platDot).join('')} ${fmtMin(g.minutes)}</div></div></div>`).join('')
-        + `<div class="item" style="cursor:pointer" data-new="1"><div class="grow muted">${icon('plus', 'ic-inline')} Add “${esc(q)}” as a new game</div></div>`;
-    }, 160);
-  });
-  box.addEventListener('click', async (e) => {
-    const p = e.target.closest('[data-pick]');
-    if (p) { const g = (await api(`/games/${p.dataset.pick}`)); input.value = g.title; box.hidden = true; onPick(g); }
-    if (e.target.closest('[data-new]')) {
-      const g = await api('/games', { method: 'POST', body: { title: input.value.trim() } });
-      input.value = g.title; box.hidden = true; onPick(g);
+  const live = document.createElement('div');
+  live.className = 'vh';
+  live.setAttribute('aria-live', 'polite');
+  input.after(box, live);
+  Object.entries({ role: 'combobox', 'aria-expanded': 'false', 'aria-controls': 'gp-list', 'aria-autocomplete': 'list' }).forEach(([k, v]) => input.setAttribute(k, v));
+  const opts = () => [...box.querySelectorAll('[role=option]')];
+  const setActive = (i) => {
+    const o = opts();
+    active = o.length ? (i + o.length) % o.length : -1;
+    o.forEach((x, j) => { x.classList.toggle('active', j === active); x.setAttribute('aria-selected', String(j === active)); });
+    if (active >= 0) { input.setAttribute('aria-activedescendant', o[active].id); o[active].scrollIntoView({ block: 'nearest' }); } else input.removeAttribute('aria-activedescendant');
+  };
+  const open = (on) => {
+    box.hidden = !on;
+    input.setAttribute('aria-expanded', String(on));
+    if (!on) setActive(-1);
+  };
+  const search = async () => {
+    const q = input.value.trim();
+    const my = ++seq;
+    if (!q) { open(false); live.textContent = ''; return; }
+    const r = await api(`/games?q=${encodeURIComponent(q)}&limit=8&sort=recent&hidden=all`);
+    if (my !== seq) return;
+    box.innerHTML = r.items.map((g, i) => `<button type="button" class="item gp-opt" role="option" id="gp-o-${i}" tabindex="-1" aria-selected="false" data-pick="${g.id}">${cover(g)}<span class="grow"><span class="ttl ellipsis">${esc(g.title)}</span><span class="sub">${g.platforms.map(platDot).join('')} ${fmtMin(g.minutes)}</span></span></button>`).join('')
+      + `<button type="button" class="item gp-opt" role="option" id="gp-o-new" tabindex="-1" aria-selected="false" data-new="1"><span class="grow muted">${icon('plus', 'ic-inline')} Add “${esc(q)}” as a new game</span></button>`;
+    open(true);
+    active = -1;
+    live.textContent = `${plural(r.items.length, 'game')} found`;
+  };
+  const pick = async (o) => {
+    const g = o.dataset.pick ? await api(`/games/${o.dataset.pick}`) : await api('/games', { method: 'POST', body: { title: input.value.trim() } });
+    input.value = g.title;
+    open(false);
+    live.textContent = `${g.title} picked`;
+    onPick(g);
+  };
+  input.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(() => search().catch(fail), 160); });
+  input.addEventListener('keydown', async (e) => {
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      if (box.hidden) { await search().catch(fail); if (box.hidden) return; }
+      setActive(active < 0 && e.key === 'ArrowUp' ? -1 : active + (e.key === 'ArrowDown' ? 1 : -1));
+    } else if (e.key === 'Enter' && !box.hidden) {
+      e.preventDefault();
+      const o = opts()[active];
+      if (o) pick(o).catch(fail);
+    } else if (e.key === 'Escape' && !box.hidden) {
+      e.preventDefault(); // the list closes, the dialog stays
+      open(false);
     }
   });
+  input.addEventListener('blur', () => setTimeout(() => { if (!box.contains(document.activeElement) && document.activeElement !== input) open(false); }, 150));
+  // pointer: pick on press, so the input keeps focus
+  box.addEventListener('mousedown', (e) => e.preventDefault());
+  box.addEventListener('click', (e) => { const o = e.target.closest('[role=option]'); if (o) pick(o).catch(fail); });
 }
 
 function localInput(t) {
@@ -187,14 +230,15 @@ export function logSessionModal(game = null, onDone = rerender) {
     body: `<form class="stack" id="log-form">
       <div class="field"><label>Game</label>${game ? `<div class="row">${cover(game)}<b>${esc(game.title)}</b></div>` : '<input class="input" id="gp" placeholder="Search your library or type a new title" autocomplete="off">'}</div>
       <div class="field"><label>Duration</label>
-        <div class="row"><input class="input" type="number" min="0" max="168" name="h" value="1" style="width:90px"> <span class="muted">h</span>
-        <input class="input" type="number" min="0" max="59" name="m" value="0" style="width:90px"> <span class="muted">m</span></div>
+        <div class="row"><input class="input" type="number" min="0" max="168" name="h" value="1" style="width:90px" aria-label="Duration, hours"> <span class="muted" aria-hidden="true">h</span>
+        <input class="input" type="number" min="0" max="59" name="m" value="0" style="width:90px" aria-label="Duration, minutes"> <span class="muted" aria-hidden="true">m</span></div>
         <div class="chips" style="margin-top:0">${[15, 30, 60, 90, 120, 180].map((m) => `<button type="button" class="chip" data-quick="${m}">${fmtMin(m)}</button>`).join('')}</div>
       </div>
       <div class="field"><label>Ended at</label><input class="input" type="datetime-local" name="ended" value="${localInput(now)}"></div>
       <div class="field"><label>Note <span class="dim">(optional)</span></label><input class="input" name="note" placeholder="Beat the first boss…"></div>
     </form>`,
     foot: '<button class="btn" data-close>Cancel</button><button class="btn primary" id="log-save">Save session</button>',
+    autofocus: !game, // the search is what you came for, keyboard and all
     onMount(el, close) {
       if (!game) gamePicker(el.querySelector('#gp'), (g) => { picked = g; });
       el.querySelectorAll('[data-quick]').forEach((b) => b.addEventListener('click', () => {
@@ -216,6 +260,13 @@ export function logSessionModal(game = null, onDone = rerender) {
   });
 }
 
+/** Log a deleted manual session again: same game, start, end, minutes, note, and history or not. */
+async function restoreSession(s) {
+  const n = await api('/sessions', { method: 'POST', body: { game_id: s.game_id, minutes: s.minutes, started_at: s.started_at, ended_at: s.ended_at, note: s.note || '' } });
+  if (s.kind === 'baseline') await api(`/sessions/${n.id}`, { method: 'PATCH', body: { kind: 'baseline' } });
+  return n;
+}
+
 async function editSessionModal(id, onDone = rerender) {
   let s;
   try { s = await api(`/sessions/${id}`); } catch (e) { return fail(e); }
@@ -227,7 +278,7 @@ async function editSessionModal(id, onDone = rerender) {
     title: esc(s.title),
     body: `<div class="stack">
       <div class="row wrap">${platTag(s.platform)} ${sourceBadge(s)} <span class="muted small">${esc(sessionWhen(s))}</span></div>
-      ${!local ? `<div class="card small muted" style="padding:12px">${icon('info', '')} Synced from ${esc(plat(s.platform).label)}. ${s.source === 'inferred'
+      ${!local ? `<div class="card small muted" style="padding:12px">${icon('info', 'ic-inline')} Synced from ${esc(plat(s.platform).label)}. ${s.source === 'inferred'
         ? `This is history from before tracking started: its <b>${fmtMin(s.minutes)}</b> are part of the platform's total, so it can only leave the stats.`
         : `The platform only reported <b>${fmtMin(s.minutes)}</b> played between ${fmtDate(s.window_start)} ${fmtTime(s.window_start)} and ${fmtDate(s.window_end)} ${fmtTime(s.window_end)}. You can pin the exact time below.`}</div>` : ''}
       ${local && !inferred ? `<div class="field"><label>Minutes</label><input class="input" type="number" name="minutes" value="${s.minutes}" min="1"></div>` : ''}
@@ -253,7 +304,19 @@ async function editSessionModal(id, onDone = rerender) {
         try { await api(`/sessions/${s.id}`, { method: 'PATCH', body }); close(); toast('Session updated'); onDone(); } catch (e) { fail(e); }
       });
       el.querySelector('#s-del').addEventListener('click', async () => {
-        try { await api(`/sessions/${s.id}`, { method: 'DELETE' }); close(); toast(local ? 'Session deleted' : 'Removed from stats'); onDone(); } catch (e) { fail(e); }
+        // a manual session comes back from what it was; a synced one back into the stats; an imported
+        // or pushed one cannot come back the same (it would return as a manual session), so it asks first
+        if (local && s.source !== 'manual' && !(await confirmBox(`Delete this ${fmtMin(s.minutes)} session of ${esc(s.title)}? It came from ${s.source === 'api' ? 'the API' : 'an import'} and cannot be restored.`, { ok: 'Delete', danger: true, title: 'Delete session?' }))) return;
+        try {
+          await api(`/sessions/${s.id}`, { method: 'DELETE' });
+          close();
+          if (s.source === 'manual') {
+            undoToast('Session deleted', () => restoreSession(s), onDone);
+          } else if (!local && !inferred && s.kind === 'play') {
+            undoToast('Removed from stats', () => api(`/sessions/${s.id}`, { method: 'PATCH', body: { kind: 'play', note: s.note || '' } }), onDone);
+          } else toast(local ? 'Session deleted' : 'Removed from stats');
+          onDone();
+        } catch (e) { fail(e); }
       });
     },
   });
@@ -269,6 +332,62 @@ function bindSessionEdits(root, onDone) {
 // =====================================================================
 // Dashboard
 // =====================================================================
+const H = 3600e3;
+const D = 24 * H;
+/** How often a schedule syncs, and that in words: [ms, 'daily'] (null: manual only). */
+function scheduleEvery(s) {
+  const n = Math.max(1, Math.floor(Number(s.schedule_every) || 1));
+  switch (s.schedule_mode) {
+    case 'hourly': return [H, 'hourly'];
+    case 'hours': return [n * H, n === 1 ? 'hourly' : `every ${n} hours`];
+    case 'daily': return [D, 'daily'];
+    case 'days': return [n * D, n === 1 ? 'daily' : `every ${n} days`];
+    case 'weekly': return [7 * D, 'weekly'];
+    case 'monthly': return [31 * D, 'monthly'];
+    default: return null;
+  }
+}
+/** "4:00 AM" within a day, else the date. */
+const soon = (t) => (t - Date.now() < D ? fmtTime(t) : `${fmtDate(t)} ${fmtTime(t)}`);
+
+/**
+ * Is tracking working? bad: an account's last sync failed; warn: accounts paused, or a sync is
+ * overdue by half its interval again; good: up to date. Null without accounts.
+ */
+function trackingHealth(accounts) {
+  if (!accounts.length) return null;
+  const on = accounts.filter((a) => a.enabled);
+  const failing = on.filter((a) => a.last_status === 'error' && !a.syncing);
+  if (failing.length) return { level: 'bad', text: `${failing[0].name} sync failed${failing.length > 1 ? ` (+${failing.length - 1} more)` : ''}`, action: 'Fix' };
+  const paused = accounts.length - on.length;
+  if (paused) return { level: 'warn', text: `${plural(paused, 'account')} paused`, action: 'Resume' };
+  if (on.some((a) => a.syncing)) return { level: 'good', text: 'Syncing now' };
+  const pulled = on.filter((a) => !a.push);
+  const late = pulled.map((a) => ({ a, every: scheduleEvery(a.schedule || state.settings || {}) }))
+    .filter(({ a, every }) => every && a.last_sync_at && Date.now() - a.last_sync_at > 1.5 * every[0])
+    .sort((x, y) => x.a.last_sync_at - y.a.last_sync_at);
+  if (late.length) return { level: 'warn', text: `Last sync ${ago(late[0].a.last_sync_at)} (expected ${late[0].every[1]})` };
+  const last = Math.max(0, ...on.map((a) => a.last_sync_at || 0));
+  const next = Math.min(...pulled.map((a) => a.next_sync_at || Infinity));
+  return { level: 'good', text: ['Up to date', last ? `${pulled.length ? 'synced' : 'last report'} ${ago(last)}` : 'waiting for the first sync', Number.isFinite(next) && `next ${soon(next)}`].filter(Boolean).join(' · ') };
+}
+
+const dayKey = (t) => { const x = new Date(t); return `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}-${String(x.getDate()).padStart(2, '0')}`; };
+/**
+ * "▲ 1h 20m vs last week · 3 games · 5 sessions". Like with like: this week so far (it starts on the
+ * day set in Settings) against the same days of last week, tracked play only, as the heading.
+ */
+function weekLine(d) {
+  const wk = d.week;
+  const tracked = new Map(d.month.series.map((x) => [x.key, x.minutes - (x.estimated || 0)]));
+  const today = new Date(); today.setHours(12, 0, 0, 0);
+  const days = ((today.getDay() - (state.settings?.week_starts_on ?? 1) + 7) % 7) + 1; // so far, today included
+  let before = 0;
+  for (let i = 0; i < days; i++) before += tracked.get(dayKey(today.getTime() - (7 + i) * D)) || 0;
+  const diff = Math.round(wk.total_minutes - before);
+  const delta = diff ? `${icon(diff > 0 ? 'up' : 'down', 'ic-inline')}<span class="vh">${diff > 0 ? 'up' : 'down'}</span> ${fmtMin(Math.abs(diff))} vs last week` : 'Same as last week';
+  return `${delta} · ${plural(wk.games_played, 'game')} · ${plural(wk.sessions, 'session')}`;
+}
 async function dashboard(view, stale) {
   const d = await api('/summary');
   if (stale()) return;
@@ -299,16 +418,25 @@ async function dashboard(view, stale) {
 
   const wk = d.week; const mo = d.month;
   const streak = mo.streaks.current;
-  const lastSync = Math.max(0, ...d.accounts.map((a) => a.last_sync_at || 0));
-  const nextSync = Math.min(...d.accounts.map((a) => a.next_sync_at || Infinity));
   const layout = parseLayout(state.settings?.dashboard_layout);
   const on = new Set(layout.filter((x) => x.on).map((x) => x.key));
   const year = new Date().getFullYear();
-  const [heat, upNext] = await Promise.all([
+  const [heat, upNext, dupes, hist] = await Promise.all([
     on.has('heatmap') ? api(`/stats/heatmap?year=${year}`).catch(() => null) : null,
     on.has('backlog') ? api('/games?status=playing,backlog&sort=recent&limit=16').catch(() => null) : null,
+    api('/duplicates?summary=true').catch(() => null),
+    api('/history/summary').catch(() => null),
   ]);
   if (stale()) return;
+  const health = trackingHealth(d.accounts);
+  // things to look at, each only while there is something to do
+  const nDupes = dupes ? dupes.counts.suggestions + dupes.counts.double_counted : 0;
+  const nRough = (hist?.rows || []).filter((r) => r.confidence === 'low').reduce((t, r) => t + r.entries, 0);
+  const attention = [
+    nDupes && ['/duplicates', 'dupes', plural(nDupes, 'possible duplicate'), 'Merge or exclude'],
+    nRough && ['/history', 'history', `${plural(nRough, 'game')} with rough history dates`, 'Say when you played'],
+    d.errors_24h && ['/system', 'info', `${plural(d.errors_24h, 'sync error')} in 24 hours`, 'View log', 'bad'],
+  ].filter(Boolean);
   const noTracked = !wk.sessions && !mo.tracked_minutes;
   const html = {
     kpis: () => `<div class="kpis fade-in">
@@ -348,10 +476,11 @@ async function dashboard(view, stale) {
     if (DASH_SECTIONS[x.key].half && nx && DASH_SECTIONS[nx.key].half) { blocks.push(`<div class="grid grid-main">${x.out}${nx.out}</div>`); i++; } else blocks.push(x.out);
   }
   view.innerHTML = `
-    <div class="page-h"><div><h1>${greeting}</h1><p>${d.new_sessions_24h ? `${d.new_sessions_24h} new session${d.new_sessions_24h > 1 ? 's' : ''} in the last day · ` : ''}Last sync ${ago(lastSync)}${Number.isFinite(nextSync) ? ` · next ${ago(nextSync)}` : ''}</p></div>
-      <div class="row"><button class="btn ghost sm" id="dash-custom">${icon('settings')}Customize</button><button class="btn desk-only" id="dash-log">${icon('plus')}Log session</button></div></div>
+    <div class="page-h dash-h"><div><div class="eyebrow">${greeting}</div><h1>${fmtMin(wk.total_minutes)} this week</h1><p>${weekLine(d)}</p></div>
+      <div class="row wrap dash-act">${health ? `<a class="health h-${health.level}" href="/accounts" data-link><span class="hdot" aria-hidden="true"></span><span>${esc(health.text)}${health.action ? ` · <u>${health.action}</u>` : ''}</span></a>` : ''}
+        <button class="btn ghost sm" id="dash-custom" aria-label="Customize home" title="Customize home">${icon('settings')}<span class="desk-only">Customize</span></button><button class="btn desk-only" id="dash-log">${icon('plus')}Log session</button></div></div>
     <div class="dash">
-    ${d.errors_24h ? `<a class="card row" href="/system" data-link style="border-color:color-mix(in srgb,var(--bad) 45%,var(--line));padding:12px 16px">${icon('info')}<span class="grow"><b>${d.errors_24h} error${d.errors_24h > 1 ? 's' : ''}</b> in the last 24 hours</span><span class="small muted">View log${arrow()}</span></a>` : ''}
+    ${attention.length ? `<div class="attn" role="group" aria-label="Needs attention">${attention.map(([href, ic, what, act, cls = '']) => `<a class="card attn-card ${cls}" href="${href}" data-link>${icon(ic)}<span class="grow"><b>${what}</b><span class="small muted">${act}</span></span>${icon('chevR', 'ic-16')}</a>`).join('')}</div>` : ''}
     ${blocks.join('\n') || `<div class="card muted">Every section is hidden. <a href="#" id="dash-custom2" class="link">Customize</a> to bring some back.</div>`}
     </div>
     <button class="fab" id="fab-log" aria-label="Log session">${icon('plus')}</button>`;
@@ -467,13 +596,13 @@ async function library(view, stale) {
       <div class="row"><button class="btn desk-only" id="lib-add">${icon('plus')}Add game</button></div></div>
     <div class="toolbar">
       <div class="row" style="margin-bottom:10px">
-        <div class="search grow">${icon('search')}<input class="input" id="lib-q" type="search" placeholder="Search ${platforms.games} games…" value="${esc(st.q)}"></div>
-        <select class="input" id="lib-sort" style="width:auto">
+        <div class="search grow">${icon('search')}<input class="input" id="lib-q" type="search" placeholder="Search ${platforms.games} games…" value="${esc(st.q)}" aria-label="Search library"></div>
+        <select class="input" id="lib-sort" style="width:auto" aria-label="Sort by">
           ${[['recent', 'Recently played'], ['trending', 'Trending (2 wks)'], ['playtime', 'Most played'], ['title', 'A–Z'], ['added', 'Recently added'], ['rating', 'Top rated']].map(([v, l]) => `<option value="${v}" ${st.sort === v ? 'selected' : ''}>${l}</option>`).join('')}
         </select>
-        <div class="seg desk-only"><button data-view="grid" class="${st.view === 'grid' ? 'on' : ''}" aria-label="Grid" aria-pressed="${st.view === 'grid'}">${icon('grid', 'ic-16')}</button><button data-view="list" class="${st.view === 'list' ? 'on' : ''}" aria-label="List" aria-pressed="${st.view === 'list'}">${icon('list', 'ic-16')}</button></div>
+        <div class="seg desk-only" aria-label="View"><button data-view="grid" class="${st.view === 'grid' ? 'on' : ''}" aria-label="Covers">${icon('grid', 'ic-16')}</button><button data-view="list" class="${st.view === 'list' ? 'on' : ''}" aria-label="List">${icon('list', 'ic-16')}</button></div>
       </div>
-      <div class="chips" id="lib-chips">
+      <div class="chips" id="lib-chips" role="group" aria-label="Filters">
         <button class="chip ${!st.platform ? 'on' : ''}" data-plat="">All</button>
         ${platList.map((p) => `<button class="chip ${st.platform === p ? 'on' : ''}" data-plat="${esc(p)}">${platDot(p)}${esc(plat(p).label)}</button>`).join('')}
         <span style="width:1px;background:var(--line);flex:none"></span>
@@ -556,7 +685,7 @@ async function library(view, stale) {
   $('#lib-q').addEventListener('input', (e) => { clearTimeout(t); t = setTimeout(() => { st.q = e.target.value.trim(); sync(); }, 180); });
   $('#lib-sort').addEventListener('change', (e) => { st.sort = e.target.value; sync(); });
   $$('[data-view]', view).forEach((b) => b.addEventListener('click', () => {
-    st.view = b.dataset.view; $$('[data-view]', view).forEach((x) => { x.classList.toggle('on', x === b); x.setAttribute('aria-pressed', String(x === b)); }); sync();
+    st.view = b.dataset.view; $$('[data-view]', view).forEach((x) => x.classList.toggle('on', x === b)); sync();
     if (state.settings?.library_view !== st.view) saveSettings({ library_view: st.view }).catch(() => {}); // remembered on every device
   }));
   $('#lib-chips').addEventListener('click', (e) => {
@@ -629,10 +758,10 @@ async function game(view, id, stale) {
       <div class="stack">
         <div class="card">
           <div class="row wrap between" style="margin-bottom:14px">
-            <div class="seg desk-only" id="g-status">${Object.entries(STATUSES).map(([k, v]) => `<button data-st="${k}" class="${g.status === k ? 'on' : ''}">${v.label}</button>`).join('')}</div>
+            <div class="seg desk-only" id="g-status" aria-label="Status">${Object.entries(STATUSES).map(([k, v]) => `<button data-st="${k}" class="${g.status === k ? 'on' : ''}">${v.label}</button>`).join('')}</div>
             <select class="input mob-only" id="g-status-sel" aria-label="Status" style="width:auto">${Object.entries(STATUSES).map(([k, v]) => `<option value="${k}" ${g.status === k ? 'selected' : ''}>${v.label}</option>`).join('')}</select>
             <div class="row">
-              <div class="stars" id="g-stars">${[1, 2, 3, 4, 5].map((i) => `<button data-r="${i * 2}" class="${rating >= i * 2 ? 'on' : ''}" aria-label="${i} stars">${icon('star')}</button>`).join('')}</div>
+              <div class="stars" id="g-stars" role="radiogroup" aria-label="Rating">${[1, 2, 3, 4, 5].map((i) => `<button data-r="${i * 2}" class="${rating >= i * 2 ? 'on' : ''}" role="radio" aria-checked="${rating === i * 2}" aria-label="Rate ${i} of 5">${icon('star')}</button>`).join('')}</div>
               <button class="btn icon ghost${g.favorite ? ' fav-on' : ''}" id="g-fav" aria-label="Favorite" aria-pressed="${!!g.favorite}">${icon(g.favorite ? 'heartFill' : 'heart')}</button>
             </div>
           </div>
@@ -651,7 +780,7 @@ async function game(view, id, stale) {
         <div class="card"><div class="card-h"><h2>Sessions</h2><button class="btn sm" id="g-log">${icon('plus')}Log session</button></div>
           <div class="list dated" id="g-sessions">${recent.length ? groupByDay(recent).map((grp) => `<div class="day-h"><span>${dayLabel(grp.day)}</span><span>${fmtMin(grp.minutes)}</span></div>${grp.items.map((x) => sessionItem(x, { showGame: false, platLabel: g.entries.length > 1, dated: true })).join('')}`).join('') : '<p class="muted">No sessions yet.</p>'}
           ${Math.max(s.sessions, plays.length) > recent.length ? `<a class="btn sm" href="/sessions?game_id=${g.id}" data-link style="margin:12px 0">All ${Math.max(s.sessions, plays.length).toLocaleString()} sessions${arrow()}</a>` : ''}
-          ${g.sessions.filter((x) => x.kind === 'baseline' && x.source !== 'inferred').map((x) => `<div class="item"><span class="dot" style="background:var(--line);width:10px;height:10px"></span><div class="grow"><div class="sub"><b style="color:var(--text)">${esc(plat(x.platform).label)}</b> ${esc(x.note || 'History')} · ${fmtDate(x.window_end)}</div></div><div class="amt muted">${fmtMin(x.minutes)}</div><button class="btn ghost sm icon" data-edit-session="${x.id}">${icon('edit')}</button></div>`).join('')}
+          ${g.sessions.filter((x) => x.kind === 'baseline' && x.source !== 'inferred').map((x) => `<div class="item"><span class="dot" style="background:var(--line);width:10px;height:10px"></span><div class="grow"><div class="sub"><b style="color:var(--text)">${esc(plat(x.platform).label)}</b> ${esc(x.note || 'History')} · ${fmtDate(x.window_end)}</div></div><div class="amt muted">${fmtMin(x.minutes)}</div><button class="btn ghost sm icon" data-edit-session="${x.id}" aria-label="Edit history">${icon('edit')}</button></div>`).join('')}
           </div>
         </div>
       </div>
@@ -670,8 +799,8 @@ async function game(view, id, stale) {
         ${g.entries.some((e) => e.history) ? `<div class="card"><div class="card-h"><h2>History before tracking</h2></div>
           <p class="small muted" style="margin-top:-6px">Playtime from before tracking began. Instead of landing on import day it is dated from everything the platform reports, and shown hatched in charts.</p>
           ${g.entries.filter((e) => e.history).map((e) => historyBlock(e)).join('')}</div>` : ''}
-        <div class="card"><div class="card-h"><h2>Notes</h2><span class="tiny muted" id="g-notes-st"></span></div>
-          <textarea class="input" id="g-notes" placeholder="Thoughts, progress, where you left off…">${esc(g.notes || '')}</textarea></div>
+        <div class="card"><div class="card-h"><h2 id="g-notes-h">Notes</h2><span class="tiny muted" id="g-notes-st" aria-live="polite"></span></div>
+          <textarea class="input" id="g-notes" aria-labelledby="g-notes-h" placeholder="Thoughts, progress, where you left off…">${esc(g.notes || '')}</textarea></div>
         <div class="card"><div class="card-h"><h2>Details</h2></div>
           <div class="setting"><div><div class="t">Hide from library</div><div class="d">Still counts toward stats</div></div><label class="switch"><input type="checkbox" id="g-hidden" ${g.hidden ? 'checked' : ''}><span></span></label></div>
           <div class="setting"><div><div class="t">Block auto-merge</div><div class="d">New entries with this title won’t be grouped here</div></div><label class="switch"><input type="checkbox" id="g-lock" ${g.merge_locked ? 'checked' : ''}><span></span></label></div>
@@ -682,30 +811,34 @@ async function game(view, id, stale) {
   mountCharts(view);
   bindSessionEdits(view);
   const patch = async (body, msg) => { try { await api(`/games/${id}`, { method: 'PATCH', body }); if (msg) toast(msg); } catch (e) { fail(e); } };
-  // a segment on desktop, a select on a phone (eight statuses do not fit a row); both stay in step
-  const setStatus = async (st) => {
-    $$('#g-status button').forEach((x) => x.classList.toggle('on', x.dataset.st === st));
-    $('#g-status-sel').value = st;
-    await patch({ status: st });
+  /**
+   * Status, rating, favourite and hidden change in place at once, are saved, and their toast can
+   * take them back: Undo saves the previous value and shows it again.
+   */
+  const undoable = async (key, value, show, msg) => {
+    const was = g[key];
+    g[key] = value; show(value);
+    try { await api(`/games/${id}`, { method: 'PATCH', body: { [key]: value } }); } catch (e) { g[key] = was; show(was); return fail(e); }
+    undoToast(msg, async () => { await api(`/games/${id}`, { method: 'PATCH', body: { [key]: was } }); g[key] = was; show(was); });
   };
+  // a segment on desktop, a select on a phone (eight statuses do not fit a row); both stay in step
+  const segBtns = $$('#g-status button'); const statusSel = $('#g-status-sel');
+  const showStatus = (st) => { segBtns.forEach((x) => x.classList.toggle('on', x.dataset.st === st)); statusSel.value = st; };
+  const setStatus = (st) => { if (st !== g.status) undoable('status', st, showStatus, `Status: ${STATUSES[st]?.label || st}`); };
   $('#g-status').addEventListener('click', (e) => { const b = e.target.closest('[data-st]'); if (b) setStatus(b.dataset.st); });
-  $('#g-status-sel').addEventListener('change', (e) => setStatus(e.target.value));
-  $('#g-stars').addEventListener('click', async (e) => {
+  statusSel.addEventListener('change', (e) => setStatus(e.target.value));
+  const stars = $$('#g-stars button');
+  const showRating = (r) => stars.forEach((x) => { x.classList.toggle('on', !!r && Number(x.dataset.r) <= r); x.setAttribute('aria-checked', String(Number(x.dataset.r) === r)); });
+  $('#g-stars').addEventListener('click', (e) => {
     const b = e.target.closest('[data-r]'); if (!b) return;
     const r = Number(b.dataset.r) === (g.rating || 0) ? null : Number(b.dataset.r);
-    g.rating = r;
-    $$('#g-stars button').forEach((x) => x.classList.toggle('on', r && Number(x.dataset.r) <= r));
-    await patch({ rating: r });
+    undoable('rating', r, showRating, r ? `Rated ${r / 2} of 5` : 'Rating cleared');
   });
-  $('#g-fav').addEventListener('click', async (e) => {
-    const b = e.currentTarget; // swapped in place: no re-render, keyboard focus stays on the button
-    g.favorite = !g.favorite;
-    b.innerHTML = icon(g.favorite ? 'heartFill' : 'heart');
-    b.classList.toggle('fav-on', g.favorite);
-    b.setAttribute('aria-pressed', String(g.favorite));
-    await patch({ favorite: g.favorite }, g.favorite ? 'Added to favorites' : 'Removed from favorites');
-  });
-  $('#g-hidden').addEventListener('change', (e) => patch({ hidden: e.target.checked }, e.target.checked ? 'Hidden from library' : 'Visible in library'));
+  const fav = $('#g-fav'); // swapped in place: no re-render, keyboard focus stays on the button
+  const showFav = (v) => { fav.innerHTML = icon(v ? 'heartFill' : 'heart'); fav.classList.toggle('fav-on', !!v); fav.setAttribute('aria-pressed', String(!!v)); };
+  fav.addEventListener('click', () => undoable('favorite', !g.favorite, showFav, !g.favorite ? 'Added to favorites' : 'Removed from favorites'));
+  const hid = $('#g-hidden');
+  hid.addEventListener('change', () => undoable('hidden', hid.checked, (v) => { hid.checked = !!v; }, hid.checked ? 'Hidden from library' : 'Visible in library'));
   $('#g-lock').addEventListener('change', (e) => patch({ merge_locked: e.target.checked }));
   let nt;
   $('#g-notes').addEventListener('input', (e) => { $('#g-notes-st').textContent = 'Saving…'; clearTimeout(nt); nt = setTimeout(async () => { await patch({ notes: e.target.value }); $('#g-notes-st').textContent = 'Saved'; }, 600); });
@@ -723,7 +856,7 @@ async function game(view, id, stale) {
   }));
   $('#g-del').addEventListener('click', async () => {
     const synced = g.entries.some((e) => e.account_id);
-    if (!(await confirmBox(synced ? 'This game comes from a synced account and will come back on the next sync. Consider hiding it instead. Delete anyway?' : 'Delete this game and all of its sessions?', { ok: 'Delete', danger: true }))) return;
+    if (!(await confirmBox(synced ? 'This game comes from a synced account and will come back on the next sync. Consider hiding it instead. Delete anyway?' : 'Delete this game and all of its sessions? This cannot be undone.', { ok: 'Delete', danger: true, title: 'Delete game?' }))) return;
     try { await api(`/games/${id}${synced ? '?force=true' : ''}`, { method: 'DELETE' }); toast('Deleted'); navigate('/library', { replace: true }); } catch (e) { fail(e); }
   });
   $('#g-merge').addEventListener('click', () => mergeModal(g));
@@ -735,7 +868,13 @@ async function game(view, id, stale) {
     const cf = ev.target.closest('[data-hist-confirm]');
     try {
       if (cf) { await api(`/entries/${cf.dataset.histConfirm}/history`, { method: 'PATCH', body: { confirm: true } }); toast('Kept as guessed'); rerender(); }
-      if (md) { await api(`/entries/${md.dataset.entry}/history`, { method: 'PATCH', body: { mode: md.dataset.histMode } }); toast(md.dataset.histMode === 'undated' ? 'Removed from charts' : 'Charted'); rerender(); }
+      if (md) {
+        const back = md.dataset.histMode === 'undated' ? 'auto' : 'undated';
+        const set = (mode) => api(`/entries/${md.dataset.entry}/history`, { method: 'PATCH', body: { mode } });
+        await set(md.dataset.histMode);
+        undoToast(md.dataset.histMode === 'undated' ? 'Removed from charts' : 'Charted', () => set(back), rerender);
+        rerender();
+      }
       if (rs) { await api(`/entries/${rs.dataset.histReset}/history`, { method: 'PATCH', body: { reset: true } }); toast('Back to automatic dating'); rerender(); }
     } catch (err) { fail(err); }
   });
@@ -750,7 +889,15 @@ async function game(view, id, stale) {
         ${g.entries.length > 1 ? `<button class="btn" id="en-split">${icon('split')}Split into its own game</button>` : ''}
         ${en.meta?.store ? `<a class="btn ghost" href="${esc(en.meta.store)}" target="_blank" rel="noopener">Open store page${icon('external')}</a>` : ''}</div>`,
       onMount(el, close) {
-        el.querySelector('#en-ex').addEventListener('change', async (ev) => { await api(`/entries/${en.id}`, { method: 'PATCH', body: { excluded: ev.target.checked } }); close(); rerender(); });
+        el.querySelector('#en-ex').addEventListener('change', async (ev) => {
+          const ex = ev.target.checked;
+          try {
+            await api(`/entries/${en.id}`, { method: 'PATCH', body: { excluded: ex } });
+            close();
+            undoToast(ex ? 'Excluded from totals' : 'Counted in totals again', () => api(`/entries/${en.id}`, { method: 'PATCH', body: { excluded: !ex } }), rerender);
+            rerender();
+          } catch (err) { fail(err); }
+        });
         el.querySelector('#en-split')?.addEventListener('click', async () => { const ng = await api(`/entries/${en.id}/split`, { method: 'POST' }); close(); toast('Split into a separate game'); navigate(`/game/${ng.id}`); });
       },
     });
@@ -808,7 +955,7 @@ function mergeModal(g) {
   modal({
     title: `Merge into “${esc(g.title)}”`,
     body: `<p class="small muted" style="margin-top:0">Pick games that are really the same title (e.g. PS4 + PS5 versions, Steam + Game Pass). Their platforms and sessions move here.</p>
-      <div class="search">${icon('search')}<input class="input" id="mq" placeholder="Search games" value="${esc(g.title.split(/[:\-–]/)[0].trim())}"></div><div class="list" id="mr" style="margin-top:10px"></div>`,
+      <div class="search">${icon('search')}<input class="input" id="mq" aria-label="Search games" placeholder="Search games" value="${esc(g.title.split(/[:\-–]/)[0].trim())}"></div><div class="list" id="mr" style="margin-top:10px"></div>`,
     foot: '<button class="btn" data-close>Cancel</button><button class="btn primary" id="m-go" disabled>Merge</button>',
     onMount(el, close) {
       const picked = new Set();
@@ -837,8 +984,8 @@ async function sessions(view, stale) {
     <div class="page-h"><div><h1>Sessions</h1><p id="s-count">&nbsp;</p></div>
       <div class="row"><button class="btn" id="s-select">${icon('check')}Select</button><button class="btn primary desk-only" id="s-log">${icon('plus')}Log session</button></div></div>
     <div class="toolbar">
-      <div class="row" style="margin-bottom:10px"><div class="search grow">${icon('search')}<input class="input" id="s-q" type="search" placeholder="Filter by game"></div></div>
-      <div class="chips" id="s-chips">
+      <div class="row" style="margin-bottom:10px"><div class="search grow">${icon('search')}<input class="input" id="s-q" type="search" placeholder="Filter by game" aria-label="Filter sessions by game"></div></div>
+      <div class="chips" id="s-chips" role="group" aria-label="Filters">
         <button class="chip on" data-p="">All</button>
         ${lt.platforms.map((p) => `<button class="chip" data-p="${esc(p.platform)}">${platDot(p.platform)}${esc(plat(p.platform).label)}</button>`).join('')}
         <span style="width:1px;background:var(--line);flex:none"></span>
@@ -909,8 +1056,33 @@ async function sessions(view, stale) {
   list.addEventListener('change', (e) => { const id = Number(e.target.dataset.sel); if (!id) return; e.target.checked ? sel.add(id) : sel.delete(id); e.target.closest('.item').classList.toggle('sel', e.target.checked); $('#s-bulk-n').textContent = `${sel.size} selected`; });
   $('#s-bulk').addEventListener('click', async (e) => {
     const b = e.target.closest('[data-bulk]'); if (!b || !sel.size) return;
-    if (b.dataset.bulk === 'delete' && !(await confirmBox(`Delete ${plural(sel.size, 'session')}? Synced sessions are moved to history instead, since their playtime comes from the platform.`, { ok: 'Delete', danger: true }))) return;
-    try { await api('/sessions/bulk', { method: 'POST', body: { ids: [...sel], action: b.dataset.bulk } }); toast('Updated'); toggleSelect(false); load(); } catch (err) { fail(err); }
+    const action = b.dataset.bulk;
+    const ids = [...sel];
+    const picked = all.filter((x) => sel.has(x.id));
+    const n = plural(ids.length, 'session');
+    // undo: a move to or from history by the opposite move; a delete by logging manual sessions again
+    // and counting synced ones again. Imported sessions cannot come back the same, so deleting them asks first.
+    const restorable = picked.every((x) => x.source === 'manual' || (x.source === 'sync' && x.kind === 'play'));
+    if (action === 'delete' && !restorable && !(await confirmBox(`Delete ${n}? Synced sessions are moved to history instead, since their playtime comes from the platform. Imported sessions cannot be restored.`, { ok: 'Delete', danger: true, title: `Delete ${n}?` }))) return;
+    try {
+      await api('/sessions/bulk', { method: 'POST', body: { ids, action } });
+      toggleSelect(false); load();
+      if (action === 'delete') {
+        const msg = picked.some((x) => x.source !== 'manual') ? `Removed ${n}` : `Deleted ${n}`;
+        if (!restorable) return toast(msg);
+        undoToast(msg, async () => {
+          for (const x of picked) {
+            if (x.source === 'manual') await restoreSession(x);
+            else await api(`/sessions/${x.id}`, { method: 'PATCH', body: { kind: 'play', note: x.note || '' } });
+          }
+        }, () => load());
+      } else {
+        const from = action === 'baseline' ? 'play' : 'baseline';
+        const msg = action === 'baseline' ? `Moved ${n} to history` : `Counting ${n} in stats`;
+        if (picked.every((x) => x.kind === from)) undoToast(msg, () => api('/sessions/bulk', { method: 'POST', body: { ids, action: from } }), () => load());
+        else toast(msg);
+      }
+    } catch (err) { fail(err); }
   });
   bindSessionEdits(view, () => load());
   $('#s-log').addEventListener('click', () => logSessionModal(null, () => load()));
@@ -934,14 +1106,14 @@ async function stats(view, stale) {
       <a class="btn" href="/wrapped/${years[0]}" data-link>${icon('trail')}${years[0]} in review</a></div>
     <div class="toolbar"><div class="row wrap">
       <div class="row" style="gap:8px">
-        <div class="seg" id="st-range">${[['7d', '7 days', '7d'], ['30d', '30 days', '30d'], ['90d', '90 days', '90d'], ['365d', '12 months', '12m']].map(([v, l, sh]) => `<button data-r="${v}" class="${range === v ? 'on' : ''}" title="Last ${l}"><span class="lg">${l}</span><span class="sm">${sh}</span></button>`).join('')}</div>
+        <div class="seg" id="st-range" aria-label="Range">${[['7d', '7 days', '7d'], ['30d', '30 days', '30d'], ['90d', '90 days', '90d'], ['365d', '12 months', '12m']].map(([v, l, sh]) => `<button data-r="${v}" class="${range === v ? 'on' : ''}" title="Last ${l}"><span class="lg">${l}</span><span class="sm">${sh}</span></button>`).join('')}</div>
         <select class="input" id="st-year" aria-label="Year" style="width:auto"><option value="">Year…</option>${[...years.map((y) => [`year:${y}`, String(y)]), ['all', 'All time']].map(([v, l]) => `<option value="${v}" ${range === v ? 'selected' : ''}>${l}</option>`).join('')}</select>
       </div>
-      <label class="row small" style="gap:8px;cursor:pointer" title="Include playtime from before tracking began, dated by inference (hatched in charts)"><label class="switch"><input type="checkbox" id="st-est" ${estimates !== 'exclude' ? 'checked' : ''}><span></span></label>Estimated history</label>
-      <select class="input" id="st-plat" style="width:auto"><option value="">All platforms</option>${lt.platforms.map((p) => `<option value="${esc(p.platform)}" ${platform === p.platform ? 'selected' : ''}>${esc(plat(p.platform).label)}</option>`).join('')}</select>
+      <label class="row small" style="gap:8px;cursor:pointer" title="Include playtime from before tracking began, dated by inference (hatched in charts)"><span class="switch"><input type="checkbox" id="st-est" ${estimates !== 'exclude' ? 'checked' : ''}><span></span></span>Estimated history</label>
+      <select class="input" id="st-plat" style="width:auto" aria-label="Platform"><option value="">All platforms</option>${lt.platforms.map((p) => `<option value="${esc(p.platform)}" ${platform === p.platform ? 'selected' : ''}>${esc(plat(p.platform).label)}</option>`).join('')}</select>
     </div></div>
     <div id="st-body"></div>
-    <div class="card" style="margin-top:16px"><div class="card-h"><h2>Activity</h2><div class="seg" id="hm-year">${years.map((y) => `<button data-y="${y}" class="${y === heatYear ? 'on' : ''}">${y}</button>`).join('')}</div></div><div id="hm"></div></div>`;
+    <div class="card" style="margin-top:16px"><div class="card-h"><h2>Activity</h2><div class="seg" id="hm-year" aria-label="Activity year">${years.map((y) => `<button data-y="${y}" class="${y === heatYear ? 'on' : ''}">${y}</button>`).join('')}</div></div><div id="hm"></div></div>`;
   const body = $('#st-body');
   const load = async () => {
     const p = new URLSearchParams({ range, estimates });
@@ -1054,12 +1226,15 @@ async function duplicates(view, stale) {
       } else if (b.dataset.dismiss) {
         await api('/duplicates/dismiss', { method: 'POST', body: { key: b.dataset.dismiss } });
       } else if (b.dataset.exclude) {
-        await api(`/entries/${b.dataset.exclude}`, { method: 'PATCH', body: { excluded: true } });
-        toast('Excluded from totals');
+        const en = b.dataset.exclude;
+        await api(`/entries/${en}`, { method: 'PATCH', body: { excluded: true } });
+        undoToast('Excluded from totals', () => api(`/entries/${en}`, { method: 'PATCH', body: { excluded: false } }), rerender);
       } else if (b.id === 'merge-all') {
+        const strong = d.suggestions.filter((s) => s.score >= 0.95);
+        if (!(await confirmBox(`Merge the ${plural(strong.length, 'pair')} that match at 95% or more? Each pair becomes one game; this cannot be undone in one step.`, { ok: 'Merge all', title: `Merge ${plural(strong.length, 'pair')}?` }))) return;
         const done = new Set();
         let n = 0;
-        for (const x of d.suggestions.filter((s) => s.score >= 0.95)) {
+        for (const x of strong) {
           const [a, c] = x.games;
           if (done.has(a.id) || done.has(c.id)) continue;
           const [target, src] = c.minutes > a.minutes ? [c.id, a.id] : [a.id, c.id];
@@ -1130,7 +1305,7 @@ async function accountModal(platforms, existing = null) {
         <div id="acc-test-r" class="small"></div>
         <details><summary class="small muted" style="cursor:pointer">What ${esc(info.label)} provides &amp; its limits</summary>${capabilityTable(info)}</details>
       </form>`,
-      foot: `${existing ? `<button class="btn danger" id="acc-del">${icon('trash')}</button>` : ''}<span class="grow"></span>${info.push ? '' : '<button class="btn" id="acc-test">Test</button>'}<button class="btn primary" id="acc-save">${existing ? 'Save' : 'Connect & import'}</button>`,
+      foot: `${existing ? `<button class="btn danger" id="acc-del" aria-label="Unlink account" title="Unlink account">${icon('trash')}</button>` : ''}<span class="grow"></span>${info.push ? '' : '<button class="btn" id="acc-test">Test</button>'}<button class="btn primary" id="acc-save">${existing ? 'Save' : 'Connect & import'}</button>`,
       onMount(el, close) {
         bindScheduleFields(el, 'a_');
         el.querySelector('#acc-own')?.addEventListener('change', (e) => el.querySelector('#acc-sched').classList.toggle('hide', !e.target.checked));
@@ -1162,14 +1337,14 @@ async function accountModal(platforms, existing = null) {
             } else {
               await api('/accounts', { method: 'POST', body });
               toast(info.push ? 'Account created' : 'Connected — importing your library…');
-              state.syncing = true;
+              syncStarted();
               setTimeout(() => watchSync(), 1000);
             }
             close(); rerender();
           } catch (e) { fail(e); }
         });
         el.querySelector('#acc-del')?.addEventListener('click', async () => {
-          if (!(await confirmBox(`Unlink ${esc(a.name)}? All games, snapshots and sessions from this account will be deleted.`, { ok: 'Unlink & delete', danger: true }))) return;
+          if (!(await confirmBox(`Unlink ${esc(a.name)}? All games, snapshots and sessions from this account will be deleted. This cannot be undone.`, { ok: 'Unlink & delete', danger: true, title: 'Unlink account?' }))) return;
           try { await api(`/accounts/${existing.id}`, { method: 'DELETE' }); close(); toast('Account removed'); rerender(); } catch (e) { fail(e); }
         });
       },
@@ -1223,9 +1398,15 @@ async function accounts(view, stale) {
     const b = e.target.closest('[data-sync],[data-edit],[data-toggle]');
     if (!b) return;
     try {
-      if (b.dataset.sync) { await api(`/accounts/${b.dataset.sync}/sync`, { method: 'POST' }); toast('Sync started'); state.syncing = true; setTimeout(() => { rerender(); watchSync(); }, 500); }
+      if (b.dataset.sync) { await api(`/accounts/${b.dataset.sync}/sync`, { method: 'POST' }); toast('Sync started'); syncStarted(); setTimeout(() => { rerender(); watchSync(); }, 500); }
       if (b.dataset.edit) accountModal(platforms, accs.find((a) => a.id === Number(b.dataset.edit)));
-      if (b.dataset.toggle) { const a = accs.find((x) => x.id === Number(b.dataset.toggle)); await api(`/accounts/${a.id}`, { method: 'PATCH', body: { enabled: !a.enabled } }); rerender(); }
+      if (b.dataset.toggle) {
+        const a = accs.find((x) => x.id === Number(b.dataset.toggle));
+        const set = (enabled) => api(`/accounts/${a.id}`, { method: 'PATCH', body: { enabled } });
+        await set(!a.enabled);
+        undoToast(`${a.name} ${a.enabled ? 'paused' : 'resumed'}`, () => set(a.enabled), rerender);
+        rerender();
+      }
     } catch (err) { fail(err); }
   });
 }
@@ -1238,13 +1419,37 @@ function segSetting(key, title, opts, s, desc = '') {
   return `<div class="setting"><div><div class="t">${title}</div>${desc ? `<div class="d">${desc}</div>` : ''}</div><div class="seg" data-seg="${key}">${opts.map(([v, l]) => `<button data-v="${v}" class="${String(s[key]) === v ? 'on' : ''}">${l}</button>`).join('')}</div></div>`;
 }
 
+/** The "Install app" row: an Install button when the browser offers one, else how (or why not). */
+function installRow() {
+  const standalone = matchMedia('(display-mode: standalone)').matches || navigator.standalone;
+  const d = !window.isSecureContext ? 'Install and offline need HTTPS, e.g. through your reverse proxy.'
+    : standalone ? 'Installed: Vestigo opens in its own window, and pages you opened work offline.'
+      : state.installPrompt ? 'Its own window and icon, and pages you opened work offline.'
+        : 'Use your browser’s Install or Add to Home Screen option. Pages you opened work offline.';
+  return `<div class="setting" id="install"><div><div class="t">Install app</div><div class="d">${d}</div></div>${window.isSecureContext && !standalone && state.installPrompt ? `<button class="btn sm" id="inst-go">${icon('download')}Install</button>` : ''}</div>`;
+}
+
+/** A "Saved" tick beside a settings control for 1.5s; the live line says what was saved. */
+function savedTick(at, what) {
+  const row = at?.closest('.setting');
+  const host = row?.querySelector('.t') || at?.closest('.field')?.querySelector('label') || (at?.matches('button') ? at.parentElement : at);
+  if (!host) return;
+  host.querySelector('.saved')?.remove();
+  host.insertAdjacentHTML('beforeend', `<span class="saved" aria-hidden="true">${icon('check')}Saved</span>`);
+  const tick = host.lastElementChild;
+  const st = $('#set-st');
+  if (st) st.textContent = `${what || row?.querySelector('.t')?.firstChild?.textContent?.trim() || 'Setting'} saved`;
+  setTimeout(() => tick.classList.add('gone'), 1500);
+  setTimeout(() => tick.remove(), 1900);
+}
+
 async function settings(view, stale) {
   const [s, tokens, auth] = await Promise.all([api('/settings'), api('/tokens'), api('/auth/status')]);
   if (stale()) return;
   const sw = (key, title, desc) => `<div class="setting"><div><div class="t">${title}</div><div class="d">${desc}</div></div><label class="switch"><input type="checkbox" data-set="${key}" ${s[key] ? 'checked' : ''} aria-label="${esc(title)}"><span></span></label></div>`;
   const accent = accentOf(s);
   view.innerHTML = `
-    <div class="page-h"><div><h1>Settings</h1></div></div>
+    <div class="page-h"><div><h1>Settings</h1></div><span class="vh" role="status" id="set-st"></span></div>
     <div class="grid grid-2">
       <div class="stack">
         <div class="card" id="appearance"><div class="card-h"><h2>Appearance</h2><span class="tiny muted">saved for every device</span></div>
@@ -1254,13 +1459,14 @@ async function settings(view, stale) {
           ${segSetting('ui_density', 'Density', [['comfortable', 'Comfortable'], ['compact', 'Compact']], s, 'Compact fits more on screen')}
           ${segSetting('time_format', 'Time format', [['hm', '1h 5m'], ['decimal', '1.1h']], s)}
           <div class="setting"><div><div class="t">Start page</div><div class="d">What opens when you launch Vestigo</div></div><select class="input" data-str="start_page" style="width:auto">${[['home', 'Home'], ['library', 'Library'], ['sessions', 'Sessions'], ['stats', 'Stats']].map(([v, l]) => `<option value="${v}" ${s.start_page === v ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
+          ${installRow()}
           <h3 style="margin:16px 0 2px">Library</h3>
           ${segSetting('library_view', 'Default view', [['grid', 'Covers'], ['list', 'List']], s)}
           ${segSetting('cover_size', 'Cover size', [['s', 'Small'], ['m', 'Medium'], ['l', 'Large']], s)}
           ${segSetting('cover_titles', 'Titles on covers', [['auto', 'No art'], ['always', 'Always'], ['never', 'Never']], s, '“No art” only labels games without a cover image')}
           <div class="setting"><div class="t">Default sort</div><select class="input" data-str="default_library_sort" style="width:auto">${[['recent', 'Recently played'], ['playtime', 'Most played'], ['title', 'A–Z'], ['trending', 'Trending'], ['added', 'Recently added'], ['rating', 'Top rated']].map(([v, l]) => `<option value="${v}" ${s.default_library_sort === v ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
           ${sw('library_hide_unplayed', 'Hide never-played games', 'Owned games you have never launched stay out of the library unless you ask for them')}
-          <h3 style="margin:16px 0 8px">Home sections</h3>
+          <h3 style="margin:16px 0 8px" id="lay-h">Home sections</h3>
           <div id="set-layout"></div>
         </div>
         <div class="card"><div class="card-h"><h2>Sync schedule</h2><span class="badge accent" id="sched-label">${esc(s.schedule_label)}</span></div>
@@ -1282,8 +1488,8 @@ async function settings(view, stale) {
           <p class="small muted" style="margin-top:-6px">Bring history from spreadsheets, other trackers, Switch, etc. CSV columns: <code>title</code>, <code>platform</code>, <code>playtime_hours</code> or <code>playtime_minutes</code>, <code>last_played</code>, <code>status</code>, <code>rating</code>, <code>notes</code>. JSON may include per-game <code>sessions</code>. Totals without sessions become <b>history</b> — counted in lifetime, never as a burst in your charts.</p>
           <label class="btn" style="cursor:pointer">${icon('upload')}Choose CSV / JSON / GameTrack .zip<input type="file" id="imp-file" class="vh" accept=".csv,.json,.txt,.zip,text/csv,application/json,application/zip"></label>
           <p class="tiny muted" style="margin:8px 0 0">GameTrack: in GameTrack choose Settings › Export, then pick the .zip here. Unlock times date your synced games' history; hours no account here tracks are added as history; nothing is counted twice.</p>
-          <details style="margin-top:12px"><summary class="small muted" style="cursor:pointer">…or paste</summary><textarea class="input mono" id="imp-text" placeholder="title,platform,playtime_hours,status&#10;Hades,switch,42,completed" style="margin-top:8px"></textarea><button class="btn sm" id="imp-go" style="margin-top:8px">Import pasted data</button></details>
-          <div id="imp-r" class="small" style="margin-top:10px"></div>
+          <details style="margin-top:12px"><summary class="small muted" style="cursor:pointer">…or paste</summary><textarea class="input mono" id="imp-text" aria-label="CSV or JSON to import" placeholder="title,platform,playtime_hours,status&#10;Hades,switch,42,completed" style="margin-top:8px"></textarea><button class="btn sm" id="imp-go" style="margin-top:8px">Import pasted data</button></details>
+          <div id="imp-r" class="small" style="margin-top:10px" aria-live="polite"></div>
         </div>
         <div class="card"><div class="card-h"><h2>Export & backup</h2></div>
           <div class="row wrap"><a class="btn" href="/api/v1/export" download>${icon('download')}JSON</a><a class="btn" href="/api/v1/export?format=csv" download>${icon('download')}CSV</a><a class="btn" href="/api/v1/backup" download>${icon('download')}SQLite backup</a></div>
@@ -1305,31 +1511,39 @@ async function settings(view, stale) {
       </div>
     </div>`;
   bindScheduleFields(view);
-  const save = async (patch, msg = 'Saved') => {
-    try { const r = await api('/settings', { method: 'PUT', body: patch }); state.settings = { ...state.settings, ...r }; $('#sched-label').textContent = r.schedule_label; applyTheme(state.settings); toast(msg); return r; } catch (e) { fail(e); }
+  $('#inst-go')?.addEventListener('click', async () => {
+    const p = state.installPrompt;
+    if (!p) return;
+    p.prompt();
+    const { outcome } = await p.userChoice.catch(() => ({}));
+    if (outcome === 'accepted') { state.installPrompt = null; rerender(); }
+  });
+  // a change is confirmed by a "Saved" tick beside its control (and the #set-st live line), not a toast
+  const save = async (patch, at, what) => {
+    try { const r = await api('/settings', { method: 'PUT', body: patch }); state.settings = { ...state.settings, ...r }; $('#sched-label').textContent = r.schedule_label; applyTheme(state.settings); savedTick(at, what); return r; } catch (e) { fail(e); }
   };
-  $('#sched-save').addEventListener('click', () => save(readSchedule(view), 'Schedule saved'));
-  $$('[data-set]', view).forEach((el) => el.addEventListener('change', () => save({ [el.dataset.set]: el.checked })));
-  $$('[data-num]', view).forEach((el) => el.addEventListener('change', () => save({ [el.dataset.num]: Number(el.value) })));
-  $$('[data-str]', view).forEach((el) => el.addEventListener('change', () => save({ [el.dataset.str]: el.value })));
+  $('#sched-save').addEventListener('click', (e) => save(readSchedule(view), e.currentTarget, 'Sync schedule'));
+  $$('[data-set]', view).forEach((el) => el.addEventListener('change', () => save({ [el.dataset.set]: el.checked }, el)));
+  $$('[data-num]', view).forEach((el) => el.addEventListener('change', () => save({ [el.dataset.num]: Number(el.value) }, el)));
+  $$('[data-str]', view).forEach((el) => el.addEventListener('change', () => save({ [el.dataset.str]: el.value }, el)));
   $$('[data-seg]', view).forEach((g) => g.addEventListener('click', async (e) => {
     const b = e.target.closest('[data-v]');
     if (!b) return;
     $$('button', g).forEach((x) => x.classList.toggle('on', x === b));
-    const r = await save({ [g.dataset.seg]: b.dataset.v }, 'Saved');
+    const r = await save({ [g.dataset.seg]: b.dataset.v }, g);
     if (r) applyTheme(state.settings);
   }));
   const setAccent = async (c) => {
     $$('[data-accent]', view).forEach((x) => x.setAttribute('aria-pressed', String(x.dataset.accent === c)));
     $('#accent-custom').value = c;
-    const r = await save({ accent: c }, 'Accent updated');
+    const r = await save({ accent: c }, $('#accent-t'), 'Accent');
     if (r) applyTheme(state.settings);
   };
   $$('[data-accent]', view).forEach((b) => b.addEventListener('click', () => setAccent(b.dataset.accent)));
   $('#accent-custom').addEventListener('input', (e) => paintAccent(e.target.value)); // live preview, with its readable ink
   $('#accent-custom').addEventListener('change', (e) => setAccent(e.target.value));
   let layoutTimer;
-  layoutEditor($('#set-layout'), parseLayout(s.dashboard_layout), (v) => { clearTimeout(layoutTimer); layoutTimer = setTimeout(() => save({ dashboard_layout: v }, 'Home layout saved'), 400); });
+  layoutEditor($('#set-layout'), parseLayout(s.dashboard_layout), (v) => { clearTimeout(layoutTimer); layoutTimer = setTimeout(() => save({ dashboard_layout: v }, $('#lay-h'), 'Home sections'), 400); });
   // Imports preview first (dry run: nothing changes), then apply on confirm.
   const li = (cond, html) => (cond ? `<li>${html}</li>` : '');
   const fileSummary = (r) => `<ul class="small" style="margin:6px 0 0;padding-left:18px">
@@ -1413,7 +1627,7 @@ async function settings(view, stale) {
   view.addEventListener('click', async (e) => {
     const b = e.target.closest('[data-revoke]');
     if (!b) return;
-    if (!(await confirmBox('Revoke this token? Anything using it will stop working.', { ok: 'Revoke', danger: true }))) return;
+    if (!(await confirmBox('Anything using this token will stop working. This cannot be undone.', { ok: 'Revoke', danger: true, title: 'Revoke token?' }))) return;
     await api(`/tokens/${b.dataset.revoke}`, { method: 'DELETE' }); rerender();
   });
   if (['#import', '#appearance'].includes(location.hash)) setTimeout(() => $(location.hash).scrollIntoView({ behavior: scrollMotion() }), 100);
@@ -1492,9 +1706,9 @@ async function system(view, stale) {
       <div class="row wrap" style="margin-top:12px"><button class="btn sm" id="sys-reinfer">Re-date all history</button><a class="btn sm ghost" href="/history" data-link>Improve history${icon('arrowR')}</a>${sys.accounts.filter((a) => a.enrichment_pending && a.can_enrich).map((a) => `<button class="btn sm ghost" data-enrich="${a.id}">Fetch history dates for ${esc(a.name)}</button>`).join('')}</div>
     </div>
     <div class="card" style="margin-top:16px"><div class="card-h"><h2>Error log</h2><div class="row wrap">
-        <div class="seg" id="log-lvl"><button data-l="error,warn" class="on">Errors &amp; warnings</button><button data-l="error">Errors</button><button data-l="warn">Warnings</button></div>
+        <div class="seg" id="log-lvl" aria-label="Show"><button data-l="error,warn" class="on">Errors &amp; warnings</button><button data-l="error">Errors</button><button data-l="warn">Warnings</button></div>
         <button class="btn sm ghost" id="log-clear">${icon('trash')}Clear</button></div></div>
-      <div class="search" style="margin-bottom:10px">${icon('search')}<input class="input" id="log-q" placeholder="Filter messages (account, game, error…)"></div>
+      <div class="search" style="margin-bottom:10px">${icon('search')}<input class="input" id="log-q" aria-label="Filter log" placeholder="Filter messages (account, game, error…)"></div>
       <div id="log-list"></div>
     </div>
     <div class="grid grid-2" style="margin-top:16px">
@@ -1514,7 +1728,7 @@ async function system(view, stale) {
   $('#log-lvl').addEventListener('click', (e) => { const b = e.target.closest('[data-l]'); if (!b) return; level = b.dataset.l; $$('#log-lvl button').forEach((x) => x.classList.toggle('on', x === b)); reload(); });
   let t;
   $('#log-q').addEventListener('input', (e) => { clearTimeout(t); t = setTimeout(() => { q = e.target.value.trim(); reload(); }, 250); });
-  $('#log-clear').addEventListener('click', async () => { if (await confirmBox('Clear all stored log entries?', { ok: 'Clear', danger: true })) { await api('/logs', { method: 'DELETE' }); rerender(); } });
+  $('#log-clear').addEventListener('click', async () => { if (await confirmBox('Every stored log entry will be deleted. This cannot be undone.', { ok: 'Clear', danger: true, title: 'Clear the log?' })) { await api('/logs', { method: 'DELETE' }); rerender(); } });
   $('#sys-reinfer').addEventListener('click', async () => { try { const r = await api('/history/reinfer', { method: 'POST' }); toast(`Re-dated history for ${r.entries} titles`); } catch (e) { fail(e); } });
   view.addEventListener('click', async (e) => {
     const b = e.target.closest('[data-enrich]');
@@ -1559,10 +1773,10 @@ async function historyPage(view, stale) {
           : 'no dates known'}${it.undated ? ` · ${fmtMin(it.undated)} undated` : ''}${it.evidence.last_played_at ? ` · last played ${fmtDate(it.evidence.last_played_at, { year: 'numeric', month: 'short', day: 'numeric' })}` : ''}</div>
         ${it.window ? `<div class="row wrap" style="gap:6px"><button class="btn sm" data-confirm>${icon('check')}Looks right</button><span class="tiny muted">or correct it:</span></div>` : ''}
         <div class="row wrap" style="gap:6px"><span class="small">Mostly played in</span>
-          <select class="input sm" name="y" style="width:auto">${yearOpts(it)}</select>
-          <select class="input sm" name="p" style="width:auto">${PERIODS.map(([k, l]) => `<option value="${k}">${l}</option>`).join('')}</select>
+          <select class="input sm" name="y" style="width:auto" aria-label="Year">${yearOpts(it)}</select>
+          <select class="input sm" name="p" style="width:auto" aria-label="Period">${PERIODS.map(([k, l]) => `<option value="${k}">${l}</option>`).join('')}</select>
           <label class="small row" style="gap:4px"><input type="checkbox" name="span"> until</label>
-          <select class="input sm hide" name="y2" style="width:auto">${yearOpts(it)}</select>
+          <select class="input sm hide" name="y2" style="width:auto" aria-label="Until year">${yearOpts(it)}</select>
           <button class="btn sm primary" data-answer>${icon('check')}Save</button>
           <button class="btn sm ghost" data-undated>Don’t chart</button>
           <button class="btn sm ghost" data-skip>Skip</button></div>
@@ -1575,8 +1789,8 @@ async function historyPage(view, stale) {
       <p class="tiny muted" style="margin-bottom:0">${rev.style ? `Dating uses your own play pattern, learned from ${rev.style.games} games tracked from start to finish.` : 'Once a few games have been tracked from first session to last, Vestigo learns how you spread play over a game and dates history the same way.'}</p></div>
     ${steam.length ? `<div class="card" style="margin-top:16px"><div class="card-h"><h2>Steam purchase dates</h2><a class="small link" href="https://store.steampowered.com/account/licenses/" target="_blank" rel="noopener">Open your licenses page${icon('external', 'ic-inline')}</a></div>
       <p class="small muted" style="margin-top:0">Steam never shares when you got a game, but its licenses page lists it. Select the whole table there (Ctrl+A works), copy, and paste it here — every matched game gets a start date for its history.</p>
-      <div class="field"><textarea class="input" id="lic-text" rows="4" style="height:auto;padding:10px 12px;font-family:var(--mono, monospace);font-size:12.5px" placeholder="20 Nov, 2015	Counter-Strike: Global Offensive	Steam Store"></textarea></div>
-      <div class="row wrap" style="margin-top:10px">${steam.length > 1 ? `<select class="input sm" id="lic-acc" style="width:auto">${steam.map((a) => `<option value="${a.id}">${esc(a.name)}</option>`).join('')}</select>` : `<input type="hidden" id="lic-acc" value="${steam[0].id}">`}
+      <div class="field"><textarea class="input" id="lic-text" aria-label="Steam licenses table" rows="4" style="height:auto;padding:10px 12px;font-family:var(--mono, monospace);font-size:12.5px" placeholder="20 Nov, 2015	Counter-Strike: Global Offensive	Steam Store"></textarea></div>
+      <div class="row wrap" style="margin-top:10px">${steam.length > 1 ? `<select class="input sm" id="lic-acc" style="width:auto" aria-label="Steam account">${steam.map((a) => `<option value="${a.id}">${esc(a.name)}</option>`).join('')}</select>` : `<input type="hidden" id="lic-acc" value="${steam[0].id}">`}
         <button class="btn primary sm" id="lic-go">Import purchase dates</button><span class="tiny muted" id="lic-res"></span></div></div>` : ''}
     <div class="card" style="margin-top:16px"><div class="card-h"><h2>Least certain first</h2><span class="tiny muted">${rev.total} games · ${fmtHours(rev.uncertain_minutes, 0)}h uncertain</span></div>
       <div id="hist-list">${rev.items.map(row).join('') || `<div class="empty" style="padding:24px"><div class="em-ic">${icon('check')}</div><h2>Nothing left to answer</h2><p>All pre-tracking history is dated from solid evidence or by you.</p></div>`}</div>
@@ -1638,10 +1852,29 @@ async function historyPage(view, stale) {
 // =====================================================================
 // More (mobile)
 // =====================================================================
-async function more(view) {
-  const links = [['/duplicates', 'dupes', 'Duplicates', 'Merge editions, fix double counting'], ['/accounts', 'accounts', 'Accounts', 'Steam, Xbox, PlayStation, custom'], ['/history', 'history', 'Improve history', 'Date play from before tracking'], ['/system', 'system', 'System', 'Error log, API usage, diagnostics'], ['/settings', 'settings', 'Settings', 'Schedule, import/export, security'], ['/api', 'code', 'API', 'Tokens, push endpoint, docs'], [`/wrapped/${new Date().getFullYear()}`, 'trail', 'Year in review', 'The trail you left this year']];
-  view.innerHTML = `<div class="page-h"><h1>More</h1></div><div class="card pad-0">${links.map(([href, ic, t, d]) => `<a class="item" href="${href}" data-link style="padding:14px 16px"><span style="width:36px;height:36px;border-radius:10px;background:var(--panel2);display:grid;place-items:center">${icon(ic, 'ic-18')}</span><div class="grow"><div class="ttl">${t}</div><div class="sub">${d}</div></div></a>`).join('')}</div>
+const MORE_DESC = {
+  '/duplicates': 'Merge editions, fix double counting', '/history': 'Date play from before tracking', '/accounts': 'Steam, Xbox, PlayStation, custom',
+  '/settings': 'Schedule, import/export, security', '/system': 'Error log, API usage, diagnostics', '/api': 'Tokens, push endpoint, docs',
+};
+/** The phone's More tab: the sidebar's groups (minus the tabs), Year in review on top, and what needs a look counted on each row. */
+async function more(view, stale) {
+  const accs = await api('/accounts').catch(() => []);
+  if (stale()) return;
+  const paused = accs.filter((a) => !a.enabled).length;
+  const counts = {
+    '/duplicates': '<span class="badge accent hide" data-count="dupes"></span>',
+    '/system': '<span class="badge bad hide" data-count="errors"></span>',
+  };
+  // Accounts says how many and how many are paused instead of describing itself
+  const desc = { ...MORE_DESC, ...(accs.length ? { '/accounts': `${plural(accs.length, 'account')}${paused ? ` · ${paused} paused` : ''}` } : {}) };
+  const items = navItems().filter((n) => !n.tab);
+  const year = items.find((n) => n.path === '/wrapped');
+  const row = (n) => `<a class="item more-row" href="${n.href}" data-link><span class="mi">${icon(n.icon, 'ic-18')}</span><span class="grow"><span class="ttl">${n.label}</span><span class="sub">${desc[n.path] || ''}</span></span>${counts[n.path] || ''}${icon('chevR', 'ic-16 chev')}</a>`;
+  view.innerHTML = `<div class="page-h"><h1>More</h1></div>
+    <a class="more-feature" href="${year.href}" data-link><span class="mi">${icon('trail', 'ic-18')}</span><span class="grow"><span class="ttl">Year in review</span><span class="sub">The trail you left in ${state.latestYear}</span></span>${icon('chevR', 'ic-16 chev')}</a>
+    ${NAV_GROUPS.map((g) => [g, items.filter((n) => n.group === g && n !== year)]).filter(([, list]) => list.length).map(([g, list], i) => `<section class="more-sec" aria-labelledby="mg-${i}"><h2 class="nav-group" id="mg-${i}">${g}</h2><div class="card pad-0">${list.map(row).join('')}</div></section>`).join('')}
     ${state.authEnabled ? `<button class="btn" style="margin-top:16px;width:100%" data-action="logout">${icon('logout')}Log out</button>` : ''}`;
+  applyBadges();
 }
 
 export const pages = { dashboard, library, game, sessions, stats, wrapped, duplicates, accounts, settings, apidocs, more, system, history: historyPage };
