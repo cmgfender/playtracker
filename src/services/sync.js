@@ -757,6 +757,9 @@ export class SyncService {
       });
       this.refreshNext(account.id);
       this.presenceSessions(account.id, { fallbacks: items.filter((i) => i.unmeteredPlayAt).map((i) => ({ extId: String(i.extId), at: i.unmeteredPlayAt, prev: i.prevPlayedAt })) });
+      // a session this sync recorded may be the same play another account's presence already counted
+      const doubled = dropDoubledPresence(db);
+      if (doubled) this.log.info(`Removed ${doubled} presence session${doubled > 1 ? 's' : ''} another account already counts`);
       this.relearn();
       const result = { sync_id: syncId, account_id: account.id, initial, ...stats, api_calls: counters.calls, duration_ms: Date.now() - startedAt };
       this.log.info(`${label}: ${stats.games_seen} games, ${stats.sessions_created} sessions (+${stats.minutes_added}m)${stats.history_minutes ? `, ${Math.round(stats.history_minutes / 60)}h history dated (${Math.round(stats.estimated_minutes / 60)}h charted)` : ''}${initial ? ' [initial import]' : ''} in ${result.duration_ms}ms, ${counters.calls} API calls`);
@@ -1049,7 +1052,9 @@ export class SyncService {
         const entry = db.prepare('SELECT * FROM entries WHERE account_id = ? AND ext_id = ?').get(accountId, sp.ext_id);
         if (!entry) continue; // not in the library yet: the sync after this span adds it
         const minutes = Math.round((sp.ended_at - sp.started_at) / MIN);
-        if (minutes < minMin) { db.prepare('UPDATE presence SET session_id = 0 WHERE id = ?').run(sp.id); continue; }
+        // too short, or the same game played then on another account that counts its playtime
+        // (a Steam game signing in to Xbox services shows up in Xbox presence too)
+        if (minutes < minMin || playedElsewhere(db, entry, sp.started_at, sp.ended_at)) { db.prepare('UPDATE presence SET session_id = 0 WHERE id = ?').run(sp.id); continue; }
         const r = db.prepare(`INSERT INTO sessions(entry_id, sync_id, source, kind, minutes, window_start, window_end, started_at, ended_at, confidence, device, note, created_at)
           VALUES (?, NULL, 'presence', 'play', ?, ?, ?, ?, ?, 'exact', ?, ?, ?)`)
           .run(entry.id, minutes, sp.started_at, sp.ended_at, sp.started_at, sp.ended_at, sp.device || null, 'From live presence (platform reports no playtime for this title)', now);
@@ -1075,7 +1080,7 @@ export class SyncService {
           // (one that ended by the previous last-played time belongs to that earlier play)
           const covered = db.prepare(`SELECT 1 FROM sessions WHERE entry_id = ? AND kind = 'play' AND COALESCE(ended_at, window_end) BETWEEN ? AND ? LIMIT 1`)
             .get(entry.id, Math.max(f.at - 30 * MIN, (f.prev ?? -Infinity) + 1), f.at + 30 * MIN);
-          if (seen || covered) continue;
+          if (seen || covered || playedElsewhere(db, entry, f.at - 30 * MIN, f.at + 5 * MIN)) continue;
           const gap = f.prev ? Math.floor((f.at - f.prev) / MIN) : Infinity;
           const minutes = Math.max(minMin, Math.min(typical, gap, 360));
           const start = f.at - minutes * MIN;
@@ -1157,6 +1162,8 @@ export class SyncService {
     // History inferred by an older algorithm version (or migrated installs) is redone once.
     try {
       flushRollups(this.db);
+      const doubled = dropDoubledPresence(this.db);
+      if (doubled) this.log.info(`Removed ${doubled} presence session${doubled > 1 ? 's' : ''} another account already counts`);
       if (!relearnStyle(this.db, { settings: this.settings.all(), log: this.log })) reinferPending(this.db, { log: this.log, settings: this.settings.all() });
       flushRollups(this.db);
     } catch (e) { this.log.error('History inference failed', e); }
@@ -1205,4 +1212,49 @@ export class SyncService {
     clearTimeout(this.firstTick);
     clearTimeout(this.coverTimer);
   }
+}
+
+/**
+ * Is the game of `entry` known to have been played between `from` and `to` on another account
+ * (a session there, or that account's live presence)? Then a presence-only session for `entry`
+ * would count the same play twice.
+ */
+function playedElsewhere(db, entry, from, to) {
+  return !!db.prepare(`SELECT 1 FROM sessions s JOIN entries e ON e.id = s.entry_id
+      WHERE e.game_id = ? AND e.id != ? AND e.excluded = 0 AND s.kind = 'play'
+        AND COALESCE(s.started_at, s.window_start) < ? AND COALESCE(s.ended_at, s.window_end) > ?
+    UNION ALL
+    SELECT 1 FROM presence p JOIN entries e ON e.account_id = p.account_id AND e.ext_id = p.ext_id
+      WHERE e.game_id = ? AND e.id != ? AND e.excluded = 0 AND e.account_id != ?
+        AND p.started_at < ? AND COALESCE(p.ended_at, p.last_seen_at) > ?
+    LIMIT 1`).get(entry.game_id, entry.id, to, from, entry.game_id, entry.id, entry.account_id ?? -1, to, from);
+}
+
+/**
+ * Remove presence-only sessions (titles whose platform reports no playtime) that another account
+ * already counts: the same game played at the same time there. Returns the sessions removed.
+ */
+export function dropDoubledPresence(db) {
+  const rows = db.prepare(`SELECT s.id, s.minutes, s.entry_id, s.started_at, s.ended_at FROM sessions s
+    WHERE s.kind = 'play' AND (s.source = 'presence' OR (s.source = 'sync' AND s.note LIKE 'Length estimated:%')) AND s.started_at IS NOT NULL`).all();
+  let n = 0;
+  tx(db, () => {
+    for (const r of rows) {
+      const entry = db.prepare('SELECT * FROM entries WHERE id = ?').get(r.entry_id);
+      if (!entry || !playedElsewhereSessions(db, entry, r.started_at, r.ended_at)) continue;
+      db.prepare('DELETE FROM sessions WHERE id = ?').run(r.id);
+      db.prepare('UPDATE presence SET session_id = 0 WHERE session_id = ?').run(r.id);
+      db.prepare('UPDATE entries SET playtime_min = MAX(0, playtime_min - ?) WHERE id = ?').run(r.minutes, r.entry_id);
+      n++;
+    }
+    if (n) flushRollups(db);
+  });
+  return n;
+}
+
+// sessions only: a repair must not lean on presence another account saw but never counted
+function playedElsewhereSessions(db, entry, from, to) {
+  return !!db.prepare(`SELECT 1 FROM sessions s JOIN entries e ON e.id = s.entry_id
+    WHERE e.game_id = ? AND e.id != ? AND e.excluded = 0 AND s.kind = 'play' AND s.source NOT IN ('presence')
+      AND COALESCE(s.started_at, s.window_start) < ? AND COALESCE(s.ended_at, s.window_end) > ? LIMIT 1`).get(entry.game_id, entry.id, to, from);
 }
