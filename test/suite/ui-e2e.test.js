@@ -1130,6 +1130,22 @@ describe('Vestigo web UI (no password)', UI, () => {
           ['Year in review g1 line', '#view .wcard.g1 .muted', 4.5, true],
           ['Year in review g2 line', '#view .wcard.g2 .muted', 4.5, false],
           ['Year in review g3 line', '#view .wcard.g3 .muted', 4.5, false],
+          ['Year in review era label (strip)', '#view .wr-eras .erastrip text.era-l', 4.5, false],
+          ['Year in review era title', '#view .wr-eras .era-t a', 4.5, false],
+          ['Year in review era span', '#view .wr-eras .era-when', 4.5, false],
+        ],
+        // the eras card on Insights (its section loads when scrolled to): strip labels, years, legend, list
+        eras: [
+          ['era label (strip)', '#ins-what .erastrip text.era-l', 4.5, false],
+          ['era year label', '#ins-what .erastrip .axis text.yr', 4.5, false],
+          ['era month label', '#ins-what .erastrip .axis text:not(.yr)', 4.5, false],
+          ['eras legend', '#ins-what .era-legend span', 4.5, false],
+          ['era year head', '#ins-what .era-yh', 4.5, false],
+          ['era title', '#ins-what .era-t a', 4.5, false],
+          ['era span', '#ins-what .era-when', 4.5, false],
+          ['era share', '#ins-what .era-meta > span:first-child', 4.5, false],
+          ['era share figure', '#ins-what .era-meta b', 4.5, false],
+          ['era alongside', '#ins-what .era-with', 4.5, false],
         ],
       },
       phone: {
@@ -1139,6 +1155,11 @@ describe('Vestigo web UI (no password)', UI, () => {
           ['tab bar active icon', '.tabbar a.active svg', 3, true],
           ['tab bar label', '.tabbar a:not(.active)', 4.5, false],
         ],
+        eras: [
+          ['era label (strip, phone)', '#ins-what .erastrip text.era-l', 4.5, false],
+          ['era span (phone)', '#ins-what .era-when', 4.5, false],
+          ['era title (phone)', '#ins-what .era-t a', 4.5, false],
+        ],
         more: [
           ['More: featured card title', '#view .more-feature .ttl', 4.5, true],
           ['More: featured card line', '#view .more-feature .sub', 4.5, true],
@@ -1147,7 +1168,7 @@ describe('Vestigo web UI (no password)', UI, () => {
         ],
       },
     };
-    const PATHS = { more: '/more', home: '/', settings: '/settings', library: '/library?status=playing', game: `/game/${D.ids.zelda}`, wrapped: `/wrapped/${YEAR}`, insights: '/insights', sessions: '/sessions', empty: '/wrapped/2001' };
+    const PATHS = { more: '/more', home: '/', settings: '/settings', library: '/library?status=playing', game: `/game/${D.ids.zelda}`, wrapped: `/wrapped/${YEAR}`, insights: '/insights', eras: '/insights', sessions: '/sessions', empty: '/wrapped/2001' };
     const rows = [];
     const missing = [];
     await S.ok(`/games/${D.ids.zelda}`, { method: 'PATCH', body: { rating: 6 } }); // 3 stars lit, 2 not
@@ -1162,6 +1183,11 @@ describe('Vestigo web UI (no password)', UI, () => {
               await waitView(h.page);
               await h.settle();
               // the toast goes to the bottom right corner, clear of the controls measured on the page
+              if (key === 'eras') {
+                await h.page.evaluate(() => document.querySelector('#ins-what').scrollIntoView());
+                await h.page.locator('#ins-what .erastrip svg').waitFor();
+                await h.settle();
+              }
               if (checks.some((c) => c[4]?.toast)) await h.page.evaluate(async () => { Object.assign(document.querySelector('#toasts').style, { left: 'auto', right: '16px', transform: 'none' }); (await import('/app.js')).toast('Sync failed: example', { bad: true, ms: 60_000, action: { label: 'Fix', run() {} } }); });
               for (const [i, [accentName, accent]] of [...PRESETS, ODD_ACCENT].entries()) {
                 await paint(h.page, theme, accent);
@@ -1194,6 +1220,31 @@ describe('Vestigo web UI (no password)', UI, () => {
     assert.deepEqual(missing, [], 'every sampled element exists and draws a focus ring');
     assert.ok(rows.length > 400, `${rows.length} samples`);
     assert.deepEqual(rows.filter((r) => r.ratio < r.min).map((r) => `${r.theme} ${r.vp} ${r.page}: ${fmt(r)} < ${r.min}`), []);
+  });
+
+  test('eras palette: ten distinct colours, each carrying its label ink at 4.5:1 (hatched for estimated history too) and 3:1 against the card, in dark, black and light; variety stripes and breaks too', async () => {
+    const h = await visit('/');
+    try {
+      for (const theme of ['dark', 'black', 'light']) {
+        await paint(h.page, theme, '#7656ff');
+        const v = await h.page.evaluate(() => {
+          const cs = getComputedStyle(document.documentElement);
+          const g = (k) => cs.getPropertyValue(k).trim();
+          return ['--era-ink', '--era-hatch', '--era-mix', '--era-mix-ink', '--era-mix-stripe', '--muted', '--bg2', '--panel', ...Array.from({ length: 10 }, (_, i) => `--era-${i}`)].map(g);
+        });
+        assert.equal(new Set(v.slice(8)).size, 10, `${theme}: ten distinct era colours`);
+        const [ink, hatch, mix, mixInk, stripe, muted, bg2, panel, ...fills] = await srgb(h.page, v);
+        const over = (top, base) => base.slice(0, 3).map((c, j) => top[j] * top[3] + c * (1 - top[3]));
+        fills.forEach((f, i) => {
+          assert.ok(contrast(ink, f) >= 4.5, `${theme} --era-${i}: label ${contrast(ink, f).toFixed(2)}:1`);
+          assert.ok(contrast(ink, over(hatch, f)) >= 4.5, `${theme} --era-${i} hatched: label ${contrast(ink, over(hatch, f)).toFixed(2)}:1`);
+          assert.ok(contrast(f, panel) >= 3, `${theme} --era-${i} against the card: ${contrast(f, panel).toFixed(2)}:1`);
+        });
+        assert.ok(contrast(mixInk, mix) >= 4.5 && contrast(mixInk, over(stripe, mix)) >= 4.5, `${theme}: the variety label reads on its stripes`);
+        assert.ok(contrast(muted, bg2) >= 4.5, `${theme}: a break's label on the track`);
+      }
+      clean(h);
+    } finally { await h.close(); }
   });
 
   test('accent: a stored #7c5cff (the old default) shows as #7656ff, other custom accents are kept, and the on-accent ink applies before the first paint', async () => {

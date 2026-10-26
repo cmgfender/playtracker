@@ -313,7 +313,7 @@ export function srgb(page, colors) {
 // While sampling: no transitions or animations; a sampled element's ink (text, icons) or fill is hidden.
 const PROBE_CSS = `*,*::before,*::after{transition:none!important;animation:none!important;caret-color:transparent!important}
 [data-e2e-hide],[data-e2e-hide] *{color:transparent!important;-webkit-text-fill-color:transparent!important;text-shadow:none!important;text-decoration-color:transparent!important}
-svg[data-e2e-hide],[data-e2e-hide] svg,[data-e2e-fill]{visibility:hidden!important}`;
+svg[data-e2e-hide],[data-e2e-hide] svg,text[data-e2e-hide],[data-e2e-fill]{visibility:hidden!important}`;
 const probeStyle = (page) => page.evaluate((css) => {
   if (document.getElementById('e2e-probe')) return;
   const s = document.createElement('style');
@@ -325,7 +325,7 @@ const probeStyle = (page) => page.evaluate((css) => {
  * Contrast of what elements draw against the pixels actually painted behind them, so gradients,
  * accent tints, translucent bars and blur count as painted. `specs`: [{ sel, fill?, ring? }], the
  * first match of each selector.
- * - text: the element's own text box (an SVG: the icon's box) with its ink hidden; the worst pixel counts
+ * - text: the element's own text box (an SVG: the icon's box; SVG text: its fill) with its ink hidden; the worst pixel counts
  * - fill: the element itself (e.g. a switch track) against what is around it
  * - ring: the element is focused to read its focus ring (outline on the element, a switch's track or
  *   a tile's cover), then the band the ring covers is measured unfocused
@@ -337,7 +337,8 @@ export async function sampleContrasts(page, specs) {
   const info = await page.evaluate((list) => list.map((s) => {
     const el = document.querySelector(s.sel);
     if (!el) return null;
-    if (!s.ring) return { color: getComputedStyle(el)[s.fill ? 'backgroundColor' : 'color'] };
+    // SVG text (chart labels) is inked by its fill
+    if (!s.ring) return { color: getComputedStyle(el)[s.fill ? 'backgroundColor' : el instanceof SVGTextElement ? 'fill' : 'color'] };
     el.focus({ preventScroll: true });
     const ringEl = el.matches('.switch input') ? el.nextElementSibling : el.matches('.tile') ? el.querySelector('.cover') : el;
     const cs = getComputedStyle(ringEl);

@@ -673,13 +673,19 @@ export function registerRoutes(r, app) {
   r.get('/api/v1/stats/timeline', (c) => timeline(db, {
     range: c.query.range || '365d', group: groupParam(c.query.group), limit: clamp(c.query.limit, 10, 1, 50), estimates: estimatesParam(c.query, settings), ...insightOpts(c),
   }), {
-    summary: '"When did I play what": the top games of a range with minutes per week / month (swimlanes), and the most played game of each month (eras)',
+    summary: '"When did I play what": the top games of a range with minutes per week / month (swimlanes), the most played game of each month, and the range in eras',
     query: { range: `${RANGE_Q} (default 365d)`, group: 'week|month (default: week up to 200 days, else month; day|year also accepted)', limit: 'games (default 10, max 50)', platform: '', estimates: EST_Q },
     returns: '{ range: { from, to, label, group }, estimates, keys: string[], games_played, '
       + 'games: [{ game_id, title, cover_url, minutes, estimated_minutes, first_day, last_day (in the range), tracked: number[keys], estimated: number[keys] }] (most played first), '
       + 'others: { tracked: number[keys], estimated: number[keys] } (every other game together), '
       + 'months: [{ month (YYYY-MM), game_id, title, cover_url, minutes, estimated_minutes, month_minutes, share (0-1 of the month) }] (months with play), '
-      + 'eras: [{ game_id, title, cover_url, from, to (YYYY-MM), months, minutes, estimated_minutes }] (consecutive months led by the same game) }',
+      + 'eras: [{ game_id, title, cover_url, from, to (YYYY-MM), months, minutes, estimated_minutes, kind: game | variety | break, share (0-1: the game\'s share of all play in the era; null unless game), '
+      + 'total_minutes (all play in the era), alongside: [{ game_id, title, cover_url, minutes, estimated_minutes, share }] (game eras: the other games with at least 5% of the era, top 3), '
+      + 'games: [same] (variety eras: the top 3 games), ordinal (1 for a game\'s first era, 2 for its return, ...; null unless game), color_index (0, 1, ... per distinct game in order of first appearance; null unless game) }] '
+      + '(in order, covering every month from the first to the last with play: a game era is a run of months a game leads clearly - at least 30% of the month, or 20% and 1.5x the runner-up, '
+      + 'or 20% of two or more months running - and a one-month interruption does not split it when the era\'s game still had 10% of that month and the interrupter had under 50% or the era\'s game 25%; '
+      + 'variety: months without a clear lead (game_id / title null, minutes = all play); break: months without play (minutes 0)), '
+      + 'era_range: { from, to (YYYY-MM), months } (every calendar month of the range, for a time axis) }',
   });
   r.get('/api/v1/games/:id/stats', (c) => gameCurve(db, toInt(c.params.id), { group: groupParam(c.query.group) || 'month', estimates: estimatesParam(c.query, settings), weekStartsOn: settings.get('week_starts_on') }), {
     summary: 'A game over time: cumulative minutes (tracked and estimated apart), sessions and achievement unlocks per period, first / last played',

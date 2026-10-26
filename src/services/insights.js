@@ -273,15 +273,15 @@ export function timeline(db, { range = '365d', group, limit = 10, platform = nul
     const months = leaders(gm);
     const info = gameInfo(db, [...new Set([...ids, ...months.map((x) => x.game_id)])]);
     const monthRows = months.map((x) => ({ month: x.k, game_id: x.game_id, ...info.get(x.game_id), minutes: r(x.m), estimated_minutes: r(x.e), month_minutes: r(x.total), share: share(x.m, x.total) }));
-    // eras: consecutive months led by the same game
-    const eras = [];
-    const nextMonth = (k) => { const [y, m] = k.split('-').map(Number); return m === 12 ? `${y + 1}-01` : `${y}-${String(m + 1).padStart(2, '0')}`; };
-    for (const x of monthRows) {
-      const last = eras.at(-1);
-      if (last && last.game_id === x.game_id && nextMonth(last.to) === x.month) { last.to = x.month; last.months++; last.minutes += x.minutes; last.estimated_minutes += x.estimated_minutes; } else {
-        eras.push({ game_id: x.game_id, title: x.title, cover_url: x.cover_url, from: x.month, to: x.month, months: 1, minutes: x.minutes, estimated_minutes: x.estimated_minutes });
-      }
-    }
+    // eras: every calendar month of the range with what was played in it, segmented
+    const span = monthSpan(groupKey(p.from, 'month'), groupKey(p.to, 'month'));
+    const per = new Map(span.map((k) => [k, { month: k, games: [] }]));
+    for (const x of gm) per.get(x.k)?.games.push({ game_id: x.game_id, m: x.m, e: x.e });
+    const segs = segmentEras([...per.values()]);
+    const more = new Set(segs.flatMap((e) => [e.game_id, ...e.alongside.map((g) => g.game_id), ...e.games.map((g) => g.game_id)]).filter((id) => id != null && !info.has(id)));
+    for (const [id, g] of gameInfo(db, [...more])) info.set(id, g);
+    const named = (g) => ({ game_id: g.game_id, ...info.get(g.game_id), ...g });
+    const eras = segs.map((e) => ({ game_id: e.game_id, title: null, cover_url: null, ...info.get(e.game_id), ...e, alongside: e.alongside.map(named), games: e.games.map(named) }));
     return {
       range: { from: p.from, to: p.to, label: p.label, group: g },
       estimates,
@@ -294,8 +294,124 @@ export function timeline(db, { range = '365d', group, limit = 10, platform = nul
       others: { tracked: others.tracked.map((m) => Math.max(0, r(m))), estimated: others.estimated.map((m) => Math.max(0, r(m))) },
       months: monthRows,
       eras,
+      era_range: { from: span[0], to: span.at(-1), months: span.length },
     };
   });
+}
+
+/** Every month key from `from` to `to` (YYYY-MM), both included. */
+function monthSpan(from, to) {
+  const out = [];
+  let [y, m] = from.split('-').map(Number);
+  for (let k = from; k <= to; k = `${y}-${String(m).padStart(2, '0')}`) {
+    out.push(k);
+    if (++m > 12) { m = 1; y++; }
+  }
+  return out;
+}
+
+/**
+ * Era segmentation, by month. Shares are of all play in the month (or era); thresholds:
+ * - a month is a game's when that game has a clear lead: at least `lead` of the month, or at least
+ *   `edge` and `ratio` times the runner-up, or when it tops two or more months running with at
+ *   least `edge` of their play together. A month with play but no clear lead is variety; a month
+ *   without play is a break.
+ * - a one-month interruption between two runs of the same game is absorbed into one era when that
+ *   game still had at least `present` of the month and either the month's top game had less than
+ *   `dominant` or the era's game kept at least `holds`. A clear takeover still splits.
+ * - consecutive variety months are one variety era, consecutive empty months one break; breaks
+ *   before the first and after the last month with play are not eras.
+ * - an era lists `alongside` it the other games with at least `alongside` of its play (top 3).
+ */
+export const ERA_RULES = { lead: 0.3, edge: 0.2, ratio: 1.5, present: 0.1, dominant: 0.5, holds: 0.25, alongside: 0.05 };
+
+/**
+ * Eras from per-month play. `months`: every calendar month of the span in order, each
+ * { month: 'YYYY-MM', games: [{ game_id, m (minutes), e (estimated minutes) }] }. Returns eras in
+ * order, games by id only: { game_id, from, to, months, minutes, estimated_minutes, kind, share,
+ * total_minutes, alongside, games, ordinal, color_index }.
+ */
+export function segmentEras(months, R = ERA_RULES) {
+  const byMinutes = (a, b) => b.m - a.m || a.game_id - b.game_id;
+  const cls = months.map((x) => {
+    const games = x.games.filter((g) => g.m > 0).sort(byMinutes);
+    const total = games.reduce((a, g) => a + g.m, 0);
+    if (total < 0.5) return { month: x.month, games: [], total: 0, kind: 'break', key: 'break' };
+    const s1 = games[0].m / total;
+    const s2 = (games[1]?.m || 0) / total;
+    const clear = s1 >= R.lead || (s1 >= R.edge && s1 >= R.ratio * s2);
+    return { month: x.month, games, total, kind: clear ? 'game' : 'variety', game_id: clear ? games[0].game_id : null, key: clear ? `g${games[0].game_id}` : 'variety' };
+  });
+  // a narrow lead held two months or more running is a lead too
+  for (let i = 0; i < cls.length;) {
+    const top = cls[i].games[0]?.game_id;
+    let j = i + 1;
+    while (top != null && j < cls.length && cls[j].games[0]?.game_id === top) j++;
+    const run = cls.slice(i, j);
+    if (run.length >= 2 && run.some((m) => m.kind === 'variety')) {
+      const mine = run.reduce((s, m) => s + m.games[0].m, 0);
+      if (mine >= R.edge * run.reduce((s, m) => s + m.total, 0)) for (const m of run) Object.assign(m, { kind: 'game', game_id: top, key: `g${top}` });
+    }
+    i = j;
+  }
+  let a = 0;
+  let b = cls.length;
+  while (a < b && cls[a].kind === 'break') a++;
+  while (b > a && cls[b - 1].kind === 'break') b--;
+  const runs = [];
+  for (const m of cls.slice(a, b)) {
+    const last = runs.at(-1);
+    if (last?.key === m.key) last.list.push(m); else runs.push({ key: m.key, kind: m.kind, game_id: m.game_id ?? null, list: [m] });
+  }
+  // a narrow one-month interruption (by another game, or a month of variety) keeps the era whole
+  const shareIn = (m, id) => (m.games.find((g) => g.game_id === id)?.m || 0) / m.total;
+  for (let i = 1; i < runs.length - 1; i++) {
+    const [prev, x, next] = [runs[i - 1], runs[i], runs[i + 1]];
+    if (x.list.length !== 1 || x.kind === 'break' || prev.kind !== 'game' || prev.key !== next.key) continue;
+    const m = x.list[0];
+    const own = shareIn(m, prev.game_id);
+    if (own >= R.present && (m.games[0].m / m.total < R.dominant || own >= R.holds)) {
+      prev.list.push(m, ...next.list);
+      runs.splice(i, 2);
+      i--;
+    }
+  }
+  const eras = [];
+  const count = new Map(); // game -> its eras so far
+  const color = new Map(); // game -> colour index, in order of first appearance
+  for (const run of runs) {
+    const games = new Map();
+    let total = 0;
+    let est = 0;
+    for (const m of run.list) {
+      for (const g of m.games) {
+        let t = games.get(g.game_id);
+        if (!t) games.set(g.game_id, t = { game_id: g.game_id, m: 0, e: 0 });
+        t.m += g.m; t.e += g.e; total += g.m; est += g.e;
+      }
+    }
+    const ranked = [...games.values()].sort(byMinutes);
+    const item = (g) => ({ game_id: g.game_id, minutes: r(g.m), estimated_minutes: r(g.e), share: share(g.m, total) });
+    const span = { from: run.list[0].month, to: run.list.at(-1).month, months: run.list.length };
+    if (run.kind === 'game') {
+      const id = run.game_id;
+      const own = games.get(id);
+      count.set(id, (count.get(id) || 0) + 1);
+      if (!color.has(id)) color.set(id, color.size);
+      eras.push({
+        game_id: id, ...span, minutes: r(own.m), estimated_minutes: r(own.e),
+        kind: 'game', share: share(own.m, total), total_minutes: r(total),
+        alongside: ranked.filter((g) => g.game_id !== id && g.m >= total * R.alongside).slice(0, 3).map(item), games: [],
+        ordinal: count.get(id), color_index: color.get(id),
+      });
+    } else {
+      eras.push({
+        game_id: null, ...span, minutes: r(total), estimated_minutes: r(est),
+        kind: run.kind, share: null, total_minutes: r(total), alongside: [], games: ranked.slice(0, 3).map(item), ordinal: null, color_index: null,
+      });
+    }
+  }
+  return eras;
 }
 
 // =====================================================================================

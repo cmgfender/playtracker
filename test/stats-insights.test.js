@@ -10,6 +10,7 @@ import { test, describe, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { clock, local, startApp, guardNetwork, restoreNetwork, MIN, DAY } from './suite/helpers/sessions-stats-harness.js';
 import { flushRollups } from '../src/services/rollup.js';
+import { segmentEras, ERA_RULES } from '../src/services/insights.js';
 
 // Wednesday 2026-03-18 15:00 local
 const NOW = local(2026, 3, 18, 15);
@@ -193,10 +194,23 @@ describe('insights on a hand-built library', () => {
     // tracked only: Gamma leads January and February - one era
     const ex = await h.get('/stats/timeline?range=all&estimates=exclude');
     assert.equal(ex.range.group, 'month');
-    assert.deepEqual(ex.eras.map((x) => [x.title, x.from, x.to, x.months, x.minutes]), [['Gamma', '2025-03', '2025-03', 1, 45], ['Gamma', '2026-01', '2026-02', 2, 270], ['Beta', '2026-03', '2026-03', 1, 320]]);
+    assert.deepEqual(ex.eras.map((x) => [x.kind, x.title, x.from, x.to, x.months, x.minutes, x.ordinal, x.color_index]), [
+      ['game', 'Gamma', '2025-03', '2025-03', 1, 45, 1, 0], ['break', null, '2025-04', '2025-12', 9, 0, null, null],
+      ['game', 'Gamma', '2026-01', '2026-02', 2, 270, 2, 0], ['game', 'Beta', '2026-03', '2026-03', 1, 320, 1, 1]]);
+    assert.deepEqual(ex.era_range, { from: '2025-03', to: '2026-03', months: 13 });
+    // every era: the old fields, then what it is, its share of all play in it and what came alongside
+    assert.deepEqual(ex.eras[3], {
+      game_id: ids.g.beta, title: 'Beta', cover_url: null, from: '2026-03', to: '2026-03', months: 1, minutes: 320, estimated_minutes: 0,
+      kind: 'game', share: 0.571, total_minutes: 560, alongside: [{ game_id: ids.g.alpha, title: 'Alpha', cover_url: null, minutes: 240, estimated_minutes: 0, share: 0.429 }], games: [], ordinal: 1, color_index: 1,
+    });
+    assert.deepEqual(ex.eras[1], { game_id: null, title: null, cover_url: null, from: '2025-04', to: '2025-12', months: 9, minutes: 0, estimated_minutes: 0, kind: 'break', share: null, total_minutes: 0, alongside: [], games: [], ordinal: null, color_index: null });
     const inc = await h.get('/stats/timeline?range=all');
-    assert.deepEqual(inc.eras.map((x) => [x.title, x.from, x.to]), [['Old', '2024-06', '2024-06'], ['Gamma', '2025-03', '2025-03'], ['Alpha', '2026-01', '2026-01'], ['Gamma', '2026-02', '2026-02'], ['Beta', '2026-03', '2026-03']]);
+    assert.deepEqual(inc.eras.map((x) => [x.kind, x.title, x.from, x.to]), [['game', 'Old', '2024-06', '2024-06'], ['break', null, '2024-07', '2025-02'], ['game', 'Gamma', '2025-03', '2025-03'], ['break', null, '2025-04', '2025-12'],
+      ['game', 'Alpha', '2026-01', '2026-01'], ['game', 'Gamma', '2026-02', '2026-02'], ['game', 'Beta', '2026-03', '2026-03']]);
     assert.equal(inc.eras[0].estimated_minutes, 240, 'an era of history is marked as such');
+    assert.deepEqual(inc.eras.map((x) => x.color_index), [0, null, 1, null, 2, 1, 3], 'one colour per game, in order of first appearance');
+    const yr = await h.get('/stats/timeline?range=year:2026');
+    assert.deepEqual(yr.era_range, { from: '2026-01', to: '2026-03', months: 3 }, 'the year so far');
     const weekly = await h.get('/stats/timeline?range=30d');
     assert.equal(weekly.range.group, 'week', 'short ranges default to weeks');
     assert.equal(weekly.keys[0], '2026-02-16');
@@ -360,6 +374,116 @@ describe('insights on a hand-built library', () => {
       assert.ok(op.responses[200].description.length > 80, `${p} returns`);
     }
     assert.match(doc.paths['/api/v1/stats/punchcard'].get.responses[200].description, /estimated history .* no reliable time of day/);
+    const tl = doc.paths['/api/v1/stats/timeline'].get.responses[200].description;
+    for (const f of ['kind: game | variety | break', 'share', 'total_minutes', 'alongside', 'ordinal', 'color_index', 'era_range']) assert.ok(tl.includes(f), `timeline documents ${f}`);
+  });
+});
+
+// =====================================================================================
+// era segmentation, on hand-built months (shares of all play in a month)
+// =====================================================================================
+describe('eras: segmentation of months into game, variety and break eras', () => {
+  const A = 1; const B = 2; const C = 3; const D = 4; const E = 5;
+  let n = 0;
+  /** A month of play: { game: minutes }, optionally { game: estimated minutes } of those. */
+  const month = (games = {}, est = {}) => {
+    const k = n++;
+    return { month: `${2025 + Math.floor(k / 12)}-${String((k % 12) + 1).padStart(2, '0')}`, games: Object.entries(games).map(([id, m]) => ({ game_id: Number(id), m, e: est[id] || 0 })) };
+  };
+  const seg = (...months) => { n = 0; return segmentEras(months.map((f) => f())); };
+  const brief = (eras) => eras.map((e) => [e.kind, e.game_id, e.from, e.months]);
+
+  test('a narrow one-month win by another game does not split an era; a clear takeover does', () => {
+    // B tops February with 55%, but A kept 45%: still A's era
+    let eras = seg(() => month({ [A]: 600, [B]: 100 }), () => month({ [A]: 450, [B]: 550 }), () => month({ [A]: 500 }));
+    assert.deepEqual(brief(eras), [['game', A, '2025-01', 3]]);
+    assert.equal(eras[0].minutes, 1550);
+    assert.equal(eras[0].total_minutes, 2200);
+    assert.equal(eras[0].share, 0.705);
+    // B tops with 45% (not dominant) and A still played 15%: absorbed too
+    eras = seg(() => month({ [A]: 600 }), () => month({ [B]: 450, [A]: 150, [C]: 200, [D]: 200 }), () => month({ [A]: 600 }));
+    assert.deepEqual(brief(eras), [['game', A, '2025-01', 3]]);
+    // a month of variety in the middle, A still at 25%: absorbed
+    eras = seg(() => month({ [A]: 600 }), () => month({ [A]: 250, [B]: 250, [C]: 250, [D]: 250 }), () => month({ [A]: 600 }));
+    assert.deepEqual(brief(eras), [['game', A, '2025-01', 3]]);
+    // B takes 80% and A is down to 20%: a takeover, and A's return is its second era
+    eras = seg(() => month({ [A]: 600 }), () => month({ [A]: 200, [B]: 800 }), () => month({ [A]: 600 }));
+    assert.deepEqual(brief(eras), [['game', A, '2025-01', 1], ['game', B, '2025-02', 1], ['game', A, '2025-03', 1]]);
+    assert.deepEqual(eras.map((e) => e.ordinal), [1, 1, 2]);
+    // B tops with 45%, but A barely played (5%): A was not there, the era splits
+    eras = seg(() => month({ [A]: 600 }), () => month({ [B]: 450, [A]: 50, [C]: 250, [D]: 250 }), () => month({ [A]: 600 }));
+    assert.equal(eras.length, 3);
+    // two months of B: not a one-month interruption
+    eras = seg(() => month({ [A]: 600 }), () => month({ [A]: 400, [B]: 600 }), () => month({ [A]: 400, [B]: 600 }), () => month({ [A]: 600 }));
+    assert.deepEqual(brief(eras), [['game', A, '2025-01', 1], ['game', B, '2025-02', 2], ['game', A, '2025-04', 1]]);
+    // interruptions that keep coming back (A B A B A, all narrow) are one era
+    eras = seg(() => month({ [A]: 500, [B]: 400 }), () => month({ [A]: 400, [B]: 500 }), () => month({ [A]: 500, [B]: 400 }), () => month({ [A]: 400, [B]: 500 }), () => month({ [A]: 500, [B]: 400 }));
+    assert.deepEqual(brief(eras), [['game', A, '2025-01', 5]]);
+    // at the edge of the range there is nothing to come back to: the last month stays B's
+    eras = seg(() => month({ [A]: 600 }), () => month({ [A]: 450, [B]: 550 }));
+    assert.deepEqual(brief(eras), [['game', A, '2025-01', 1], ['game', B, '2025-02', 1]]);
+  });
+
+  test('months without a clear lead are variety, listing their top three games; consecutive ones are one era', () => {
+    const eras = seg(
+      () => month({ [A]: 900, [B]: 100 }),
+      () => month({ [B]: 260, [C]: 250, [D]: 250, [E]: 240 }), // top 26%
+      () => month({ [C]: 300, [D]: 280, [E]: 260, [A]: 160 }), // top 30%: a lead, however close the runner-up
+      () => month({ [A]: 210, [B]: 200, [C]: 200, [D]: 200, [E]: 190 }), // 21%, ties: no lead
+      () => month({ [D]: 280, [B]: 260, [C]: 240, [E]: 220 }), // 28%
+    );
+    assert.deepEqual(brief(eras), [['game', A, '2025-01', 1], ['variety', null, '2025-02', 1], ['game', C, '2025-03', 1], ['variety', null, '2025-04', 2]]);
+    const v = eras[3];
+    assert.equal(v.minutes, 2000, 'a variety era counts all its play');
+    assert.equal(v.total_minutes, 2000);
+    assert.equal(v.share, null);
+    assert.equal(v.ordinal, null);
+    assert.equal(v.color_index, null);
+    assert.deepEqual(v.games.map((g) => [g.game_id, g.minutes, g.share]), [[D, 480, 0.24], [B, 460, 0.23], [C, 440, 0.22]]);
+    assert.deepEqual(v.alongside, []);
+  });
+
+  test('a clear lead: 30% of the month, or 20% and 1.5x the runner-up, or a narrow lead held two months running', () => {
+    // 25% against 10%s: clear
+    let eras = seg(() => month({ [A]: 250, [B]: 100, [C]: 100, [D]: 100, [E]: 100, 6: 100, 7: 100, 8: 150 }));
+    assert.deepEqual(brief(eras), [['game', A, '2025-01', 1]]);
+    // 22% against 20%: one month of it is variety...
+    eras = seg(() => month({ [A]: 220, [B]: 200, [C]: 200, [D]: 190, [E]: 190 }));
+    assert.equal(eras[0].kind, 'variety');
+    // ...two months running is A's era
+    eras = seg(() => month({ [A]: 220, [B]: 200, [C]: 200, [D]: 190, [E]: 190 }), () => month({ [A]: 230, [C]: 200, [B]: 200, [D]: 190, [E]: 180 }));
+    assert.deepEqual(brief(eras), [['game', A, '2025-01', 2]]);
+    // but 18% two months running is still variety
+    eras = seg(() => month({ [A]: 180, [B]: 170, [C]: 170, [D]: 170, [E]: 160, 6: 150 }), () => month({ [A]: 180, [B]: 170, [C]: 170, [D]: 170, [E]: 160, 6: 150 }));
+    assert.deepEqual(brief(eras), [['variety', null, '2025-01', 2]]);
+  });
+
+  test('months without play are breaks (merged), none before the first or after the last month played', () => {
+    const eras = seg(() => month(), () => month({ [A]: 300 }), () => month(), () => month(), () => month({ [A]: 200 }), () => month({ [B]: 100 }), () => month(), () => month({ [B]: 0.2 }));
+    assert.deepEqual(brief(eras), [['game', A, '2025-02', 1], ['break', null, '2025-03', 2], ['game', A, '2025-05', 1], ['game', B, '2025-06', 1]]);
+    assert.deepEqual(eras[1], { game_id: null, from: '2025-03', to: '2025-04', months: 2, minutes: 0, estimated_minutes: 0, kind: 'break', share: null, total_minutes: 0, alongside: [], games: [], ordinal: null, color_index: null });
+    assert.deepEqual(eras.map((e) => e.ordinal), [1, null, 2, 1], 'a break does not join two eras of a game: the return is its second');
+    assert.deepEqual(seg(), []);
+    assert.deepEqual(seg(() => month(), () => month()), [], 'a range without play has no eras');
+    assert.deepEqual(brief(seg(() => month({ [A]: 5 }))), [['game', A, '2025-01', 1]], 'a single month');
+  });
+
+  test('alongside: the other games with at least 5% of the era, top three; estimated minutes kept apart', () => {
+    const [e] = seg(() => month({ [A]: 600, [B]: 100, [C]: 60, [D]: 50, [E]: 30 }, { [A]: 400, [B]: 100 }), () => month({ [A]: 400, [B]: 20, [C]: 40, [D]: 10, [E]: 10 }));
+    // total 1320: B 120 (9.1%), C 100 (7.6%), D 60 (4.5% - left out), E 40
+    assert.deepEqual(e.alongside, [{ game_id: B, minutes: 120, estimated_minutes: 100, share: 0.091 }, { game_id: C, minutes: 100, estimated_minutes: 0, share: 0.076 }]);
+    assert.equal(e.minutes, 1000);
+    assert.equal(e.estimated_minutes, 400);
+    assert.equal(e.share, 0.758);
+    assert.ok(ERA_RULES.alongside === 0.05);
+  });
+
+  test('color_index: one per game in order of first appearance, the same for its returns', () => {
+    const eras = seg(() => month({ [C]: 500 }), () => month({ [A]: 500 }), () => month(), () => month({ [B]: 500, [A]: 50 }), () => month({ [A]: 500 }), () => month({ [D]: 100, [E]: 100, [B]: 100, [C]: 100 }), () => month({ [C]: 500 }));
+    assert.deepEqual(eras.map((e) => [e.kind, e.game_id, e.color_index, e.ordinal]), [
+      ['game', C, 0, 1], ['game', A, 1, 1], ['break', null, null, null], ['game', B, 2, 1], ['game', A, 1, 2], ['variety', null, null, null], ['game', C, 0, 2]]);
+    // the same months give the same colours
+    assert.deepEqual(seg(() => month({ [C]: 500 }), () => month({ [A]: 500 })).map((e) => e.color_index), [0, 1]);
   });
 });
 

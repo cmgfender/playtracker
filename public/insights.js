@@ -1,5 +1,5 @@
-import { $, $$, esc, fmtMin, fmtHours, fmtDate, plat, platDot, cover, icon, api, state, plural, STATUSES, coverHue } from './app.js';
-import { mountCharts, punchcard, histogram, areaChart, swimlanes, scatterChart, lineChart, barChart, dayName } from './charts.js';
+import { $, $$, esc, fmtMin, fmtHours, fmtDate, plat, platDot, cover, icon, api, state, plural, STATUSES } from './app.js';
+import { mountCharts, punchcard, histogram, areaChart, swimlanes, scatterChart, lineChart, barChart, dayName, chart, registerChart, textWidth } from './charts.js';
 import { seriesLabel, seriesName, hourLabel, emptyState, kpi, rarityText, achIcon } from './pages.js';
 
 /*
@@ -15,7 +15,7 @@ const RANGES = [['7d', '7 days', '7d'], ['30d', '30 days', '30d'], ['90d', '90 d
 const SECTIONS = [
   // [id, title, line, the height it usually takes (its placeholder's, so sections further down stay unloaded)]
   ['when', 'When you play', 'Weekday, hour and session length · tracked play', 460],
-  ['what', 'What you played', 'Games over time, eras and platforms', 1100],
+  ['what', 'What you played', 'Games over time, eras and platforms', 1500],
   ['records', 'Records & highlights', '', 720],
   ['ach', 'Achievements', 'Unlocks, rarities and completion', 900],
   ['yoy', 'Year over year', 'Month by month, and the year so far', 700],
@@ -126,8 +126,6 @@ export async function insights(view, stale) {
       <div class="legend"><span><i class="dot" style="background:var(--accent-mark)"></i>Tracked</span>${tl.games.some((x) => x.estimated_minutes) ? '<span><i class="dot hatch-dot"></i>Estimated history</span>' : ''}<span>${plural(tl.games_played, 'game')} played · top ${tl.games.length} shown${others > 0 ? ', the rest on one lane with its own scale' : ''}</span></div>
       <div class="ins-top">${tl.games.map((x, i) => `<a class="row small" href="/game/${x.game_id}" data-link><span class="num">${i + 1}</span><span class="grow ellipsis">${esc(x.title)}</span><b>${fmtMin(x.minutes, { short: x.minutes >= 600 })}</b></a>`).join('')}</div>`
       : none('Nothing played in this range.');
-    // eras: the most played game of each month, consecutive months of one game together
-    const eras = tl.eras.length ? eraStrip(tl) : none('No months with play in this range.');
     const series = ps.series.map((s) => ({ name: s.name == null ? (f.by === 'device' ? 'Unknown device' : 'Unknown') : f.by === 'platform' ? plat(s.name).label : s.name, color: s.name == null ? 'var(--import)' : plat(s.name).color, tracked: s.tracked, estimated: s.estimated, minutes: s.minutes, est: s.estimated_minutes }));
     const plabels = ps.keys.map((k) => ({ label: seriesLabel(k, ps.range.group), name: seriesName(k, ps.range.group) }));
     const any = series.some((s) => s.minutes > 0);
@@ -137,10 +135,10 @@ export async function insights(view, stale) {
         <div class="legend">${series.filter((s) => s.minutes).map((s) => `<span><i class="dot" style="background:${s.color}"></i>${esc(s.name)} · ${fmtMin(s.minutes, { short: true })}${s.est ? ` (${fmtMin(s.est, { short: true })} est.)` : ''}</span>`).join('')}${series.some((s) => s.est) ? '<span><i class="dot hatch-dot"></i>Estimated history, hatched</span>' : ''}</div>
         ${f.by === 'device' && series.length === 1 && series[0].name === 'Unknown device' ? note('No platform here reports devices for these sessions (Steam Deck and PlayStation consoles do, through live presence).') : ''}`
       : none('Nothing played in this range.')}</div>`;
+    // eras: the range on a time axis, in runs of months one game led
     return `<div class="card"><div class="card-h"><h3>Top games over time</h3><span class="tiny muted">${esc(tl.range.label)} · by ${g}</span></div>${lanes}</div>
-      <div class="grid grid-2 ins-grid" style="margin-top:16px">
-        <div class="card"><div class="card-h"><h3>Eras</h3><span class="tiny muted">most played game of each month</span></div>${eras}</div>
-        ${platCard}</div>`;
+      <div class="card ins-eras" style="margin-top:16px"><div class="card-h"><h3>Eras</h3><span class="tiny muted">${esc(tl.range.label)} · who led each month</span></div>${eraStrip(tl)}</div>
+      <div style="margin-top:16px">${platCard}</div>`;
   }
 
   async function records() {
@@ -317,22 +315,155 @@ export async function insights(view, stale) {
   await load('when');
 }
 
-/**
- * The eras of GET /stats/timeline: a strip of months in each era's colour (decorative) and the
- * list it stands for (links), mostly-estimated eras marked. Also on Year in review.
+// ---------------------------------------------------------------- eras
+/*
+ * The eras of GET /stats/timeline (also on Year in review): a strip on a true time axis (every month
+ * of the range the same width, breaks left empty, years marked under it; arrow keys read each era)
+ * and the list it stands for, by year and in the same order, so each row is the block above it.
+ * Colours come from a categorical palette by the era's color_index (--era-0 … --era-9, set per
+ * theme with an ink that reads on all of them); mostly estimated eras are hatched, variety striped.
  */
-export function eraStrip(tl) {
-  const color = (e) => `hsl(${coverHue(e.title)} 46% var(--era-l))`;
-  const est = (e) => e.estimated_minutes * 2 > e.minutes;
-  return `<div class="eras" aria-hidden="true">${tl.eras.map((e) => `<i style="flex:${e.months};background-color:${color(e)}" class="${est(e) ? 'est' : ''}" title="${esc(`${e.title}: ${eraSpan(e)}`)}"></i>`).join('')}</div>
-    <ol class="eras-list">${tl.eras.map((e) => `<li><span class="dot" style="background:${color(e)}"></span><span class="when">${eraSpan(e)}</span><a href="/game/${e.game_id}" data-link class="grow ellipsis">${esc(e.title)}</a><span class="amt">${fmtMin(e.minutes, { short: e.minutes >= 600 })}${est(e) ? ' <span class="badge" title="Mostly estimated history">est.</span>' : ''}</span></li>`).join('')}</ol>
-    ${note(`${plural(tl.eras.length, 'era')} across ${plural(tl.months.length, 'month')} with play: each is a run of months led by the same game.`)}`;
-}
+const ERA_COLORS = 10;
+const eraColor = (e) => (e.kind === 'game' ? `var(--era-${(e.color_index ?? 0) % ERA_COLORS})` : 'var(--era-mix)');
+const mostlyEst = (e) => e.kind !== 'break' && e.estimated_minutes * 2 > e.minutes;
+const monthNo = (k) => { const [y, m] = k.split('-').map(Number); return y * 12 + m - 1; };
+const nth = (n) => `${n}${{ one: 'st', two: 'nd', few: 'rd' }[new Intl.PluralRules('en', { type: 'ordinal' }).select(n)] || 'th'}`;
+const names = (list) => { const t = list.map((g) => g.title); return t.length < 3 ? t.join(' and ') : `${t.slice(0, -1).join(', ')} and ${t.at(-1)}`; };
+const hrs = (m) => fmtMin(m, { short: m >= 600 });
+const r1 = (v) => Math.round(v * 10) / 10;
 
 function eraSpan(e) {
   if (e.from === e.to) return monthName(e.from);
   const sameYear = e.from.slice(0, 4) === e.to.slice(0, 4);
   return `${monthName(e.from, sameYear ? { month: 'short' } : { month: 'short', year: 'numeric' })} – ${monthName(e.to)}`;
+}
+
+function eraTip(e) {
+  const span = `${eraSpan(e)} (${plural(e.months, 'month')})`;
+  if (e.kind === 'break') return `Break · ${eraSpan(e)} · ${plural(e.months, 'month')}, no play`;
+  if (e.kind === 'variety') return `A mix of games · ${span} · ${e.games.map((g) => g.title).join(', ')} · ${fmtMin(e.minutes)}${mostlyEst(e) ? ' · mostly estimated' : ''}`;
+  return `${e.title} · ${span} · ${pct(e.share)} of play · ${fmtMin(e.minutes)}${e.ordinal > 1 ? ` · ${nth(e.ordinal)} era` : ''}${mostlyEst(e) ? ' · mostly estimated' : ''}`;
+}
+
+/** "3 eras in 12 months: Baldur's Gate 3 led Jul – Oct 2026, …" */
+function eraSummary(eras, months) {
+  const shown = eras.filter((e) => e.kind !== 'break');
+  const parts = shown.slice(0, 6).map((e) => (e.kind === 'game' ? `${e.title} led ${eraSpan(e)}` : `a mix of games ${eraSpan(e)}`));
+  if (shown.length > 6) parts.push(`${shown.length - 6} more`);
+  const off = eras.filter((e) => e.kind === 'break').reduce((a, e) => a + e.months, 0);
+  if (off) parts.push(`${plural(off, 'month')} without play`);
+  return `${plural(shown.length, 'era')} in ${plural(months, 'month')}: ${parts.join(', ') || 'no play'}`;
+}
+
+/** The text, cut with an ellipsis to fit `room` px of 12px semibold (nothing when under 3 letters fit). */
+function fitText(s, room) {
+  const per = 7.1;
+  if (s.length * per <= room) return s;
+  const n = Math.floor(room / per) - 1;
+  return n >= 3 ? `${s.slice(0, n).trimEnd()}…` : '';
+}
+
+registerChart('erastrip', ({ eras, from, to, through }, opts, box) => {
+  const start = monthNo(from);
+  const last = Math.max(monthNo(to), through ? monthNo(through) : 0);
+  const n = last - start + 1;
+  const W = box.w;
+  const mw = W / n;
+  const H = W < 520 ? 34 : 40;
+  const gap = mw >= 8 ? 2 : 1;
+  const x0 = (k) => (monthNo(k) - start) * mw;
+  let marks = `<rect class="era-track" x="0" y="0" width="${r1(W)}" height="${H}" rx="8"/>`;
+  // the rest of the year (Year in review): months still to come
+  if (monthNo(to) < last) marks += `<rect class="era-future" x="${r1(x0(to) + mw + gap / 2)}" y="0.5" width="${r1((last - monthNo(to)) * mw - gap)}" height="${H - 1}" rx="7"/>`;
+  for (const e of eras) {
+    const x = x0(e.from) + gap / 2;
+    const w = Math.max(1, e.months * mw - gap);
+    const rect = `x="${r1(x)}" y="0" width="${r1(w)}" height="${H}" rx="${r1(Math.min(7, w / 2))}"`;
+    const tip = esc(eraTip(e));
+    if (e.kind === 'break') {
+      marks += `<rect class="hit era-break" ${rect} data-tip="${tip}"/>`;
+      const t = fitText('Break', w - 14);
+      if (t) marks += `<text class="era-l brk" x="${r1(x + 7)}" y="${H / 2 + 4}">${t}</text>`;
+      continue;
+    }
+    marks += `<rect class="hit era-b" ${rect} fill="${eraColor(e)}" data-kind="${e.kind}" data-tip="${tip}"/>`;
+    if (e.kind === 'variety') marks += `<rect ${rect} fill="url(#${box.id}-mix)" pointer-events="none"/>`;
+    else if (mostlyEst(e)) marks += `<rect class="era-est" ${rect} fill="url(#${box.id}-est)" pointer-events="none"/>`;
+    const t = fitText(e.kind === 'game' ? e.title : 'Mix', w - 14);
+    if (t) marks += `<text class="era-l${e.kind === 'variety' ? ' mix' : ''}" x="${r1(x + 7)}" y="${H / 2 + 4}">${esc(t)}</text>`;
+  }
+  // under the strip: the years (a tick at each January), and quarters where there is room
+  const month = (m) => new Date(2000, m, 1).toLocaleDateString(undefined, { month: 'short' });
+  const items = [];
+  let ticks = '';
+  for (let i = 0; i < n; i++) {
+    const m = (start + i) % 12;
+    const y = Math.floor((start + i) / 12);
+    if (i === 0 || m === 0) items.push({ i, text: i === 0 && m !== 0 ? `${month(m)} ${y}` : String(y), yr: true });
+    if (m === 0 && i > 0) ticks += `<line class="era-tick" x1="${r1(i * mw)}" x2="${r1(i * mw)}" y1="${H + 2}" y2="${H + 9}"/>`;
+  }
+  if (mw * 3 >= 40) for (let i = 1; i < n; i++) if ([3, 6, 9].includes((start + i) % 12)) items.push({ i, text: month((start + i) % 12) });
+  const placed = [];
+  for (const it of items) {
+    const tw = textWidth(it.text);
+    const x = Math.max(0, Math.min(W - tw, it.i * mw + (it.i ? 4 : 1)));
+    if (placed.some((p) => x < p.r + 8 && x + tw > p.l - 8)) continue;
+    placed.push({ l: x, r: x + tw, ...it, x });
+  }
+  const labels = placed.map((p) => `<text class="${p.yr ? 'yr' : ''}" x="${r1(p.x)}" y="${H + 19}">${esc(p.text)}</text>`).join('');
+  const defs = `<defs><pattern id="${box.id}-est" width="7" height="7" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><line x1="0" y1="0" x2="0" y2="7" stroke="var(--era-hatch)" stroke-width="1.6"/></pattern>`
+    + `<pattern id="${box.id}-mix" width="8" height="8" patternUnits="userSpaceOnUse" patternTransform="rotate(-45)"><line x1="0" y1="0" x2="0" y2="8" stroke="var(--era-mix-stripe)" stroke-width="3"/></pattern></defs>`;
+  return { defs, h: H + 24, svg: `${marks}<g class="axis">${ticks}${labels}</g>`, label: eraSummary(eras, n) };
+});
+
+/**
+ * One era of the list: the colour of its block, a cover, the title (a link) and a "2nd era" tag for a
+ * return; its span (and a quiet "mostly estimated"); its share and hours, then what came alongside.
+ * Variety rows show their top games, breaks one dim line.
+ */
+function eraRow(e) {
+  const est = mostlyEst(e) ? '<span class="era-est" title="Mostly estimated history: played before tracking began, dated by inference"> · mostly estimated</span>' : '';
+  const when = `<div class="era-sub era-when">${eraSpan(e)} · ${plural(e.months, 'month')}${est}</div>`;
+  if (e.kind === 'break') {
+    return `<li class="era-row brk"><span class="era-sw" aria-hidden="true"></span><div class="era-main"><div class="era-t">Break · ${plural(e.months, 'month')}, no play</div><div class="era-sub era-when">${eraSpan(e)}</div></div></li>`;
+  }
+  if (e.kind === 'variety') {
+    return `<li class="era-row mix"><span class="era-sw" aria-hidden="true"></span><span class="era-mixtile" aria-hidden="true">${icon('grid')}</span>
+      <div class="era-main"><div class="era-t"><b>A mix of games</b></div>${when}
+      <div class="era-sub era-meta"><span><b>${hrs(e.minutes)}</b> across games</span>${e.games.length ? `<span class="era-with">mostly ${esc(names(e.games.slice(0, 2)))}</span>` : ''}</div></div></li>`;
+  }
+  return `<li class="era-row${mostlyEst(e) ? ' est' : ''}" style="--era-c:${eraColor(e)}"><span class="era-sw" aria-hidden="true"></span>${cover(e)}
+    <div class="era-main"><div class="era-t"><a href="/game/${e.game_id}" data-link class="ellipsis">${esc(e.title)}</a>${e.ordinal > 1 ? `<span class="era-tag" title="${esc(e.title)} led an earlier era too">${nth(e.ordinal)} era</span>` : ''}</div>
+      ${when}
+      <div class="era-sub era-meta"><span><b>${pct(e.share)}</b> of your play · <b>${hrs(e.minutes)}</b></span>${e.alongside.length ? `<span class="era-with">alongside ${esc(names(e.alongside.slice(0, 2)))}</span>` : ''}</div></div></li>`;
+}
+
+/**
+ * The eras card body for a timeline response: the strip, a legend for what is not a game, and the
+ * list grouped by year (no year heads when it is one year). opts.through: extend the axis to this
+ * month (YYYY-MM), drawing the months still to come (Year in review: the rest of the year).
+ */
+export function eraStrip(tl, { through } = {}) {
+  const eras = tl.eras || [];
+  if (!eras.length) return none('No months with play in this range.');
+  const range = tl.era_range || { from: eras[0].from, to: eras.at(-1).to };
+  const years = new Map();
+  for (const e of eras) {
+    const y = e.from.slice(0, 4);
+    if (!years.has(y)) years.set(y, []);
+    years.get(y).push(e);
+  }
+  const legend = [
+    eras.some((e) => e.kind === 'game' && mostlyEst(e)) && '<span><i class="dot era-dot est"></i>Hatched: mostly estimated history</span>',
+    eras.some((e) => e.kind === 'variety') && '<span><i class="dot era-dot mix"></i>A mix: no game clearly led</span>',
+    eras.some((e) => e.kind === 'break') && '<span><i class="dot era-dot brk"></i>No play</span>',
+  ].filter(Boolean);
+  const games = eras.filter((e) => e.kind === 'game');
+  const returns = games.filter((e) => e.ordinal > 1).length;
+  return `${chart('erastrip', { eras, from: range.from, to: range.to, through: through && through > range.to ? through : null }, { keys: 'Eras on a timeline; arrow keys read each era' })}
+    ${legend.length ? `<div class="legend era-legend">${legend.join('')}</div>` : ''}
+    <div class="era-years">${[...years].map(([y, list]) => `<section class="era-year">${years.size > 1 ? `<h4 class="era-yh">${y}</h4>` : ''}<ol class="era-list">${list.map(eraRow).join('')}</ol></section>`).join('')}</div>
+    ${note(`${plural(games.length, 'era')} of ${plural(new Set(games.map((e) => e.game_id)).size, 'game')}${returns ? `, ${plural(returns, 'return')}` : ''}. An era is a run of months one game led; a narrow one-month detour does not split it.`)}`;
 }
 
 /** "Unlocks per month: 196 in all, most in August 2026 (30)" for count charts. */
