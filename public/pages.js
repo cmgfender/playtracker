@@ -544,7 +544,7 @@ async function dashboard(view, stale) {
   const noTracked = !wk.sessions && !mo.tracked_minutes;
   const html = {
     kpis: () => `<div class="kpis fade-in">
-      ${kpi('This week', hoursVal(wk.total_minutes), noTracked ? 'Sessions appear after you play' : `${plural(wk.sessions, 'session')} · ${plural(wk.games_played, 'game')}`, sparkline(wk.series.map((s) => s.minutes)), 'feature')}
+      ${kpi('This week', hoursVal(wk.total_minutes), noTracked ? 'Sessions appear after you play' : `${plural(wk.sessions, 'session')} · ${plural(wk.games_played, 'game')}`, sparkline(Array.from({ length: 7 }, (_, i) => wk.series[i]?.minutes ?? 0)), 'feature')}
       ${kpi('Today', fmtMin(d.today.total_minutes), d.today.top_games[0] ? esc(d.today.top_games[0].title) : 'Nothing yet')}
       ${kpi('Last 30 days', hoursVal(mo.tracked_minutes), `${fmtMin(mo.avg_per_day_minutes)}/day avg${mo.estimated_minutes ? ` · +${fmtHours(mo.estimated_minutes)}h est.` : ''}`)}
       ${kpi('Streak', `${streak}<small> day${streak === 1 ? '' : 's'}</small>`, `Best: ${plural(mo.streaks.longest, 'day')}`)}

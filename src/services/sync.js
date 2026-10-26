@@ -730,6 +730,8 @@ export class SyncService {
         state = res.state ?? state;
         info = res.info || null;
         if (res.complete === false) complete = false;
+        // a list cut off at the platform's cap: titles it no longer shows were not removed
+        if (res.capped) db.prepare('UPDATE entries SET missing_since = NULL WHERE account_id = ? AND missing_since IS NOT NULL').run(account.id);
         if (res.warning) warnings.push(res.warning);
         if (!items) throw new Error('This account receives data through the API (POST /api/v1/accounts/:id/report)');
       }

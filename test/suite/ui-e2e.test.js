@@ -1631,7 +1631,9 @@ describe('Vestigo web UI (no password)', UI, () => {
             if (y < top.bottom || y > bar.top || x < 0 || x > innerWidth) continue; // off screen, or scrolled under the top or tab bar
             out.n++;
             const hit = document.elementFromPoint(x, y);
-            if (!el.contains(hit)) out.bad.push(`${p}: ${el.className || el.tagName} at ${Math.round(x)},${Math.round(y)} is under ${hit?.className || hit?.tagName}`);
+            // what this checks is the floating button; rows passing under the sticky toolbar and day
+            // headers are meant to (how many sit there depends on how far infinite scroll has loaded)
+            if (!el.contains(hit) && hit?.closest('.fab')) out.bad.push(`${p}: ${el.className || el.tagName} at ${Math.round(x)},${Math.round(y)} is under ${hit?.className || hit?.tagName}`);
           }
           return out;
         }, path);
