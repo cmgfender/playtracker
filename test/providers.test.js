@@ -398,3 +398,47 @@ test('the sync after a session waits while a game is still being played, then ru
   assert.ok(s.soonFor(a()) <= Date.now());
   await call(`/accounts/${acc.id}`, { method: 'DELETE' });
 });
+
+test('xbox: a title list at the 1000-title cap never marks titles as removed, and clears such marks', async () => {
+  const many = (n) => Array.from({ length: n }, (_, i) => ({ titleId: String(50000 + i), name: `T${i}`, type: 'Game', titleHistory: { lastTimePlayed: new Date(NOW - i * 3600_000).toISOString() } }));
+  const ctx = (titles) => ({ remainingBudget: () => 100000, getEntry: () => null, http: async (url) => (/titleHistory/.test(url) ? { content: { xuid: '2533', titles }, code: 200 } : { statlistscollection: [{ stats: [{ name: 'MinutesPlayed', value: '60' }] }] }) });
+  const account = { config: { api_key: 'k', hourly_limit: '100000' }, state: {} };
+  const full = await providers.xbox.fetchLibrary(account, ctx(many(1000)));
+  assert.equal(full.capped, true);
+  assert.equal(full.complete, false, 'at the cap the list is not the whole library');
+  const under = await providers.xbox.fetchLibrary(account, ctx(many(999)));
+  assert.equal(under.complete, true);
+  assert.ok(!under.capped);
+
+  // through a sync: a stale "no longer in library" mark is cleared when the list is capped
+  const prev = globalThis.fetch;
+  globalThis.fetch = async (url, o) => {
+    const u = new URL(url);
+    if (u.pathname === '/api/v2/player/titleHistory') return json({ xuid: '2533', titles: many(1000) });
+    if (u.pathname.startsWith('/api/v2/achievements/stats/')) return json({ statlistscollection: [{ stats: [{ name: 'MinutesPlayed', value: '60' }] }] });
+    return mockFetch(url, o);
+  };
+  try {
+    const acc = await call('/accounts', { method: 'POST', body: { platform: 'xbox', name: 'Capped', config: { api_key: 'k6', presence: 'off', hourly_limit: '100000' }, sync: false } });
+    await call(`/accounts/${acc.id}/sync?wait=true`, { method: 'POST' });
+    const db = app.app.db;
+    db.prepare("UPDATE entries SET missing_since = ? WHERE account_id = ? AND ext_id = '50999'").run(NOW, acc.id);
+    await call(`/accounts/${acc.id}/sync?wait=true`, { method: 'POST' });
+    assert.equal(db.prepare('SELECT COUNT(*) n FROM entries WHERE account_id = ? AND missing_since IS NOT NULL').get(acc.id).n, 0);
+    await call(`/accounts/${acc.id}`, { method: 'DELETE' });
+  } finally { globalThis.fetch = prev; }
+});
+
+test('psn presence reports whether you are online', async () => {
+  const psn = providers.psn;
+  const reply = (p) => ({ basicPresence: p });
+  const run = async (p) => {
+    const orig = psn.presence;
+    // presence fetches a token first: give it one through the account state
+    return orig.call(psn, { config: { npsso: 'x' }, state: { access_token: 't', expires_at: Date.now() + 3600_000, refresh_token: 'r', refresh_expires_at: Date.now() + 86400_000, account_id: '1' } }, { http: async () => reply(p) });
+  };
+  assert.equal((await run({ primaryPlatformInfo: { onlineStatus: 'online' }, gameTitleInfoList: [{ npTitleId: 'PPSA1', titleName: 'Astro Bot', launchPlatform: 'PS5' }] })).online, 'Online');
+  assert.equal((await run({ primaryPlatformInfo: { onlineStatus: 'offline' } })).online, 'Offline');
+  assert.equal((await run({ availability: 'availableToPlay' })).online, 'Online');
+  assert.equal((await run({})).online, null);
+});

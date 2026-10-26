@@ -3,6 +3,7 @@ import { text, percent, unlockTime } from '../services/achievements.js';
 
 const API = 'https://xbl.io/api/v2';
 // Xbox Home / dashboard / app shells; 704208617 is the Xbox app on Windows (reported as "Online")
+const TITLE_HISTORY_CAP = 1000;
 const HOME_TITLE_IDS = new Set(['750323071', '1022622766', '714681658', '704208617']);
 // presence words some shells report as their title; never a game unless the library has it
 const SHELL_NAMES = /^(home|online|away|busy|offline|xbox( app)?)$/i;
@@ -178,6 +179,9 @@ export const xbox = {
     const headers = this.headers(account);
     const hist = await ctx.http(`${API}/player/titleHistory`, { headers });
     const titles = unwrap(hist)?.titles || hist?.titles || [];
+    // Xbox lists only the most recently played titles (1000 at most): at the cap, a title missing
+    // from the list may just have dropped off its end, so the report can't show what was removed
+    const capped = titles.length >= TITLE_HISTORY_CAP;
     // keep ~15% of the hour for presence & retries
     let budget = Math.max(0, (ctx.remainingBudget?.(this.hourlyLimit(account)) ?? this.hourlyLimit(account)) - Math.ceil(this.hourlyLimit(account) * 0.15));
     const items = [];
@@ -273,7 +277,7 @@ export const xbox = {
     if (samples.length) state.missing_minutes_samples = samples;
     const deferred = deferredIds.length;
     const warning = deferred ? `${deferred} titles deferred to stay within the OpenXBL hourly limit - fetched by hourly back-fill syncs` : null;
-    return { items, state, warning, complete: deferred === 0, info: { titles: titles.length, missing_minutes: missing, deferred } };
+    return { items, state, warning, complete: deferred === 0 && !capped, capped, info: { titles: titles.length, missing_minutes: missing, deferred, ...(capped ? { capped: true } : {}) } };
   },
 
   async presence(account, ctx) {
