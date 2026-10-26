@@ -398,3 +398,39 @@ test('the sync after a session waits while a game is still being played, then ru
   assert.ok(s.soonFor(a()) <= Date.now());
   await call(`/accounts/${acc.id}`, { method: 'DELETE' });
 });
+
+test('a game played on Steam that also shows up in Xbox presence is counted once', async () => {
+  const db = app.app.db; const s = app.app.sync;
+  const M = 60_000; const t0 = Date.now() - 6 * 3600_000;
+  const steam = await call('/accounts', { method: 'POST', body: { platform: 'steam', name: 'S2', config: { api_key: 'k7', steam_id: '76561190000000077', presence: 'off' }, sync: false } });
+  const xbox = await call('/accounts', { method: 'POST', body: { platform: 'xbox', name: 'X2', config: { api_key: 'k8', presence: 'off' }, sync: false } });
+  const game = await call('/games', { method: 'POST', body: { title: 'Tape to Tape', merge: false } });
+  const entry = (acc, ext) => Number(db.prepare('INSERT INTO entries(account_id, game_id, platform, ext_id, title, playtime_min, first_seen_at) VALUES (?, ?, ?, ?, ?, 0, ?)').run(acc.id, game.id, acc.id === steam.id ? 'steam' : 'xbox', ext, 'Tape to Tape', t0 - 86400_000).lastInsertRowid);
+  const se = entry(steam, '2286390'); const xe = entry(xbox, '1619912274');
+  db.prepare('UPDATE accounts SET state = ? WHERE id = ?').run(JSON.stringify({ unmetered: { 1619912274: 1 } }), xbox.id);
+  const steamPlay = (start, minutes) => {
+    db.prepare("INSERT INTO sessions(entry_id, source, kind, minutes, window_start, window_end, started_at, ended_at, confidence, created_at) VALUES (?, 'sync', 'play', ?, ?, ?, ?, ?, 'exact', ?)").run(se, minutes, start, start + minutes * M, start, start + minutes * M, Date.now());
+    db.prepare('UPDATE entries SET playtime_min = playtime_min + ? WHERE id = ?').run(minutes, se);
+  };
+  const xboxSpan = (start, minutes) => db.prepare('INSERT INTO presence(account_id, ext_id, title, started_at, last_seen_at, ended_at) VALUES (?, ?, ?, ?, ?, ?)').run(xbox.id, '1619912274', 'Tape to Tape', start, start + minutes * M, start + minutes * M);
+  const xboxMinutes = () => db.prepare('SELECT playtime_min m FROM entries WHERE id = ?').get(xe).m;
+
+  // Steam recorded the session first: Xbox presence of the same play adds nothing
+  steamPlay(t0, 14); xboxSpan(t0 + M, 13);
+  s.presenceSessions(xbox.id, { now: Date.now() });
+  assert.equal(xboxMinutes(), 0);
+  // Xbox presence first (an older version recorded it): the repair removes it once Steam counts it
+  xboxSpan(t0 + 2 * 3600_000, 14);
+  s.presenceSessions(xbox.id, { now: Date.now() });
+  assert.equal(xboxMinutes(), 14, 'no Steam session yet: presence is all we know');
+  steamPlay(t0 + 2 * 3600_000, 14);
+  assert.equal((await import('../src/services/sync.js')).dropDoubledPresence(db), 1);
+  assert.equal(xboxMinutes(), 0);
+  // a different time is different play: kept
+  xboxSpan(t0 + 4 * 3600_000, 20);
+  s.presenceSessions(xbox.id, { now: Date.now() });
+  assert.equal(xboxMinutes(), 20);
+  const bad = db.prepare('SELECT e.id FROM entries e LEFT JOIN sessions x ON x.entry_id = e.id WHERE e.id IN (?, ?) GROUP BY e.id HAVING COALESCE(SUM(x.minutes), 0) != e.playtime_min').all(se, xe);
+  assert.deepEqual(bad, []);
+  for (const a of [steam, xbox]) await call(`/accounts/${a.id}`, { method: 'DELETE' });
+});
