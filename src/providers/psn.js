@@ -267,7 +267,10 @@ export const psn = {
       try {
         const data = await ctx.http(`${M}/userProfile/v1/internal/users/${id}/basicPresences?type=primary`, { headers: { Authorization: `Bearer ${tok.access_token}` } }, { retries: 0 });
         const p = data?.basicPresence || {};
-        return { playing: (p.gameTitleInfoList || []).map((g) => ({ extId: g.npTitleId, title: g.titleName, device: g.launchPlatform || g.format || null })), state: tok };
+        const playing = (p.gameTitleInfoList || []).map((g) => ({ extId: g.npTitleId, title: g.titleName, device: g.launchPlatform || g.format || null }));
+        const status = p.primaryPlatformInfo?.onlineStatus || p.availability;
+        const online = !status ? null : /^online$|^availabletoplay$/i.test(status) ? 'Online' : /offline|unavailable/i.test(status) ? 'Offline' : String(status);
+        return { playing, online, seen: playing.map((g) => ({ id: g.extId, name: g.title, device: g.device })), state: tok };
       } catch (err) {
         if (err.rateLimited || err.auth) throw err; // the fallback id would only cost another call
         lastErr = err;
