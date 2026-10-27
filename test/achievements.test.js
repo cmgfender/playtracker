@@ -7,9 +7,10 @@ import { DatabaseSync } from 'node:sqlite';
 import { createApp } from '../src/server.js';
 import { openDb } from '../src/db.js';
 import { parseSteamAchievements } from '../src/providers/steam.js';
-import { parseXboxAchievements, findUnlockTimes } from '../src/providers/xbox.js';
+import { parseXboxAchievements, findUnlockTimes, pagingOf, ACH_PAGES } from '../src/providers/xbox.js';
 import { parsePsnTrophies, earnedTimes } from '../src/providers/psn.js';
-import { storeAchievements, entrySummaries, combineSummaries, ownersOf, sessionAchievements, ACH_SLACK, ACH_VERSION } from '../src/services/achievements.js';
+import { storeAchievements, entrySummaries, combineSummaries, ownersOf, sessionAchievements, summaryOf, ACH_SLACK, ACH_VERSION } from '../src/services/achievements.js';
+import { importGameTrack } from '../src/services/gametrack.js';
 import { flushRollups } from '../src/services/rollup.js';
 
 const MIN = 60_000;
@@ -342,6 +343,7 @@ async function platforms(url, opts = {}) {
     if (p.startsWith('/api/v2/achievements/stats/')) return jsonRes({ statlistscollection: [{ stats: [{ name: 'MinutesPlayed', value: String(x.titles.get(p.split('/').pop())?.minutes ?? 0) }] }] }, 200, h);
     if (p.startsWith('/api/v2/achievements/player/')) {
       const a = x.ach.get(p.split('/').pop());
+      if (typeof a === 'function') { const v = a(q); return typeof v === 'number' ? jsonRes({ error: 'x' }, v, h) : jsonRes(v, 200, h); } // a list in pages (by continuationToken)
       return typeof a === 'number' ? jsonRes({ error: 'x' }, a, h) : jsonRes(a ?? { content: { achievements: [] }, code: 200 }, 200, h);
     }
     if (p.startsWith('/api/v2/dvr/')) return jsonRes({ values: [] }, 200, h);
@@ -752,6 +754,226 @@ describe('Xbox: the enrichment request carries the achievements; reads after pla
   });
 });
 
+/**
+ * A title whose list comes in pages: lists[i] is page i ([{ id, at, gs }], as modernReply);
+ * tokens[i] the continuationToken page i names (default p1, p2, ...; none on the last page).
+ */
+const pagedReply = (lists, { total = lists.flat().length, tokens = lists.map((_, i) => (i < lists.length - 1 ? `p${i + 1}` : null)) } = {}) => (q) => {
+  const i = q.continuationToken ? Number(/^p(\d+)$/.exec(q.continuationToken)?.[1]) : 0;
+  const r = modernReply(lists[i] || []);
+  r.content.pagingInfo = { continuationToken: tokens[i] ?? null, totalRecords: total };
+  return r;
+};
+const pageCalls = (id) => net.filter((c) => c.path.endsWith(`/achievements/player/${XUID}/${id}`)).map((c) => c.params.continuationToken ?? null);
+
+describe('Xbox: long achievement lists are read page by page, inside the hourly budget', () => {
+  test('pagingInfo in either reply shape; progress counts what the platform says the title has', () => {
+    assert.deepEqual(pagingOf({ content: { achievements: [], pagingInfo: { continuationToken: 'abc', totalRecords: 120 } }, code: 200 }), { token: 'abc', total: 120 });
+    assert.deepEqual(pagingOf({ achievements: [], pagingInfo: { continuationToken: null } }), { token: null, total: null }, 'Xbox 360 lists page the same way');
+    assert.deepEqual(pagingOf({ achievements: [], pagingInfo: { continuationToken: '', totalRecords: '7' } }), { token: null, total: 7 });
+    assert.deepEqual(pagingOf(null), { token: null, total: null });
+    const s = summaryOf({ total: 32, unlocked: 32, last_unlocked_at: 5 }, null, 50);
+    assert.deepEqual([s.total, s.unlocked, s.percent, s.completed, s.completed_at], [50, 32, 64, false, null], 'a list read in part is not 100%');
+    assert.equal(summaryOf({ total: 3, unlocked: 3, last_unlocked_at: 5 }, null, 2).completed, true, 'a total below what is stored counts what is stored');
+  });
+
+  test('every page is read and merged in order; a repeated token ends the list; totals use totalRecords', async () => {
+    clock.t = T0 + 30 * HOUR;
+    xboxWorld();
+    net.length = 0;
+    const x = fake.xbox;
+    x.titles.set('3001', { id: '3001', name: 'Long List', minutes: 900, lastPlayed: ago(3) });
+    x.titles.set('3002', { id: '3002', name: 'Looping Pages', minutes: 400, lastPlayed: ago(4) });
+    const long = [[{ id: 1, at: ago(30) }, { id: 2, at: ago(29) }], [{ id: 3, at: ago(20) }, { id: 4, at: null }], [{ id: 5, at: ago(10) }, { id: 6, at: null }]];
+    x.ach.set('3001', pagedReply(long));
+    x.ach.set('3002', pagedReply([[{ id: 1, at: ago(40) }, { id: 2, at: null }], [{ id: 3, at: ago(35) }, { id: 4, at: null }]], { total: 6, tokens: ['p1', 'p1'] }));
+    const t = await startApp();
+    try {
+      const acc = (await t.link('xbox', { api_key: 'xbl-paged' })).id;
+      await t.sync(acc);
+      assert.deepEqual(pageCalls('3001'), [null, 'p1', 'p2'], 'three requests, each naming the token of the page before');
+      const rows = (id) => t.db.prepare('SELECT ach_id, unlocked, sort FROM achievements WHERE entry_id = ? ORDER BY sort').all(t.entry(acc, id).id).map((r) => [r.ach_id, r.unlocked, r.sort]);
+      assert.deepEqual(rows('3001'), [['1', 1, 0], ['2', 1, 1], ['3', 1, 2], ['4', 0, 3], ['5', 1, 4], ['6', 0, 5]]);
+      const gameOf = async (q) => t.get(`/games/${(await t.get(`/games?q=${encodeURIComponent(q)}`)).items[0].id}`);
+      const a = (await gameOf('Long List')).achievements;
+      assert.deepEqual([a.total, a.unlocked, a.completed], [6, 4, false]);
+      assert.deepEqual(t.hist(acc, '3001').anchors, [ago(30), ago(29), ago(20), ago(10)], 'every page dates the history');
+      // the second page names the token of the first again: no third request, the list ends there
+      assert.deepEqual(pageCalls('3002'), [null, 'p1']);
+      assert.equal(rows('3002').length, 4);
+      const b = (await gameOf('Looping Pages')).achievements;
+      assert.deepEqual([b.total, b.unlocked, b.percent], [6, 2, 33.3], 'what the platform says it has, not the 4 read');
+      assert.deepEqual([t.entry(acc, '3001').ach_v, t.entry(acc, '3002').ach_v, t.entry(acc, '3001').ach_total], [ACH_VERSION, ACH_VERSION, 6]);
+      assert.deepEqual(JSON.parse(t.db.prepare('SELECT state FROM accounts WHERE id = ?').get(acc).state).ach_pages ?? {}, {}, 'nothing left to read on');
+      const n = sent(/\/achievements\/player\//);
+      await t.post(`/accounts/${acc}/enrich?wait=true`);
+      assert.equal(sent(/\/achievements\/player\//), n, 'read for good: not asked again');
+    } finally { await t.close(); }
+  });
+
+  test('the budget running out mid-title keeps what was read, never dips into the reserve, and goes on from that page later - no duplicates', async () => {
+    clock.t = T0 + 40 * HOUR + 2 * MIN;
+    xboxWorld();
+    net.length = 0;
+    const x = fake.xbox;
+    x.titles.set('3003', { id: '3003', name: 'Cut Short', minutes: 600, lastPlayed: ago(6) });
+    const pages = [[{ id: 1, at: ago(60) }, { id: 2, at: ago(50) }], [{ id: 3, at: ago(40) }, { id: 4, at: ago(30) }], [{ id: 5, at: ago(20) }, { id: 6, at: null }]];
+    x.ach.set('3003', pagedReply(pages));
+    const reserve = Math.ceil(150 * 0.3);
+    const t = await startApp();
+    try {
+      const acc = (await t.link('xbox', { api_key: 'xbl-budget' })).id;
+      // other tools left 50 of the hour: the sync takes 2, the capture lists 2, the first page 1 - then only the reserve is left
+      usedThisHour(t, acc, 150 - 50);
+      await t.sync(acc);
+      assert.deepEqual(pageCalls('3003'), [null], 'one page, then the reserve stops it');
+      assert.ok(xboxRemaining() >= reserve, `${xboxRemaining()} left, the reserve is ${reserve}`);
+      const entry = () => t.entry(acc, '3003');
+      const ids = () => t.db.prepare('SELECT ach_id FROM achievements WHERE entry_id = ? ORDER BY sort').all(entry().id).map((r) => r.ach_id);
+      assert.deepEqual(ids(), ['1', '2'], 'what was read is kept');
+      const game = (await t.get('/games?q=Cut')).items[0];
+      let s = (await t.get(`/games/${game.id}`)).achievements;
+      assert.deepEqual([s.total, s.unlocked, s.percent, s.completed], [6, 2, 33.3, false], 'not shown as complete');
+      assert.equal(entry().enriched_at, null, 'its history waits for the rest of the list');
+      assert.equal(entry().ach_v, 0, 'not read for good');
+      assert.equal(JSON.parse(t.db.prepare('SELECT state FROM accounts WHERE id = ?').get(acc).state).ach_pages['3003'].token, 'p1');
+
+      // the next hour it goes on from the page where it stopped
+      clock.t = (Math.floor(clock.t / HOUR) + 1) * HOUR + 3 * MIN;
+      await t.post(`/accounts/${acc}/enrich?wait=true`);
+      assert.deepEqual(pageCalls('3003'), [null, 'p1', 'p2'], 'the first page is not read again');
+      assert.deepEqual(ids(), ['1', '2', '3', '4', '5', '6']);
+      assert.equal(t.db.prepare('SELECT COUNT(*) n, COUNT(DISTINCT ach_id) d FROM achievements').get().n, 6);
+      s = (await t.get(`/games/${game.id}`)).achievements;
+      assert.deepEqual([s.total, s.unlocked, s.completed], [6, 5, false]);
+      assert.ok(entry().enriched_at != null);
+      assert.equal(entry().ach_v, ACH_VERSION);
+      assert.deepEqual(t.hist(acc, '3003').anchors, [ago(60), ago(50), ago(40), ago(30), ago(20)], 'the history is dated from every page');
+      assert.deepEqual(JSON.parse(t.db.prepare('SELECT state FROM accounts WHERE id = ?').get(acc).state).ach_pages, {});
+
+      // played again, and again cut short after its first page: it stays due, then goes on
+      clock.t = (Math.floor(clock.t / HOUR) + 1) * HOUR + 5 * MIN;
+      x.titles.get('3003').minutes += 40;
+      x.titles.get('3003').lastPlayed = clock.t - 2 * MIN;
+      pages[2][1].at = clock.t - 10 * MIN; // the last one, unlocked just now
+      usedThisHour(t, acc, 150 - 48); // the sync takes 2, the first page 1
+      await t.sync(acc);
+      assert.deepEqual(pageCalls('3003').slice(3), [null]);
+      assert.ok(xboxRemaining() >= reserve);
+      const due = async () => (await t.get('/system')).accounts.find((a) => a.id === acc).achievements.refresh_due;
+      assert.equal(await due(), 1, 'still to be read on');
+      clock.t = (Math.floor(clock.t / HOUR) + 1) * HOUR + 3 * MIN;
+      const r = await t.post(`/accounts/${acc}/enrich?wait=true`);
+      assert.deepEqual(pageCalls('3003').slice(3), [null, 'p1', 'p2']);
+      assert.equal(r.achievements.read, 1);
+      assert.equal(await due(), 0);
+      s = (await t.get(`/games/${game.id}`)).achievements;
+      assert.deepEqual([s.total, s.unlocked, s.completed], [6, 6, true]);
+      assert.equal(t.db.prepare('SELECT COUNT(*) n FROM achievements').get().n, 6, 'no duplicates');
+      const play = t.db.prepare("SELECT id FROM sessions WHERE entry_id = ? AND kind = 'play'").get(entry().id);
+      const six = (await t.get(`/games/${game.id}/achievements`)).items.find((i) => i.id === '6');
+      assert.deepEqual([six.session_kind, six.session?.id], ['tracked', play.id]);
+      assert.deepEqual(t.unbalanced(), []);
+    } finally { await t.close(); }
+  });
+
+  test('a page to go on from that keeps failing is a failed attempt: given up after 3, what was read stays', async () => {
+    clock.t = T0 + 50 * HOUR + 2 * MIN;
+    xboxWorld();
+    net.length = 0;
+    fake.xbox.titles.set('3005', { id: '3005', name: 'Broken Page', minutes: 300, lastPlayed: ago(7) });
+    const list = pagedReply([[{ id: 1, at: ago(70) }, { id: 2, at: null }], [{ id: 3, at: ago(60) }, { id: 4, at: null }]]);
+    fake.xbox.ach.set('3005', (q) => (q.continuationToken ? 500 : list(q)));
+    const t = await startApp();
+    try {
+      const acc = (await t.link('xbox', { api_key: 'xbl-broken' })).id;
+      usedThisHour(t, acc, 150 - 50);
+      await t.sync(acc);
+      assert.deepEqual(pageCalls('3005'), [null]);
+      for (let i = 0; i < 4; i++) {
+        clock.t = (Math.floor(clock.t / HOUR) + 1) * HOUR + 3 * MIN;
+        await t.post(`/accounts/${acc}/enrich?wait=true`);
+      }
+      assert.deepEqual(pageCalls('3005'), [null, 'p1', 'p1', 'p1'], 'three tries, then it is given up');
+      const e = t.entry(acc, '3005');
+      assert.ok(e.enriched_at != null);
+      assert.equal(e.ach_v, ACH_VERSION);
+      assert.deepEqual([t.db.prepare('SELECT COUNT(*) n FROM achievements WHERE entry_id = ?').get(e.id).n, e.ach_total], [2, 4], 'the first page is kept; progress still counts all 4');
+    } finally { await t.close(); }
+  });
+
+  test('a page cap ends a list that never stops naming new pages', async () => {
+    clock.t = T0 + 60 * HOUR;
+    xboxWorld();
+    net.length = 0;
+    fake.xbox.titles.set('3004', { id: '3004', name: 'Endless', minutes: 100, lastPlayed: ago(8) });
+    fake.xbox.ach.set('3004', (q) => {
+      const i = q.continuationToken ? Number(q.continuationToken.slice(1)) : 0;
+      const r = modernReply([{ id: i + 1, at: null }]);
+      r.content.pagingInfo = { continuationToken: `p${i + 1}`, totalRecords: 1000 };
+      return r;
+    });
+    const t = await startApp();
+    try {
+      const acc = (await t.link('xbox', { api_key: 'xbl-endless' })).id;
+      await t.sync(acc);
+      assert.equal(pageCalls('3004').length, ACH_PAGES);
+      assert.equal(t.entry(acc, '3004').ach_v, ACH_VERSION, 'taken as read');
+      assert.equal((await t.get(`/games/${(await t.get('/games?q=Endless')).items[0].id}`)).achievements.total, 1000);
+    } finally { await t.close(); }
+  });
+});
+
+// =====================================================================================
+// GameTrack's achievements, then the platform
+// =====================================================================================
+describe('GameTrack first, Steam linked later', () => {
+  test('the imported copy\'s achievements join the synced entry; Steam\'s read keeps one row each, its data wins, unlocks stay', async () => {
+    clock.t = T0 + 80 * HOUR;
+    steamWorld();
+    net.length = 0;
+    const t = await startApp();
+    try {
+      const r = importGameTrack(t.db, {
+        games: [{ uuid: 'S', title: 'Space Game', hours_played: '10', owned_platform: 'PC' }],
+        steam_games: [{ game_uuid: 'S', appid: '100', name: 'Space Game', playtime_forever: '600' }],
+        steam_achievements: [
+          { steam_game_appid: '100', name: 'A', achieved: 'true', unlock_time: iso(ago(21)) }, // Steam's apiname
+          { steam_game_appid: '100', name: 'Epsilon', achieved: 'true', unlock_time: iso(ago(4)) }, // its display name; Steam says locked
+          { steam_game_appid: '100', name: 'Delta', achieved: 'false', unlock_time: '' },
+          { steam_game_appid: '100', name: 'Zeta', achieved: 'true', unlock_time: iso(ago(6)) }, // Steam does not list it
+        ],
+      }, { settings: t.inst.app.settings.all(), now: clock.t });
+      assert.deepEqual([r.imported_titles, r.achievements_imported], [1, 4]);
+      const acc = (await t.link('steam', { api_key: 'steam-key', steam_id: STEAMID })).id;
+      await t.sync(acc);
+      const e = t.entry(acc, '100');
+      assert.equal(t.db.prepare('SELECT COUNT(*) n FROM entries WHERE game_id = ?').get(e.game_id).n, 1, 'one copy: the synced entry adopted the import');
+      const rows = t.db.prepare('SELECT ach_id, name, unlocked, unlocked_at, rarity, icon_url, source FROM achievements WHERE entry_id = ? ORDER BY sort').all(e.id).map((x) => ({ ...x }));
+      assert.deepEqual(rows.map((x) => [x.ach_id, x.name, x.unlocked, x.unlocked_at, x.rarity, x.source]), [
+        ['A', 'Alpha', 1, unix(ago(20)) * 1000, 80.5, null], // Steam's time wins
+        ['B', 'Beta', 1, unix(ago(8)) * 1000, 12.25, null],
+        ['C', 'Gamma', 1, null, 3, null],
+        ['D', 'Delta', 0, null, 0.9, null],
+        ['E', 'Epsilon', 1, ago(4), 1.5, null], // GameTrack's unlock is kept
+      ]);
+      assert.ok(rows.every((x) => x.icon_url), 'icons from the schema (what GameTrack listed counts as not known)');
+      assert.equal(t.db.prepare('SELECT COUNT(*) n FROM achievements').get().n, 5, 'nothing twice, nothing left on the adopted copy');
+      assert.deepEqual([(await t.get(`/games/${e.game_id}`)).achievements.total, (await t.get(`/games/${e.game_id}`)).achievements.unlocked], [5, 4]);
+      // GameTrack again: nothing changes
+      const snap = t.db.prepare('SELECT * FROM achievements ORDER BY id').all().map((x) => ({ ...x }));
+      const again = importGameTrack(t.db, {
+        games: [{ uuid: 'S', title: 'Space Game', hours_played: '10', owned_platform: 'PC' }],
+        steam_games: [{ game_uuid: 'S', appid: '100', name: 'Space Game', playtime_forever: '600' }],
+        steam_achievements: [{ steam_game_appid: '100', name: 'Epsilon', achieved: 'true', unlock_time: iso(ago(4)) }, { steam_game_appid: '100', name: 'Zeta', achieved: 'true', unlock_time: iso(ago(6)) }],
+      }, { settings: t.inst.app.settings.all(), now: clock.t });
+      assert.deepEqual([again.achievements_imported, again.achievements_matched, again.achievements_updated, again.achievements_unmatched], [0, 1, 0, 1]);
+      assert.deepEqual(t.db.prepare('SELECT * FROM achievements ORDER BY id').all().map((x) => ({ ...x })), snap);
+      assert.deepEqual(t.unbalanced(), []);
+    } finally { await t.close(); }
+  });
+});
+
 function psnWorld() {
   const s = fake.psn;
   s.titles = [];
@@ -850,7 +1072,7 @@ describe('upgrade: a database from before achievements were kept', () => {
 
       t = await startApp({ dbFile: file });
       try {
-        assert.equal(t.db.prepare('PRAGMA user_version').get().user_version, 6, 'migrated');
+        assert.equal(t.db.prepare('PRAGMA user_version').get().user_version, 7, 'migrated');
         const diag = async () => (await t.get('/system')).accounts.find((a) => a.id === acc).achievements;
         const d0 = await diag();
         assert.deepEqual([d0.titles, d0.done, d0.pending, d0.pending_with_history, d0.achievements], [3, 0, 3, 0, 0], 'every played title waits for the back-fill');
