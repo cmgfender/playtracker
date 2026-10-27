@@ -20,6 +20,7 @@ import { gameTrackTables, importGameTrack } from '../services/gametrack.js';
 import { modelFor } from '../services/model.js';
 import { entrySummaries, combineSummaries, gameAchievements, withSessionAchievements, achievementStats, achievementProgress } from '../services/achievements.js';
 import { punchcard, sessionLengths, platformSeries, timeline, gameCurve, libraryOverview, yearOverYear, records } from '../services/insights.js';
+import { suggest, feedbackList, setFeedback, MODES } from '../services/suggest.js';
 import fsp from 'node:fs';
 import { httpJson, ProviderError } from '../providers/http.js';
 import { HttpError, toInt, toTime } from '../util.js';
@@ -735,6 +736,45 @@ export function registerRoutes(r, app) {
       + 'most_played: { game_id, title, cover_url, minutes, estimated_minutes, share } | null, most_played_by: { group, items: [{ key, game_id, title, cover_url, minutes, estimated_minutes, share }] }, '
       + 'weekday: number[7] (tracked minutes, 0 = Sunday), hours: number[24] (exact sessions), '
       + 'highlights: [{ id (longest_session|biggest_day|best_week|longest_streak|most_played|favorite_weekday|time_of_day|first_session), text (an English one-liner from a fixed template), value, unit (minutes|days|percent), ...the ids / days it refers to }] }',
+  });
+
+  // ---------- what should I play? ----------
+  const PICK_DOC = '{ game_id, title, cover_url, platforms: string[], status, rating (0-10) | null, favorite, minutes (lifetime), score (0-100), mode_match (false: no game has what the mode looks for, this is the closest), '
+    + 'reasons: [{ id (fit|recent|momentum|finish|dusty|fresh|favorite|rating|status|played (only when nothing else stands out), or fit_long: sessions run longer than the time given), text (an English line with the numbers), value (the number the line is built on: minutes, a percent, days, a rating, a status) }] (the strongest first, at most 3 plus fit_long), '
+    + 'typical_session_minutes (median tracked session of the game), typical_session_source (game | overall: the player\'s median, the game has fewer than 2 sessions | default: 60, nothing tracked), '
+    + 'last_played_at | null, achievements: { unlocked, total, percent } | null, launch_url (steam://rungameid/... for a synced Steam game) | null }';
+  r.get('/api/v1/suggest', (c) => {
+    const q = c.query;
+    const exclude = String(q.exclude || '').split(',').map((x) => toInt(x)).filter((x) => x != null);
+    return suggest(db, {
+      minutes: q.minutes, mode: q.mode || 'auto', platform: q.platform, count: clamp(q.count, 3, 1, 10),
+      seed: q.seed, exclude, chase: q.chase === 'true' || q.chase === '1',
+    });
+  }, {
+    summary: 'What should I play? A few picks from the library for the time you have, each with plain-language reasons',
+    query: {
+      minutes: 'time you have: 5..1440, or long (a long session; 4h). Omitted: any length (quick mode assumes 30)',
+      mode: `${Object.entries(MODES).map(([k, m]) => `${k} (${m.label})`).join(' | ')}; default auto`,
+      platform: 'only games owned on these platforms (comma list: steam,xbox,psn,manual,...)',
+      count: 'picks, 1..10 (default 3): the first is the main pick, the rest alternates',
+      seed: 'integer; the same inputs and seed give the same picks (default: today\'s date as YYYYMMDD). Pick again: seed + 1 with exclude',
+      exclude: 'game ids already shown (comma list), left out of this answer',
+      chase: 'true = also beaten games that have achievements left (chasing completion)',
+    },
+    returns: `{ mode, mode_label, minutes (the time used for the fit, null = any), long, platform, chase, seed, count, typical_session_minutes (the player's median tracked session) | null, picks: [${PICK_DOC}], `
+      + 'considered (games scored), excluded_counts: { hidden, excluded (every entry excluded as a double count), wishlist, completed, dropped, beaten (unless chase and achievements are left), never, snoozed, platform, shown (exclude), just_played (the most played game of the last 3 days; not in keep mode) }, note }. '
+      + 'Never suggested: hidden, excluded or wishlist games, completed and dropped ones, and games snoozed or marked never (POST /suggest/feedback). '
+      + 'Signals (each 0..1, weighed per mode): fit (typical session vs the time given), recent (tracked play in 14 days), momentum (60 days of play, none in the last 14), finish (achievement completion, few left), '
+      + 'dusty (2h+ played, untouched 180+ days), fresh (under 1h played), pref (favorite / rating), status (playing > backlog > paused > beaten > unset). What is installed is unknown.',
+  });
+  r.get('/api/v1/suggest/feedback', () => feedbackList(db), {
+    summary: 'Games snoozed ("Not now") or never to be suggested, to list and undo',
+    returns: '{ items: [{ game_id, title, cover_url, action: snooze | never, until (snooze: suggested again from then) | null, created_at }], snoozed, never } (expired snoozes are left out)',
+  });
+  r.post('/api/v1/suggest/feedback', (c) => setFeedback(db, c.body), {
+    summary: 'Not now (snooze a game for some days), never suggest it, or reset either',
+    body: '{ game_id, action: snooze | never | reset, days? (snooze: 1..365, default 7) }',
+    returns: '{ ok, game_id, action, until | null }',
   });
 
   // ---------- duplicates ----------

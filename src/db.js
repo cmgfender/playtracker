@@ -324,6 +324,16 @@ const MIGRATIONS = [
     if (!cols.has('ach_v')) db.exec('ALTER TABLE entries ADD COLUMN ach_v INTEGER NOT NULL DEFAULT 0');
     if (!cols.has('ach_at')) db.exec('ALTER TABLE entries ADD COLUMN ach_at INTEGER');
   },
+  // 7: "What should I play?" feedback: a game snoozed until a time, or never suggested again.
+  //    Safe to run again on a database that has it.
+  `
+  CREATE TABLE IF NOT EXISTS suggest_feedback (
+    game_id INTEGER PRIMARY KEY REFERENCES games(id) ON DELETE CASCADE,
+    action TEXT NOT NULL,          -- 'snooze' | 'never'
+    until INTEGER,                 -- snooze: suggested again from this time
+    created_at INTEGER NOT NULL
+  );
+  `,
 ];
 
 export function openDb(file) {

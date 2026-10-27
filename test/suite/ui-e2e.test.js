@@ -21,7 +21,7 @@ const UI = { skip: skipReason || false };
 const PUBLIC = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'public');
 const NOW = Date.now();
 const YEAR = new Date(NOW).getFullYear();
-const DEFAULT_LAYOUT = 'kpis,live,jump,chart,top,recent,accounts,-heatmap,-backlog';
+const DEFAULT_LAYOUT = 'kpis,live,jump,suggest,chart,top,recent,accounts,-heatmap,-backlog';
 // Home's heading: this week's playtime ("4h 27m this week"); the greeting is the eyebrow above it
 const HOME_H1 = /^(\d[\d,.]*h(?: \d+m)?|\d+m) this week$/;
 
@@ -836,7 +836,7 @@ describe('Vestigo web UI (no password)', UI, () => {
       };
       await check();
       const saved = (await S.ok('/settings')).dashboard_layout;
-      assert.equal(saved, 'kpis,live,jump,accounts,chart,top,-recent,heatmap,-backlog');
+      assert.equal(saved, 'kpis,live,jump,suggest,accounts,chart,top,-recent,heatmap,-backlog');
       await page.reload();
       await waitView(page);
       await h.settle();
@@ -850,7 +850,7 @@ describe('Vestigo web UI (no password)', UI, () => {
       await page.locator('.modal', { hasText: 'Customize home' }).waitFor();
       const rows = page.locator('.modal .layout-row');
       const n = await rows.count();
-      assert.equal(n, 9, 'all nine home sections are listed');
+      assert.equal(n, 10, 'all ten home sections are listed');
       for (let i = 0; i < n; i++) if (await rows.nth(i).locator('input[data-on]').isChecked()) await rows.nth(i).locator('label.switch span').click();
       await page.locator('#lay-save').click();
       await page.locator('#view', { hasText: 'Every section is hidden' }).waitFor();
@@ -1071,6 +1071,23 @@ describe('Vestigo web UI (no password)', UI, () => {
           ['tracking health pill', '#view .health > span:last-child', 4.5, false],
           ['attention card', '#view .attn-card b', 4.5, false],
           ['attention card line', '#view .attn-card .small', 4.5, false],
+          // What should I play?
+          ['suggest: time (on)', '#dash-suggest .seg button.on', 4.5, false],
+          ['suggest: time', '#dash-suggest .seg button:not(.on)', 4.5, false],
+          ['suggest: title', '#dash-suggest .sg-title a', 4.5, false],
+          ['suggest: platform', '#dash-suggest .sg-plats > span', 4.5, false],
+          ['suggest: reason', '#dash-suggest .sg-why li span', 4.5, false],
+          ['suggest: reason tick', '#dash-suggest .sg-why li svg', 3, false],
+          ['suggest: primary button', '#dash-suggest .sg-act .btn.primary', 4.5, true],
+          ['suggest: ghost button', '#dash-suggest .sg-act .btn.ghost', 4.5, false],
+          ['suggest: "Or try"', '#dash-suggest .sg-alts .eyebrow', 4.5, false],
+          ['suggest: alternate', '#dash-suggest .sg-alt .ttl', 4.5, false],
+          ['suggest: alternate line', '#dash-suggest .sg-alt .sub', 4.5, false],
+          ['suggest: alternate chevron', '#dash-suggest .sg-alt > svg', 3, false],
+          ['suggest: footer', '#dash-suggest .sg-foot span', 4.5, false],
+          ['suggest: count', '#dash-suggest [data-sg-count]', 4.5, false],
+          ['focus ring: alternate', '#dash-suggest .sg-alt', 3, true, { ring: true }],
+          ['focus ring: time', '#dash-suggest .seg button.on', 3, true, { ring: true }],
         ],
         settings: [
           ['primary button', '#sched-save', 4.5, true],
@@ -1154,6 +1171,9 @@ describe('Vestigo web UI (no password)', UI, () => {
           ['tab bar active label', '.tabbar a.active', 4.5, true],
           ['tab bar active icon', '.tabbar a.active svg', 3, true],
           ['tab bar label', '.tabbar a:not(.active)', 4.5, false],
+          ['suggest: reason (phone)', '#dash-suggest .sg-why li span', 4.5, false],
+          ['suggest: ghost button (phone)', '#dash-suggest .sg-act .btn.ghost', 4.5, false],
+          ['suggest: primary button (phone)', '#dash-suggest .sg-act .btn.primary', 4.5, true],
         ],
         eras: [
           ['era label (strip, phone)', '#ins-what .erastrip text.era-l', 4.5, false],
@@ -3193,7 +3213,7 @@ describe('Vestigo web assets', () => {
   });
 
   test('no emoji or pictographs in the UI markup', () => {
-    for (const f of ['index.html', 'app.js', 'pages.js', 'charts.js', 'insights.js']) {
+    for (const f of ['index.html', 'app.js', 'pages.js', 'charts.js', 'insights.js', 'suggest.js']) {
       assert.deepEqual([...read(f).matchAll(/\p{Extended_Pictographic}/gu)].map((m) => m[0]), [], f);
     }
   });

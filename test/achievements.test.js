@@ -850,7 +850,7 @@ describe('upgrade: a database from before achievements were kept', () => {
 
       t = await startApp({ dbFile: file });
       try {
-        assert.equal(t.db.prepare('PRAGMA user_version').get().user_version, 6, 'migrated');
+        assert.ok(t.db.prepare('PRAGMA user_version').get().user_version >= 6, 'migrated');
         const diag = async () => (await t.get('/system')).accounts.find((a) => a.id === acc).achievements;
         const d0 = await diag();
         assert.deepEqual([d0.titles, d0.done, d0.pending, d0.pending_with_history, d0.achievements], [3, 0, 3, 0, 0], 'every played title waits for the back-fill');
