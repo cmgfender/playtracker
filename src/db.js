@@ -334,6 +334,14 @@ const MIGRATIONS = [
     created_at INTEGER NOT NULL
   );
   `,
+  // 8: achievements known from an import (GameTrack) until the platform reports them, and how
+  //    many achievements the platform says a title has (Xbox lists are read page by page: a
+  //    partly read title must not look complete)
+  (db) => {
+    const cols = (t) => new Set(db.prepare(`PRAGMA table_info(${t})`).all().map((c) => c.name));
+    if (!cols('achievements').has('source')) db.exec('ALTER TABLE achievements ADD COLUMN source TEXT'); // 'gametrack' | NULL = the platform
+    if (!cols('entries').has('ach_total')) db.exec('ALTER TABLE entries ADD COLUMN ach_total INTEGER');
+  },
 ];
 
 export function openDb(file) {

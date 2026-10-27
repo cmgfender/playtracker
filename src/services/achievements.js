@@ -74,20 +74,33 @@ function normalize(it, i) {
 const META = ['name', 'description', 'icon_url', 'icon_locked_url', 'rarity', 'points', 'grade', 'hidden', 'group_id', 'sort'];
 // A read updates what the platform says now and never repeats a row. An unlock is kept even if a
 // later reply says locked (a glitchy or partial reply must not take it back, like totals keep
-// their high-water mark); only rows that really change are written.
+// their high-water mark); only rows that really change are written. A row known from an import
+// (source) is the platform's own once the platform names it.
 const UPSERT = `INSERT INTO achievements(entry_id, ach_id, name, description, icon_url, icon_locked_url, unlocked, unlocked_at, rarity, points, grade, hidden, group_id, sort, first_seen_at, updated_at)
   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   ON CONFLICT(entry_id, ach_id) DO UPDATE SET
     ${META.map((c) => `${c} = COALESCE(excluded.${c}, ${c})`).join(', ')},
-    unlocked = MAX(unlocked, excluded.unlocked), unlocked_at = COALESCE(excluded.unlocked_at, unlocked_at), updated_at = excluded.updated_at
+    unlocked = MAX(unlocked, excluded.unlocked), unlocked_at = COALESCE(excluded.unlocked_at, unlocked_at), updated_at = excluded.updated_at,
+    source = CASE WHEN excluded.name IS NOT NULL THEN NULL ELSE source END
   WHERE ${META.map((c) => `COALESCE(excluded.${c}, ${c}) IS NOT ${c}`).join(' OR ')}
-    OR MAX(unlocked, excluded.unlocked) IS NOT unlocked OR COALESCE(excluded.unlocked_at, unlocked_at) IS NOT unlocked_at`;
+    OR MAX(unlocked, excluded.unlocked) IS NOT unlocked OR COALESCE(excluded.unlocked_at, unlocked_at) IS NOT unlocked_at
+    OR (excluded.name IS NOT NULL AND source IS NOT NULL)`;
+
+/** A name as compared across sources (case, spacing, quotes and trademark signs aside). */
+export const nameKey = (v) => (text(v, 500) || '').toLowerCase().replace(/[‘’“”'"`™®©]/g, '').replace(/\s+/g, ' ').trim();
+/** The trophy set an id is scoped to ('<npCommunicationId>:<trophyId>' -> '<npCommunicationId>:'), or null. */
+const scopeOf = (id) => /^[^:]+:/.exec(id)?.[0] ?? null;
 
 /**
  * Upsert one entry's achievements as a provider read them. Returns what changed:
  * { added, updated, newly_unlocked } (re-reading the same reply changes nothing).
+ *
+ * A row an import brought in under an id of its own (it knew no platform id) becomes the
+ * platform's row of the same name, its unlock kept. complete = the reply listed every
+ * achievement of the title: imported rows it knows by neither id nor name are dropped, so
+ * nothing is listed twice (for PlayStation only in the trophy sets the reply covers).
  */
-export function storeAchievements(db, entryId, items, { now = Date.now() } = {}) {
+export function storeAchievements(db, entryId, items, { now = Date.now(), complete = false } = {}) {
   const rows = [];
   const seen = new Set();
   (Array.isArray(items) ? items : []).forEach((it, i) => {
@@ -97,6 +110,32 @@ export function storeAchievements(db, entryId, items, { now = Date.now() } = {})
   const out = { added: 0, updated: 0, newly_unlocked: 0 };
   if (!rows.length) return out;
   const before = new Map(db.prepare('SELECT ach_id, unlocked FROM achievements WHERE entry_id = ?').all(entryId).map((r) => [r.ach_id, r.unlocked]));
+  const imported = db.prepare('SELECT id, ach_id, name FROM achievements WHERE entry_id = ? AND source IS NOT NULL ORDER BY sort, id').all(entryId).filter((g) => !seen.has(g.ach_id));
+  if (imported.length) {
+    const byName = new Map();
+    for (const g of imported) {
+      const k = nameKey(g.name);
+      if (k) byName.set(k, [...(byName.get(k) || []), g]);
+    }
+    const rename = db.prepare('UPDATE achievements SET ach_id = ? WHERE id = ?');
+    const taken = new Set();
+    for (const r of rows) {
+      if (before.has(r.id) || !r.name) continue;
+      const list = byName.get(nameKey(r.name)) || [];
+      // of several with that name, one of the same trophy set first
+      const g = list.find((x) => !taken.has(x.id) && scopeOf(x.ach_id) === scopeOf(r.id)) || list.find((x) => !taken.has(x.id));
+      if (!g) continue;
+      taken.add(g.id);
+      rename.run(r.id, g.id);
+      before.set(r.id, before.get(g.ach_id));
+      before.delete(g.ach_id);
+    }
+    if (complete) {
+      const scopes = rows.every((r) => scopeOf(r.id)) ? new Set(rows.map((r) => scopeOf(r.id))) : null;
+      const drop = db.prepare('DELETE FROM achievements WHERE id = ?');
+      for (const g of imported) if (!taken.has(g.id) && (!scopes || scopes.has(scopeOf(g.ach_id)))) drop.run(g.id);
+    }
+  }
   const up = db.prepare(UPSERT);
   for (const r of rows) {
     const res = up.run(entryId, r.id, r.name, r.description, r.icon_url, r.icon_locked_url, r.unlocked, r.unlocked_at, r.rarity, r.points, r.grade, r.hidden, r.group_id, r.sort, now, now);
@@ -109,9 +148,61 @@ export function storeAchievements(db, entryId, items, { now = Date.now() } = {})
   return out;
 }
 
-/** What is stored for an entry, for providers deciding whether details must be read again. */
+/** What is stored for an entry, for providers deciding whether details must be read again (what only an import told counts as unknown). */
 export function knownAchievements(db, entryId) {
-  return db.prepare('SELECT ach_id, name IS NOT NULL named, icon_url IS NOT NULL iconed FROM achievements WHERE entry_id = ?').all(entryId);
+  return db.prepare('SELECT ach_id, name IS NOT NULL AND source IS NULL named, icon_url IS NOT NULL AND source IS NULL iconed FROM achievements WHERE entry_id = ?').all(entryId);
+}
+
+const FILL = ['name', 'description', 'icon_url', 'icon_locked_url', 'rarity', 'points', 'grade', 'hidden', 'group_id'];
+/**
+ * Merge achievements an import (GameTrack) knows into one entry, filling gaps only: what the
+ * platform reported wins (names, icons, rarity, its unlock times); the import adds unlocks,
+ * unlock times the platform has none for and - for titles no account reads yet - the rows
+ * themselves. An unlock is never taken back.
+ *
+ * Items are { id?, alt_ids?, fallback_id?, name, ..., unlocked, unlocked_at }. Each lands on the
+ * stored row with its id (or one of alt_ids), else the one with its name, else a new row under
+ * its id (fallback_id when it has none: a later platform read takes it over by name). Once the
+ * platform has listed the title (`listed`), items it does not know are left out (unmatched):
+ * they can only be another spelling of a row it has. Returns { added, matched, updated,
+ * unmatched }; the same items again change nothing.
+ */
+export function importAchievements(db, entryId, items, { now = Date.now(), source = 'gametrack', listed = false } = {}) {
+  const out = { added: 0, matched: 0, updated: 0, unmatched: 0 };
+  const stored = db.prepare('SELECT id, ach_id, name, sort FROM achievements WHERE entry_id = ? ORDER BY sort, id').all(entryId);
+  const byId = new Map(stored.map((r) => [r.ach_id, r]));
+  const byName = new Map();
+  for (const r of stored) {
+    const k = nameKey(r.name);
+    if (k) byName.set(k, [...(byName.get(k) || []), r]);
+  }
+  const taken = new Set();
+  let sort = stored.reduce((m, r) => Math.max(m, r.sort ?? 0), -1) + 1;
+  const ins = db.prepare(`INSERT INTO achievements(entry_id, ach_id, name, description, icon_url, icon_locked_url, unlocked, unlocked_at, rarity, points, grade, hidden, group_id, sort, first_seen_at, updated_at, source)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+  const upd = db.prepare(`UPDATE achievements SET ${FILL.map((c) => `${c} = COALESCE(${c}, ?)`).join(', ')},
+      unlocked = MAX(unlocked, ?), unlocked_at = COALESCE(unlocked_at, ?), updated_at = ?
+    WHERE id = ? AND (${FILL.map((c) => `(${c} IS NULL AND ? IS NOT NULL)`).join(' OR ')} OR unlocked < ? OR (unlocked_at IS NULL AND ? IS NOT NULL))`);
+  const free = (r) => r && !taken.has(r.id);
+  (Array.isArray(items) ? items : []).forEach((it, i) => {
+    const r = normalize({ ...it, id: text(it?.id, 200) ?? it?.fallback_id }, i);
+    if (!r) return;
+    const ids = [text(it.id, 200), ...(it.alt_ids || []).map((x) => text(x, 200))].filter(Boolean);
+    const row = ids.map((id) => byId.get(id)).find(free) || (byName.get(nameKey(r.name)) || []).find(free) || (free(byId.get(r.id)) ? byId.get(r.id) : null);
+    if (row) {
+      taken.add(row.id);
+      out.matched++;
+      const vals = FILL.map((c) => r[c]);
+      if (upd.run(...vals, r.unlocked, r.unlocked_at, now, row.id, ...vals, r.unlocked, r.unlocked_at).changes) out.updated++;
+      return;
+    }
+    if (listed || byId.has(r.id)) { out.unmatched++; return; }
+    const id = Number(ins.run(entryId, r.id, r.name, r.description, r.icon_url, r.icon_locked_url, r.unlocked, r.unlocked_at, r.rarity, r.points, r.grade, r.hidden, r.group_id, sort++, now, now, source).lastInsertRowid);
+    byId.set(r.id, { id, ach_id: r.id, name: r.name });
+    taken.add(id);
+    out.added++;
+  });
+  return out;
 }
 
 // ---------------------------------------------------------------- summaries
@@ -129,10 +220,11 @@ const SUMMARY = `SELECT a.entry_id, COUNT(*) total, SUM(a.unlocked) unlocked,
  * { total, unlocked, percent, points, points_total, grades, last_unlocked_at, completed, completed_at, fetched_at }
  * completed = everything unlocked, or (PlayStation) the platinum earned; completed_at = the
  * earlier of the two moments. points (Xbox) and grades (PlayStation) are null where the platform
- * has none.
+ * has none. reported: how many the platform says the title has (Xbox lists are read page by
+ * page), when more than what is stored.
  */
-export function summaryOf(r, fetchedAt = null) {
-  const total = r?.total || 0;
+export function summaryOf(r, fetchedAt = null, reported = null) {
+  const total = Math.max(r?.total || 0, reported || 0);
   const unlocked = r?.unlocked || 0;
   const platinum = r?.platinum_at != null;
   const all = total > 0 && unlocked >= total;
@@ -152,14 +244,14 @@ export function summaryOf(r, fetchedAt = null) {
 }
 
 /**
- * Summaries for entries (rows with id, ach_v, ach_at): Map(entry id -> summary | null). null =
+ * Summaries for entries (rows with id, ach_v, ach_at, ach_total): Map(entry id -> summary | null). null =
  * never read (or the platform has no achievements); a read title without any is all zeros.
  */
 export function entrySummaries(db, entries) {
   const list = [...entries];
   if (!list.length) return new Map();
   const rows = new Map(db.prepare(`${SUMMARY} WHERE a.entry_id IN (SELECT value FROM json_each(?)) GROUP BY a.entry_id`).all(JSON.stringify(list.map((e) => e.id))).map((r) => [r.entry_id, r]));
-  return new Map(list.map((e) => [e.id, rows.has(e.id) || e.ach_v > 0 ? summaryOf(rows.get(e.id), e.ach_at ?? null) : null]));
+  return new Map(list.map((e) => [e.id, rows.has(e.id) || e.ach_v > 0 ? summaryOf(rows.get(e.id), e.ach_at ?? null, e.ach_total ?? null) : null]));
 }
 
 /** Several entries' summaries as one (a game): counts add up, completed when any entry is. */
@@ -322,7 +414,7 @@ export function withSessionAchievements(db, rows, opts) {
 export function gameAchievements(db, gameId, { entryId = null, state = 'all' } = {}) {
   const ent = entryId ? 'AND e.id = ?' : '';
   const args = entryId ? [gameId, entryId] : [gameId];
-  const entries = db.prepare(`SELECT e.id, e.platform, e.account_id, ac.name account_name, e.title, e.excluded, e.ach_v, e.ach_at
+  const entries = db.prepare(`SELECT e.id, e.platform, e.account_id, ac.name account_name, e.title, e.excluded, e.ach_v, e.ach_at, e.ach_total
     FROM entries e LEFT JOIN accounts ac ON ac.id = e.account_id WHERE e.game_id = ? ${ent} ORDER BY e.id`).all(...args);
   const sums = entrySummaries(db, entries);
   const st = state === 'unlocked' ? 'AND a.unlocked = 1' : state === 'locked' ? 'AND a.unlocked = 0' : '';
@@ -380,7 +472,7 @@ export function achievementStats(db, { range = '30d', group, platform = null, we
       .map((r) => ({ ...itemOf(r), game_id: r.game_id, title: r.title, cover_url: r.cover_url ?? null }));
 
     // per entry: completion, all-time totals, games completed in the range
-    const per = db.prepare(`SELECT s.*, e.game_id, e.platform, e.ach_at, gm.title, gm.cover_url, ${PLAYED_SQL.replace(/(playtime_min|last_played_at)/g, 'e.$1')} played
+    const per = db.prepare(`SELECT s.*, e.game_id, e.platform, e.ach_at, e.ach_total, gm.title, gm.cover_url, ${PLAYED_SQL.replace(/(playtime_min|last_played_at)/g, 'e.$1')} played
       FROM (${SUMMARY} GROUP BY a.entry_id) s JOIN entries e ON e.id = s.entry_id JOIN games gm ON gm.id = e.game_id WHERE e.excluded = 0 ${pf}`).all(...pa);
     const totals = { unlocked: 0, total: 0, percent: 0, points: 0, points_total: 0, grades: Object.fromEntries(GRADES.map((x) => [x, 0])), entries: 0, completed: 0 };
     const buckets = BUCKETS.map(([min, max, lbl]) => ({ label: lbl, min, max, count: 0 }));
@@ -388,7 +480,7 @@ export function achievementStats(db, { range = '30d', group, platform = null, we
     let pctSum = 0;
     let played = 0;
     for (const r of per) {
-      const s = summaryOf(r, r.ach_at);
+      const s = summaryOf(r, r.ach_at, r.ach_total);
       totals.unlocked += s.unlocked;
       totals.total += s.total;
       totals.points += s.points || 0;

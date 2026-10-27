@@ -93,7 +93,8 @@ Microsoft has no public consumer API, so Vestigo uses [OpenXBL](https://xbl.io).
 - Syncs keep 15% of the budget in reserve.
 - Presence checks every 5 minutes (12 requests an hour) and pauses when the budget runs low.
 - Enrichment, which reads achievement unlock times from `achievements/player/{xuid}/{titleId}`, only uses budget while more than 30% is left. The same reply carries the achievements (names, icons, gamerscore, rarity; Xbox 360 titles too), so keeping them costs nothing extra.
-- A title played since its achievements were read is read again after the sync (1 request, at most 5 titles per run), also only above that 30% reserve.
+- Long lists come in pages (`pagingInfo.continuationToken`, Xbox 360 titles alike): each further page is one more request (`?continuationToken=`), asked only while more than 30% is left, at most 10 pages per title. When the budget runs out mid-title, what was read is kept and the title is read on from that page later (from the first page again if it was played since); until then its progress counts `totalRecords`, so it never shows a wrong 100%.
+- A title played since its achievements were read is read again after the sync (1 request per page, at most 5 titles per run), also only above that 30% reserve.
 - Titles read before achievements were kept are back-filled once: at most a quarter of the hourly limit per clock hour, never into the reserve, so presence and syncs always have room.
 
 **Large first import:**
