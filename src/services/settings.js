@@ -20,6 +20,13 @@ export const DEFAULT_SETTINGS = {
   // Notifications
   webhook_url: '',
   webhook_on: 'sessions',     // 'sessions' | 'always' | 'errors'
+  weekly_summary: true,       // last week's summary through the webhook, on the first day of the week (week_starts_on)
+  weekly_summary_time: '09:00',
+
+  // Automatic backups to <data>/backups (or VESTIGO_BACKUP_DIR)
+  backup_mode: 'daily',       // 'daily' | 'weekly' (on week_starts_on) | 'off'
+  backup_time: '03:30',
+  backup_keep: 7,             // scheduled backups kept (1..90); the oldest beyond this are removed
 
   // UI (stored server-side so every device gets the same look)
   theme: 'dark',              // 'dark' | 'black' (OLED) | 'light' | 'auto'
@@ -48,6 +55,7 @@ const ENUMS = {
   default_library_sort: ['recent', 'trending', 'playtime', 'title', 'added', 'rating'],
   stats_estimates: ['include', 'exclude'],
   webhook_on: ['sessions', 'always', 'errors'],
+  backup_mode: ['daily', 'weekly', 'off'],
 };
 const BOOLS = new Map([[true, true], ['true', true], [1, true], ['1', true], [false, false], ['false', false], [0, false], ['0', false]]);
 
@@ -84,6 +92,7 @@ export class Settings {
     const s = this.all();
     delete s.password_hash;
     delete s.history_style; // learned data, not a setting
+    delete s.weekly_summary_sent; // the last week summarized
     return s;
   }
 }
@@ -111,6 +120,8 @@ export function validateSettings(patch) {
   const badInt = (k, min, max) => k in out && !(Number.isInteger(out[k]) && out[k] >= min && out[k] <= max);
   if ('schedule_mode' in out && !VALID_MODES.includes(out.schedule_mode)) errors.push(`schedule_mode must be one of ${VALID_MODES.join(', ')}`);
   if ('schedule_time' in out && !/^([01]\d|2[0-3]):[0-5]\d$/.test(out.schedule_time)) errors.push('schedule_time must be HH:MM');
+  for (const k of ['weekly_summary_time', 'backup_time']) if (k in out && !/^([01]\d|2[0-3]):[0-5]\d$/.test(out[k])) errors.push(`${k} must be HH:MM`);
+  if (badInt('backup_keep', 1, 90)) errors.push('backup_keep must be 1..90');
   if (badInt('schedule_every', 1, 365)) errors.push('schedule_every must be 1..365');
   if (badInt('schedule_weekday', 0, 6)) errors.push('schedule_weekday must be 0..6');
   if (badInt('schedule_monthday', 1, 28)) errors.push('schedule_monthday must be 1..28');

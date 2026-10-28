@@ -192,7 +192,7 @@ export const psn = {
           titles = new Map((r?.titles || []).map((t) => [t.npTitleId, t.trophyTitles || []]));
           for (const e of batch) ctx.cache?.set(`psn:sets:${e.ext_id}`, titles.get(e.ext_id) || [], DAY);
         } catch (err) {
-          if (err.rateLimited || err.auth) break;
+          if (err.rateLimited || err.auth || err.blocked) break;
           const none = err.status === 404 || err.status === 400;
           for (const e of batch) updates.push({ entryId: e.id, anchors: [], done: none, ...(none ? { achievements: null } : {}) });
           continue;
@@ -272,7 +272,7 @@ export const psn = {
         const online = !status ? null : /^online$|^availabletoplay$/i.test(status) ? 'Online' : /offline|unavailable/i.test(status) ? 'Offline' : String(status);
         return { playing, online, seen: playing.map((g) => ({ id: g.extId, name: g.title, device: g.device })), state: tok };
       } catch (err) {
-        if (err.rateLimited || err.auth) throw err; // the fallback id would only cost another call
+        if (err.rateLimited || err.auth || err.blocked) throw err; // the fallback id would only cost another call
         lastErr = err;
       }
     }

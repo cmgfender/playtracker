@@ -1,7 +1,6 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { DatabaseSync } from 'node:sqlite';
 import { tx } from '../db.js';
 import { providers, providerInfo } from '../providers/index.js';
 import { parseAccount } from '../services/sync.js';
@@ -21,6 +20,9 @@ import { modelFor } from '../services/model.js';
 import { entrySummaries, combineSummaries, gameAchievements, withSessionAchievements, achievementStats, achievementProgress } from '../services/achievements.js';
 import { punchcard, sessionLengths, platformSeries, timeline, gameCurve, libraryOverview, yearOverYear, records } from '../services/insights.js';
 import { suggest, feedbackList, setFeedback, MODES } from '../services/suggest.js';
+import { snapshot, isBackupName } from '../services/backup.js';
+import { weeklySummary, summaryText } from '../services/digest.js';
+import { sendSummary } from '../services/webhook.js';
 import fsp from 'node:fs';
 import { httpJson, ProviderError } from '../providers/http.js';
 import { HttpError, toInt, toTime } from '../util.js';
@@ -1055,13 +1057,59 @@ export function registerRoutes(r, app) {
     const tmp = path.join(os.tmpdir(), `vestigo-backup-${Date.now()}.db`);
     // a read-only connection of its own: SQLite refuses VACUUM while a statement is running on the
     // app's connection (an export still downloading); either way it copies one consistent snapshot
-    const src = app.dbFile && app.dbFile !== ':memory:' ? new DatabaseSync(app.dbFile, { readOnly: true }) : db;
-    try { src.exec(`VACUUM INTO '${tmp.replace(/'/g, "''")}'`); } finally { if (src !== db) src.close(); }
+    snapshot({ db, dbFile: app.dbFile, dest: tmp });
     const buf = fs.readFileSync(tmp);
     fs.unlinkSync(tmp);
     c.sendRaw(200, buf, 'application/vnd.sqlite3', { 'Content-Disposition': `attachment; filename="vestigo-${new Date().toISOString().slice(0, 10)}.db"` });
     return undefined;
   }, { summary: 'Download a consistent SQLite backup' });
+
+  // automatic backups kept on the server (see services/backup.js)
+  const backups = () => { if (!app.backups) throw new HttpError(404, 'Backups are not available'); return app.backups; };
+  const backupFile = (name) => {
+    const b = backups();
+    if (!isBackupName(name) || !b.dir) throw new HttpError(404, 'No such backup');
+    const file = path.join(b.dir, name);
+    if (!fs.existsSync(file)) throw new HttpError(404, 'No such backup');
+    return file;
+  };
+  r.get('/api/v1/backups', () => backups().status(), {
+    summary: 'Automatic backups: schedule, folder and the files kept',
+    returns: '{ enabled, mode, time, keep, dir, count, total_bytes, last, next_at, last_error: { at, message } | null, files: [{ name, kind: scheduled|before-upgrade, at, bytes }] }',
+  });
+  r.post('/api/v1/backups', () => {
+    const b = backups();
+    if (!b.dir) throw new HttpError(409, 'Backups need a database file (this instance runs in memory)');
+    if (b.running) throw new HttpError(409, 'A backup is already running');
+    return b.run({ reason: 'manual' });
+  }, { summary: 'Make a backup now (kept with the scheduled ones)', returns: '{ name, bytes, removed: [names] }' });
+  r.get('/api/v1/backups/:name', (c) => {
+    const file = backupFile(c.params.name);
+    c.stream(200, 'application/vnd.sqlite3', { 'Content-Disposition': `attachment; filename="${c.params.name}"`, 'Content-Length': fs.statSync(file).size });
+    fs.createReadStream(file).on('error', () => c.res.destroy()).pipe(c.res);
+    return undefined;
+  }, { summary: 'Download one kept backup' });
+  r.delete('/api/v1/backups/:name', (c) => { fs.unlinkSync(backupFile(c.params.name)); return { ok: true }; }, { summary: 'Delete one kept backup' });
+
+  // ---------- weekly summary ----------
+  r.get('/api/v1/summary/week', (c) => {
+    const weeksAgo = c.query.weeks_ago == null ? 1 : toInt(c.query.weeks_ago);
+    if (!(weeksAgo >= 0 && weeksAgo <= 520)) throw new HttpError(400, 'weeks_ago must be 0..520');
+    const s = weeklySummary(db, { weeksAgo, weekStartsOn: settings.get('week_starts_on') });
+    return { ...s, text: summaryText(s) };
+  }, {
+    summary: 'A week in numbers: what the weekly webhook summary sends (tracked play only)',
+    query: { weeks_ago: '0 = this week so far, 1 = last week (default), …' },
+    returns: '{ week: { from, to, start_day, end_day, complete }, minutes, sessions, games_played, days_played, previous_minutes, change_percent, top_games, platforms, new_games, '
+      + 'achievements: { unlocked, points, rarest, platinums }, longest_session, busiest_day, streak_days, text }',
+  });
+  r.post('/api/v1/summary/week/send', async () => {
+    const url = settings.get('webhook_url');
+    if (!url) throw new HttpError(400, 'Set a webhook URL first');
+    const s = weeklySummary(db, { weeksAgo: 1, weekStartsOn: settings.get('week_starts_on') });
+    try { await sendSummary(url, s, summaryText(s)); } catch (err) { throw new HttpError(502, err.message); }
+    return { ok: true };
+  }, { summary: "Send last week's summary to the webhook now (a test; the scheduled one still goes out)" });
 
   // ---------- integrations ----------
   // ---------- history inference ----------
@@ -1218,6 +1266,8 @@ export function registerRoutes(r, app) {
         snapshots: count('SELECT COUNT(*) n FROM snapshots'), presence_spans: count('SELECT COUNT(*) n FROM presence'),
         logs: count('SELECT COUNT(*) n FROM logs'), achievements: count('SELECT COUNT(*) n FROM achievements'),
       },
+      backups: app.backups ? (({ files, ...b }) => ({ ...b, before_upgrade: files.filter((f) => f.kind === 'before-upgrade').length }))(app.backups.status()) : null,
+      weekly_summary: { enabled: !!(settings.get('weekly_summary') && settings.get('webhook_url')), time: settings.get('weekly_summary_time'), last_sent_week: settings.get('weekly_summary_sent') || null },
       errors_24h: count("SELECT COUNT(*) n FROM logs WHERE level = 'error' AND time > ?", Date.now() - 86_400_000),
       warnings_24h: count("SELECT COUNT(*) n FROM logs WHERE level = 'warn' AND time > ?", Date.now() - 86_400_000),
       accounts,

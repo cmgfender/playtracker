@@ -169,7 +169,8 @@ export function firstPlayDay(db, estimates = 'include') {
 
 export function computeStats(db, opts = {}) {
   const { range = '30d', group, gameId, platform, weekStartsOn = 1, now = Date.now(), topLimit = 25, estimates = 'include' } = opts;
-  return memo(db, `stats:${range}:${group}:${gameId}:${platform}:${weekStartsOn}:${topLimit}:${estimates}`, () => {
+  // an explicit `now` (a past week) is part of the key: the range alone names a different period
+  return memo(db, `stats:${range}:${group}:${gameId}:${platform}:${weekStartsOn}:${topLimit}:${estimates}:${opts.now ?? ''}`, () => {
     let { from, to, label } = resolveRange(range, now, weekStartsOn);
     if (from === 0) {
       const first = gameId

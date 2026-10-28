@@ -351,7 +351,7 @@ export const xbox = {
         const anchors = [...r.replies.flatMap((x) => findUnlockTimes(x)), ...(captures.get(String(e.ext_id)) || [])];
         updates.push({ entryId: e.id, anchors, done: !r.resume, achievements: r.items, total: r.total, whole: r.whole, calls: r.calls, ...(r.resume ? { partial: true, resume: true } : {}) });
       } catch (err) {
-        if (err.rateLimited || err.auth) break;
+        if (err.rateLimited || err.auth || err.blocked) break;
         const none = err.status === 404 || err.status === 400; // the title has no achievements
         updates.push({ entryId: e.id, anchors: captures.get(String(e.ext_id)) || [], done: none, ...(none ? { achievements: null, total: null } : {}) });
       }
@@ -441,7 +441,7 @@ export const xbox = {
         const r = await this.readTitle(account, e, ctx, { headers, gap, reserve, pages, budget });
         updates.push({ entryId: e.id, achievements: r.items, total: r.total, done: true, whole: r.whole, calls: r.calls, ...(r.resume ? { partial: true, resume: true } : {}) });
       } catch (err) {
-        if (err.rateLimited || err.auth) break;
+        if (err.rateLimited || err.auth || err.blocked) break;
         const none = err.status === 404 || err.status === 400;
         updates.push({ entryId: e.id, done: none, calls: budget.calls - calls0, ...(none ? { achievements: null, total: null } : {}) });
       }
