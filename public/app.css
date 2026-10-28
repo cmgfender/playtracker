@@ -405,6 +405,7 @@ a > svg.ic-inline:last-child { margin-left: .25em; }
 .chart.bar > svg { width: 100%; height: 100%; }
 .chart .tip { position: absolute; pointer-events: none; transform: translate(-50%, calc(-100% - 10px)); background: var(--text); color: var(--bg); padding: 6px 9px; border-radius: 8px; font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; opacity: 0; transition: opacity .12s; z-index: 5; }
 .chart .tip.on { opacity: 1; }
+.chart .hit.go { cursor: pointer; }
 .axis text { fill: var(--dim); font-size: 11px; }
 .gridline { stroke: var(--line-strong); stroke-opacity: .35; stroke-dasharray: 3 4; }
 .baseline { stroke: var(--line); }

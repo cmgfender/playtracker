@@ -1,4 +1,4 @@
-import { esc, fmtMin, plat } from './app.js';
+import { esc, fmtMin, plat, navigate } from './app.js';
 
 /*
  * Charts: hand-written SVG drawn at the real pixel size of their box.
@@ -146,6 +146,15 @@ function bindTip(ch) {
   ch.addEventListener('pointermove', show);
   ch.addEventListener('pointerdown', show);
   ch.addEventListener('pointerleave', () => { if (document.activeElement !== ch) tip.classList.remove('on'); });
+  // marks with an href open it on click; on a touch screen the first tap shows the tip, a second opens
+  let touch = false; let armed = null;
+  ch.addEventListener('pointerdown', (e) => { touch = e.pointerType === 'touch'; });
+  ch.addEventListener('click', (e) => {
+    const t = e.target.closest?.('[data-href]');
+    if (!t) { armed = null; return; }
+    if (touch && armed !== t) { armed = t; return; }
+    navigate(t.dataset.href);
+  });
   if (!ch.hasAttribute('data-keys')) return;
   // keyboard: Left / Right step through the marks in drawing order, Up / Down by opts.keyRow (a grid's row), Home / End
   let at = -1;
@@ -160,7 +169,7 @@ function bindTip(ch) {
     if (step) next = at < 0 || at >= marks.length ? (step > 0 ? 0 : marks.length - 1) : Math.max(0, Math.min(marks.length - 1, at + step));
     else if (e.key === 'Home') next = 0;
     else if (e.key === 'End') next = marks.length - 1;
-    else if (e.key === 'Escape' && tip.classList.contains('on')) { e.preventDefault(); off(); return; } else return;
+    else if (e.key === 'Escape' && tip.classList.contains('on')) { e.preventDefault(); off(); return; } else if (e.key === 'Enter' && marks[at]?.dataset.href) { e.preventDefault(); navigate(marks[at].dataset.href); return; } else return;
     e.preventDefault();
     at = next;
     const t = marks[at];
@@ -234,7 +243,7 @@ export function barTop(x, y, w, h, r = 4) {
 }
 
 /** Transparent hover target; the tooltip shows `tip`, placed at height `top` (default: the target's top). */
-export const hit = (x, y, w, h, tip, top) => `<rect class="hit" x="${r1(x)}" y="${r1(y)}" width="${r1(w)}" height="${r1(h)}" fill="transparent" data-tip="${esc(tip)}"${top !== undefined ? ` data-top="${r1(top)}"` : ''}/>`;
+export const hit = (x, y, w, h, tip, top, href) => `<rect class="hit${href ? ' go' : ''}" x="${r1(x)}" y="${r1(y)}" width="${r1(w)}" height="${r1(h)}" fill="transparent" data-tip="${esc(tip)}"${top !== undefined ? ` data-top="${r1(top)}"` : ''}${href ? ` data-href="${esc(href)}"` : ''}/>`;
 
 /** "Title: 122h total, busiest Oct 2 with 17h 25m" ("Title: nothing played" when empty). */
 export function summarize(title, items, fmt = (v) => fmtMin(v)) {
@@ -286,7 +295,7 @@ registerChart('bar', (data, opts, box) => {
       topY -= h;
       marks += `<path class="mk" d="${barTop(x, topY, bw, h, rad)}" fill="${d.color || color}"/>`;
     }
-    hits += hit(a.x + i * slot, a.y, slot, a.h, tip, topY);
+    hits += hit(a.x + i * slot, a.y, slot, a.h, d.href ? `${tip} · ${opts.hrefHint || 'open'}` : tip, topY, d.href);
   });
   // labels at most every 32px (wider labels need more), thinned again by xLabels() if they would touch
   const lw = Math.max(32, Math.max(0, ...data.map((d) => textWidth(d.label || ''))) + 10);
@@ -300,7 +309,9 @@ registerChart('bar', (data, opts, box) => {
 });
 
 /**
- * Bar chart. data: [{ label, name?, value, color?, stack?: [{ key, value, color }], tip? }]
+ * Bar chart. data: [{ label, name?, value, color?, stack?: [{ key, value, color }], tip?, href? }]
+ * A bar with an href opens it on click, and on Enter when the chart has opts.keys; opts.hrefHint
+ * ends its tooltip ("… · see sessions").
  * `label` is the x axis text, `name` the longer form used in tooltips and the summary.
  * opts: { title (aria summary), size: 'page' | 'card' | 'small', color, unit: 'min' | 'count',
  *   labelEvery, formatTick, maxBar (px), summary(data) }
