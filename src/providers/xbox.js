@@ -92,6 +92,22 @@ export function parseXboxAchievements(payload, titleId = null) {
   });
 }
 
+/**
+ * pagingInfo of an achievements/player reply (modern and Xbox 360 alike, in the envelope or
+ * not): { token, total }. token = the continuationToken of the next page (null on the last),
+ * total = totalRecords (null when not said).
+ */
+export function pagingOf(payload) {
+  const body = unwrap(payload);
+  const p = (body && typeof body === 'object' && !Array.isArray(body) ? body.pagingInfo : null) ?? payload?.pagingInfo;
+  const n = p?.totalRecords == null || p.totalRecords === '' ? NaN : Number(p.totalRecords);
+  return { token: text(p?.continuationToken, 4000), total: Number.isInteger(n) && n >= 0 ? n : null };
+}
+
+// pages of one title's achievements read at most (a read stopped by the budget goes on from
+// where it stopped; past this the list is taken as read - its total still shows it is not all)
+export const ACH_PAGES = 10;
+
 /** Capture (screenshot / game clip) times per title id, from either media API shape. */
 export function captureTimes(obj, out = new Map()) {
   if (!obj || typeof obj !== 'object') return out;
@@ -153,7 +169,7 @@ export const xbox = {
     per_device: 'devices the title is available on (not per-device minutes)',
     presence: 'presence: current title + placement (Full/Snapped)',
     history_anchors: 'Achievement unlock times (modern + Xbox 360 titles) and screenshot / game clip capture dates (2 requests per enrichment run)',
-    achievements: 'achievements/player (the enrichment request): names, icons, gamerscore, rarity, unlock times; read again after new play (1 request per title, above the 30% reserve)',
+    achievements: 'achievements/player (the enrichment request): names, icons, gamerscore, rarity, unlock times; read again after new play (1 request per page of a title - most have one - above the 30% reserve; long lists go on from where the budget stopped them)',
     rate_limit: 'OpenXBL: 150 requests/hour on the free plan (configurable for paid plans)',
     limitations: [
       'Requires the third-party OpenXBL service (Microsoft offers no public consumer API).',
@@ -324,27 +340,89 @@ export const xbox = {
         ctx.warn?.(`Xbox ${kind}: ${err.message}`);
       }
     }
+    const pages = { ...(account.state.ach_pages || {}) };
     for (const e of entries) {
       if (ctx.stopped?.()) break;
       if ((ctx.remainingBudget?.(this.hourlyLimit(account)) ?? 0) <= reserve) break;
-      await gap();
       try {
-        const r = await ctx.http(`${API}/achievements/player/${encodeURIComponent(xuid)}/${encodeURIComponent(e.ext_id)}`, { headers }, { retries: 0 });
-        // the same reply carries the achievements themselves: no extra request
-        updates.push({ entryId: e.id, anchors: [...findUnlockTimes(r), ...(captures.get(String(e.ext_id)) || [])], done: true, achievements: parseXboxAchievements(r, e.ext_id) });
+        const r = await this.readTitle(account, e, ctx, { headers, gap, reserve, pages });
+        // the same replies carry the achievements themselves: no extra request. A list the budget
+        // cut short is enriched again later, from where it stopped (its history waits for it)
+        const anchors = [...r.replies.flatMap((x) => findUnlockTimes(x)), ...(captures.get(String(e.ext_id)) || [])];
+        updates.push({ entryId: e.id, anchors, done: !r.resume, achievements: r.items, total: r.total, whole: r.whole, calls: r.calls, ...(r.resume ? { partial: true, resume: true } : {}) });
       } catch (err) {
         if (err.rateLimited || err.auth) break;
         const none = err.status === 404 || err.status === 400; // the title has no achievements
-        updates.push({ entryId: e.id, anchors: captures.get(String(e.ext_id)) || [], done: none, ...(none ? { achievements: null } : {}) });
+        updates.push({ entryId: e.id, anchors: captures.get(String(e.ext_id)) || [], done: none, ...(none ? { achievements: null, total: null } : {}) });
       }
     }
-    return { updates };
+    return { updates, ...(JSON.stringify(pages) !== JSON.stringify(account.state.ach_pages || {}) ? { state: { ach_pages: pages } } : {}) };
+  },
+
+  /**
+   * One title's achievements: achievements/player, then each further page its
+   * pagingInfo.continuationToken names (?continuationToken=, as Xbox Live's own achievements
+   * API takes it - OpenXBL passes it on). Modern and Xbox 360 lists page alike. A page is one
+   * request: a further page is asked only while more than the reserve of the hour is left and
+   * `budget` (shared by the run: { calls, max }) allows; the read stops on the last page, a
+   * token seen before, an empty page or after ACH_PAGES pages. A read stopped early keeps what
+   * it read and leaves where it stopped in `pages` (account.state.ach_pages: ext id -> { token,
+   * pages, read, at, total }), so the next read goes on from there - unless the title was
+   * played since its first page was read, or the token is refused (then from the first page).
+   * Returns { items, replies, total (totalRecords), calls, resume (stopped early), whole (items
+   * are the full list: read in one go) }; throws the error of a first page, or when no page could be read.
+   */
+  async readTitle(account, e, ctx, { headers, gap, reserve, pages, budget = { calls: 0, max: Infinity } }) {
+    const url = `${API}/achievements/player/${encodeURIComponent(account.state.xuid)}/${encodeURIComponent(e.ext_id)}`;
+    const key = String(e.ext_id);
+    const room = () => !ctx.stopped?.() && budget.calls < budget.max && (ctx.remainingBudget?.(this.hourlyLimit(account)) ?? 0) > reserve;
+    let from = pages[key];
+    if (from && !(from.token && (e.last_session_at ?? 0) <= (from.at ?? 0))) from = null;
+    const start = () => ({ token: from?.token ?? null, count: from?.pages ?? 0, total: from?.total ?? null, offset: from?.read ?? 0, at: from?.at ?? Date.now() });
+    let { token, count, total, offset, at } = start();
+    const seen = new Set(token ? [token] : []);
+    const items = [];
+    const replies = [];
+    const calls0 = budget.calls;
+    for (;;) {
+      await gap(); budget.calls++;
+      let r;
+      try {
+        r = await ctx.http(token ? `${url}?continuationToken=${encodeURIComponent(token)}` : url, { headers }, { retries: 0 });
+      } catch (err) {
+        if (err.auth || (!from && !replies.length)) throw err;
+        // a token from an earlier read that is refused (expired): from the first page again
+        if (from && !replies.length && !err.rateLimited && err.status >= 400 && err.status < 500) {
+          from = null;
+          ({ token, count, total, offset, at } = start());
+          seen.clear();
+          if (room()) continue;
+        }
+        break; // keep what was read; go on from this page next time
+      }
+      replies.push(r);
+      count++;
+      const page = parseXboxAchievements(r, e.ext_id);
+      for (const it of page) items.push({ ...it, sort: offset + items.length });
+      const next = pagingOf(r);
+      if (next.total != null) total = next.total;
+      if (!next.token || seen.has(next.token) || !page.length || count >= ACH_PAGES) { token = null; break; }
+      seen.add(next.token);
+      token = next.token;
+      if (!room()) break;
+    }
+    if (token) pages[key] = { token, pages: count, read: offset + items.length, at, total };
+    else delete pages[key];
+    // nothing read at all (the page to go on from failed): a failed attempt, not progress
+    if (!replies.length) throw new Error('no page of the achievement list could be read');
+    return { items, replies, total, calls: budget.calls - calls0, resume: !!token, whole: !token && !from };
   },
 
   /**
    * Read titles' achievements again (played since they were read, or never read): one
-   * achievements/player request per title, only while more than 30% of the hour's budget is left
-   * (like enrichment), at most `maxCalls`.
+   * achievements/player request per page of a title (most have one), only while more than 30%
+   * of the hour's budget is left (like enrichment), at most `maxCalls` requests. A title the
+   * budget cut short is marked to be read on later (partial, resume), not as read.
    */
   async achievements(account, entries, ctx, { maxCalls = 10 } = {}) {
     const xuid = account.state.xuid;
@@ -353,20 +431,21 @@ export const xbox = {
     const gap = spacer(1000);
     const reserve = Math.ceil(this.hourlyLimit(account) * 0.3);
     const updates = [];
-    let calls = 0;
+    const budget = { calls: 0, max: maxCalls };
+    const pages = { ...(account.state.ach_pages || {}) };
     for (const e of entries) {
-      if (ctx.stopped?.() || calls >= maxCalls) break;
+      if (ctx.stopped?.() || budget.calls >= maxCalls) break;
       if ((ctx.remainingBudget?.(this.hourlyLimit(account)) ?? 0) <= reserve) break;
-      await gap(); calls++;
+      const calls0 = budget.calls;
       try {
-        const r = await ctx.http(`${API}/achievements/player/${encodeURIComponent(xuid)}/${encodeURIComponent(e.ext_id)}`, { headers }, { retries: 0 });
-        updates.push({ entryId: e.id, achievements: parseXboxAchievements(r, e.ext_id), done: true });
+        const r = await this.readTitle(account, e, ctx, { headers, gap, reserve, pages, budget });
+        updates.push({ entryId: e.id, achievements: r.items, total: r.total, done: true, whole: r.whole, calls: r.calls, ...(r.resume ? { partial: true, resume: true } : {}) });
       } catch (err) {
         if (err.rateLimited || err.auth) break;
         const none = err.status === 404 || err.status === 400;
-        updates.push({ entryId: e.id, done: none, ...(none ? { achievements: null } : {}) });
+        updates.push({ entryId: e.id, done: none, calls: budget.calls - calls0, ...(none ? { achievements: null, total: null } : {}) });
       }
     }
-    return { updates };
+    return { updates, ...(JSON.stringify(pages) !== JSON.stringify(account.state.ach_pages || {}) ? { state: { ach_pages: pages } } : {}) };
   },
 };

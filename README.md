@@ -32,6 +32,9 @@ Steam, Xbox and PlayStation tell you **how long you've played in total**, but no
   - Top games, weekday and time-of-day breakdowns.
   - Platform share and a **year in review** page.
 - **Library:** cover grid or list, search, platform and status filters, favorites, ratings, notes, hidden games, statuses (playing, backlog, beaten, completed, dropped…).
+- **What should I play?** A Home card (and the `P` key) that picks from your library for the time you have and your mood: Quick fix, Keep going, Finish something, Start something new, Rediscover or Surprise me.
+  - Each pick says why, with your numbers: "Sessions here run about 40m, fits in 1h", "10h in the last 60 days, nothing in the last 2 weeks", "92% of achievements, 2 left".
+  - Not now (a week) and Never set a game aside; Pick again never repeats. Hidden, wishlist, completed and dropped games are never suggested.
 - **API-first:**
   - REST/JSON for everything, with an auto-generated OpenAPI spec (`/api/openapi.json`) and an in-app docs page.
   - API tokens, a `/api/v1/widget` endpoint for Homepage, Homarr and Home Assistant, and Prometheus `/metrics`.
@@ -204,6 +207,7 @@ Main endpoints:
 - **Sessions and stats:** `sessions` (list, create, edit, bulk), `stats`, `stats/heatmap`, `stats/year/:year`
 - **Charts and insights:** `stats/punchcard`, `stats/session-lengths`, `stats/platforms` (or `?by=device`), `stats/timeline`, `games/:id/stats`, `stats/library`, `stats/year-over-year`, `stats/records` (tracked play and estimated history always apart; shapes in `/api/openapi.json`)
 - **Duplicates:** `duplicates`
+- **What should I play?:** `suggest?minutes=60&mode=finish` (picks with reasons), `suggest/feedback` (not now, never, reset)
 - **Accounts and syncing:** `accounts`, `accounts/:id/sync`, `accounts/:id/report`, `syncs`
 - **Admin:** `settings`, `tokens`, `import`, `export`, `backup`
 

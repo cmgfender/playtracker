@@ -2,7 +2,7 @@
 // A new VERSION makes `activate` delete every other cache (e.g. the pre-rename 'pt-v1').
 // Every SHELL file must exist: one failed request fails the whole install.
 const VERSION = 'vestigo-v1';
-const SHELL = ['/', '/app.css', '/app.js', '/charts.js', '/pages.js', '/insights.js', '/favicon.svg', '/icon.svg', '/icon-180.png', '/icon-192.png', '/manifest.webmanifest'];
+const SHELL = ['/', '/app.css', '/app.js', '/charts.js', '/pages.js', '/insights.js', '/suggest.js', '/favicon.svg', '/icon.svg', '/icon-180.png', '/icon-192.png', '/manifest.webmanifest'];
 // at most this many API answers are kept; only what the offline pages need is cached at all
 const API_MAX = 60;
 

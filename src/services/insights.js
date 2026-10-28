@@ -425,8 +425,10 @@ export function gameCurve(db, gameId, { group = 'month', estimates = 'include', 
     const days = db.prepare(`SELECT p.day, p.estimated, SUM(p.minutes) m, SUM(p.ends) n ${f.sql} GROUP BY p.day, p.estimated ORDER BY p.day`).all(...f.args);
     const unlocks = db.prepare(`SELECT a.unlocked_at t FROM achievements a JOIN entries e ON e.id = a.entry_id
       WHERE e.game_id = ? AND e.excluded = 0 AND a.unlocked = 1 AND a.unlocked_at IS NOT NULL ORDER BY a.unlocked_at`).all(gameId).map((x) => x.t);
-    const ach = db.prepare(`SELECT COUNT(*) total, COALESCE(SUM(a.unlocked), 0) unlocked, COALESCE(SUM(CASE WHEN a.unlocked = 1 AND a.unlocked_at IS NULL THEN 1 ELSE 0 END), 0) undated
-      FROM achievements a JOIN entries e ON e.id = a.entry_id WHERE e.game_id = ? AND e.excluded = 0`).get(gameId);
+    // per entry, what the platform says it has when more than stored (Xbox titles read in part)
+    const ach = db.prepare(`SELECT COALESCE(SUM(MAX(n, COALESCE(reported, 0))), 0) total, COALESCE(SUM(u), 0) unlocked, COALESCE(SUM(undated), 0) undated
+      FROM (SELECT COUNT(*) n, e.ach_total reported, SUM(a.unlocked) u, SUM(CASE WHEN a.unlocked = 1 AND a.unlocked_at IS NULL THEN 1 ELSE 0 END) undated
+        FROM achievements a JOIN entries e ON e.id = a.entry_id WHERE e.game_id = ? AND e.excluded = 0 GROUP BY e.id)`).get(gameId);
     const kinds = Object.fromEntries(db.prepare(`SELECT s.kind, COUNT(*) n, COALESCE(SUM(s.minutes), 0) m, MIN(COALESCE(s.started_at, s.sort_time)) first, MAX(s.sort_time) last
       FROM sessions s JOIN entries e ON e.id = s.entry_id WHERE e.game_id = ? AND e.excluded = 0 AND s.minutes > 0 GROUP BY s.kind`).all(gameId).map((x) => [x.kind, x]));
     const plat = db.prepare('SELECT MIN(first_played_at) first, MAX(last_played_at) last FROM entries WHERE game_id = ? AND excluded = 0').get(gameId);
@@ -492,7 +494,8 @@ export function libraryOverview(db, { hidden = false, points = 500, dustyLimit =
       d AS (SELECT game_id, MIN(day) first_day, MAX(day) last_day, MIN(CASE WHEN estimated = 0 THEN day END) first_tracked,
           SUM(CASE WHEN estimated = 0 THEN minutes ELSE 0 END) tracked
         FROM play_days INDEXED BY play_days_game WHERE excluded = 0 GROUP BY game_id),
-      a AS (SELECT en.game_id, COUNT(*) total, SUM(ac.unlocked) unlocked FROM achievements ac JOIN entries en ON en.id = ac.entry_id WHERE en.excluded = 0 GROUP BY en.game_id)
+      a AS (SELECT game_id, SUM(MAX(n, COALESCE(reported, 0))) total, SUM(u) unlocked
+        FROM (SELECT en.game_id, COUNT(*) n, en.ach_total reported, SUM(ac.unlocked) u FROM achievements ac JOIN entries en ON en.id = ac.entry_id WHERE en.excluded = 0 GROUP BY en.id) GROUP BY game_id)
       SELECT g.id, g.status, g.created_at, e.minutes, e.played, e.fp, e.lp, e.added, d.first_day, d.last_day, d.first_tracked, COALESCE(d.tracked, 0) tracked, a.total ach_total, a.unlocked ach_unlocked
       FROM games g JOIN e ON e.game_id = g.id LEFT JOIN d ON d.game_id = g.id LEFT JOIN a ON a.game_id = g.id ${hid}`).all();
 

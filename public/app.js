@@ -1,4 +1,5 @@
 import { pages, logSessionModal, layoutModal } from './pages.js';
+import { suggestModal } from './suggest.js';
 
 // ---------- tiny helpers ----------
 export const $ = (sel, root = document) => root.querySelector(sel);
@@ -164,6 +165,12 @@ const P = {
   filter: '<path d="M3 5h18l-7 8.5V19l-4 2v-7.5z"/>',
   chevD: '<path d="m6 9 6 6 6-6"/>',
   theme: '<circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 0 0 18z" fill="currentColor"/>',
+  // What should I play?: a compass (the card), play, pick again, not now, never
+  compass: '<circle cx="12" cy="12" r="9"/><path d="m15.5 8.5-2 5-5 2 2-5z"/>',
+  play: '<path d="M7 4.5v15l12-7.5z"/>',
+  shuffle: '<path d="M16 3h5v5M4 20 21 3M21 16v5h-5M15 15l6 6M4 4l5 5"/>',
+  moon: '<path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/>',
+  ban: '<circle cx="12" cy="12" r="9"/><path d="m5.7 5.7 12.6 12.6"/>',
 };
 export function icon(name, cls = '') {
   return `<svg class="${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${P[name] || ''}</svg>`;
@@ -864,6 +871,7 @@ function download(href) {
 }
 const ACTIONS = () => [
   { label: 'Log session', icon: 'clock', keys: 'N', run: () => logSessionModal() },
+  { label: 'What should I play?', icon: 'compass', keys: 'P', sub: 'A pick for the time you have', run: () => suggestModal() },
   { label: 'Sync all', icon: 'sync', run: () => syncAll() },
   { label: 'Customize home', icon: 'settings', run: () => layoutModal() },
   { label: 'Connect an account', icon: 'plus', run: () => navigate('/accounts?add=1') },
@@ -962,7 +970,7 @@ export function palette() {
 /** The keyboard shortcuts, as a dialog (?). */
 function shortcutSheet() {
   const rows = [
-    [`${kbd(MOD.trim())} ${kbd('K')}`, 'Search games, pages and actions'], [kbd('/'), 'Search this page (or everything)'], [kbd('N'), 'Log a session'],
+    [`${kbd(MOD.trim())} ${kbd('K')}`, 'Search games, pages and actions'], [kbd('/'), 'Search this page (or everything)'], [kbd('N'), 'Log a session'], [kbd('P'), 'What should I play?'],
     [`${kbd('G')} ${kbd('H')}`, 'Go to Home'], [`${kbd('G')} ${kbd('L')}`, 'Go to Library'], [`${kbd('G')} ${kbd('S')}`, 'Go to Sessions'], [`${kbd('G')} ${kbd('T')}`, 'Go to Stats'],
     [`${kbd('G')} ${kbd('I')}`, 'Go to Insights'], [`${kbd('G')} ${kbd('A')}`, 'Go to Accounts'], [kbd('?'), 'This list'],
   ];
@@ -993,7 +1001,7 @@ document.addEventListener('keydown', (e) => {
     e.preventDefault();
     const s = $('#view input[type=search]');
     if (s && visible(s)) s.focus(); else palette();
-  } else if (k === 'n') { e.preventDefault(); logSessionModal(); } else if (k === '?') { e.preventDefault(); shortcutSheet(); }
+  } else if (k === 'n') { e.preventDefault(); logSessionModal(); } else if (k === 'p') { e.preventDefault(); suggestModal(); } else if (k === '?') { e.preventDefault(); shortcutSheet(); }
 });
 // install: the browser's prompt is kept for the Install button in Settings
 window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); state.installPrompt = e; });

@@ -33,10 +33,10 @@ export const DEFAULT_SETTINGS = {
   time_format: 'hm',          // 'hm' (1h 5m) | 'decimal' (1.1h)
   start_page: 'home',         // 'home' | 'library' | 'sessions' | 'stats'
   // home sections in order; a leading '-' hides one
-  dashboard_layout: 'kpis,live,jump,chart,top,recent,accounts,-heatmap,-backlog',
+  dashboard_layout: 'kpis,live,jump,suggest,chart,top,recent,accounts,-heatmap,-backlog',
 };
 
-export const DASHBOARD_SECTIONS = ['kpis', 'live', 'jump', 'chart', 'top', 'recent', 'accounts', 'heatmap', 'backlog'];
+export const DASHBOARD_SECTIONS = ['kpis', 'live', 'jump', 'suggest', 'chart', 'top', 'recent', 'accounts', 'heatmap', 'backlog'];
 const ENUMS = {
   theme: ['dark', 'black', 'light', 'auto'],
   ui_density: ['comfortable', 'compact'],

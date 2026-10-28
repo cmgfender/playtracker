@@ -324,6 +324,24 @@ const MIGRATIONS = [
     if (!cols.has('ach_v')) db.exec('ALTER TABLE entries ADD COLUMN ach_v INTEGER NOT NULL DEFAULT 0');
     if (!cols.has('ach_at')) db.exec('ALTER TABLE entries ADD COLUMN ach_at INTEGER');
   },
+  // 7: "What should I play?" feedback: a game snoozed until a time, or never suggested again.
+  //    Safe to run again on a database that has it.
+  `
+  CREATE TABLE IF NOT EXISTS suggest_feedback (
+    game_id INTEGER PRIMARY KEY REFERENCES games(id) ON DELETE CASCADE,
+    action TEXT NOT NULL,          -- 'snooze' | 'never'
+    until INTEGER,                 -- snooze: suggested again from this time
+    created_at INTEGER NOT NULL
+  );
+  `,
+  // 8: achievements known from an import (GameTrack) until the platform reports them, and how
+  //    many achievements the platform says a title has (Xbox lists are read page by page: a
+  //    partly read title must not look complete)
+  (db) => {
+    const cols = (t) => new Set(db.prepare(`PRAGMA table_info(${t})`).all().map((c) => c.name));
+    if (!cols('achievements').has('source')) db.exec('ALTER TABLE achievements ADD COLUMN source TEXT'); // 'gametrack' | NULL = the platform
+    if (!cols('entries').has('ach_total')) db.exec('ALTER TABLE entries ADD COLUMN ach_total INTEGER');
+  },
 ];
 
 export function openDb(file) {

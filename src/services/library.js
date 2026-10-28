@@ -53,6 +53,8 @@ export function mergeGames(db, targetId, sourceIds) {
       notes = CASE WHEN COALESCE(notes,'') = '' THEN ? WHEN COALESCE(?, '') = '' THEN notes ELSE notes || char(10) || ? END,
       favorite = MAX(favorite, ?), status = CASE WHEN status = 'unset' THEN ? ELSE status END, updated_at = ?
       WHERE id = ?`).run(src.cover_url, src.rating, src.notes, src.notes, src.notes, src.favorite, src.status, now, targetId);
+    // "Not now" / "Never suggest" follow the game into the merge (the target's own choice wins)
+    db.prepare('UPDATE OR IGNORE suggest_feedback SET game_id = ? WHERE game_id = ?').run(targetId, sid);
     db.prepare('DELETE FROM games WHERE id = ?').run(sid);
   }
   // consolidate multiple manual entries: one counted and one excluded at most, so a merge

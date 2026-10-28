@@ -141,6 +141,8 @@ export function applyItems(db, account, items, { settings, now = Date.now(), syn
       entry.game_id = old.game_id;
       db.prepare('DELETE FROM games WHERE id = ? AND NOT EXISTS (SELECT 1 FROM entries WHERE game_id = ?) AND created_at = ?').run(created, created, now);
     }
+    // achievements the copy brought (GameTrack): the synced entry's, joined with the platform's by its next read
+    db.prepare('UPDATE OR IGNORE achievements SET entry_id = ? WHERE entry_id = ?').run(entry.id, old.id);
     db.prepare('DELETE FROM entries WHERE id = ?').run(old.id);
     // the platform's total stands; your recorded play is part of it, the rest is history
     const total = Math.max(playtime, playMin);
@@ -831,10 +833,11 @@ export class SyncService {
           for (const u of updates) {
             mergeEvidence(this.db, u.entryId, { anchors: u.anchors?.length ? u.anchors : undefined, release_at: u.release_at });
             if (u.anchors?.length) anchored++;
-            // a title that keeps failing is given up after 3 attempts (no endless retry loop)
-            const tries = u.done ? 0 : (this.enrichTries.get(u.entryId) || 0) + 1;
+            // a title that keeps failing is given up after 3 attempts (no endless retry loop); one
+            // the budget cut short (resume: read on from there) is no failed attempt
+            const tries = u.done ? 0 : (this.enrichTries.get(u.entryId) || 0) + (u.resume ? 0 : 1);
             if (u.done || tries >= 3) { this.db.prepare('UPDATE entries SET enriched_at = ? WHERE id = ?').run(Date.now(), u.entryId); this.enrichTries.delete(u.entryId); } else this.enrichTries.set(u.entryId, tries);
-            if (u.done || tries >= 3) progressed++;
+            if (u.done || tries >= 3 || u.resume) progressed++;
             // the same replies carry the achievements themselves (given up along with the title)
             this.readAchievements(u, t0, { giveUp: !u.done && tries >= 3 });
           }
@@ -870,14 +873,20 @@ export class SyncService {
   // ---------- achievements / trophies (background) ----------
   /**
    * Store the achievements a provider read for one title (an update { entryId, achievements, done,
-   * partial }: achievements = a list, null = it has none, undefined = not read). Once read for
-   * good the title is marked read (ach_v, ach_at); one that keeps failing is given up after 3
-   * attempts, until it is played again. Never touches sessions, totals or history.
+   * partial, resume, whole, total }: achievements = a list, null = it has none, undefined = not
+   * read). Once read for good the title is marked read (ach_v, ach_at); one that keeps failing
+   * is given up after 3 attempts, until it is played again. A list the budget cut short (resume:
+   * Xbox pages) keeps what was read and stays due as it was - read on from there next time, not
+   * a failed attempt. total = how many the platform says the title has (undefined: not said).
+   * Never touches sessions, totals or history.
    */
   readAchievements(u, at, { giveUp = false } = {}) {
     const db = this.db;
-    if (Array.isArray(u.achievements)) storeAchievements(db, u.entryId, u.achievements);
     const read = u.achievements !== undefined && u.done !== false && !u.partial;
+    // a full list (not only its last pages) drops what an import listed that the platform does not
+    if (Array.isArray(u.achievements)) storeAchievements(db, u.entryId, u.achievements, { complete: read && u.whole !== false });
+    if (u.total !== undefined && (read || u.total != null)) db.prepare('UPDATE entries SET ach_total = ? WHERE id = ?').run(u.total ?? null, u.entryId);
+    if (u.resume && !read) return false;
     const tries = read ? 0 : (this.achTries.get(u.entryId) || 0) + 1;
     if (read || giveUp || tries >= 3) {
       db.prepare('UPDATE entries SET ach_v = ?, ach_at = ? WHERE id = ?').run(ACH_VERSION, at, u.entryId);
@@ -918,7 +927,7 @@ export class SyncService {
       ORDER BY COALESCE(last_session_at, last_played_at, 0) DESC, id LIMIT ?`).all(account.id, ACH_VERSION, share) : [];
     const counters = { calls: 0, errors: 0, rate_limited: 0, ms: 0, hosts: {} };
     const ctx = this.ctxFor(account, { counters });
-    let read = 0; let backfilled = 0; let tried = 0;
+    let read = 0; let backfilled = 0; let tried = 0; let resumed = 0;
     if (played.length || back.length) {
       const live = this.lease(account.id);
       const isBack = new Set(back.map((e) => e.id));
@@ -928,8 +937,10 @@ export class SyncService {
         if (state) db.prepare('UPDATE accounts SET state = ? WHERE id = ?').run(JSON.stringify({ ...this.account(account.id).state, ...state }), account.id);
         for (const u of updates) {
           const ok = this.readAchievements(u, t0);
+          if (u.resume && !ok) resumed++;
           if (ok) read++;
-          if (isBack.has(u.entryId)) { tried++; if (ok) backfilled++; }
+          // the hourly share counts requests (an Xbox title of several pages takes one per page)
+          if (isBack.has(u.entryId)) { tried += u.calls ?? 1; if (ok) backfilled++; }
         }
       });
       if (pace.hourlyShare && tried) this.achHour.set(account.id, { hour, calls: (this.achHour.get(account.id)?.hour === hour ? this.achHour.get(account.id).calls : 0) + tried });
@@ -938,7 +949,7 @@ export class SyncService {
     if (read) this.log.info(`Read achievements of ${read} ${account.platform} titles (${backfilled} back-filled, ${left.pending} to go) in ${Math.round((Date.now() - t0) / 1000)}s, ${counters.calls} API calls`);
     // more to do: Steam / PSN go on at enrichment's pace while what is left shrinks; Xbox goes on
     // in the next clock hour while it shrinks or its budget / hourly share is what held it back
-    const progressed = left.pending + left.due < start.pending + start.due;
+    const progressed = left.pending + left.due < start.pending + start.due || resumed > 0;
     let retryIn = null;
     if ((backfill && left.pending) || left.due) {
       if (pace.hourlyShare) {

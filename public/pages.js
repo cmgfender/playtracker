@@ -7,6 +7,7 @@ import {
 const arrow = () => icon('arrowR', 'ic-inline'); // trailing "go there" arrow on links
 import { barChart, sparkline, donut, heatmap, topList, platformLegend, mountCharts, curveChart, dayName } from './charts.js';
 import { insights, eraStrip } from './insights.js';
+import { mountSuggest } from './suggest.js';
 
 const WD = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 // time-of-day axis: 12a / 6a / 12p / 6p, or 00 / 06 / 12 / 18 where the clock is 24-hour
@@ -252,7 +253,7 @@ function localInput(t) {
   return d.toISOString().slice(0, 16);
 }
 
-export function logSessionModal(game = null, onDone = rerender) {
+export function logSessionModal(game = null, onDone = rerender, { minutes = 60 } = {}) {
   let picked = game;
   const now = Date.now();
   modal({
@@ -260,8 +261,8 @@ export function logSessionModal(game = null, onDone = rerender) {
     body: `<form class="stack" id="log-form">
       <div class="field"><label>Game</label>${game ? `<div class="row">${cover(game)}<b>${esc(game.title)}</b></div>` : '<input class="input" id="gp" placeholder="Search your library or type a new title" autocomplete="off">'}</div>
       <div class="field"><label>Duration</label>
-        <div class="row"><input class="input" type="number" min="0" max="168" name="h" value="1" style="width:90px" aria-label="Duration, hours"> <span class="muted" aria-hidden="true">h</span>
-        <input class="input" type="number" min="0" max="59" name="m" value="0" style="width:90px" aria-label="Duration, minutes"> <span class="muted" aria-hidden="true">m</span></div>
+        <div class="row"><input class="input" type="number" min="0" max="168" name="h" value="${Math.floor(minutes / 60)}" style="width:90px" aria-label="Duration, hours"> <span class="muted" aria-hidden="true">h</span>
+        <input class="input" type="number" min="0" max="59" name="m" value="${minutes % 60}" style="width:90px" aria-label="Duration, minutes"> <span class="muted" aria-hidden="true">m</span></div>
         <div class="chips" style="margin-top:0">${[15, 30, 60, 90, 120, 180].map((m) => `<button type="button" class="chip" data-quick="${m}">${fmtMin(m)}</button>`).join('')}</div>
       </div>
       <div class="field"><label>Ended at</label><input class="input" type="datetime-local" name="ended" value="${localInput(now)}"></div>
@@ -551,6 +552,7 @@ async function dashboard(view, stale) {
       ${kpi('Lifetime', `${fmtHours(d.lifetime.total_minutes)}<small>h</small>`, `${d.lifetime.games_played} of ${d.lifetime.games} games played`)}
     </div>`,
     live: () => (d.playing_now?.length ? `<div class="card live-card"><div class="row wrap">${d.playing_now.map((p) => `<a class="row" href="${p.game_id ? `/game/${p.game_id}` : '/accounts'}" data-link style="min-width:0;flex:1">${cover({ title: p.title, cover_url: p.cover_url }, '', 'width:44px;')}<div style="min-width:0"><div class="small" style="color:var(--good);font-weight:700"><span class="live-dot"></span>Playing now · ${esc(plat(p.platform).label)}</div><div class="ttl ellipsis" style="font-weight:700">${esc(p.title)}</div><div class="tiny muted">for ${fmtMin(Math.max(1, p.minutes))}</div></div></a>`).join('')}</div></div>` : ''),
+    suggest: () => '<div class="card sg" id="dash-suggest" role="region" aria-labelledby="sg-h"></div>',
     jump: () => (d.now_playing.length ? `<div class="card"><div class="card-h"><h2>Jump back in</h2><a href="/library?sort=trending" data-link>See all</a></div>
       <div class="carousel">${d.now_playing.map((g) => `<a class="tile" href="/game/${g.id}" data-link>${cover(g)}<div class="t">${esc(g.title)}</div><div class="m">${g.platforms.map(platDot).join('')} ${fmtMin(g.recent_minutes)} · 2 wks</div></a>`).join('')}</div></div>` : ''),
     chart: () => `<div class="card"><div class="card-h"><h2>Last 30 days</h2><a href="/stats" data-link>Stats${arrow()}</a></div>
@@ -590,6 +592,7 @@ async function dashboard(view, stale) {
     </div>
     <button class="fab" id="fab-log" aria-label="Log session">${icon('plus')}</button>`;
   mountCharts(view);
+  if ($('#dash-suggest')) mountSuggest($('#dash-suggest'), { platforms: d.lifetime.platforms.map((x) => x.platform) });
   $('#dash-log')?.addEventListener('click', () => logSessionModal());
   $('#fab-log').addEventListener('click', () => logSessionModal());
   const custom = (e) => { e?.preventDefault(); layoutModal(); };
@@ -604,6 +607,7 @@ const DASH_SECTIONS = {
   kpis: { label: 'Stat cards', desc: 'This week, today, 30 days, streak, lifetime' },
   live: { label: 'Playing now', desc: 'While presence sees a game running' },
   jump: { label: 'Jump back in', desc: 'Played in the last two weeks' },
+  suggest: { label: 'What should I play?', desc: 'A pick for the time you have' },
   chart: { label: 'Last 30 days', desc: 'Daily chart', half: true },
   top: { label: 'Top this month', desc: 'Most played games', half: true },
   recent: { label: 'Recent sessions', desc: '', half: true },
@@ -611,7 +615,7 @@ const DASH_SECTIONS = {
   heatmap: { label: 'Year heatmap', desc: 'Every day of this year' },
   backlog: { label: 'Up next', desc: 'Games marked Playing or Backlog' },
 };
-const DEFAULT_LAYOUT = 'kpis,live,jump,chart,top,recent,accounts,-heatmap,-backlog';
+const DEFAULT_LAYOUT = 'kpis,live,jump,suggest,chart,top,recent,accounts,-heatmap,-backlog';
 
 function parseLayout(str) {
   const out = String(str || DEFAULT_LAYOUT).split(',').map((x) => x.trim()).filter(Boolean)

@@ -605,6 +605,61 @@ select.input.sm { padding-right: 26px; }
 .dash { display: flex; flex-direction: column; gap: 16px; }
 .dash > .grid { margin: 0; }
 
+/* ---------- what should I play? (Home card and dialog) ---------- */
+.sg-ctl { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 16px; }
+.sg-ctl .sg-sel { width: auto; min-height: 38px; }
+.sg-body { display: grid; grid-template-columns: minmax(0, 1fr) minmax(220px, 280px); gap: 14px 22px; align-items: start; }
+.sg-body > .sg-nomatch, .sg-body > .sg-foot, .sg-body > .sg-empty { grid-column: 1 / -1; margin: 0; }
+.sg-main { display: grid; grid-template-columns: 112px minmax(0, 1fr); grid-template-areas: "cover info" "cover act"; gap: 6px 18px; align-items: start; min-width: 0; }
+.sg-main.sg-skel { display: flex; gap: 18px; }
+.sg-main.sg-skel .cover { width: 112px; }
+.sg-cover { grid-area: cover; display: block; }
+.sg-cover .cover { width: 100%; box-shadow: var(--shadow); }
+.sg-info { grid-area: info; min-width: 0; }
+.sg-title { font-size: 21px; font-weight: 800; letter-spacing: -.025em; line-height: 1.2; overflow-wrap: anywhere; }
+.sg-title a:hover { text-decoration: underline; text-underline-offset: 3px; }
+.sg-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin-top: 6px; }
+.sg-meta { column-gap: 12px; }
+.sg-plats { display: inline-flex; flex-wrap: wrap; gap: 4px 10px; }
+.sg-plats > span { display: inline-flex; align-items: center; gap: 6px; }
+.sg-why { list-style: none; margin: 12px 0 4px; padding: 0; display: grid; gap: 7px; }
+.sg-why li { display: flex; gap: 9px; align-items: flex-start; font-size: 14px; line-height: 1.35; }
+.sg-why li svg { margin-top: 1px; color: var(--good); }
+.sg-why li.neg { color: var(--muted); }
+.sg-why li.neg svg { color: var(--muted); }
+.sg-act { grid-area: act; display: flex; flex-wrap: wrap; gap: 8px 16px; margin-top: 8px; }
+.sg-act-go, .sg-act-more { display: flex; flex-wrap: wrap; gap: 8px; }
+.sg-alts { border-left: 1px solid var(--line); padding-left: 20px; min-width: 0; }
+.sg-alt-list { list-style: none; margin: 8px 0 0; padding: 0; display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; }
+.sg-alt { display: flex; align-items: center; gap: 12px; width: 100%; min-height: 64px; padding: 8px 10px 8px 8px; border-radius: 12px; border: 1px solid var(--line); background: var(--panel2); text-align: left; cursor: pointer; -webkit-tap-highlight-color: transparent; }
+.sg-alt:hover { border-color: color-mix(in srgb, var(--text) 25%, var(--line)); }
+.sg-alt .cover { width: 34px; border-radius: 7px; }
+.sg-alt .cover .ph .full { display: none; }
+.sg-alt .cover .ph .ini { display: block; font-size: 12px; }
+.sg-alt .ttl { display: block; font-weight: 600; font-size: 14px; }
+.sg-alt .sub { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; font-size: 12.5px; color: var(--muted); line-height: 1.3; margin-top: 2px; }
+.sg-alt > svg { color: var(--muted); }
+.sg-foot { display: flex; flex-wrap: wrap; gap: 4px 10px; justify-content: space-between; align-items: baseline; }
+.linkbtn { border: 0; background: none; padding: 0; font: inherit; cursor: pointer; }
+.sg-dialog .sg-body { grid-template-columns: minmax(0, 1fr) minmax(200px, 250px); }
+@media (max-width: 900px) {
+  .sg-body, .sg-dialog .sg-body { grid-template-columns: minmax(0, 1fr); }
+  .sg-alts { border-left: 0; padding-left: 0; border-top: 1px solid var(--line); padding-top: 12px; }
+}
+@media (max-width: 600px) {
+  .sg-main { grid-template-columns: 84px minmax(0, 1fr); grid-template-areas: "cover info" "act act"; column-gap: 14px; }
+  .sg-main.sg-skel .cover { width: 84px; }
+  .sg-title { font-size: 18px; }
+  .sg-act { margin-top: 10px; flex-direction: column; gap: 8px; }
+  .sg-act-go, .sg-act-more { flex-wrap: nowrap; }
+  .sg-act .btn { flex: 1 1 0; min-width: 0; padding: 0 8px; }
+  .sg-act .btn.ghost { border-color: var(--line); }
+  .sg-ctl .seg { flex: 1 1 100%; }
+  .sg-ctl .seg button { flex: 1; }
+  .sg-ctl .sg-sel { flex: 1 1 0; min-width: 0; }
+}
+@media (max-width: 420px) { .sg-act-more .btn svg { display: none; } }
+
 /* ---------- home: tracking health and what needs attention ---------- */
 .dash-h .eyebrow { margin-bottom: 4px; }
 .dash-act { align-items: center; }
