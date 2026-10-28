@@ -807,12 +807,14 @@ export function playStyle(db, { range = '365d', platform = null, weekStartsOn = 
     const weekRows = [...weeks.entries()].sort((a, b) => (a[0] < b[0] ? -1 : 1)).map(([key, w]) => {
       const vals = [...w.values()];
       const total = vals.reduce((a, b) => a + b, 0);
-      return { key, games: w.size, minutes: r(total), top_share: share(Math.max(...vals), total) };
+      // the week still under way is drawn but not counted in the typical week
+      return { key, games: w.size, minutes: r(total), top_share: share(Math.max(...vals), total), ...(key === wk(today) ? { partial: true } : {}) };
     }).filter((w) => w.minutes >= 1);
-    const topShare = median(weekRows.map((w) => w.top_share));
+    const whole = weekRows.filter((w) => !w.partial).length ? weekRows.filter((w) => !w.partial) : weekRows;
+    const topShare = median(whole.map((w) => w.top_share));
     const focus = weekRows.length ? {
-      weeks: weekRows.length,
-      games_per_week: Math.round((weekRows.reduce((a, w) => a + w.games, 0) / weekRows.length) * 10) / 10,
+      weeks: whole.length,
+      games_per_week: Math.round((whole.reduce((a, w) => a + w.games, 0) / whole.length) * 10) / 10,
       median_top_share: topShare,
       style: topShare >= R.focused ? 'focused' : topShare <= R.varied ? 'varied' : 'balanced',
       series: weekRows,

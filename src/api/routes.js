@@ -746,7 +746,7 @@ export function registerRoutes(r, app) {
   r.get('/api/v1/stats/style', (c) => playStyle(db, { range: c.query.range || '365d', platform: c.query.platform || null, weekStartsOn: settings.get('week_starts_on'), limit: clamp(c.query.limit, 10, 1, 50) }), {
     summary: 'How you play: focus per week, what became of the games started, staying power, comebacks (tracked play only)',
     query: { range: '7d|30d|90d|365d|year:2026|all (default 365d)', platform: '', limit: 'games listed per part (default 10)' },
-    returns: '{ range, rules, focus: { weeks, games_per_week, median_top_share, style: focused|balanced|varied, series: [{ key, games, minutes, top_share }] } | null, '
+    returns: '{ range, rules, focus: { weeks, games_per_week, median_top_share, style: focused|balanced|varied, series: [{ key, games, minutes, top_share, partial? (the week under way: not in the medians) }] } | null, '
       + 'starts: { count, outcomes: { finished, playing, invested, faded, tried, dropped }, median_minutes, median_days, items: [{ game_id, title, first_day, last_day, minutes, days, span_days, outcome, early_share }] }, '
       + 'staying_power: { games, median_early_share, median_span_days } | null, comebacks: { count, items: [{ game_id, title, returned_on, gap_days, minutes_since }] } }',
   });
