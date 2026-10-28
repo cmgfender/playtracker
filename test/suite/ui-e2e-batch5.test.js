@@ -431,8 +431,8 @@ describe('Vestigo web UI, batch 5: Insights and Year in review on the demo libra
       assert.equal(await n('when', '.chart.hist svg'), 1, 'session lengths');
       assert.match(await sec('when').locator('.kpi', { hasText: 'Median' }).innerText(), /\d/);
       assert.equal(await n('what', '.chart.lanes svg'), 1, 'swimlanes');
-      assert.ok(await n('what', '.eras i') >= 2, 'eras strip');
-      assert.ok(await n('what', '.eras-list li') >= 2, 'eras list');
+      assert.ok(await n('what', '.chart.erastrip [data-tip]') >= 2, 'eras strip');
+      assert.ok(await n('what', '.era-list li') >= 2, 'eras list');
       assert.equal(await n('what', '.chart.area svg'), 1, 'platforms over time');
       assert.ok(await n('records', '.rec') >= 6, 'record cards');
       assert.ok(await n('records', '.hl li') >= 4, 'highlight lines');
@@ -473,6 +473,100 @@ describe('Vestigo web UI, batch 5: Insights and Year in review on the demo libra
     } finally { await h.close(); }
   });
 
+  test('eras: a strip on a true time axis (equal months, years under it, titles inside wide blocks, tooltips, arrow keys, a summary) and the list by year; 1400, 390 and 360px', async () => {
+    const tl = await S.ok('/stats/timeline?range=all');
+    assert.ok(tl.eras.some((e) => e.kind === 'variety') && tl.eras.some((e) => e.ordinal > 1), 'the demo has a mix and a return');
+    const from = tl.era_range.from;
+    const idx = (k) => (Number(k.slice(0, 4)) - Number(from.slice(0, 4))) * 12 + Number(k.slice(5)) - Number(from.slice(5));
+    const first = tl.eras.find((e) => e.kind === 'game');
+    const reEsc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    for (const viewport of [DESKTOP, PHONE, PHONE_SMALL]) {
+      const where = `${viewport.width}px`;
+      const h = await visit(S, '/insights?range=all', { viewport });
+      const { page } = h;
+      try {
+        await page.evaluate(() => document.querySelector('#ins-what').scrollIntoView());
+        const card = page.locator('#ins-what .ins-eras');
+        const strip = card.locator('.chart.erastrip');
+        await strip.locator('svg').waitFor();
+        const g = await strip.evaluate((el) => {
+          const svg = el.querySelector('svg');
+          const box = (n) => { const b = n.getBBox(); return { x: b.x, w: b.width, r: b.x + b.width }; };
+          return {
+            hostW: el.clientWidth, w: svg.viewBox.baseVal.width, label: svg.getAttribute('aria-label'),
+            blocks: [...svg.querySelectorAll('.era-b, .era-break')].map((r) => ({ ...box(r), tip: r.dataset.tip })),
+            texts: [...svg.querySelectorAll('text.era-l')].map((t) => ({ ...box(t), s: t.textContent })),
+            years: [...svg.querySelectorAll('.axis text.yr')].map((t) => ({ ...box(t), s: t.textContent })),
+          };
+        });
+        assert.ok(Math.abs(g.w - g.hostW) < 1, `${where}: drawn at its width`);
+        // every month the same width: each block starts at its first month and spans its months
+        const mw = g.w / tl.era_range.months;
+        assert.equal(g.blocks.length, tl.eras.length);
+        tl.eras.forEach((e, i) => {
+          const b = g.blocks[i];
+          assert.ok(Math.abs(b.x - idx(e.from) * mw) <= 1.2 && Math.abs(b.w - e.months * mw) <= 2.2, `${where} era ${i} (${e.from}..${e.to}): x ${b.x.toFixed(1)} w ${b.w.toFixed(1)}, a month is ${mw.toFixed(1)}px`);
+        });
+        // the years under it, each from its January
+        assert.ok(g.years.length >= 2, `${where}: year labels (${g.years.map((y) => y.s)})`);
+        assert.match(g.years[0].s, new RegExp(`${from.slice(0, 4)}$`), `${where}: the axis opens with its first year`);
+        for (const y of g.years.slice(1)) {
+          assert.match(y.s, /^\d{4}$/);
+          assert.ok(Math.abs(y.x - (idx(`${y.s}-01`) * mw + 4)) <= 1, `${where}: ${y.s} sits at its January`);
+        }
+        // titles inside the wide blocks, never past their edge
+        assert.ok(g.texts.length >= 2, `${where}: labels inside blocks`);
+        for (const t of g.texts) {
+          const b = g.blocks.find((x) => t.x >= x.x && t.x < x.r);
+          assert.ok(b && t.r <= b.r + 0.5, `${where}: "${t.s}" stays inside its block`);
+        }
+        for (const [i, e] of tl.eras.entries()) {
+          if (e.kind === 'game' && g.blocks[i].w >= 120) assert.ok(g.texts.some((t) => e.title.startsWith(t.s.replace(/…$/, ''))), `${where}: ${e.title} is named in its block`);
+        }
+        // the summary: "8 eras in 30 months: Marvel's Spider-Man 2 led May – Aug 2024, …"
+        assert.match(g.label, new RegExp(`^\\d+ eras in ${tl.era_range.months} months: ${reEsc(first.title)} led `));
+        // hover and keyboard read the same tooltips
+        await strip.locator('.era-b').first().hover();
+        assert.equal(await strip.locator('.tip.on').innerText(), g.blocks[0].tip);
+        assert.match(g.blocks[0].tip, /^.+ · .+ \(\d+ months?\) · \d+% of play · /);
+        await strip.focus();
+        assert.equal(await strip.getAttribute('role'), 'group');
+        await page.keyboard.press('ArrowRight');
+        await page.keyboard.press('ArrowRight');
+        assert.equal(await strip.locator('.chart-live').innerText(), g.blocks[1].tip);
+        await page.keyboard.press('End');
+        assert.equal(await strip.locator('.chart-live').innerText(), g.blocks.at(-1).tip);
+        // the list: a head per year, a row per era in the strip's order
+        assert.deepEqual(await card.locator('.era-yh').allInnerTexts(), [...new Set(tl.eras.map((e) => e.from.slice(0, 4)))]);
+        const rows = card.locator('.era-row');
+        assert.equal(await rows.count(), tl.eras.length);
+        for (const [i, e] of tl.eras.entries()) {
+          const row = rows.nth(i);
+          const text = (await row.innerText()).replace(/\s+/g, ' ');
+          if (e.kind === 'game') {
+            assert.equal(await row.locator('.era-t a').getAttribute('href'), `/game/${e.game_id}`);
+            assert.ok(text.includes(`${Math.round(e.share * 100)}% of your play`), `${where} row ${i}: ${text}`);
+            if (e.alongside.length) assert.ok(text.includes(`alongside ${e.alongside[0].title}`), `${where} row ${i}: ${text}`);
+            assert.equal(await row.locator('.era-tag').count(), e.ordinal > 1 ? 1 : 0, `${where} row ${i}: a return is marked`);
+            if (e.ordinal === 2) assert.match(text, /2nd era/);
+            assert.equal(await row.locator('.cover').count(), 1, 'a cover (or its monogram)');
+          } else if (e.kind === 'variety') {
+            assert.ok(text.startsWith('A mix of games') && text.includes(`mostly ${e.games[0].title}`), `${where} row ${i}: ${text}`);
+          }
+          assert.match(text, /\d+ months?/);
+          assert.equal(/mostly estimated/.test(text), e.estimated_minutes * 2 > e.minutes, `${where} row ${i}: mostly estimated marked as such`);
+        }
+        // phones: nothing wider than the screen, every row inside the card
+        const o = await overflow(page, viewport.width);
+        assert.ok(o.doc <= viewport.width + 1, `${where}: ${o.doc}px wide, widest ${JSON.stringify(o.culprit)}`);
+        const spill = await card.evaluate((c) => { const r = c.getBoundingClientRect(); return [...c.querySelectorAll('.era-row, .era-row *')].filter((n) => n.getBoundingClientRect().right > r.right + 0.5).length; });
+        assert.equal(spill, 0, `${where}: rows stay inside the card`);
+        assert.deepEqual(chartProblems(where, (await chartReport(page)).filter((c) => /erastrip/.test(c.kind))), []);
+        clean(h);
+      } finally { await h.close(); }
+    }
+  });
+
   test('Insights and Year in review: dark and light, desktop and phone, without overflow or page errors', async () => {
     for (const colorScheme of ['dark', 'light']) {
       await S.ok('/settings', { method: 'PUT', body: { theme: colorScheme } });
@@ -506,7 +600,14 @@ describe('Vestigo web UI, batch 5: Insights and Year in review on the demo libra
       const w = await S.ok(`/stats/year/${YEAR}`);
       assert.equal(await big(), `${Math.round(w.total_minutes / 60).toLocaleString()} hours`);
       for (const t of ['Achievements', 'Favourite time', 'Longest session', 'Best month', 'Game of the year']) assert.equal(await page.locator('.wcard', { hasText: t }).count(), 1, t);
-      assert.ok(await page.locator('.eras i').count() >= 2, 'the eras of the year');
+      assert.ok(await page.locator('.wr-eras .chart.erastrip [data-tip]').count() >= 2, 'the eras of the year');
+      const tl = await S.ok(`/stats/timeline?range=year:${YEAR}&group=month`);
+      assert.equal(await page.locator('.wr-eras .era-row').count(), tl.eras.length, 'a row per era');
+      assert.equal(await page.locator('.wr-eras .era-yh').count(), 0, 'one year: no year heads');
+      // the axis runs to December: the months still to come are drawn, empty
+      const axis = await page.locator('.wr-eras .erastrip svg').evaluate((svg) => ({ w: svg.viewBox.baseVal.width, future: svg.querySelector('.era-future')?.getBBox().width ?? 0 }));
+      const later = 12 - Number(tl.era_range.to.slice(5));
+      assert.ok(Math.abs(axis.future - (later * axis.w) / 12) < 3, `${later} months still to come on the axis (${JSON.stringify(axis)})`);
       assert.equal(await page.locator('.wr-months span').count(), 12, 'J F M … under the month bars');
       assert.equal(await page.locator('.wr-months i.best').count(), 1, 'the best month marked');
       const ach = await S.ok(`/stats/achievements?range=year:${YEAR}`);
@@ -525,6 +626,55 @@ describe('Vestigo web UI, batch 5: Insights and Year in review on the demo libra
       const wt = await S.ok(`/stats/year/${YEAR}?estimates=exclude`);
       assert.equal(wt.total_minutes, wt.tracked_minutes);
       await waitUntil(async () => (await big()) === `${Math.round(wt.tracked_minutes / 60).toLocaleString()} hours`, { message: 'the headline is tracked play' });
+      clean(h);
+    } finally { await h.close(); }
+  });
+});
+
+// ======================================================================== eras with little data
+describe('Vestigo web UI, batch 5: eras with one month, a break, and none', UI, () => {
+  let S;
+  before(async () => { S = await startApp(); });
+  after(() => S?.close());
+
+  test('one month of play is one era on the axis; months without play between two are a break; a range without play says so', async () => {
+    const solo = await S.ok('/games', { method: 'POST', body: { title: 'Solo Quest' } });
+    await S.ok('/sessions', { method: 'POST', body: { game_id: solo.id, minutes: 90, ended_at: NOW - 2 * HOUR } });
+    const h = await visit(S, '/insights?range=30d', { viewport: PHONE_SMALL });
+    const { page } = h;
+    const eras = async () => {
+      await page.evaluate(() => document.querySelector('#ins-what').scrollIntoView());
+      await page.locator('#ins-what .ins-eras .ins-none, #ins-what .ins-eras .erastrip svg').first().waitFor();
+      return page.locator('#ins-what .ins-eras');
+    };
+    try {
+      let card = await eras();
+      const tl = await S.ok('/stats/timeline?range=30d');
+      assert.equal(tl.eras.length, 1);
+      assert.equal(await card.locator('.erastrip .era-b').count(), 1);
+      const n = tl.era_range.months;
+      assert.match(await card.locator('.erastrip svg').getAttribute('aria-label'), new RegExp(`^1 era in ${n} months?: Solo Quest led `));
+      assert.match((await card.locator('.era-row').innerText()).replace(/\s+/g, ' '), /Solo Quest .*1 month 100% of your play · 1h 30m/);
+      assert.equal(await card.locator('.era-yh').count(), 0);
+      // a game played 70 days ago: a month or two without play between them
+      const old = await S.ok('/games', { method: 'POST', body: { title: 'Old Flame' } });
+      await S.ok('/sessions', { method: 'POST', body: { game_id: old.id, minutes: 120, ended_at: NOW - 70 * DAY } });
+      await page.goto(`${S.origin}/insights?range=365d`);
+      await waitView(page);
+      card = await eras();
+      const rows = (await card.locator('.era-row').allInnerTexts()).map((t) => t.replace(/\s+/g, ' ').trim());
+      assert.equal(rows.length, 3, rows.join(' | '));
+      assert.match(rows[1], /^Break · [12] months?, no play/);
+      assert.equal(await card.locator('.erastrip .era-break').count(), 1);
+      assert.match(await card.locator('.era-legend').innerText(), /No play/);
+      const o = await overflow(page, PHONE_SMALL.width);
+      assert.ok(o.doc <= PHONE_SMALL.width + 1, `${o.doc}px wide`);
+      // nothing in the range
+      await page.goto(`${S.origin}/insights?range=year:2001`);
+      await waitView(page);
+      card = await eras();
+      assert.equal(await card.locator('.ins-none').innerText(), 'No months with play in this range.');
+      assert.equal(await card.locator('.erastrip').count(), 0);
       clean(h);
     } finally { await h.close(); }
   });

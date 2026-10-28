@@ -42,7 +42,7 @@ import { esc, fmtMin, plat } from './app.js';
  * Kinds: bar, heat, punch (weekday x hour grid), hist (histogram with median / p90 marks), area
  * (stacked area over time), lanes (swimlanes: a row of bars per game), curve (a game's cumulative
  * play with sessions and unlocks per period), scatter (completion vs hours), lines (several series
- * over the same periods: lines, or grouped bars).
+ * over the same periods: lines, or grouped bars); erastrip (eras on a month axis) is registered in insights.js.
  */
 
 // ---------- core ----------
@@ -137,7 +137,9 @@ function bindTip(ch) {
     const tr = t.getBoundingClientRect();
     const sl = ch.scrollLeft;
     tip.textContent = t.dataset.tip;
-    tip.style.left = `${Math.min(sl + r.width - 40, Math.max(sl + 40, tr.left - r.left + sl + tr.width / 2))}px`;
+    // centred on the mark, but kept inside the chart (a long tip near an edge would widen the page)
+    const half = Math.max(40, Math.min(tip.offsetWidth, r.width) / 2);
+    tip.style.left = `${Math.min(sl + r.width - half, Math.max(sl + half, tr.left - r.left + sl + tr.width / 2))}px`;
     tip.style.top = `${Math.max(16, t.dataset.top ? Number(t.dataset.top) : tr.top - r.top)}px`;
     tip.classList.add('on');
   };

@@ -700,8 +700,8 @@ input[type="color"].swatch::-webkit-color-swatch { border: 0; border-radius: 6px
    Batch 5: palette, library filters, game page, sessions periods, achievements,
    insights, first run, Year in review
    ===================================================================== */
-:root { --star-ink: var(--star); --era-l: 52%; --g-platinum: #c7d2fe; --g-gold: #fbbf24; --g-silver: #cbd5e1; --g-bronze: #f59e0b; }
-:root[data-theme="light"] { --star-ink: #92400e; --era-l: 56%; --g-platinum: #4f46e5; --g-gold: #b45309; --g-silver: #64748b; --g-bronze: #9a3412; }
+:root { --star-ink: var(--star); --g-platinum: #c7d2fe; --g-gold: #fbbf24; --g-silver: #cbd5e1; --g-bronze: #f59e0b; }
+:root[data-theme="light"] { --star-ink: #92400e; --g-platinum: #4f46e5; --g-gold: #b45309; --g-silver: #64748b; --g-bronze: #9a3412; }
 
 /* ---------- Home: the weekly mini bars sit in the top corner, clear of the sessions line ---------- */
 .kpi .spark-bars { top: 14px; bottom: auto; height: 30px; width: 34%; }
@@ -908,14 +908,71 @@ kbd svg { width: 11px; height: 11px; }
 .ins-top a { padding: 5px 0; border-top: 1px solid var(--line); }
 .ins-top b { font-variant-numeric: tabular-nums; }
 .ins-top .num { width: 18px; flex: none; color: var(--muted); font-variant-numeric: tabular-nums; }
-.eras { display: flex; gap: 2px; height: 34px; margin-bottom: 12px; border-radius: 10px; overflow: hidden; }
-.eras i { display: block; min-width: 4px; }
-.eras i.est { background-image: repeating-linear-gradient(45deg, rgba(255, 255, 255, .3) 0 2px, transparent 2px 6px); }
-.eras-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; font-size: 13.5px; }
-.eras-list li { display: flex; align-items: center; gap: 8px; min-width: 0; }
-.eras-list .when { width: 128px; flex: none; color: var(--muted); font-variant-numeric: tabular-nums; }
-.eras-list .amt { font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; }
-@media (max-width: 600px) { .eras-list .when { width: 92px; font-size: 12.5px; } }
+/* ---------- eras: a strip on a time axis and the list it stands for ---------- */
+/* a categorical palette by color_index: light fills with dark ink on dark themes, deep fills with white ink on light;
+   the estimated hatch and the variety stripes move away from the ink, so labels on them only gain contrast */
+:root {
+  --era-0: #38bdf8; --era-1: #fbbf24; --era-2: #a78bfa; --era-3: #34d399; --era-4: #fb7185;
+  --era-5: #2dd4bf; --era-6: #fb923c; --era-7: #818cf8; --era-8: #a3e635; --era-9: #f472b6;
+  --era-ink: #0b0d12; --era-hatch: rgba(255, 255, 255, .34);
+  --era-mix: #4b5367; --era-mix-ink: #eef0f6; --era-mix-stripe: rgba(0, 0, 0, .2);
+}
+:root[data-theme="light"] {
+  --era-0: #0369a1; --era-1: #b45309; --era-2: #6d28d9; --era-3: #047857; --era-4: #be123c;
+  --era-5: #0f766e; --era-6: #c2410c; --era-7: #4338ca; --era-8: #4d7c0f; --era-9: #be185d;
+  --era-ink: #fff; --era-hatch: rgba(0, 0, 0, .2);
+  --era-mix: #d5d9e2; --era-mix-ink: #141824; --era-mix-stripe: rgba(255, 255, 255, .6);
+}
+.chart.erastrip { height: auto; margin: 4px 0 2px; }
+.erastrip .era-track { fill: var(--bg2); }
+.erastrip .era-break { fill: transparent; stroke: var(--line-strong); stroke-opacity: .55; stroke-dasharray: 3 3; }
+.erastrip .era-future { fill: none; stroke: var(--line); stroke-dasharray: 2 3; }
+.erastrip .era-l { font-size: 12px; font-weight: 600; fill: var(--era-ink); pointer-events: none; }
+.erastrip .era-l.mix { fill: var(--era-mix-ink); }
+.erastrip .era-l.brk { fill: var(--muted); font-weight: 500; }
+.erastrip .axis text.yr { fill: var(--muted); font-weight: 600; }
+.erastrip .era-tick { stroke: var(--line-strong); stroke-width: 1; }
+.era-legend { margin-top: 6px; }
+.era-dot { background: var(--era-1); }
+.era-dot.est { background: var(--era-0) repeating-linear-gradient(45deg, var(--era-hatch) 0 2px, transparent 2px 5px); }
+.era-dot.mix { background: var(--era-mix) repeating-linear-gradient(-45deg, var(--era-mix-stripe) 0 2px, transparent 2px 5px); }
+.era-dot.brk { background: transparent; box-shadow: inset 0 0 0 1px var(--line-strong); }
+.era-years { container-type: inline-size; display: flex; flex-direction: column; margin-top: 12px; }
+.era-yh { margin: 12px 0 2px; font-size: 12px; font-weight: 700; letter-spacing: .08em; color: var(--muted); }
+.era-list { list-style: none; margin: 0; padding: 0; }
+.era-row { position: relative; display: flex; align-items: center; gap: 12px; min-width: 0; padding: 10px 0 10px 14px; border-top: 1px solid var(--line); }
+.era-sw { position: absolute; left: 0; top: 10px; bottom: 10px; width: 4px; border-radius: 4px; background: var(--era-c, var(--era-mix)); }
+.era-row.est .era-sw { background-image: repeating-linear-gradient(45deg, var(--era-hatch) 0 2px, transparent 2px 5px); }
+.era-row.mix .era-sw { background-image: repeating-linear-gradient(-45deg, var(--era-mix-stripe) 0 2px, transparent 2px 5px); }
+.era-row.brk .era-sw { background: none; box-shadow: inset 0 0 0 1px var(--line-strong); opacity: .7; }
+.era-row > .cover { width: 34px; border-radius: 7px; }
+.era-row > .cover .ph { padding: 2px; }
+.era-row > .cover .ph .full { display: none; }
+.era-row > .cover .ph .ini { display: block; font-size: 12px; }
+.era-mixtile { flex: none; display: grid; place-items: center; width: 34px; height: 51px; border-radius: 7px; color: var(--era-mix-ink); background: var(--era-mix) repeating-linear-gradient(-45deg, var(--era-mix-stripe) 0 3px, transparent 3px 8px); }
+.era-mixtile svg { width: 18px; height: 18px; }
+.era-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.era-t { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: 14px; font-weight: 600; }
+.era-t > a { min-width: 0; }
+.era-t > b { font-weight: inherit; }
+.era-t > a:hover { text-decoration: underline; }
+.era-sub { font-size: 12.5px; color: var(--muted); font-variant-numeric: tabular-nums; min-width: 0; overflow-wrap: anywhere; }
+.era-sub b { color: var(--text); font-weight: 600; }
+.era-est { font-style: italic; }
+.era-with::before { content: " · "; }
+.era-tag { flex: none; padding: 1px 7px; border-radius: 99px; border: 1px solid var(--line); font-size: 11px; font-weight: 600; color: var(--muted); white-space: nowrap; }
+.era-row.brk { padding-top: 7px; padding-bottom: 7px; }
+.era-row.brk .era-sw { top: 7px; bottom: 7px; }
+.era-row.brk .era-main { flex-direction: row; align-items: baseline; gap: 10px; }
+.era-row.brk .era-t { font-size: 13px; font-weight: 500; color: var(--muted); }
+/* a wide card: the span under the title, the share, hours and company in a column of their own */
+@container (min-width: 620px) {
+  .era-main { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); column-gap: 24px; align-items: center; }
+  .era-main > .era-meta { grid-column: 2; grid-row: 1 / span 2; display: flex; flex-direction: column; }
+  .era-with::before { content: none; }
+  .era-sub, .era-with { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+  .era-row.brk .era-main { display: flex; }
+}
 .recs { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 12px; }
 .rec { padding: 14px 16px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel); box-shadow: var(--shadow-card, none); min-width: 0; }
 .rec .rv { margin: 4px 0 2px; font-size: 24px; font-weight: 800; letter-spacing: -.03em; font-variant-numeric: tabular-nums; }
@@ -960,12 +1017,6 @@ a.wcard:hover { border-color: color-mix(in srgb, var(--text) 25%, var(--line)); 
 .side-search .grow { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .card .kpis.k4.strip .kpi .value { font-size: 22px; white-space: nowrap; }
 .ach-row .sub .dot { margin-right: 6px; vertical-align: 1px; }
-.eras-list .when { width: 150px; white-space: nowrap; }
-@media (max-width: 600px) {
-  .eras-list li { flex-wrap: wrap; row-gap: 0; }
-  .eras-list .when { width: auto; flex: 1 1 calc(100% - 20px); }
-  .eras-list li > a { margin-left: 16px; }
-}
 /* three across: a last row of two closes the gap (the last card spans two columns) */
 @media (min-width: 1180px) { .wr .wrapped { grid-template-columns: repeat(3, minmax(0, 1fr)); } .wr .wrapped > :last-child:nth-child(3n+2) { grid-column: span 2; } }
 @media (max-width: 600px) { .lib-row1 { gap: 8px; } .lib-row1 .search { min-width: 112px; } .lib-row1 #lib-sort { flex: 0 1 auto; min-width: 0; max-width: 46%; text-overflow: ellipsis; } }

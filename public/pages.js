@@ -1799,12 +1799,13 @@ async function wrapped(view, year, stale) {
       ${ach && (ach.unlocked || ach.completed_count) ? `<div class="wcard wr-ach"><div class="muted">Achievements</div><div class="big">${ach.unlocked.toLocaleString()}</div><div class="muted">unlocked${ach.points ? ` · ${ach.points.toLocaleString()}G` : ''}${ach.grades?.platinum ? ` · ${plural(ach.grades.platinum, 'platinum')}` : ''} · ${plural(ach.completed_count, 'game')} completed</div>
         ${rarest ? `<div class="wr-rare">${achIcon(rarest, { size: 30 })}<div style="min-width:0"><div class="ellipsis"><b>${esc(rarest.name || 'Hidden achievement')}</b></div><div class="small muted">${esc(rarest.title)} · the rarest, ${fmtRarity(rarest.rarity ?? 0)} of players</div></div></div>` : ''}</div>` : ''}
     </div>
-    ${tl?.eras?.length ? `<div class="card" style="margin-top:16px"><div class="card-h"><h2>The eras of ${y}</h2><span class="tiny muted">the most played game of each month</span></div>${eraStrip(tl)}</div>` : ''}
+    ${tl?.eras?.length ? `<div class="card wr-eras" style="margin-top:16px"><div class="card-h"><h2>The eras of ${y}</h2><span class="tiny muted">who led each month</span></div>${eraStrip(tl, { through: `${y}-12` })}</div>` : ''}
     ${ach?.completed?.length ? `<div class="card" style="margin-top:16px"><div class="card-h"><h2>Completed in ${y}</h2></div><div class="list">${ach.completed.map((x) => `<a class="item" href="/game/${x.game_id}" data-link>${cover(x)}<div class="grow"><div class="ttl ellipsis">${esc(x.title)}</div><div class="sub">${platDot(x.platform)}${x.platinum ? 'Platinum' : `${x.unlocked} of ${x.total}`} · ${fmtDate(x.completed_at, { month: 'long', day: 'numeric' })}</div></div><span class="badge good">${x.platinum ? 'Platinum' : '100%'}</span></a>`).join('')}</div></div>` : ''}
     <div class="grid grid-2" style="margin-top:16px">
       <div class="card"><div class="card-h"><h2>Top 10</h2></div>${topList(w.top_games, { coverFn: (g) => cover(g), limit: 10 })}</div>
       <div class="card"><div class="card-h"><h2>New this year</h2></div><div class="list">${w.new_game_list.map((g) => `<a class="item" href="/game/${g.game_id}" data-link>${cover(g)}<div class="grow ttl ellipsis">${esc(g.title)}</div><span class="small muted">${fmtDate(g.first)}</span></a>`).join('') || '<p class="muted">—</p>'}</div></div>
     </div></div>`;
+  mountCharts(view);
   bindWrapped();
   function bindWrapped() {
     $('#wr-est').addEventListener('change', (e) => navigate(`/wrapped/${y}${e.target.checked ? '' : '?estimates=exclude'}`, { replace: true }));
