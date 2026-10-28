@@ -156,6 +156,8 @@ export function applyItems(db, account, items, { settings, now = Date.now(), syn
   const sessionMinutes = db.prepare('SELECT minutes FROM sessions WHERE id = ?');
   const spansFor = db.prepare('SELECT * FROM presence WHERE account_id = ? AND ext_id = ? AND started_at < ? AND COALESCE(ended_at, last_seen_at) > ? ORDER BY started_at');
   const linkSpan = db.prepare('UPDATE presence SET session_id = ? WHERE id = ?');
+  // finished presence spans of a title no session has used yet, since the account was linked
+  const unclaimedSpans = db.prepare('SELECT * FROM presence WHERE account_id = ? AND ext_id = ? AND ended_at IS NOT NULL AND session_id IS NULL AND started_at >= ? ORDER BY started_at');
   // finished presence spans of a title that ended in (from, to), newest first
   const endedSpans = db.prepare('SELECT * FROM presence WHERE account_id = ? AND ext_id = ? AND ended_at IS NOT NULL AND ended_at > ? AND ended_at < ? ORDER BY ended_at DESC');
   // when an entry's total first reached a value
@@ -432,6 +434,27 @@ export function applyItems(db, account, items, { settings, now = Date.now(), syn
       const [ws, we] = model.window(from ?? now, now);
       const playedBeforeWindow = from && lastPlayedAt && lastPlayedAt < ws - 2 * MIN;
       const startedBeforeWindow = from && it.firstPlayedAt && it.firstPlayedAt < ws - 2 * MIN;
+      // A game listed only after it was played (a free game Steam adds a day later, a title the
+      // platform was slow to report): when presence saw that play, those sittings are tracked
+      // sessions at their real times (with the usual slack for presence's poll gaps), not history.
+      // Only what presence did not see is history. (Play since the last sync is handled below.)
+      if (playedBeforeWindow && !initial && !it.backfill) {
+        const watched = unclaimedSpans.all(account.id, extId, account.created_at || 0);
+        if (watched.length) {
+          curExt = extId;
+          const lens = watched.map((sp) => Math.max(1, (sp.ended_at - sp.started_at) / MIN));
+          const covered = Math.min(playtime, Math.round(lens.reduce((a, x) => a + x, 0) * 1.25 + 5));
+          intSplit(covered, lens).forEach((m, i) => {
+            const sp = watched[i];
+            if (m <= 0) return;
+            const id = play({ ...entry, ext_id: extId }, it.title || entry.title, { minutes: m, windowStart: sp.started_at, windowEnd: sp.ended_at, started: sp.started_at, ended: sp.ended_at, confidence: 'exact', device: sp.device || null });
+            if (id) linkSpan.run(id, sp.id);
+          });
+          stats.games_changed++;
+          if (playtime > covered) history(entry, playtime - covered, it, { tracking_start: watched[0].started_at });
+          continue;
+        }
+      }
       const isImport = initial || !prevSync || it.backfill || playedBeforeWindow;
       if (isImport) {
         // first sight of existing playtime -> history (dated by inference, never a burst today)
