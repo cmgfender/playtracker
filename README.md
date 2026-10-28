@@ -42,6 +42,8 @@ Steam, Xbox and PlayStation tell you **how long you've played in total**, but no
 - **Ops:**
   - No dependencies at all: Node 22 plus the built-in SQLite.
   - Optional password, a JSON/CSV export and a one-click SQLite backup.
+  - Automatic backups: a copy of the database in `/data/backups` every night (or weekly), the last 7 kept, plus a copy before an update changes the database. Settings → Export & backups shows them; to restore, stop the container and put a backup in place of `vestigo.db` (or `playtracker.db`).
+  - A weekly summary through the webhook: last week's hours, top games, new games and achievements.
   - Installable as a mobile web app (PWA).
 
 ## Quick start
@@ -205,11 +207,12 @@ Main endpoints:
 - **Library:** `games`, `games/:id`, `games/:id/merge`, `entries/:id` (exclude, split, move, push playtime)
 - **Achievements:** `games/:id/achievements` (the full list, each with its session), summaries on `games/:id`, `achievements` on every session, `stats/achievements`
 - **Sessions and stats:** `sessions` (list, create, edit, bulk), `stats`, `stats/heatmap`, `stats/year/:year`
-- **Charts and insights:** `stats/punchcard`, `stats/session-lengths`, `stats/platforms` (or `?by=device`), `stats/timeline`, `games/:id/stats`, `stats/library`, `stats/year-over-year`, `stats/records` (tracked play and estimated history always apart; shapes in `/api/openapi.json`)
+- **Charts and insights:** `stats/punchcard`, `stats/session-lengths`, `stats/platforms` (or `?by=device`), `stats/timeline`, `games/:id/stats`, `stats/library`, `stats/year-over-year`, `stats/records`, `stats/style` (focus, the games started, comebacks), `stats?compare=true&highlights=true` (the previous period and a range's highlights) (tracked play and estimated history always apart; shapes in `/api/openapi.json`)
+- **Weekly summary:** `summary/week?weeks_ago=1`, `summary/week/send`
 - **Duplicates:** `duplicates`
 - **What should I play?:** `suggest?minutes=60&mode=finish` (picks with reasons), `suggest/feedback` (not now, never, reset)
 - **Accounts and syncing:** `accounts`, `accounts/:id/sync`, `accounts/:id/report`, `syncs`
-- **Admin:** `settings`, `tokens`, `import`, `export`, `backup`
+- **Admin:** `settings`, `tokens`, `import`, `export`, `backup` (download one now), `backups` (the automatic ones: list, back up now, download, delete)
 
 ## Logging, errors & diagnostics
 
@@ -242,6 +245,7 @@ Main endpoints:
 | `TZ` | `UTC` | Timezone for daily buckets and scheduled sync times |
 | `VESTIGO_DATA` | `/data` | The data folder. It holds `vestigo.db`, or the `playtracker.db` an earlier version created (used in place). |
 | `VESTIGO_DB` | | Full path to the database file instead (overrides `VESTIGO_DATA`) |
+| `VESTIGO_BACKUP_DIR` | `<data>/backups` | Where automatic backups go |
 | `VESTIGO_PASSWORD` | | Password for the UI and API. You can also set one in Settings. With no password, access is open (fine on a trusted LAN). |
 | `VESTIGO_SECURE_COOKIE` | `false` | Set to `true` when served over HTTPS |
 | `VESTIGO_CORS_ORIGIN` | | Lets another origin call the API from a browser |
@@ -254,6 +258,7 @@ Every `VESTIGO_` variable (here and in the logging table above) also works under
 |---|---|
 | `VESTIGO_DATA` | `PLAYTRACKER_DATA` |
 | `VESTIGO_DB` | `PLAYTRACKER_DB` |
+| `VESTIGO_BACKUP_DIR` | `PLAYTRACKER_BACKUP_DIR` |
 | `VESTIGO_PASSWORD` | `PLAYTRACKER_PASSWORD` |
 | `VESTIGO_SECURE_COOKIE` | `PLAYTRACKER_SECURE_COOKIE` |
 | `VESTIGO_CORS_ORIGIN` | `PLAYTRACKER_CORS_ORIGIN` |

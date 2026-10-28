@@ -28,7 +28,7 @@ function weekOf(t) {
 export async function sessions(view, stale) {
   const q0 = new URLSearchParams(location.search);
   const f = {
-    platform: '', source: '', q: '', kind: 'play', game_id: q0.get('game_id') || '',
+    platform: q0.get('platform') || '', source: '', q: '', kind: 'play', game_id: q0.get('game_id') || '',
     period: PERIODS_S.some(([k]) => k === q0.get('period')) ? q0.get('period') : 'all', from: q0.get('from') || '', to: q0.get('to') || '',
   };
   if ((f.from || f.to) && !q0.get('period')) f.period = 'custom';
@@ -49,8 +49,8 @@ export async function sessions(view, stale) {
         <label class="small row" style="gap:6px">To <input class="input sm" type="date" id="s-to" value="${esc(f.to)}"></label>
       </div>
       <div class="chips" id="s-chips" role="group" aria-label="Filters">
-        <button class="chip on" data-p="">All platforms</button>
-        ${lt.platforms.map((p) => `<button class="chip" data-p="${esc(p.platform)}">${platDot(p.platform)}${esc(plat(p.platform).label)}</button>`).join('')}
+        <button class="chip${f.platform ? '' : ' on'}" data-p="">All platforms</button>
+        ${lt.platforms.map((p) => `<button class="chip${f.platform === p.platform ? ' on' : ''}" data-p="${esc(p.platform)}">${platDot(p.platform)}${esc(plat(p.platform).label)}</button>`).join('')}
         <span class="chip-sep" aria-hidden="true"></span>
         ${chip('data-src', 'manual', 'Logged by me')}${chip('data-src', 'sync', 'From platforms')}${chip('data-src', 'import', 'Imported')}
         ${chip('data-kind', 'baseline', 'Pre-tracking history', 'Playtime filed as history: it counts toward lifetime, not in stats')}

@@ -258,6 +258,11 @@ describe('weekly summary', () => {
       assert.equal(sent[0].summary.minutes, 285);
       assert.match(sent[0].text, /your week/);
       assert.equal(a.settings.public().weekly_summary_sent, undefined);
+      // first run long after the slot (an update on a Wednesday): last week is marked, not sent
+      a.settings.set({ weekly_summary_sent: null });
+      const quietly = new WeeklySummary({ db: a.db, settings: a.settings, log: quiet, send: async () => { throw new Error('must not send'); } });
+      assert.equal(await quietly.tick(local(2026, 3, 18, 15)), false);
+      assert.equal(a.settings.get('weekly_summary_sent'), '2026-03-09');
     } finally { close(); }
   });
 });

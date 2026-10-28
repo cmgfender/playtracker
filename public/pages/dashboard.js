@@ -166,11 +166,12 @@ export async function dashboard(view, stale) {
   const layout = parseLayout(state.settings?.dashboard_layout);
   const on = new Set(layout.filter((x) => x.on).map((x) => x.key));
   const year = new Date().getFullYear();
-  const [heat, upNext, dupes, hist] = await Promise.all([
+  const [heat, upNext, dupes, hist, recap] = await Promise.all([
     on.has('heatmap') ? api(`/stats/heatmap?year=${year}`).catch(() => null) : null,
     on.has('backlog') ? api('/games?status=playing,backlog&sort=recent&limit=16').catch(() => null) : null,
     api('/duplicates?summary=true').catch(() => null),
     api('/history/summary').catch(() => null),
+    on.has('recap') ? api('/summary/week?weeks_ago=1').catch(() => null) : null,
   ]);
   // the first-run checklist stays on Home (on the device that saw it) until it is dismissed
   const ck = lsGet(FIRSTRUN) === '1' ? await checklistData(d.accounts, true, { dupes, hist }) : null;
@@ -211,6 +212,7 @@ export async function dashboard(view, stale) {
         </div>
         <div class="row" style="margin-top:12px"><button class="btn sm" data-action="sync-all">${icon('sync')}<span class="lbl">Sync now</span></button><a class="btn sm ghost" href="/accounts?add=1" data-link>${icon('plus')}Add</a></div></div>`,
     heatmap: () => (heat ? `<div class="card"><div class="card-h"><h2>${year} at a glance</h2><a href="/stats" data-link>Stats${arrow()}</a></div>${heatmap(year, heat.days, { weekStartsOn: state.settings?.week_starts_on ?? 1, estimated: heat.estimated_days || {} })}</div>` : ''),
+    recap: () => recapCard(recap),
     backlog: () => (upNext ? `<div class="card"><div class="card-h"><h2>Up next</h2><a href="/library?status=playing" data-link>Library${arrow()}</a></div>
       ${upNext.items.length ? `<div class="carousel">${upNext.items.map((g) => `<a class="tile" href="/game/${g.id}" data-link>${cover(g)}<div class="t">${esc(g.title)}</div><div class="m">${g.platforms.map(platDot).join('')} ${STATUSES[g.status]?.label || ''}</div></a>`).join('')}</div>`
         : '<p class="muted small" style="margin:0">Mark games as <b>Playing</b> or <b>Backlog</b> on their page and they show up here.</p>'}</div>` : ''),
@@ -250,6 +252,7 @@ const DASH_SECTIONS = {
   live: { label: 'Playing now', desc: 'While presence sees a game running' },
   jump: { label: 'Jump back in', desc: 'Played in the last two weeks' },
   suggest: { label: 'What should I play?', desc: 'A pick for the time you have' },
+  recap: { label: 'Last week', desc: 'Hours, top games, achievements and the change from the week before' },
   chart: { label: 'Last 30 days', desc: 'Daily chart', half: true },
   top: { label: 'Top this month', desc: 'Most played games', half: true },
   recent: { label: 'Recent sessions', desc: '', half: true },
@@ -257,7 +260,7 @@ const DASH_SECTIONS = {
   heatmap: { label: 'Year heatmap', desc: 'Every day of this year' },
   backlog: { label: 'Up next', desc: 'Games marked Playing or Backlog' },
 };
-const DEFAULT_LAYOUT = 'kpis,live,jump,suggest,chart,top,recent,accounts,-heatmap,-backlog';
+const DEFAULT_LAYOUT = 'kpis,live,jump,suggest,recap,chart,top,recent,accounts,-heatmap,-backlog';
 
 export function parseLayout(str) {
   const out = String(str || DEFAULT_LAYOUT).split(',').map((x) => x.trim()).filter(Boolean)
@@ -315,4 +318,30 @@ export function layoutModal() {
       });
     },
   });
+}
+
+/** Last week in numbers (GET /summary/week): what the weekly webhook summary sends, on Home. */
+function recapCard(w) {
+  if (!w || (!w.minutes && !w.previous_minutes)) return '';
+  const day = (k) => new Date(`${k}T12:00`).getTime();
+  const span = `${fmtDate(day(w.week.start_day))} – ${fmtDate(day(w.week.end_day))}`;
+  const ch = w.change_percent;
+  const change = ch == null ? (w.minutes ? 'nothing the week before' : '') : ch === 0 ? 'same as the week before'
+    : `${icon(ch > 0 ? 'up' : 'down', 'ic-inline')}<span class="vh">${ch > 0 ? 'up' : 'down'}</span> ${Math.abs(ch)}% vs the week before`;
+  const a = w.achievements;
+  const extra = [
+    w.new_games.length && `New: ${w.new_games.slice(0, 3).map((g) => `<a class="link" href="/game/${g.game_id}" data-link>${esc(g.title)}</a>`).join(', ')}${w.new_games.length > 3 ? ` and ${w.new_games.length - 3} more` : ''}`,
+    a.rarest && `Rarest unlock: <a class="link" href="/game/${a.rarest.game_id}" data-link>${esc(a.rarest.name || 'Hidden')}</a> (${a.rarest.rarity < 10 ? a.rarest.rarity.toFixed(1) : Math.round(a.rarest.rarity)}%)`,
+    w.busiest_day && `Busiest: ${esc(w.busiest_day.weekday)}, ${fmtMin(w.busiest_day.minutes)}`,
+  ].filter(Boolean);
+  return `<div class="card recap"><div class="card-h"><h2>Last week</h2><a href="/sessions?from=${w.week.start_day}&to=${w.week.end_day}" data-link>${span}${arrow()}</a></div>
+    ${w.minutes ? `<div class="recap-b">
+      <div><div class="kpis k4 strip">
+        ${kpi('Played', hoursVal(w.minutes), change)}
+        ${kpi('Sessions', String(w.sessions), plural(w.days_played, 'day'))}
+        ${kpi('Games', String(w.games_played), w.new_games.length ? `${w.new_games.length} new` : '')}
+        ${kpi('Achievements', String(a.unlocked), a.points ? `${a.points.toLocaleString()} G` : a.platinums.length ? `${plural(a.platinums.length, 'platinum')}` : '')}
+      </div>${extra.length ? `<p class="small muted recap-x">${extra.join(' · ')}</p>` : ''}</div>
+      <div>${topList(w.top_games, { coverFn: (g) => cover(g), limit: 3 })}</div>
+    </div>` : `<p class="muted small" style="margin:0">No tracked play last week (${fmtMin(w.previous_minutes)} the week before).</p>`}</div>`;
 }

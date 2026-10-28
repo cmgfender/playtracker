@@ -21,7 +21,7 @@ const UI = { skip: skipReason || false };
 const PUBLIC = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'public');
 const NOW = Date.now();
 const YEAR = new Date(NOW).getFullYear();
-const DEFAULT_LAYOUT = 'kpis,live,jump,suggest,chart,top,recent,accounts,-heatmap,-backlog';
+const DEFAULT_LAYOUT = 'kpis,live,jump,suggest,recap,chart,top,recent,accounts,-heatmap,-backlog';
 // Home's heading: this week's playtime ("4h 27m this week"); the greeting is the eyebrow above it
 const HOME_H1 = /^(\d[\d,.]*h(?: \d+m)?|\d+m) this week$/;
 
@@ -836,7 +836,7 @@ describe('Vestigo web UI (no password)', UI, () => {
       };
       await check();
       const saved = (await S.ok('/settings')).dashboard_layout;
-      assert.equal(saved, 'kpis,live,jump,suggest,accounts,chart,top,-recent,heatmap,-backlog');
+      assert.equal(saved, 'kpis,live,jump,suggest,recap,accounts,chart,top,-recent,heatmap,-backlog');
       await page.reload();
       await waitView(page);
       await h.settle();
@@ -850,7 +850,7 @@ describe('Vestigo web UI (no password)', UI, () => {
       await page.locator('.modal', { hasText: 'Customize home' }).waitFor();
       const rows = page.locator('.modal .layout-row');
       const n = await rows.count();
-      assert.equal(n, 10, 'all ten home sections are listed');
+      assert.equal(n, 11, 'all eleven home sections are listed');
       for (let i = 0; i < n; i++) if (await rows.nth(i).locator('input[data-on]').isChecked()) await rows.nth(i).locator('label.switch span').click();
       await page.locator('#lay-save').click();
       await page.locator('#view', { hasText: 'Every section is hidden' }).waitFor();

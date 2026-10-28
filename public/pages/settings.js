@@ -8,6 +8,22 @@ import { scheduleFields, bindScheduleFields, readSchedule } from './accounts.js'
 // =====================================================================
 // Settings
 // =====================================================================
+const WEEKDAY = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+const mb = (b) => `${(b / 1048576).toFixed(b >= 1e8 ? 0 : 1)} MB`;
+
+/** The backups kept: the last one, the next, any error, and the files (download / delete). */
+export function backupBox(b) {
+  if (!b) return '<p class="small muted">Backups could not be read.</p>';
+  if (!b.dir) return '';
+  const err = b.last_error ? `<p class="small" style="color:var(--bad-ink);margin:6px 0">The last backup failed ${ago(b.last_error.at)}: ${esc(b.last_error.message)}. It is tried again a few hours later.</p>` : '';
+  const line = b.last ? `Last backup ${ago(b.last.at)} (${mb(b.last.bytes)})` : 'No backup yet';
+  const next = b.enabled && b.next_at ? ` · next ${b.next_at - Date.now() < 60_000 ? 'in a minute' : `${fmtDate(b.next_at)} ${new Date(b.next_at).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}`}` : b.enabled ? '' : ' · automatic backups are off';
+  const rows = b.files.map((f) => `<div class="item"><div class="grow"><div class="ttl mono small ellipsis">${esc(f.name)}</div><div class="sub">${fmtDate(f.at, { year: 'numeric', month: 'short', day: 'numeric' })} ${new Date(f.at).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })} · ${mb(f.bytes)}${f.kind === 'before-upgrade' ? ' · before an update' : ''}</div></div>
+    <a class="btn sm ghost" href="/api/v1/backups/${encodeURIComponent(f.name)}" download aria-label="Download ${esc(f.name)}">${icon('download')}</a><button class="btn sm ghost danger" data-bk-del="${esc(f.name)}" aria-label="Delete ${esc(f.name)}">${icon('trash')}</button></div>`).join('');
+  return `${err}<div class="row wrap" style="margin-top:8px;align-items:center"><button class="btn sm" id="bk-now">${icon('download')}Back up now</button><span class="small muted">${line}${next}</span></div>
+    ${b.files.length ? `<details style="margin-top:10px"><summary class="small muted" style="cursor:pointer">${b.files.length} kept · ${mb(b.total_bytes)}</summary><div class="list" style="margin-top:6px">${rows}</div></details>` : ''}`;
+}
+
 const ACCENTS = [['#7656ff', 'Violet (default)'], ['#22d3ee', 'Cyan'], ['#34d399', 'Mint'], ['#f472b6', 'Rose'], ['#fb923c', 'Ember'], ['#facc15', 'Gold'], ['#ef4444', 'Red'], ['#60a5fa', 'Sky']];
 function segSetting(key, title, opts, s, desc = '') {
   return `<div class="setting"><div><div class="t">${title}</div>${desc ? `<div class="d">${desc}</div>` : ''}</div><div class="seg" data-seg="${key}">${opts.map(([v, l]) => `<button data-v="${v}" class="${String(s[key]) === v ? 'on' : ''}">${l}</button>`).join('')}</div></div>`;
@@ -38,7 +54,7 @@ function savedTick(at, what) {
 }
 
 export async function settings(view, stale) {
-  const [s, tokens, auth] = await Promise.all([api('/settings'), api('/tokens'), api('/auth/status')]);
+  const [s, tokens, auth, bk] = await Promise.all([api('/settings'), api('/tokens'), api('/auth/status'), api('/backups').catch(() => null)]);
   if (stale()) return;
   const sw = (key, title, desc) => `<div class="setting"><div><div class="t">${title}</div><div class="d">${desc}</div></div><label class="switch"><input type="checkbox" data-set="${key}" ${s[key] ? 'checked' : ''} aria-label="${esc(title)}"><span></span></label></div>`;
   const accent = accentOf(s);
@@ -85,13 +101,21 @@ export async function settings(view, stale) {
           <details style="margin-top:12px"><summary class="small muted" style="cursor:pointer">…or paste</summary><textarea class="input mono" id="imp-text" aria-label="CSV or JSON to import" placeholder="title,platform,playtime_hours,status&#10;Hades,switch,42,completed" style="margin-top:8px"></textarea><button class="btn sm" id="imp-go" style="margin-top:8px">Import pasted data</button></details>
           <div id="imp-r" class="small" style="margin-top:10px" aria-live="polite"></div>
         </div>
-        <div class="card" id="export"><div class="card-h"><h2>Export & backup</h2></div>
+        <div class="card" id="export"><div class="card-h"><h2>Export & backups</h2></div>
           <div class="row wrap"><a class="btn" href="/api/v1/export" download>${icon('download')}JSON</a><a class="btn" href="/api/v1/export?format=csv" download>${icon('download')}CSV</a><a class="btn" href="/api/v1/backup" download>${icon('download')}SQLite backup</a></div>
           <p class="small muted">Everything is stored in the container’s <code>/data</code> volume — on Unraid, map it to a folder under <code>/mnt/user/appdata</code>. <a href="/system" data-link class="link">System</a> shows the database file in use.</p>
+          ${bk ? `<h3 style="margin:16px 0 2px" id="backups">Automatic backups</h3>
+          ${segSetting('backup_mode', 'Schedule', [['daily', 'Daily'], ['weekly', 'Weekly'], ['off', 'Off']], s, bk.dir ? `Copies of the database in <code>${esc(bk.dir)}</code>${s.backup_mode === 'weekly' ? `, on ${WEEKDAY[s.week_starts_on ?? 1]}s` : ''}` : 'Not available: this instance keeps its database in memory')}
+          <div class="setting"><div><div class="t">Time</div></div><input class="input" type="time" data-str="backup_time" value="${esc(s.backup_time)}" style="width:auto" aria-label="Backup time"></div>
+          <div class="setting"><div><div class="t">Keep</div><div class="d">The oldest are removed beyond this many. A copy made before an update changes the database is kept apart (the last 3).</div></div><input class="input" type="number" min="1" max="90" data-num="backup_keep" value="${s.backup_keep}" style="width:90px" aria-label="Backups kept"></div>
+          <div id="bk-box">${backupBox(bk)}</div>` : ''}
         </div>
         <div class="card" id="notifications"><div class="card-h"><h2>Notifications</h2></div>
           <div class="field"><label>Webhook URL</label><input class="input" data-str="webhook_url" value="${esc(s.webhook_url)}" placeholder="https://discord.com/api/webhooks/…"><div class="help">Discord and Slack get a formatted message; anything else gets JSON. Works with ntfy, Gotify bridges, Home Assistant, n8n…</div></div>
           <div class="setting"><div class="t">Send when</div><select class="input" data-str="webhook_on" style="width:auto"><option value="sessions" ${s.webhook_on === 'sessions' ? 'selected' : ''}>New sessions or errors</option><option value="always" ${s.webhook_on === 'always' ? 'selected' : ''}>Every sync</option><option value="errors" ${s.webhook_on === 'errors' ? 'selected' : ''}>Errors only</option></select></div>
+          ${sw('weekly_summary', 'Weekly summary', `Last week’s hours, top games, new games and achievements, sent on ${WEEKDAY[s.week_starts_on ?? 1]}s (the first day of your week)`)}
+          <div class="setting"><div><div class="t">Summary time</div></div><input class="input" type="time" data-str="weekly_summary_time" value="${esc(s.weekly_summary_time)}" style="width:auto" aria-label="Weekly summary time"></div>
+          <div class="row wrap" style="margin-top:8px"><button class="btn sm" id="wk-preview">${icon('eye')}Preview</button><button class="btn sm" id="wk-send">${icon('external')}Send last week’s now</button></div>
         </div>
         <div class="card" id="security"><div class="card-h"><h2>Security</h2></div>
           ${auth.password_source === 'env' ? `<p class="small muted">Password is set with <code>${esc(auth.password_env || 'VESTIGO_PASSWORD')}</code> and can’t be changed here.</p>` : `
@@ -202,6 +226,32 @@ export async function settings(view, stale) {
     e.preventDefault();
     try { const r = await api('/auth/password', { method: 'PUT', body: { current: e.target.current?.value, password: e.target.password.value } }); state.authEnabled = r.auth_enabled; toast(r.auth_enabled ? 'Password saved' : 'Password removed'); rerender(); } catch (err) { fail(err); }
   });
+  $('#wk-preview').addEventListener('click', async () => {
+    try {
+      const w = await api('/summary/week?weeks_ago=1');
+      modal({ title: 'Weekly summary', body: `<p class="small muted" style="margin-top:0">What the webhook gets on ${WEEKDAY[state.settings?.week_starts_on ?? 1]} at ${esc(state.settings?.weekly_summary_time || '09:00')}${state.settings?.webhook_url ? '' : ' (once a webhook URL is set)'}:</p><pre class="code" style="white-space:pre-wrap">${esc(w.text)}</pre>`, foot: '<button class="btn" data-close>Close</button>' });
+    } catch (e) { fail(e); }
+  });
+  $('#wk-send').addEventListener('click', async (e) => {
+    const b = e.currentTarget;
+    b.disabled = true;
+    try { await api('/summary/week/send', { method: 'POST' }); toast('Weekly summary sent'); } catch (err) { fail(err); } finally { b.disabled = false; }
+  });
+  const bkBox = $('#bk-box');
+  bkBox?.addEventListener('click', async (e) => {
+    const go = e.target.closest('#bk-now');
+    const del = e.target.closest('[data-bk-del]');
+    if (go) {
+      go.disabled = true;
+      go.innerHTML = `${icon('sync')}Backing up…`;
+      try { const r = await api('/backups', { method: 'POST' }); toast(`Backup saved: ${r.name}`); } catch (err) { fail(err); }
+      bkBox.innerHTML = backupBox(await api('/backups').catch(() => null));
+    } else if (del) {
+      if (!(await confirmBox(`Delete ${del.dataset.bkDel}? This cannot be undone.`, { ok: 'Delete', danger: true, title: 'Delete backup?' }))) return;
+      try { await api(`/backups/${encodeURIComponent(del.dataset.bkDel)}`, { method: 'DELETE' }); } catch (err) { fail(err); }
+      bkBox.innerHTML = backupBox(await api('/backups').catch(() => null));
+    }
+  });
   $('#tok-new').addEventListener('click', () => modal({
     title: 'New API token',
     body: '<div class="field"><label>Name</label><input class="input" id="tok-name" placeholder="Home Assistant"></div><div id="tok-out"></div>',
@@ -224,5 +274,5 @@ export async function settings(view, stale) {
     if (!(await confirmBox('Anything using this token will stop working. This cannot be undone.', { ok: 'Revoke', danger: true, title: 'Revoke token?' }))) return;
     await api(`/tokens/${b.dataset.revoke}`, { method: 'DELETE' }); rerender();
   });
-  if (/^#(appearance|schedule|detection|import|export|notifications|security|tokens)$/.test(location.hash)) setTimeout(() => $(location.hash)?.scrollIntoView({ behavior: scrollMotion() }), 100);
+  if (/^#(appearance|schedule|detection|import|export|backups|notifications|security|tokens)$/.test(location.hash)) setTimeout(() => $(location.hash)?.scrollIntoView({ behavior: scrollMotion() }), 100);
 }

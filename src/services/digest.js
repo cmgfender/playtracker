@@ -78,7 +78,7 @@ export function summaryText(s) {
   if (a.platinums.length) lines.push(`Platinum: ${a.platinums.join(', ')}`);
   if (s.longest_session) lines.push(`Longest session: ${fmtMinutes(s.longest_session.minutes)} of ${s.longest_session.title}`);
   if (s.busiest_day) lines.push(`Busiest day: ${s.busiest_day.weekday} (${fmtMinutes(s.busiest_day.minutes)})`);
-  if (s.streak_days > 1) lines.push(`Current streak: ${s.streak_days} days`);
+  if (s.streak_days > 1) lines.push(`Streak${s.week.complete ? ' going into this week' : ''}: ${s.streak_days} days`);
   return lines.join('\n');
 }
 
@@ -86,12 +86,17 @@ export function summaryText(s) {
  * When the summary of last week is due: the first day of this week at `time`. Returns the
  * week to send (its start, as YYYY-MM-DD) or null when nothing is due now.
  */
+/** This week's send time: its first day at weekly_summary_time. */
+function slotTime(s, now) {
+  const [h, m] = String(s.weekly_summary_time || '09:00').split(':').map(Number);
+  const at = new Date(weekStart(now, s.week_starts_on ?? 1)); at.setHours(h, m, 0, 0);
+  return at.getTime();
+}
+
 export function summaryDue(s, lastSent, now = Date.now()) {
   if (!s.weekly_summary || !s.webhook_url) return null;
-  const start = weekStart(now, s.week_starts_on ?? 1);
-  const [h, m] = String(s.weekly_summary_time || '09:00').split(':').map(Number);
-  const at = new Date(start); at.setHours(h, m, 0, 0);
-  if (now < at.getTime() || now - at.getTime() > LATE_DAYS * DAY) return null;
+  const at = slotTime(s, now);
+  if (now < at || now - at > LATE_DAYS * DAY) return null;
   const week = dayKey(weekStart(now, s.week_starts_on ?? 1, 1));
   return lastSent === week ? null : week;
 }
@@ -111,6 +116,8 @@ export class WeeklySummary {
     const s = this.settings.all();
     const week = summaryDue(s, s.weekly_summary_sent, now);
     if (!week || now < this.retryAt || this.busy) return false;
+    // never sent before (just updated, or just turned on) and well past the slot: start with next week's
+    if (s.weekly_summary_sent == null && now - slotTime(s, now) > 3600_000) { this.settings.set({ weekly_summary_sent: week }); return false; }
     this.busy = true;
     try {
       const summary = weeklySummary(this.db, { weeksAgo: 1, weekStartsOn: s.week_starts_on ?? 1, now });
