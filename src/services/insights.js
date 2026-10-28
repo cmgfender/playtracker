@@ -875,3 +875,91 @@ export function playStyle(db, { range = '365d', platform = null, weekStartsOn = 
     };
   });
 }
+
+// =====================================================================================
+// tags (IGDB metadata): genres, themes, modes, perspectives, franchises, developers, publishers
+// =====================================================================================
+export const TAG_KIND_NAMES = ['genre', 'theme', 'mode', 'perspective', 'franchise', 'developer', 'publisher'];
+
+/**
+ * Play by tag in a range: each tag's minutes (a game counts fully in every tag it has), games,
+ * sessions and games finished, the top tags per period, and how much of the play has metadata
+ * at all (coverage). Empty items until IGDB has matched games.
+ */
+export function tagStats(db, { kind = 'genre', range = '365d', group, platform = null, estimates = 'include', weekStartsOn = 1, now = Date.now(), limit = 12 } = {}) {
+  if (!TAG_KIND_NAMES.includes(kind)) throw new HttpError(400, `kind must be one of ${TAG_KIND_NAMES.join(', ')}`);
+  return memo(db, `tags:${kind}:${range}:${group}:${platform}:${estimates}:${weekStartsOn}:${limit}`, () => {
+    const p = period(db, { range, now, weekStartsOn, platform, estimates });
+    const g = ['day', 'week', 'month', 'year'].includes(group) ? group : (p.span <= 200 ? 'week' : 'month');
+    const keys = emptySeries(p.from, p.to, g, weekStartsOn);
+    const idx = keyIndex(keys);
+    const key = keyer(g, weekStartsOn);
+    const f = filter('p', { fromDay: p.fromDay, toDay: p.toDay, platform, estimates });
+    const perG = db.prepare(`SELECT p.game_id, SUM(p.minutes) m, SUM(p.minutes * p.estimated) e, SUM(p.ends) n ${perGameSql(f, p)} GROUP BY p.game_id`).all(...f.args);
+    const tagsOf = new Map();
+    for (const t of db.prepare('SELECT game_id, name FROM game_tags WHERE kind = ?').iterate(kind)) {
+      let l = tagsOf.get(t.game_id);
+      if (!l) tagsOf.set(t.game_id, l = []);
+      l.push(t.name);
+    }
+    const matched = new Set(db.prepare('SELECT game_id FROM game_meta WHERE igdb_id IS NOT NULL').all().map((x) => x.game_id));
+    const finished = new Set(db.prepare("SELECT id FROM games WHERE status IN ('completed', 'beaten')").all().map((x) => x.id));
+    const by = new Map();
+    let total = 0; let matchedMin = 0; let matchedGames = 0; let untagged = 0;
+    for (const x of perG) {
+      total += x.m;
+      if (matched.has(x.game_id)) { matchedMin += x.m; matchedGames++; }
+      const list = tagsOf.get(x.game_id);
+      if (!list) { if (matched.has(x.game_id)) untagged += x.m; continue; }
+      for (const n of list) {
+        let t = by.get(n);
+        if (!t) by.set(n, t = { name: n, m: 0, e: 0, games: 0, sessions: 0, finished: 0 });
+        t.m += x.m; t.e += x.e; t.games++; t.sessions += x.n; if (finished.has(x.game_id)) t.finished++;
+      }
+    }
+    const all = [...by.values()].filter((t) => t.m >= 0.5).sort((a, b) => b.m - a.m || (a.name < b.name ? -1 : 1));
+    const top = all.slice(0, limit);
+    const topSet = new Set(top.map((t) => t.name));
+    const series = new Map(top.map((t) => [t.name, zeros(keys.length)]));
+    if (top.length) {
+      for (const row of db.prepare(`SELECT p.day, p.game_id, SUM(p.minutes) m ${f.sql} GROUP BY p.day, p.game_id`).iterate(...f.args)) {
+        const i = idx.get(key(row.day));
+        if (i === undefined) continue;
+        for (const n of tagsOf.get(row.game_id) || []) if (topSet.has(n)) series.get(n)[i] += row.m;
+      }
+    }
+    return {
+      kind,
+      range: { from: p.from, to: p.to, label: p.label, group: g },
+      estimates,
+      coverage: { games: perG.length, matched_games: matchedGames, minutes: r(total), matched_minutes: r(matchedMin), untagged_minutes: r(untagged) },
+      tags: all.length,
+      items: top.map((t) => ({ name: t.name, minutes: r(t.m), estimated_minutes: r(t.e), games: t.games, sessions: t.sessions, finished: t.finished, share: share(t.m, total) })),
+      keys,
+      series: top.map((t) => ({ name: t.name, values: series.get(t.name).map(r) })),
+    };
+  });
+}
+
+/**
+ * Your pace against IGDB's typical times to beat, for games you finished (status Completed or
+ * Beaten): your hours over the main story's (or main + extras when only that is known). The
+ * median ratio says whether you rush or linger.
+ */
+export function paceStats(db, { limit = 10 } = {}) {
+  return memo(db, `pace:${limit}`, () => {
+    const rows = db.prepare(`SELECT g.id game_id, g.title, g.cover_url, g.status, m.ttb_main, m.ttb_extra, m.ttb_complete,
+        (SELECT COALESCE(SUM(playtime_min), 0) FROM entries e WHERE e.game_id = g.id AND e.excluded = 0) minutes
+      FROM games g JOIN game_meta m ON m.game_id = g.id
+      WHERE g.status IN ('completed', 'beaten') AND COALESCE(m.ttb_main, m.ttb_extra) > 0`).all()
+      .filter((x) => x.minutes >= 30)
+      .map((x) => { const typical = x.ttb_main || x.ttb_extra; return { ...x, typical, basis: x.ttb_main ? 'main' : 'extra', ratio: Math.round((x.minutes / typical) * 100) / 100 }; });
+    const sorted = [...rows].sort((a, b) => a.ratio - b.ratio);
+    const mid = sorted.length ? (sorted.length % 2 ? sorted[sorted.length >> 1].ratio : (sorted[sorted.length / 2 - 1].ratio + sorted[sorted.length / 2].ratio) / 2) : null;
+    return {
+      games: rows.length,
+      median_ratio: mid == null ? null : Math.round(mid * 100) / 100,
+      items: rows.sort((a, b) => b.minutes - a.minutes).slice(0, limit).map((x) => ({ game_id: x.game_id, title: x.title, cover_url: x.cover_url ?? null, status: x.status, minutes: x.minutes, typical_minutes: x.typical, basis: x.basis, complete_minutes: x.ttb_complete, ratio: x.ratio })),
+    };
+  });
+}

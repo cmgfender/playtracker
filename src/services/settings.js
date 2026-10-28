@@ -23,6 +23,11 @@ export const DEFAULT_SETTINGS = {
   weekly_summary: true,       // last week's summary through the webhook, on the first day of the week (week_starts_on)
   weekly_summary_time: '09:00',
 
+  // Game metadata from IGDB (optional): a Twitch app's client id and secret (dev.twitch.tv/console/apps)
+  igdb_client_id: '',
+  igdb_client_secret: '',    // never sent to the browser (igdb_secret_set says whether there is one)
+  igdb_enabled: true,
+
   // Automatic backups to <data>/backups (or VESTIGO_BACKUP_DIR)
   backup_mode: 'daily',       // 'daily' | 'weekly' (on week_starts_on) | 'off'
   backup_time: '03:30',
@@ -93,6 +98,9 @@ export class Settings {
     delete s.password_hash;
     delete s.history_style; // learned data, not a setting
     delete s.weekly_summary_sent; // the last week summarized
+    s.igdb_secret_set = !!s.igdb_client_secret;
+    delete s.igdb_client_secret;
+    delete s.igdb_token;
     return s;
   }
 }

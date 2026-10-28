@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { openDb, SCHEMA_VERSION } from './db.js';
 import { Backups, backupBeforeUpgrade } from './services/backup.js';
 import { WeeklySummary } from './services/digest.js';
+import { Igdb } from './services/igdb.js';
 import { sendSummary } from './services/webhook.js';
 import { Settings } from './services/settings.js';
 import { SyncService } from './services/sync.js';
@@ -129,10 +130,11 @@ export function createApp({ dbFile, password, passwordEnv, log: rawLog, schedule
   const sync = new SyncService({ db, settings, log });
   const backups = new Backups({ db, dbFile, settings, log: log.scoped('backup') });
   const weekly = new WeeklySummary({ db, settings, log: log.scoped('webhook'), send: sendSummary });
+  const igdb = new Igdb({ db, settings, log: log.scoped('igdb') });
   const auth = new Auth({ db, settings, envPassword: password, envName: passwordEnv });
   const router = new Router();
   const http_ = { requests: 0, errors: 0, client_errors: 0, started_at: Date.now(), slow: 0 };
-  const app = { db, dbFile, settings, sync, backups, weekly, auth, log, version: pkg.version, revision: REVISION, router, http: http_, rebuildRollups: () => rebuildRollups(db) };
+  const app = { db, dbFile, settings, sync, backups, weekly, igdb, auth, log, version: pkg.version, revision: REVISION, router, http: http_, rebuildRollups: () => rebuildRollups(db) };
   const apiLog = log.scoped('api');
   const t0 = Date.now();
   const rolled = ensureRollupTimezone(db, settings, log.scoped('rollup'));
@@ -271,7 +273,7 @@ export function createApp({ dbFile, password, passwordEnv, log: rawLog, schedule
     });
   });
   server.on('clientError', (err, socket) => { socket.destroy(); });
-  if (scheduler) { sync.start(); backups.start(); weekly.start(); }
+  if (scheduler) { sync.start(); backups.start(); weekly.start(); igdb.start(); }
   let closed = false;
   return {
     server, app,
@@ -281,6 +283,7 @@ export function createApp({ dbFile, password, passwordEnv, log: rawLog, schedule
       sync.stop();
       backups.stop();
       weekly.stop();
+      igdb.stop();
       server.close();
       log.detachDb();
       try { db.close(); } catch { /* already closed */ }

@@ -342,6 +342,32 @@ const MIGRATIONS = [
     if (!cols('achievements').has('source')) db.exec('ALTER TABLE achievements ADD COLUMN source TEXT'); // 'gametrack' | NULL = the platform
     if (!cols('entries').has('ach_total')) db.exec('ALTER TABLE entries ADD COLUMN ach_total INTEGER');
   },
+  // 9: game metadata from IGDB (optional): the match and its details per game, and its tags
+  //    (genres, themes, modes, perspectives, franchises, developers, publishers) for grouping.
+  //    Safe to run again on a database that has them.
+  `
+  CREATE TABLE IF NOT EXISTS game_meta (
+    game_id INTEGER PRIMARY KEY REFERENCES games(id) ON DELETE CASCADE,
+    igdb_id INTEGER,               -- NULL: looked up, nothing matched
+    matched_by TEXT NOT NULL,      -- 'steam' (the Steam app id) | 'title' | 'manual' | 'none'
+    locked INTEGER NOT NULL DEFAULT 0, -- chosen by hand: never matched again on its own
+    name TEXT, slug TEXT, url TEXT, summary TEXT,
+    release_date INTEGER,          -- first release, epoch ms
+    rating REAL, rating_count INTEGER,
+    ttb_main INTEGER, ttb_extra INTEGER, ttb_complete INTEGER, -- typical minutes to beat
+    cover_image TEXT,
+    tries INTEGER NOT NULL DEFAULT 0,
+    fetched_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS game_meta_igdb ON game_meta(igdb_id);
+  CREATE TABLE IF NOT EXISTS game_tags (
+    game_id INTEGER NOT NULL REFERENCES games(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL,            -- genre | theme | mode | perspective | franchise | developer | publisher
+    name TEXT NOT NULL,
+    PRIMARY KEY (game_id, kind, name)
+  ) WITHOUT ROWID;
+  CREATE INDEX IF NOT EXISTS game_tags_kind ON game_tags(kind, name, game_id);
+  `,
 ];
 
 /** The schema version this build migrates a database to. */

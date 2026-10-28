@@ -18,7 +18,8 @@ import { readZip, isZip } from '../services/zip.js';
 import { gameTrackTables, importGameTrack } from '../services/gametrack.js';
 import { modelFor } from '../services/model.js';
 import { entrySummaries, combineSummaries, gameAchievements, withSessionAchievements, achievementStats, achievementProgress } from '../services/achievements.js';
-import { punchcard, sessionLengths, platformSeries, timeline, gameCurve, libraryOverview, yearOverYear, records, playStyle } from '../services/insights.js';
+import { punchcard, sessionLengths, platformSeries, timeline, gameCurve, libraryOverview, yearOverYear, records, playStyle, tagStats, paceStats, TAG_KIND_NAMES } from '../services/insights.js';
+import { gameMeta } from '../services/igdb.js';
 import { suggest, feedbackList, setFeedback, MODES } from '../services/suggest.js';
 import { snapshot, isBackupName } from '../services/backup.js';
 import { weeklySummary, summaryText } from '../services/digest.js';
@@ -118,6 +119,7 @@ const GAME_SORTS = {
   recent: 'MAX(agg.last_session, agg.last_played_entry) DESC, agg.minutes DESC, g.id',
   playtime: 'agg.minutes DESC, g.id', title: 'g.title COLLATE NOCASE ASC, g.id', added: 'g.created_at DESC, g.id',
   rating: 'COALESCE(g.rating, -1) DESC, agg.minutes DESC, g.id', trending: 'recent_minutes DESC, agg.minutes DESC, g.id',
+  released: '(SELECT release_date FROM game_meta WHERE game_id = g.id) IS NULL, (SELECT release_date FROM game_meta WHERE game_id = g.id) DESC, g.id',
 };
 
 function sessionRow(s) {
@@ -245,6 +247,12 @@ export function registerRoutes(r, app) {
     if (q.played === 'false') where.push('agg.minutes = 0');
     if (q.multi === 'true') where.push('agg.entry_count > 1');
     if (q.recent === 'true') where.push('rec.recent_minutes > 0');
+    // tag=genre:Shooter,theme:Horror - every one must match (IGDB metadata)
+    for (const t of String(q.tag || '').split(',').map((x) => x.trim()).filter(Boolean)) {
+      const i = t.indexOf(':');
+      if (i < 1 || !TAG_KIND_NAMES.includes(t.slice(0, i))) throw new HttpError(400, `tag must be kind:name, the kind one of ${TAG_KIND_NAMES.join(', ')}`);
+      where.push('g.id IN (SELECT game_id FROM game_tags WHERE kind = ? AND name = ?)'); args.push(t.slice(0, i), t.slice(i + 1));
+    }
     const order = GAME_SORTS[q.sort] || GAME_SORTS[settings.get('default_library_sort')] || GAME_SORTS.recent;
     const limit = Math.min(5000, Math.max(1, toInt(q.limit, 100)));
     const offset = Math.max(0, toInt(q.offset, 0));
@@ -252,7 +260,7 @@ export function registerRoutes(r, app) {
     const totals = memo(db, `games-count:${JSON.stringify(args)}:${where.join('|')}`, () => db.prepare(`SELECT COUNT(*) n, COALESCE(SUM(minutes), 0) m, COALESCE(MAX(minutes), 0) mx FROM (${base})`).get(...args));
     const items = db.prepare(`${base} ORDER BY ${order} LIMIT ? OFFSET ?`).all(...args, limit, offset).map(gameRow);
     return { total: totals.n, total_minutes: totals.m, max_minutes: totals.mx, limit, offset, items };
-  }, { summary: 'List / search the library (paginated)', query: { q: 'search', platform: 'steam,xbox,psn,…', status: 'comma list', sort: 'recent|playtime|title|added|rating|trending', played: 'true|false', favorite: 'true', hidden: 'true|only', multi: 'true = only games with several entries', recent: 'true = played in the last 14 days', limit: 'max 5000 (default 100)', offset: '' } });
+  }, { summary: 'List / search the library (paginated)', query: { q: 'search', platform: 'steam,xbox,psn,…', status: 'comma list', sort: 'recent|playtime|title|added|rating|trending|released (IGDB release date)', tag: 'kind:name[,kind:name] (IGDB metadata, e.g. genre:Shooter)', played: 'true|false', favorite: 'true', hidden: 'true|only', multi: 'true = only games with several entries', recent: 'true = played in the last 14 days', limit: 'max 5000 (default 100)', offset: '' } });
 
   r.post('/api/v1/games', (c) => {
     const title = typeof c.body.title === 'string' ? c.body.title.trim() : '';
@@ -278,7 +286,7 @@ export function registerRoutes(r, app) {
     if (!g) {
       const bare = db.prepare('SELECT * FROM games WHERE id = ?').get(id);
       if (!bare) throw new HttpError(404, 'Game not found');
-      return { ...gameRow(bare), entries: [], achievements: null };
+      return { ...gameRow(bare), entries: [], achievements: null, meta: gameMeta(db, id) };
     }
     const rows = db.prepare(`SELECT e.*, a.name account_name FROM entries e LEFT JOIN accounts a ON a.id = e.account_id WHERE e.game_id = ? ORDER BY e.playtime_min DESC`).all(id);
     const ach = entrySummaries(db, rows);
@@ -307,6 +315,7 @@ export function registerRoutes(r, app) {
     return {
       ...gameRow(g),
       entries,
+      meta: gameMeta(db, id),
       // the game's achievements: its counted entries together (completed when any of them is)
       achievements: combineSummaries(entries.filter((e) => !e.excluded).map((e) => e.achievements)),
       summary: {
@@ -750,6 +759,51 @@ export function registerRoutes(r, app) {
       + 'starts: { count, outcomes: { finished, playing, invested, faded, tried, dropped }, median_minutes, median_days, items: [{ game_id, title, first_day, last_day, minutes, days, span_days, outcome, early_share }] }, '
       + 'staying_power: { games, median_early_share, median_span_days } | null, comebacks: { count, items: [{ game_id, title, returned_on, gap_days, minutes_since }] } }',
   });
+  r.get('/api/v1/stats/tags', (c) => tagStats(db, { kind: c.query.kind || 'genre', range: c.query.range || '365d', group: c.query.group, platform: c.query.platform || null, estimates: estimatesParam(c.query, settings), weekStartsOn: settings.get('week_starts_on'), limit: clamp(c.query.limit, 12, 1, 50) }), {
+    summary: 'Play by IGDB tag (genre, theme, mode, perspective, franchise, developer, publisher): a game counts fully in each of its tags',
+    query: { kind: TAG_KIND_NAMES.join('|'), range: '7d|30d|90d|365d|year:2026|all (default 365d)', group: 'day|week|month|year', platform: '', estimates: 'include|exclude|only', limit: 'tags listed and charted (default 12)' },
+    returns: '{ kind, range, estimates, coverage: { games, matched_games, minutes, matched_minutes, untagged_minutes }, tags (how many in the range), items: [{ name, minutes, estimated_minutes, games, sessions, finished, share }], keys, series: [{ name, values }] }',
+  });
+  r.get('/api/v1/stats/pace', (c) => paceStats(db, { limit: clamp(c.query.limit, 10, 1, 50) }), {
+    summary: 'Your hours against IGDB\'s typical time to beat, for games marked Completed or Beaten',
+    returns: '{ games, median_ratio (your time / typical; null without data), items: [{ game_id, title, minutes, typical_minutes, basis: main|extra, complete_minutes, ratio }] }',
+  });
+
+  // ---------- IGDB (optional game metadata) ----------
+  const igdb = () => { if (!app.igdb) throw new HttpError(404, 'IGDB is not available'); return app.igdb; };
+  const igdbCall = async (fn) => {
+    try { return await fn(); } catch (err) { if (err instanceof HttpError) throw err; throw new HttpError(err.auth ? 422 : err.status === 404 ? 404 : 502, err.message); }
+  };
+  r.get('/api/v1/igdb/status', () => igdb().status(), {
+    summary: 'IGDB metadata: set up or not, the pass running now, and how many games are matched',
+    returns: '{ configured, credentials, from_env, enabled, running, phase, done, total, started_at, last_run_at, last_error, last_counts, coverage: { total, matched, unmatched, pending, by: { steam, title, manual } } }',
+  });
+  r.post('/api/v1/igdb/test', () => igdbCall(async () => { await igdb().token(true); await igdb().query('games', 'fields name; limit 1;'); return { ok: true }; }), { summary: 'Check the IGDB (Twitch) client id and secret' });
+  r.post('/api/v1/igdb/run', () => {
+    const i = igdb();
+    if (!i.configured()) throw new HttpError(409, 'Set up IGDB first (a Twitch client id and secret)');
+    i.kick?.();
+    return i.status();
+  }, { summary: 'Match and refresh game metadata now (in the background)' });
+  r.get('/api/v1/igdb/search', (c) => {
+    const q = String(c.query.q || '').trim();
+    if (!q) throw new HttpError(400, 'q is required');
+    return igdbCall(() => igdb().lookup(q));
+  }, { summary: 'Search IGDB by title (to pick a match by hand)', query: { q: 'title' }, returns: '[{ id, name, year, main, url }]' });
+  r.put('/api/v1/games/:id/meta', (c) => {
+    const id = toInt(c.params.id);
+    if (!db.prepare('SELECT 1 FROM games WHERE id = ?').get(id)) throw new HttpError(404, 'Game not found');
+    const v = c.body.igdb_id;
+    if (v !== null && !(Number.isInteger(v) && v > 0)) throw new HttpError(400, 'igdb_id must be an IGDB game id, or null for "no match"');
+    return igdbCall(async () => { await igdb().setMatch(id, v); return gameMeta(db, id); });
+  }, { summary: 'Match a game to an IGDB game by hand (kept: never matched again on its own), or null: it has none', body: '{ igdb_id: number | null }' });
+  r.delete('/api/v1/games/:id/meta', (c) => {
+    db.prepare('DELETE FROM game_meta WHERE game_id = ?').run(toInt(c.params.id));
+    db.prepare('DELETE FROM game_tags WHERE game_id = ?').run(toInt(c.params.id));
+    app.igdb?.kick?.();
+    return { ok: true };
+  }, { summary: 'Forget a game\'s metadata: it is matched again automatically' });
+
   r.get('/api/v1/stats/records', (c) => records(db, { range: c.query.range || 'all', group: groupParam(c.query.group, ['month', 'year']), estimates: estimatesParam(c.query, settings), ...insightOpts(c) }), {
     summary: 'Records and highlights: longest session, biggest day, best week / month, longest streak, most played game per period, first tracked session',
     query: { range: `${RANGE_Q} (default all)`, group: 'month|year for most_played_by (default: year for ranges over 400 days, else month)', game_id: '', platform: '', estimates: `${EST_Q} - most played only; the other records are tracked play` },
@@ -1013,6 +1067,8 @@ export function registerRoutes(r, app) {
     const prev = settings.all();
     settings.set(v.values);
     for (const a of db.prepare('SELECT id FROM accounts').all()) sync.refreshNext(a.id);
+    // new IGDB credentials: a new token, and a pass right away
+    if (['igdb_client_id', 'igdb_client_secret', 'igdb_enabled'].some((k) => k in v.values && v.values[k] !== prev[k])) { settings.set({ igdb_token: null }); app.igdb?.kick?.(); }
     // history caps changed -> re-date history with the new limits
     if ('history_learn' in v.values && v.values.history_learn !== prev.history_learn) relearnStyle(db, { settings: settings.all() });
     if (['history_max_day_minutes', 'history_max_game_day_minutes', 'use_recent_on_import'].some((k) => k in v.values && v.values[k] !== prev[k])) {
@@ -1288,6 +1344,7 @@ export function registerRoutes(r, app) {
         logs: count('SELECT COUNT(*) n FROM logs'), achievements: count('SELECT COUNT(*) n FROM achievements'),
       },
       backups: app.backups ? (({ files, ...b }) => ({ ...b, before_upgrade: files.filter((f) => f.kind === 'before-upgrade').length }))(app.backups.status()) : null,
+      igdb: app.igdb ? (({ configured, running, last_run_at, last_error, last_counts, coverage }) => ({ configured, running, last_run_at, last_error, last_counts, coverage }))(app.igdb.status()) : null,
       weekly_summary: { enabled: !!(settings.get('weekly_summary') && settings.get('webhook_url')), time: settings.get('weekly_summary_time'), last_sent_week: settings.get('weekly_summary_sent') || null },
       errors_24h: count("SELECT COUNT(*) n FROM logs WHERE level = 'error' AND time > ?", Date.now() - 86_400_000),
       warnings_24h: count("SELECT COUNT(*) n FROM logs WHERE level = 'warn' AND time > ?", Date.now() - 86_400_000),
