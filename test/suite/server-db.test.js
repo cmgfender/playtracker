@@ -93,9 +93,15 @@ describe('SPA and static files (real server process)', () => {
     const refs = new Set([...html.matchAll(/(?:href|src)="(\/[^"]+)"/g)].map((m) => m[1]));
     const manifest = JSON.parse(readPublic('manifest.webmanifest').toString());
     for (const i of manifest.icons) refs.add(i.src);
-    for (const f of ['app.js', 'pages.js', 'charts.js']) {
-      for (const m of readPublic(f).toString().matchAll(/from '\.\/([\w.-]+\.js)'/g)) refs.add(`/${m[1]}`);
+    // every module the app imports, followed from app.js through pages.js into pages/*.js
+    const todo = ['/app.js'];
+    for (let f; (f = todo.shift());) {
+      for (const m of readPublic(f.slice(1)).toString().matchAll(/from '(\.\.?\/[\w./-]+\.js)'/g)) {
+        const ref = path.posix.join(path.posix.dirname(f), m[1]);
+        if (!refs.has(ref)) { refs.add(ref); todo.push(ref); }
+      }
     }
+    assert.ok(refs.has('/pages.js') && refs.has('/pages/shared.js'), `the page modules are found: ${[...refs]}`);
     refs.add('/sw.js');
     const types = { '.js': /^text\/javascript/, '.css': /^text\/css/, '.svg': /^image\/svg\+xml/, '.png': /^image\/png/, '.webmanifest': /^application\/manifest\+json/ };
     assert.ok(refs.size >= 8, `found references: ${[...refs]}`);
@@ -108,7 +114,7 @@ describe('SPA and static files (real server process)', () => {
   });
 
   test('app code revalidates on every load (no-cache + ETag); images may be cached', async () => {
-    for (const p of ['/', '/library', '/app.js', '/pages.js', '/charts.js', '/app.css', '/manifest.webmanifest', '/sw.js']) {
+    for (const p of ['/', '/library', '/app.js', '/pages.js', '/pages/game.js', '/charts.js', '/app.css', '/manifest.webmanifest', '/sw.js']) {
       const r = await H.rawRequest(srv.port, p);
       const cc = String(r.headers['cache-control'] || '');
       assert.ok(/no-cache|max-age=0|must-revalidate/.test(cc), `${p} must revalidate, got "${cc}"`);
@@ -151,7 +157,7 @@ describe('SPA and static files (real server process)', () => {
   });
 
   test('brotli is preferred, gzip is the fallback, identity otherwise - and every body decodes to the exact file', async () => {
-    for (const f of ['app.js', 'pages.js', 'app.css', 'index.html', 'icon.svg', 'manifest.webmanifest']) {
+    for (const f of ['app.js', 'pages.js', 'pages/game.js', 'app.css', 'index.html', 'icon.svg', 'manifest.webmanifest']) {
       const want = readPublic(f);
       const url = f === 'index.html' ? '/' : `/${f}`;
       const br = await H.rawRequest(srv.port, url, { headers: { 'accept-encoding': 'gzip, deflate, br' } });
