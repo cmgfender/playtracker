@@ -2206,14 +2206,14 @@ describe('Vestigo web UI (no password)', UI, () => {
           if (sw.state === 'activated') return ok();
           sw.addEventListener('statechange', () => { if (sw.state === 'activated') ok(); if (sw.state === 'redundant') no(new Error('service worker install failed (a shell file is missing?)')); });
         });
-        const shell = (await (await caches.open('vestigo-v1')).keys()).map((q) => new URL(q.url).pathname);
+        const shell = (await (await caches.open('vestigo-v2')).keys()).map((q) => new URL(q.url).pathname);
         const out = { keys: await caches.keys(), scope: new URL(reg.scope).pathname, shell };
         await reg.unregister();
         return out;
       });
-      assert.deepEqual(r.keys, ['vestigo-v1'], 'only the new cache is left');
+      assert.deepEqual(r.keys, ['vestigo-v2'], 'only the new cache is left');
       assert.equal(r.scope, '/', 'same scope as before');
-      for (const p of ['/', '/app.js', '/pages.js', '/favicon.svg', '/icon-180.png', '/manifest.webmanifest']) assert.ok(r.shell.includes(p), `${p} is in the offline shell`);
+      for (const p of ['/', '/app.js', '/pages.js', '/pages/shared.js', '/favicon.svg', '/icon-180.png', '/manifest.webmanifest']) assert.ok(r.shell.includes(p), `${p} is in the offline shell`);
       clean(h);
     } finally { await h.close(); }
   });
@@ -2863,7 +2863,7 @@ describe('Offline: service worker cache and banner', UI, () => {
       await page.goto(`${S.origin}/`);
       await waitView(page);
       await h.settle(300);
-      const cached = await page.evaluate(async () => (await (await caches.open('vestigo-v1')).keys()).map((r) => new URL(r.url)).filter((u) => u.pathname.startsWith('/api/')).map((u) => u.pathname + u.search));
+      const cached = await page.evaluate(async () => (await (await caches.open('vestigo-v2')).keys()).map((r) => new URL(r.url)).filter((u) => u.pathname.startsWith('/api/')).map((u) => u.pathname + u.search));
       assert.ok(cached.length > 0 && cached.length <= 60, `${cached.length} API answers cached`);
       assert.deepEqual(cached.filter((u) => /[?&]q=/.test(u)), [], 'no searches cached');
       for (const u of ['/api/v1/summary', '/api/v1/settings', '/api/v1/stats/lifetime', '/api/v1/games/1']) assert.ok(cached.includes(u), `${u} is kept for offline use (${cached})`);
@@ -3190,13 +3190,17 @@ describe('Vestigo web assets', () => {
     assert.equal(b.toString('latin1', 12, 16), 'IHDR', `${f} is a PNG`);
     return { w: b.readUInt32BE(16), h: b.readUInt32BE(20), type: b[25] };
   };
+  /** every file under public/, subfolders included, as 'app.js' or 'pages/game.js' */
+  const publicFiles = () => fs.readdirSync(PUBLIC, { recursive: true }).map((f) => f.split(path.sep).join('/')).filter((f) => fs.statSync(path.join(PUBLIC, f)).isFile());
+  /** the page modules pages.js gathers (one per page, plus their shared helpers) */
+  const pageModules = () => fs.readdirSync(path.join(PUBLIC, 'pages')).filter((f) => f.endsWith('.js')).map((f) => `pages/${f}`);
 
   test('`grep -rni playtracker public/` finds nothing; the only pt- names left are compatibility identifiers', () => {
     // kept on purpose: renaming them would reset every browser's theme / start page or orphan the hatch patterns
     const COMPAT = new Set(['pt-theme', 'pt-accent', 'pt-ui', 'pt-started', 'pt-hatch', 'pt-hatch-ov', 'pt-v1']);
     const hits = [];
     const ids = new Set();
-    for (const f of fs.readdirSync(PUBLIC)) {
+    for (const f of publicFiles()) {
       const text = fs.readFileSync(path.join(PUBLIC, f)).toString('latin1');
       text.split('\n').forEach((line, i) => { if (/playtracker/i.test(line)) hits.push(`${f}:${i + 1}: ${line.trim().slice(0, 120)}`); });
       if (/\.(html|js|css|svg|webmanifest)$/.test(f)) for (const m of text.matchAll(/\bpt[-_][\w-]+/g)) ids.add(m[0]);
@@ -3213,14 +3217,14 @@ describe('Vestigo web assets', () => {
   });
 
   test('no emoji or pictographs in the UI markup', () => {
-    for (const f of ['index.html', 'app.js', 'pages.js', 'charts.js', 'insights.js', 'suggest.js']) {
+    for (const f of ['index.html', 'app.js', 'pages.js', ...pageModules(), 'charts.js', 'insights.js', 'suggest.js']) {
       assert.deepEqual([...read(f).matchAll(/\p{Extended_Pictographic}/gu)].map((m) => m[0]), [], f);
     }
   });
 
   test('one design system: no fixed `.hex` platform colours, icons instead of → ↗ ↑ ↓ ♥ glyphs, five font weights, reduced-motion and touch rules', () => {
-    for (const f of fs.readdirSync(PUBLIC).filter((x) => /\.(js|css|html)$/.test(x))) assert.ok(!/\.hex\b/.test(read(f)), `${f} uses theme colours, not .hex`);
-    assert.deepEqual([...read('pages.js').matchAll(/[→↗↑↓♥]/gu)].map((m) => m[0]), [], 'pages.js draws arrows and hearts with icon()');
+    for (const f of publicFiles().filter((x) => /\.(js|css|html)$/.test(x))) assert.ok(!/\.hex\b/.test(read(f)), `${f} uses theme colours, not .hex`);
+    for (const f of ['pages.js', ...pageModules()]) assert.deepEqual([...read(f).matchAll(/[→↗↑↓♥]/gu)].map((m) => m[0]), [], `${f} draws arrows and hearts with icon()`);
     const css = read('app.css');
     assert.deepEqual([...new Set([...css.matchAll(/font-weight: ?(\d+)/g)].map((m) => m[1]))].sort(), ['400', '500', '600', '700', '800']);
     assert.match(css, /@media \(prefers-reduced-motion: ?reduce\)/);
@@ -3262,9 +3266,11 @@ describe('Vestigo web assets', () => {
 
   test('service worker: Vestigo cache name, same /sw.js path, and every shell file exists (one missing file fails the install)', () => {
     const sw = read('sw.js');
-    assert.equal(/const VERSION = '([^']+)'/.exec(sw)[1], 'vestigo-v1');
+    assert.equal(/const VERSION = '([^']+)'/.exec(sw)[1], 'vestigo-v2');
     const shell = JSON.parse(/const SHELL = (\[[^\]]+\])/.exec(sw)[1].replace(/'/g, '"'));
     for (const p of shell) assert.ok(fs.existsSync(path.join(PUBLIC, p === '/' ? 'index.html' : p)), `${p} exists`);
+    // every script the app loads works offline: a page module left out would break that page with no network
+    for (const f of publicFiles().filter((x) => x.endsWith('.js') && x !== 'sw.js')) assert.ok(shell.includes(`/${f}`), `/${f} is in the shell`);
     assert.match(read('app.js'), /register\('\/sw\.js'\)/);
   });
 });

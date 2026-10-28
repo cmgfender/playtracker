@@ -1,8 +1,9 @@
 // Offline shell: static assets revalidated (cached as fallback), API network-first with a cached fallback.
 // A new VERSION makes `activate` delete every other cache (e.g. the pre-rename 'pt-v1').
 // Every SHELL file must exist: one failed request fails the whole install.
-const VERSION = 'vestigo-v1';
-const SHELL = ['/', '/app.css', '/app.js', '/charts.js', '/pages.js', '/insights.js', '/suggest.js', '/favicon.svg', '/icon.svg', '/icon-180.png', '/icon-192.png', '/manifest.webmanifest'];
+const VERSION = 'vestigo-v2';
+const SHELL = ['/', '/app.css', '/app.js', '/charts.js', '/pages.js', '/insights.js', '/suggest.js', '/favicon.svg', '/icon.svg', '/icon-180.png', '/icon-192.png', '/manifest.webmanifest',
+  '/pages/shared.js', '/pages/dashboard.js', '/pages/library.js', '/pages/game.js', '/pages/sessions.js', '/pages/stats.js', '/pages/wrapped.js', '/pages/duplicates.js', '/pages/accounts.js', '/pages/settings.js', '/pages/system.js', '/pages/history.js', '/pages/more.js'];
 // at most this many API answers are kept; only what the offline pages need is cached at all
 const API_MAX = 60;
 
