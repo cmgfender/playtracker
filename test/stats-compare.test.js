@@ -92,3 +92,47 @@ test('GET /stats?compare=true&highlights=true adds previous and highlights; with
     assert.equal((await get('range=all&compare=true')).previous, null);
   } finally { close(); }
 });
+
+test('playStyle: focus per week, what became of the games started, staying power, comebacks', async () => {
+  const { playStyle } = await import('../src/services/insights.js');
+  const { app, close } = createApp({ dbFile: ':memory:', password: '', scheduler: false, log: quiet });
+  const db = app.db;
+  try {
+    const game = (title, status = 'unset') => Number(db.prepare('INSERT INTO games(title, norm_title, status, created_at, updated_at) VALUES (?, ?, ?, 0, 0)').run(title, title.toLowerCase(), status).lastInsertRowid);
+    const entry = (g) => Number(db.prepare("INSERT INTO entries(account_id, game_id, platform, ext_id, title, playtime_min, first_seen_at) VALUES (NULL, ?, 'steam', ?, 'x', 0, 0)").run(g, `x${g}`).lastInsertRowid);
+    const ins = db.prepare("INSERT INTO sessions(entry_id, source, kind, minutes, window_start, window_end, started_at, ended_at, created_at) VALUES (?, 'manual', ?, ?, ?, ?, ?, ?, ?)");
+    const play = (e, start, minutes, kind = 'play') => { ins.run(e, kind, minutes, start, start + minutes * MIN, start, start + minutes * MIN, start + minutes * MIN); db.prepare('UPDATE entries SET playtime_min = playtime_min + ? WHERE id = ?').run(minutes, e); };
+    const ids = {};
+    const g = (title, status) => { ids[title] = game(title, status); return entry(ids[title]); };
+    const going = g('Going'); const tried = g('Tried'); const invested = g('Invested'); const done = g('Done', 'completed'); const back = g('Back'); const old = g('Old');
+    // a busy first week, then a little more: 600 of 700 minutes in the first 7 days
+    play(going, local(2026, 3, 1, 12), 300); play(going, local(2026, 3, 3, 12), 300); play(going, local(2026, 3, 17, 12), 100);
+    play(tried, local(2026, 3, 2, 21), 20);
+    play(invested, local(2026, 2, 20, 12), 400); play(invested, local(2026, 3, 1, 12), 250);
+    play(done, local(2026, 2, 22, 20), 120);
+    play(back, local(2025, 11, 1, 20), 60); play(back, local(2026, 3, 5, 20), 90); // 124 days apart
+    play(old, local(2026, 1, 1, 20), 50, 'estimate'); play(old, local(2026, 3, 4, 20), 60); // estimated before: not a start
+    flushRollups(db);
+
+    const s = playStyle(db, { range: '30d', now: NOW });
+    const by = Object.fromEntries(s.starts.items.map((x) => [x.title, x]));
+    assert.deepEqual(Object.keys(by).sort(), ['Done', 'Going', 'Invested', 'Tried']);
+    assert.equal(by.Going.outcome, 'playing');
+    assert.equal(by.Tried.outcome, 'tried');
+    assert.equal(by.Invested.outcome, 'invested');
+    assert.equal(by.Done.outcome, 'finished');
+    assert.deepEqual(s.starts.outcomes, { finished: 1, playing: 1, invested: 1, faded: 0, tried: 1, dropped: 0 });
+    assert.equal(by.Going.early_share, 0.857);
+    assert.equal(by.Going.days, 3);
+    assert.equal(by.Going.span_days, 17);
+    assert.equal(s.starts.items[0].title, 'Tried', 'the latest start first');
+    // staying power: games started 30+ days ago with at least the "tried" minutes - none yet in 30 days
+    assert.equal(s.staying_power, null);
+    const year = playStyle(db, { range: '365d', now: local(2026, 5, 1, 12) });
+    assert.ok(year.staying_power.games >= 3);
+    assert.deepEqual(s.comebacks.items.map((c) => [c.title, c.returned_on, c.gap_days, c.minutes_since]), [['Back', '2026-03-05', 124, 90]]);
+    assert.ok(s.focus.weeks >= 3);
+    assert.ok(['focused', 'balanced', 'varied'].includes(s.focus.style));
+    assert.ok(s.focus.series.every((w) => w.games >= 1 && w.top_share > 0 && w.top_share <= 1));
+  } finally { close(); }
+});

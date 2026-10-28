@@ -18,7 +18,7 @@ import { readZip, isZip } from '../services/zip.js';
 import { gameTrackTables, importGameTrack } from '../services/gametrack.js';
 import { modelFor } from '../services/model.js';
 import { entrySummaries, combineSummaries, gameAchievements, withSessionAchievements, achievementStats, achievementProgress } from '../services/achievements.js';
-import { punchcard, sessionLengths, platformSeries, timeline, gameCurve, libraryOverview, yearOverYear, records } from '../services/insights.js';
+import { punchcard, sessionLengths, platformSeries, timeline, gameCurve, libraryOverview, yearOverYear, records, playStyle } from '../services/insights.js';
 import { suggest, feedbackList, setFeedback, MODES } from '../services/suggest.js';
 import { snapshot, isBackupName } from '../services/backup.js';
 import { weeklySummary, summaryText } from '../services/digest.js';
@@ -742,6 +742,13 @@ export function registerRoutes(r, app) {
     returns: '{ estimates, years: [{ year, partial (the current year), total_minutes, tracked_minutes, estimated_minutes, to_date: { through (MM-DD, today), minutes, tracked_minutes, estimated_minutes } (Jan 1 to the same date: compares years so far), '
       + 'sessions, games_played, days_played (tracked), new_games (first ever play in that year), top_game: { game_id, title, cover_url, minutes, estimated_minutes } | null, '
       + 'months: [{ month (1-12), key (YYYY-MM), minutes, tracked, estimated, sessions }] }] (oldest first) }',
+  });
+  r.get('/api/v1/stats/style', (c) => playStyle(db, { range: c.query.range || '365d', platform: c.query.platform || null, weekStartsOn: settings.get('week_starts_on'), limit: clamp(c.query.limit, 10, 1, 50) }), {
+    summary: 'How you play: focus per week, what became of the games started, staying power, comebacks (tracked play only)',
+    query: { range: '7d|30d|90d|365d|year:2026|all (default 365d)', platform: '', limit: 'games listed per part (default 10)' },
+    returns: '{ range, rules, focus: { weeks, games_per_week, median_top_share, style: focused|balanced|varied, series: [{ key, games, minutes, top_share }] } | null, '
+      + 'starts: { count, outcomes: { finished, playing, invested, faded, tried, dropped }, median_minutes, median_days, items: [{ game_id, title, first_day, last_day, minutes, days, span_days, outcome, early_share }] }, '
+      + 'staying_power: { games, median_early_share, median_span_days } | null, comebacks: { count, items: [{ game_id, title, returned_on, gap_days, minutes_since }] } }',
   });
   r.get('/api/v1/stats/records', (c) => records(db, { range: c.query.range || 'all', group: groupParam(c.query.group, ['month', 'year']), estimates: estimatesParam(c.query, settings), ...insightOpts(c) }), {
     summary: 'Records and highlights: longest session, biggest day, best week / month, longest streak, most played game per period, first tracked session',
