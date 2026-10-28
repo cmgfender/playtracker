@@ -334,3 +334,67 @@ export function yearInReview(db, year, { weekStartsOn = 1, estimates = 'include'
     };
   });
 }
+
+/**
+ * The period a range is compared with, like for like: the same span just before it, ending at the
+ * same point (30 days → the 30 days before; this week so far → last week to the same weekday and
+ * time; 2025 → 2024; this year so far → last year to the same date). null for all time.
+ */
+export function previousPeriod(range, now = Date.now()) {
+  const r = String(range || '30d');
+  let m;
+  const monthsBack = (t, n) => { const d = new Date(t); const day = d.getDate(); d.setDate(1); d.setMonth(d.getMonth() - n); d.setDate(Math.min(day, new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate())); return d.getTime(); };
+  if ((m = /^(\d+)d$/.exec(r))) return { range: r, now: now - Math.min(Number(m[1]), 36500) * DAY };
+  if (r === 'week') return { range: r, now: now - 7 * DAY };
+  if (r === 'month') return { range: r, now: monthsBack(now, 1) };
+  if (r === 'year') return { range: r, now: monthsBack(now, 12) };
+  if ((m = /^year:(\d{4})$/.exec(r))) return { range: `year:${Number(m[1]) - 1}`, now: monthsBack(now, 12) };
+  if ((m = /^month:(\d{4})-(\d{2})$/.exec(r))) {
+    const d = new Date(Number(m[1]), Number(m[2]) - 2, 1);
+    return { range: `month:${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`, now: monthsBack(now, 1) };
+  }
+  if (!/^(year|month):/.test(r) && r !== 'all' && r !== 'week') return previousPeriod('30d', now); // resolveRange's fallback
+  return null;
+}
+
+/** The previous period's headline numbers (see previousPeriod), or null. */
+export function comparePeriod(db, opts = {}) {
+  const { range = '30d', now = Date.now() } = opts;
+  const p = previousPeriod(range, now);
+  if (!p) return null;
+  const s = computeStats(db, { ...opts, range: p.range, now: p.now, topLimit: 1 });
+  return {
+    range: s.range, total_minutes: s.total_minutes, tracked_minutes: s.tracked_minutes, estimated_minutes: s.estimated_minutes, sessions: s.sessions,
+    games_played: s.games_played, days_played: s.days_played, avg_session_minutes: s.avg_session_minutes, avg_per_day_minutes: s.avg_per_day_minutes,
+    longest_session_minutes: s.longest_session?.minutes || 0,
+  };
+}
+
+/**
+ * What happened in a range besides playtime: games played for the first time ever (estimated
+ * history counts as played, so a game tracked only lately is not "new"), achievements unlocked
+ * (with the rarest) and the day with the most different games.
+ */
+export function periodHighlights(db, { range = '30d', platform = null, gameId = null, weekStartsOn = 1, now = Date.now(), limit = 12 } = {}) {
+  return memo(db, `highlights:${range}:${platform}:${gameId}:${weekStartsOn}:${limit}:${now}`, () => {
+    const { from, to } = resolveRange(range, now, weekStartsOn);
+    const fromDay = dayKey(from); const toDay = dayKey(to);
+    const pf = platform ? 'AND e.platform = ?' : '';
+    const gf = gameId ? 'AND e.game_id = ?' : '';
+    const pargs = [platform, gameId].filter((x) => x != null && x !== '');
+    // a game is new when its first play day anywhere falls in the range (on this platform, when filtered)
+    const fresh = db.prepare(`SELECT g.id game_id, g.title, g.cover_url, MIN(p.day) first FROM play_days p JOIN games g ON g.id = p.game_id
+      WHERE p.excluded = 0 ${platform ? 'AND p.platform = ?' : ''} ${gameId ? 'AND p.game_id = ?' : ''} GROUP BY p.game_id HAVING first >= ? AND first <= ? ORDER BY first DESC`).all(...pargs, fromDay, toDay);
+    const ach = db.prepare(`SELECT COUNT(*) n, COALESCE(SUM(a.points), 0) points, COUNT(DISTINCT e.game_id) games FROM achievements a JOIN entries e ON e.id = a.entry_id
+      WHERE a.unlocked = 1 AND a.unlocked_at >= ? AND a.unlocked_at <= ? AND e.excluded = 0 ${pf} ${gf}`).get(from, to, ...pargs);
+    const rarest = ach.n ? db.prepare(`SELECT a.name, a.rarity, a.grade, a.unlocked_at, g.title, g.id game_id FROM achievements a JOIN entries e ON e.id = a.entry_id JOIN games g ON g.id = e.game_id
+      WHERE a.unlocked = 1 AND a.unlocked_at >= ? AND a.unlocked_at <= ? AND e.excluded = 0 AND a.rarity IS NOT NULL ${pf} ${gf} ORDER BY a.rarity ASC LIMIT 1`).get(from, to, ...pargs) || null : null;
+    const varied = db.prepare(`SELECT p.day, COUNT(DISTINCT p.game_id) games FROM play_days p
+      WHERE p.excluded = 0 AND p.estimated = 0 AND p.day >= ? AND p.day <= ? ${platform ? 'AND p.platform = ?' : ''} ${gameId ? 'AND p.game_id = ?' : ''} GROUP BY p.day ORDER BY games DESC, p.day DESC LIMIT 1`).get(fromDay, toDay, ...pargs) || null;
+    return {
+      new_games: { count: fresh.length, items: fresh.slice(0, limit).map((g) => ({ game_id: g.game_id, title: g.title, cover_url: g.cover_url, first_day: g.first })) },
+      achievements: { unlocked: ach.n, points: ach.points, games: ach.games, rarest },
+      most_varied_day: varied && varied.games > 1 ? { day: varied.day, games: varied.games } : null,
+    };
+  });
+}

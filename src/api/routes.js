@@ -6,7 +6,7 @@ import { providers, providerInfo } from '../providers/index.js';
 import { parseAccount } from '../services/sync.js';
 import { validateSettings } from '../services/settings.js';
 import { describeSchedule, nextRun } from '../services/schedule.js';
-import { computeStats, heatmap, lifetime, yearInReview, memo } from '../services/stats.js';
+import { computeStats, heatmap, lifetime, yearInReview, memo, comparePeriod, periodHighlights } from '../services/stats.js';
 import { findDuplicates } from '../services/duplicates.js';
 import { importRows, exportChunks, parseCsv } from '../services/importer.js';
 import { manualEntry, mergeGames, pruneEmptyGames, splitEntry, findOrCreateGame, cleanTitle } from '../services/library.js';
@@ -603,9 +603,23 @@ export function registerRoutes(r, app) {
   }, { summary: 'Bulk convert sessions to baseline/play or delete', body: '{ ids: number[], action: "baseline"|"play"|"delete" }' });
 
   // ---------- stats ----------
-  r.get('/api/v1/stats', (c) => computeStats(db, {
-    range: c.query.range, group: c.query.group, gameId: toInt(c.query.game_id), platform: c.query.platform, weekStartsOn: settings.get('week_starts_on'), estimates: estimatesParam(c.query, settings),
-  }), { summary: 'Aggregated stats for a range. Inferred pre-tracking history is included (and reported separately) unless estimates=exclude', query: { range: '7d|30d|90d|365d|week|month|year|all|year:2026|month:2026-05', group: 'day|week|month|year', game_id: '', platform: '', estimates: 'include|exclude|only' } });
+  r.get('/api/v1/stats', (c) => {
+    const opts = { range: c.query.range, group: c.query.group, gameId: toInt(c.query.game_id), platform: c.query.platform, weekStartsOn: settings.get('week_starts_on'), estimates: estimatesParam(c.query, settings) };
+    const s = computeStats(db, opts);
+    if (c.query.compare !== 'true' && c.query.highlights !== 'true') return s;
+    const now = Date.now();
+    return {
+      ...s,
+      ...(c.query.compare === 'true' ? { previous: comparePeriod(db, { ...opts, now }) } : {}),
+      ...(c.query.highlights === 'true' ? { highlights: periodHighlights(db, { range: opts.range, platform: opts.platform || null, gameId: opts.gameId, weekStartsOn: opts.weekStartsOn, now }) } : {}),
+    };
+  }, {
+    summary: 'Aggregated stats for a range. Inferred pre-tracking history is included (and reported separately) unless estimates=exclude',
+    query: { range: '7d|30d|90d|365d|week|month|year|all|year:2026|month:2026-05', group: 'day|week|month|year', game_id: '', platform: '', estimates: 'include|exclude|only',
+      compare: 'true = add `previous`: the same numbers for the period before, like for like (null for all time)', highlights: 'true = add `highlights`: new games, achievements unlocked, the most varied day' },
+    returns: '{ range, total_minutes, sessions, games_played, …, previous?: { range, total_minutes, tracked_minutes, sessions, games_played, days_played, avg_session_minutes, avg_per_day_minutes, longest_session_minutes } | null, '
+      + 'highlights?: { new_games: { count, items: [{ game_id, title, cover_url, first_day }] }, achievements: { unlocked, points, games, rarest }, most_varied_day: { day, games } | null } }',
+  });
   r.get('/api/v1/stats/lifetime', () => lifetime(db), { summary: 'Lifetime totals (including imported history)' });
   r.get('/api/v1/stats/heatmap', (c) => heatmap(db, { year: c.query.year, gameId: toInt(c.query.game_id), estimates: estimatesParam(c.query, settings) }), { summary: 'Minutes per day for a year', query: { year: '', game_id: '', estimates: 'include|exclude|only' } });
   r.get('/api/v1/stats/year/:year', (c) => {
