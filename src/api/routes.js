@@ -136,6 +136,18 @@ function sessionRow(s) {
 const SESSION_SELECT = `SELECT s.*, e.game_id, e.platform, e.account_id, a.name account_name, g.title, g.cover_url
   FROM sessions s JOIN entries e ON e.id = s.entry_id JOIN games g ON g.id = e.game_id LEFT JOIN accounts a ON a.id = e.account_id`;
 
+/** tag=a|b: the items, with "\\|" and "\\\\" inside a name standing for | and \\ (names are free text). */
+function splitTags(v) {
+  const out = []; let cur = '';
+  const s = String(v || '');
+  for (let i = 0; i < s.length; i++) {
+    if (s[i] === '\\' && i + 1 < s.length) cur += s[++i];
+    else if (s[i] === '|') { out.push(cur); cur = ''; } else cur += s[i];
+  }
+  out.push(cur);
+  return out.map((x) => x.trim()).filter(Boolean);
+}
+
 // strict booleans (as in settings and imports): "false" or "0" must never read as true
 const flag = (v) => (v === true || v === 'true' || v === 1 || v === '1' ? 1 : 0);
 // search text for `LIKE ? ESCAPE '\'`: % and _ are literal characters, not wildcards
@@ -252,7 +264,7 @@ export function registerRoutes(r, app) {
     // tag=genre:Shooter|genre:Indie|mode:Co-operative (IGDB metadata; | apart, as names hold commas):
     // any of the names of a kind, and every kind given
     const byKind = new Map();
-    for (const t of String(q.tag || '').split('|').map((x) => x.trim()).filter(Boolean)) {
+    for (const t of splitTags(q.tag)) {
       const i = t.indexOf(':');
       if (i < 1 || !TAG_KIND_NAMES.includes(t.slice(0, i))) throw new HttpError(400, `tag must be kind:name, the kind one of ${TAG_KIND_NAMES.join(', ')}`);
       byKind.set(t.slice(0, i), [...(byKind.get(t.slice(0, i)) || []), t.slice(i + 1)]);
@@ -265,7 +277,7 @@ export function registerRoutes(r, app) {
     const totals = memo(db, `games-count:${JSON.stringify(args)}:${where.join('|')}`, () => db.prepare(`SELECT COUNT(*) n, COALESCE(SUM(minutes), 0) m, COALESCE(MAX(minutes), 0) mx FROM (${base})`).get(...args));
     const items = memo(db, `games:${JSON.stringify(args)}:${where.join('|')}:${order}:${limit}:${offset}`, () => db.prepare(`${base} ORDER BY ${order} LIMIT ? OFFSET ?`).all(...args, limit, offset).map(gameRow));
     return { total: totals.n, total_minutes: totals.m, max_minutes: totals.mx, limit, offset, items };
-  }, { summary: 'List / search the library (paginated)', query: { q: 'search', platform: 'steam,xbox,psn,…', status: 'comma list', sort: 'recent|playtime|title|added|rating|trending|released (IGDB release date)', tag: 'kind:name[|kind:name…] (IGDB metadata, e.g. genre:Shooter|genre:Indie): any name of a kind, every kind', played: 'true|false', favorite: 'true', hidden: 'true|only', multi: 'true = only games with several entries', recent: 'true = played in the last 14 days', limit: 'max 5000 (default 100)', offset: '' } });
+  }, { summary: 'List / search the library (paginated)', query: { q: 'search', platform: 'steam,xbox,psn,…', status: 'comma list', sort: 'recent|playtime|title|added|rating|trending|released (IGDB release date)', tag: 'kind:name[|kind:name…] (IGDB metadata, e.g. genre:Shooter|genre:Indie; a | or \\ inside a name is written \\| or \\\\): any name of a kind, every kind', played: 'true|false', favorite: 'true', hidden: 'true|only', multi: 'true = only games with several entries', recent: 'true = played in the last 14 days', limit: 'max 5000 (default 100)', offset: '' } });
 
   r.post('/api/v1/games', (c) => {
     const title = typeof c.body.title === 'string' ? c.body.title.trim() : '';

@@ -198,6 +198,10 @@ describe('IGDB metadata', () => {
     assert.equal((await api('/games?tag=genre:Shooter|mode:Single%20player')).body.total, 1);
     assert.equal((await api('/games?tag=genre:Shooter|genre:Indie')).body.total, 2, 'any genre of the list');
     assert.equal((await api('/games?tag=genre:Shooter|perspective:Third%20person')).body.total, 0, 'every kind');
+    // a | inside a name is written \| (names are free text)
+    app.db.prepare("INSERT INTO game_tags(game_id, kind, name) VALUES (?, 'franchise', 'Pipe|Name')").run(ids.wolf);
+    assert.deepEqual((await api(`/games?tag=${encodeURIComponent('franchise:Pipe\\|Name')}`)).body.items.map((x) => x.id), [ids.wolf]);
+    app.db.prepare("DELETE FROM game_tags WHERE name = 'Pipe|Name'").run();
     const tags = (await api('/tags?kind=genre')).body;
     assert.deepEqual(tags.find((x) => x.name === 'Shooter'), { kind: 'genre', name: 'Shooter', games: 1 });
     assert.equal((await api('/games?tag=bad')).status, 400);
