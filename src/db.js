@@ -351,6 +351,10 @@ export function openDb(file) {
   if (file !== ':memory:') fs.mkdirSync(path.dirname(file), { recursive: true });
   const db = new DatabaseSync(file);
   db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000; PRAGMA synchronous = NORMAL;');
+  // an 8 MB page cache (SQLite's default is 2 MB: stats over a large library re-read the same pages
+  // from the OS on every query), and a WAL that shrinks back to 32 MB once checkpointed instead of
+  // keeping the size a big import or index rebuild once grew it to
+  db.exec('PRAGMA cache_size = -8192; PRAGMA journal_size_limit = 33554432;');
   migrate(db);
   return db;
 }

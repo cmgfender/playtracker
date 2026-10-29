@@ -1,7 +1,8 @@
 // Resource contracts: cached stats outlive writes no stat reads (API call accounting, presence
 // heartbeats, the error log, API token use) and are dropped by any other; the Stats page's
 // comparison and highlights are cached like the stats; title similarity is still Sørensen–Dice;
-// a backup made through the API leaves the server answering while it copies.
+// a backup made through the API leaves the server answering while it copies; the connection's
+// page cache and WAL size limit.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -12,6 +13,7 @@ import { createApp } from '../src/server.js';
 import { computeStats, comparePeriod, periodHighlights, memo } from '../src/services/stats.js';
 import { similarity, normalizeTitle } from '../src/services/titles.js';
 import { createLogger } from '../src/logger.js';
+import { openDb } from '../src/db.js';
 
 const MIN = 60_000;
 const quiet = { info() {}, warn() {}, error() {}, debug() {} };
@@ -145,6 +147,24 @@ test('a backup through the API is copied off the main thread: the server keeps a
     assert.ok(worst < Math.max(60, blocking / 2), `longest stall ${worst.toFixed(0)}ms during a ${took.toFixed(0)}ms backup (a blocking copy: ${blocking.toFixed(0)}ms)`);
   } finally {
     close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('the connection has an 8 MB page cache, and the WAL shrinks back to 32 MB after a checkpoint', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vg-perf-'));
+  const db = openDb(path.join(dir, 'vestigo.db'));
+  try {
+    assert.equal(db.prepare('PRAGMA cache_size').get().cache_size, -8192);
+    assert.equal(db.prepare('PRAGMA journal_size_limit').get().journal_size_limit, 32 * 1048576);
+    db.exec("CREATE TABLE filler(b BLOB); WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 12000) INSERT INTO filler SELECT randomblob(4000) FROM n;");
+    const wal = () => fs.statSync(path.join(dir, 'vestigo.db-wal')).size;
+    assert.ok(wal() > 40 * 1048576, 'one big write grew the WAL');
+    db.exec('PRAGMA wal_checkpoint(PASSIVE)');
+    db.exec("INSERT INTO settings(key, value) VALUES ('x', '1')"); // the next write starts the WAL over
+    assert.ok(wal() <= 32 * 1048576, `WAL ${(wal() / 1048576).toFixed(1)} MB after the checkpoint`);
+  } finally {
+    db.close();
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
