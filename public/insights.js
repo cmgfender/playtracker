@@ -16,6 +16,7 @@ const SECTIONS = [
   // [id, title, line, the height it usually takes (its placeholder's, so sections further down stay unloaded)]
   ['when', 'When you play', 'Weekday, hour and session length · tracked play', 460],
   ['what', 'What you played', 'Games over time, eras and platforms', 1500],
+  ['style', 'How you play', 'Focus, the games you start, comebacks · tracked play', 900],
   ['records', 'Records & highlights', '', 720],
   ['ach', 'Achievements', 'Unlocks, rarities and completion', 900],
   ['yoy', 'Year over year', 'Month by month, and the year so far', 700],
@@ -25,6 +26,7 @@ const day = (k) => new Date(`${k}T12:00`).getTime();
 const longDay = (k) => fmtDate(day(k), { year: 'numeric', month: 'short', day: 'numeric' });
 const monthName = (k, opts = { month: 'short', year: 'numeric' }) => new Date(`${k}-01T12:00`).toLocaleDateString(undefined, opts);
 const pct = (x) => `${Math.round(x * 100)}%`;
+const monthEnd = (k) => { const [y, m] = k.split('-').map(Number); return `${k}-${String(new Date(y, m, 0).getDate()).padStart(2, '0')}`; };
 const note = (text) => `<p class="small muted ins-note">${text}</p>`;
 const none = (text) => `<div class="ins-none">${icon('info', 'ic-16')}<span>${text}</span></div>`;
 /** A row of label, bar and value (status, platform, buckets): the bar is relative to `max`. */
@@ -92,7 +94,7 @@ export async function insights(view, stale) {
       body.innerHTML = none(`Could not load this section: ${esc(e.message)}`);
     } finally { if (my === seq[id]) body.removeAttribute('aria-busy'); }
   }
-  const RENDER = { when, what, records, ach, yoy, library };
+  const RENDER = { when, what, style, records, ach, yoy, library };
 
   async function when() {
     const [pc, sl] = await Promise.all([api(`/stats/punchcard?${params()}`), api(`/stats/session-lengths?${params()}`)]);
@@ -141,15 +143,53 @@ export async function insights(view, stale) {
       <div style="margin-top:16px">${platCard}</div>`;
   }
 
+  async function style() {
+    const p = new URLSearchParams({ range: f.range });
+    if (f.platform) p.set('platform', f.platform);
+    const s = await api(`/stats/style?${p}`);
+    const fo = s.focus;
+    const weekEnd = (k) => { const d = new Date(`${k}T12:00`); d.setDate(d.getDate() + 6); return d; };
+    const ymd = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    const STYLE_WORDS = { focused: 'Focused', balanced: 'Balanced', varied: 'Varied' };
+    const focus = fo ? `<p class="ins-lead"><b>${STYLE_WORDS[fo.style]}</b>: ${fo.style === 'varied' ? `your top game takes ${pct(fo.median_top_share)} of a typical week, ${fo.games_per_week} games a week on average` : `one game takes ${pct(fo.median_top_share)} of a typical week, with ${fo.games_per_week} games a week on average`}.</p>
+      ${barChart(fo.series.map((w) => ({ label: seriesLabel(w.key, 'week'), name: `the week of ${seriesName(w.key, 'day')}`, value: w.games, href: `/sessions?from=${w.key}&to=${ymd(weekEnd(w.key))}`,
+        tip: `Week of ${seriesName(w.key, 'day')}${w.partial ? ' (so far)' : ''}: ${plural(w.games, 'game')}, the top one ${pct(w.top_share)} of ${fmtMin(w.minutes)}`, color: w.partial ? 'var(--line-strong)' : w.top_share >= s.rules.focused ? 'var(--accent-mark)' : 'var(--accent2)' })),
+      { unit: 'count', size: 'card', title: 'Games played per week', hrefHint: 'see sessions', keys: 'Games per week; arrow keys read each week, Enter opens its sessions', summary: (d) => summarizeCount('Games played per week', d, 'game') })}
+      <div class="legend"><span><i class="dot" style="background:var(--accent-mark)"></i>One game ${pct(s.rules.focused)}+ of the week</span><span><i class="dot" style="background:var(--accent2)"></i>Spread out</span></div>`
+      : none('No tracked play in this range.');
+    const st = s.starts;
+    const OUT = [['finished', 'Finished', 'var(--good)', 'good'], ['playing', 'Still going', 'var(--accent-mark)', 'accent'], ['invested', `Stuck with (${fmtMin(s.rules.invested, { short: true })}+)`, 'var(--accent2)', ''],
+      ['faded', 'Faded', 'var(--muted)', ''], ['tried', 'Only tried', 'var(--line-strong)', ''], ['dropped', 'Dropped', 'var(--bad)', 'bad']];
+    const outLabel = Object.fromEntries(OUT.map(([k, l, , cls]) => [k, [l.replace(/ \(.*/, ''), cls]]));
+    const maxO = Math.max(1, ...Object.values(st.outcomes));
+    const starts = st.count ? `<p class="ins-lead">You started <b>${plural(st.count, 'game')}</b>${st.outcomes.finished ? `, finished ${st.outcomes.finished}` : ''}${st.outcomes.tried ? `, only tried ${st.outcomes.tried}` : ''}. A typical start gets ${fmtMin(st.median_minutes)} over ${plural(Math.round(st.median_days), 'day')}.</p>
+      ${OUT.filter(([k]) => st.outcomes[k]).map(([k, l, color]) => meterRow(esc(l), st.outcomes[k], maxO, plural(st.outcomes[k], 'game'), color)).join('')}
+      <div class="list" style="margin-top:8px">${st.items.map((x) => `<a class="item" href="/game/${x.game_id}" data-link>${cover(x)}<div class="grow"><div class="ttl ellipsis">${esc(x.title)}</div><div class="sub">since ${fmtDate(day(x.first_day))} · ${plural(x.days, 'day')} played${x.early_share >= 0.5 && x.days > 1 ? ` · ${pct(x.early_share)} in the first week` : ''}</div></div><div class="amt">${fmtMin(x.minutes, { short: x.minutes >= 600 })}<div><span class="badge ${outLabel[x.outcome][1]}">${outLabel[x.outcome][0]}</span></div></div></a>`).join('')}</div>
+      ${st.count > st.items.length ? note(`The latest ${st.items.length} of ${st.count} starts.`) : ''}`
+      : none('No new games started in this range (a start is the first play of a game, tracked as it happened).');
+    const sp = s.staying_power;
+    const staying = sp ? `<div class="kpis k2 strip">${kpi('First week', `${Math.round(sp.median_early_share * 100)}<small>%</small>`, `of a game’s hours, at the median`)}${kpi('Played over', plural(Math.round(sp.median_span_days), 'day'), 'first to last session, at the median')}</div>
+      ${note(`From the ${plural(sp.games, 'game')} started at least ${s.rules.settled} days ago and played ${fmtMin(s.rules.tried)} or more. ${sp.median_early_share >= 0.5 ? 'Most of a game’s time comes right after you start it.' : 'You keep coming back to games well after the first week.'}`)}`
+      : none(`Needs games started at least ${s.rules.settled} days ago: try a longer range.`);
+    const cb = s.comebacks;
+    const comebacks = cb.count ? `<div class="list">${cb.items.map((x) => `<a class="item" href="/game/${x.game_id}" data-link>${cover(x)}<div class="grow"><div class="ttl ellipsis">${esc(x.title)}</div><div class="sub">back on ${fmtDate(day(x.returned_on))} after ${x.gap_days >= 61 ? plural(Math.round(x.gap_days / 30.4), 'month') : plural(x.gap_days, 'day')}</div></div><div class="amt">${fmtMin(x.minutes_since, { short: x.minutes_since >= 600 })}<div class="tiny muted">since</div></div></a>`).join('')}</div>${cb.count > cb.items.length ? note(`The latest ${cb.items.length} of ${cb.count}.`) : ''}`
+      : none(`No comebacks in this range: a return to a game after ${s.rules.gap}+ days without it.`);
+    return `<div class="grid grid-2 ins-grid">
+      <div class="card"><div class="card-h"><h3>Focus</h3><span class="tiny muted">${esc(s.range.label)} · games per week</span></div>${focus}</div>
+      <div class="card"><div class="card-h"><h3>Staying power</h3></div>${staying}</div>
+      <div class="card"><div class="card-h"><h3>Games you started</h3><span class="tiny muted">${esc(s.range.label)}</span></div>${starts}</div>
+      <div class="card"><div class="card-h"><h3>Comebacks</h3><span class="tiny muted">back after ${s.rules.gap}+ days</span></div>${comebacks}</div></div>`;
+  }
+
   async function records() {
     const r = await api(`/stats/records?${params()}`);
     const L = r.longest_session;
     const game = (x) => (x ? `<a class="link" href="/game/${x.game_id}" data-link>${esc(x.title)}</a>` : '');
     const cards = [
       L && ['Longest session', fmtMin(L.minutes), `${game(L)} · ${longDay(L.day)}`],
-      r.biggest_day && ['Biggest day', fmtMin(r.biggest_day.minutes), longDay(r.biggest_day.day)],
-      r.best_week && ['Best week', fmtMin(r.best_week.minutes), `${fmtDate(day(r.best_week.from))} – ${longDay(r.best_week.to)}`],
-      r.best_month && ['Best month', fmtMin(r.best_month.minutes), monthName(r.best_month.key, { month: 'long', year: 'numeric' })],
+      r.biggest_day && ['Biggest day', fmtMin(r.biggest_day.minutes), longDay(r.biggest_day.day), `/sessions?from=${r.biggest_day.day}&to=${r.biggest_day.day}`],
+      r.best_week && ['Best week', fmtMin(r.best_week.minutes), `${fmtDate(day(r.best_week.from))} – ${longDay(r.best_week.to)}`, `/sessions?from=${r.best_week.from}&to=${r.best_week.to}`],
+      r.best_month && ['Best month', fmtMin(r.best_month.minutes), monthName(r.best_month.key, { month: 'long', year: 'numeric' }), `/sessions?from=${r.best_month.key}-01&to=${monthEnd(r.best_month.key)}`],
       r.longest_streak && ['Longest streak', plural(r.longest_streak.days, 'day'), `${fmtDate(day(r.longest_streak.from))} – ${longDay(r.longest_streak.to)}`],
       ['Current streak', plural(r.current_streak || 0, 'day'), r.current_streak ? 'ending today or yesterday' : 'play today to start one'],
       r.most_played && ['Most played', fmtMin(r.most_played.minutes, { short: r.most_played.minutes >= 600 }), `${game(r.most_played)} · ${pct(r.most_played.share)} of play${r.most_played.estimated_minutes ? ` · ${fmtMin(r.most_played.estimated_minutes, { short: true })} est.` : ''}`],
@@ -158,7 +198,7 @@ export async function insights(view, stale) {
     if (!r.sessions && !r.most_played) return none('No records yet in this range: they start with the first tracked session.');
     const lines = (r.highlights || []).map((h) => highlight(h, r)).filter(Boolean);
     const by = r.most_played_by?.items || [];
-    return `<div class="recs">${cards.map(([l, v, s]) => `<div class="rec"><div class="eyebrow">${l}</div><div class="rv">${v}</div><div class="small muted">${s}</div></div>`).join('')}</div>
+    return `<div class="recs">${cards.map(([l, v, s, href]) => `<div class="rec"><div class="eyebrow">${l}</div>${href ? `<a class="rv" href="${href}" data-link title="See the sessions">${v}</a>` : `<div class="rv">${v}</div>`}<div class="small muted">${s}</div></div>`).join('')}</div>
       <div class="grid grid-2 ins-grid" style="margin-top:16px">
         <div class="card"><div class="card-h"><h3>Highlights</h3><span class="tiny muted">${esc(r.range.label)}</span></div>${lines.length ? `<ul class="hl">${lines.map((x) => `<li>${x}</li>`).join('')}</ul>` : none('Nothing stands out yet.')}</div>
         <div class="card"><div class="card-h"><h3>Most played by ${r.most_played_by?.group || 'year'}</h3></div>${by.length ? `<div class="list">${by.slice().reverse().slice(0, 6).map((x) => `<a class="item" href="/game/${x.game_id}" data-link>${cover(x)}<div class="grow"><div class="ttl ellipsis">${esc(x.title)}</div><div class="sub">${esc(r.most_played_by.group === 'month' ? monthName(x.key) : x.key)} · ${pct(x.share)} of play</div></div><div class="amt">${fmtMin(x.minutes, { short: x.minutes >= 600 })}${x.estimated_minutes ? `<div class="tiny muted">${fmtMin(x.estimated_minutes, { short: true })} est.</div>` : ''}</div></a>`).join('')}</div>` : none('No play in this range.')}</div>

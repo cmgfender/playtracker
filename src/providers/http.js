@@ -43,14 +43,11 @@ export async function httpJson(url, opts = {}, { retries = 2, timeoutMs = 30_000
         lastErr.final = true; // waited enough, or told to wait longer than we will: stop here
         throw lastErr;
       }
-      if (!res.ok) {
-        const auth = res.status === 401 || res.status === 403;
-        throw new ProviderError(`${host} responded ${res.status}${auth ? ' (check credentials / privacy settings)' : ''}: ${text.slice(0, 200)}`, { status: res.status, auth });
-      }
+      if (!res.ok) throw httpError(host, res.status, text, res.headers.get('content-type'));
       try {
         return text ? JSON.parse(text) : null;
       } catch {
-        throw new ProviderError(`${host} returned invalid JSON: ${text.slice(0, 120)}`, { status: res.status });
+        throw new ProviderError(`${host} returned invalid JSON: ${readableBody(text, res.headers.get('content-type'), 120)}`, { status: res.status });
       }
     } catch (err) {
       if (err instanceof ProviderError && (err.final || !(err.rateLimited || err.status >= 500))) throw err;
@@ -68,6 +65,53 @@ export async function httpJson(url, opts = {}, { retries = 2, timeoutMs = 30_000
     }
   }
   throw lastErr;
+}
+
+const PLATFORM_HOSTS = [[/playstation|sony|psn/i, 'PlayStation Network'], [/xbl\.io|xboxlive|xbox/i, 'Xbox'], [/steam/i, 'Steam']];
+const platformOf = (host) => PLATFORM_HOSTS.find(([re]) => re.test(host))?.[1] || null;
+const HTML = /^\s*<(!doctype|html|head|body|title|h1)\b/i;
+
+/**
+ * A response body as one short readable line: an error page's title or heading, a JSON error's
+ * message, or the text with tags stripped. Never raw markup.
+ */
+export function readableBody(text, type = '', max = 200) {
+  const t = String(text || '');
+  if (!t.trim()) return '';
+  let out;
+  if (/html/i.test(type || '') || HTML.test(t)) {
+    const pick = (re) => t.match(re)?.[1]?.replace(/<[^>]*>/g, ' ');
+    const title = pick(/<title[^>]*>([\s\S]*?)<\/title>/i) || pick(/<h1[^>]*>([\s\S]*?)<\/h1>/i);
+    out = title || t.replace(/<(script|style)[\s\S]*?<\/\1>/gi, ' ').replace(/<[^>]*>/g, ' ');
+    out = out.replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'");
+  } else {
+    try {
+      const b = JSON.parse(t);
+      const e = b?.error;
+      out = (typeof e === 'object' && e ? e.message || e.description || e.code : e) || b?.message || b?.error_description || b?.detail || b?.title || t;
+      if (typeof out !== 'string') out = JSON.stringify(out);
+    } catch { out = t; }
+  }
+  out = out.replace(/\s+/g, ' ').trim();
+  return out.length > max ? `${out.slice(0, max - 1)}…` : out;
+}
+
+/**
+ * The error for a failed (non-429, non-5xx) response. A 401, or a 403 from the API itself, is a
+ * credentials / privacy problem. A 403 that is a web page (Akamai's "Access Denied", a Cloudflare
+ * challenge) comes from the platform's edge network: a temporary block, not the account's fault.
+ */
+export function httpError(host, status, text, type = '') {
+  const body = readableBody(text, type);
+  const page = /html/i.test(type || '') || HTML.test(String(text || ''));
+  const name = platformOf(host);
+  if (status === 403 && page) {
+    const err = new ProviderError(`${name || host} refused the request (403${body ? ` ${body}` : ''}) - a temporary block by its network, not a credentials problem; it is retried on the next check`, { status });
+    err.blocked = true;
+    return err;
+  }
+  const auth = status === 401 || status === 403;
+  return new ProviderError(`${host} responded ${status}${auth ? ' (check credentials / privacy settings)' : ''}${body ? `: ${body}` : ''}`, { status, auth });
 }
 
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));

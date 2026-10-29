@@ -344,6 +344,9 @@ const MIGRATIONS = [
   },
 ];
 
+/** The schema version this build migrates a database to. */
+export const SCHEMA_VERSION = MIGRATIONS.length;
+
 export function openDb(file) {
   if (file !== ':memory:') fs.mkdirSync(path.dirname(file), { recursive: true });
   const db = new DatabaseSync(file);

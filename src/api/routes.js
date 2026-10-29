@@ -1,13 +1,12 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { DatabaseSync } from 'node:sqlite';
 import { tx } from '../db.js';
 import { providers, providerInfo } from '../providers/index.js';
 import { parseAccount } from '../services/sync.js';
 import { validateSettings } from '../services/settings.js';
 import { describeSchedule, nextRun } from '../services/schedule.js';
-import { computeStats, heatmap, lifetime, yearInReview, memo } from '../services/stats.js';
+import { computeStats, heatmap, lifetime, yearInReview, memo, comparePeriod, periodHighlights } from '../services/stats.js';
 import { findDuplicates } from '../services/duplicates.js';
 import { importRows, exportChunks, parseCsv } from '../services/importer.js';
 import { manualEntry, mergeGames, pruneEmptyGames, splitEntry, findOrCreateGame, cleanTitle } from '../services/library.js';
@@ -19,8 +18,11 @@ import { readZip, isZip } from '../services/zip.js';
 import { gameTrackTables, importGameTrack } from '../services/gametrack.js';
 import { modelFor } from '../services/model.js';
 import { entrySummaries, combineSummaries, gameAchievements, withSessionAchievements, achievementStats, achievementProgress } from '../services/achievements.js';
-import { punchcard, sessionLengths, platformSeries, timeline, gameCurve, libraryOverview, yearOverYear, records } from '../services/insights.js';
+import { punchcard, sessionLengths, platformSeries, timeline, gameCurve, libraryOverview, yearOverYear, records, playStyle } from '../services/insights.js';
 import { suggest, feedbackList, setFeedback, MODES } from '../services/suggest.js';
+import { snapshot, isBackupName } from '../services/backup.js';
+import { weeklySummary, summaryText } from '../services/digest.js';
+import { sendSummary } from '../services/webhook.js';
 import fsp from 'node:fs';
 import { httpJson, ProviderError } from '../providers/http.js';
 import { HttpError, toInt, toTime } from '../util.js';
@@ -601,9 +603,23 @@ export function registerRoutes(r, app) {
   }, { summary: 'Bulk convert sessions to baseline/play or delete', body: '{ ids: number[], action: "baseline"|"play"|"delete" }' });
 
   // ---------- stats ----------
-  r.get('/api/v1/stats', (c) => computeStats(db, {
-    range: c.query.range, group: c.query.group, gameId: toInt(c.query.game_id), platform: c.query.platform, weekStartsOn: settings.get('week_starts_on'), estimates: estimatesParam(c.query, settings),
-  }), { summary: 'Aggregated stats for a range. Inferred pre-tracking history is included (and reported separately) unless estimates=exclude', query: { range: '7d|30d|90d|365d|week|month|year|all|year:2026|month:2026-05', group: 'day|week|month|year', game_id: '', platform: '', estimates: 'include|exclude|only' } });
+  r.get('/api/v1/stats', (c) => {
+    const opts = { range: c.query.range, group: c.query.group, gameId: toInt(c.query.game_id), platform: c.query.platform, weekStartsOn: settings.get('week_starts_on'), estimates: estimatesParam(c.query, settings) };
+    const s = computeStats(db, opts);
+    if (c.query.compare !== 'true' && c.query.highlights !== 'true') return s;
+    const now = Date.now();
+    return {
+      ...s,
+      ...(c.query.compare === 'true' ? { previous: comparePeriod(db, { ...opts, now }) } : {}),
+      ...(c.query.highlights === 'true' ? { highlights: periodHighlights(db, { range: opts.range, platform: opts.platform || null, gameId: opts.gameId, weekStartsOn: opts.weekStartsOn, now }) } : {}),
+    };
+  }, {
+    summary: 'Aggregated stats for a range. Inferred pre-tracking history is included (and reported separately) unless estimates=exclude',
+    query: { range: '7d|30d|90d|365d|week|month|year|all|year:2026|month:2026-05', group: 'day|week|month|year', game_id: '', platform: '', estimates: 'include|exclude|only',
+      compare: 'true = add `previous`: the same numbers for the period before, like for like (null for all time)', highlights: 'true = add `highlights`: new games, achievements unlocked, the most varied day' },
+    returns: '{ range, total_minutes, sessions, games_played, …, previous?: { range, total_minutes, tracked_minutes, sessions, games_played, days_played, avg_session_minutes, avg_per_day_minutes, longest_session_minutes } | null, '
+      + 'highlights?: { new_games: { count, items: [{ game_id, title, cover_url, first_day }] }, achievements: { unlocked, points, games, rarest }, most_varied_day: { day, games } | null } }',
+  });
   r.get('/api/v1/stats/lifetime', () => lifetime(db), { summary: 'Lifetime totals (including imported history)' });
   r.get('/api/v1/stats/heatmap', (c) => heatmap(db, { year: c.query.year, gameId: toInt(c.query.game_id), estimates: estimatesParam(c.query, settings) }), { summary: 'Minutes per day for a year', query: { year: '', game_id: '', estimates: 'include|exclude|only' } });
   r.get('/api/v1/stats/year/:year', (c) => {
@@ -726,6 +742,13 @@ export function registerRoutes(r, app) {
     returns: '{ estimates, years: [{ year, partial (the current year), total_minutes, tracked_minutes, estimated_minutes, to_date: { through (MM-DD, today), minutes, tracked_minutes, estimated_minutes } (Jan 1 to the same date: compares years so far), '
       + 'sessions, games_played, days_played (tracked), new_games (first ever play in that year), top_game: { game_id, title, cover_url, minutes, estimated_minutes } | null, '
       + 'months: [{ month (1-12), key (YYYY-MM), minutes, tracked, estimated, sessions }] }] (oldest first) }',
+  });
+  r.get('/api/v1/stats/style', (c) => playStyle(db, { range: c.query.range || '365d', platform: c.query.platform || null, weekStartsOn: settings.get('week_starts_on'), limit: clamp(c.query.limit, 10, 1, 50) }), {
+    summary: 'How you play: focus per week, what became of the games started, staying power, comebacks (tracked play only)',
+    query: { range: '7d|30d|90d|365d|year:2026|all (default 365d)', platform: '', limit: 'games listed per part (default 10)' },
+    returns: '{ range, rules, focus: { weeks, games_per_week, median_top_share, style: focused|balanced|varied, series: [{ key, games, minutes, top_share, partial? (the week under way: not in the medians) }] } | null, '
+      + 'starts: { count, outcomes: { finished, playing, invested, faded, tried, dropped }, median_minutes, median_days, items: [{ game_id, title, first_day, last_day, minutes, days, span_days, outcome, early_share }] }, '
+      + 'staying_power: { games, median_early_share, median_span_days } | null, comebacks: { count, items: [{ game_id, title, returned_on, gap_days, minutes_since }] } }',
   });
   r.get('/api/v1/stats/records', (c) => records(db, { range: c.query.range || 'all', group: groupParam(c.query.group, ['month', 'year']), estimates: estimatesParam(c.query, settings), ...insightOpts(c) }), {
     summary: 'Records and highlights: longest session, biggest day, best week / month, longest streak, most played game per period, first tracked session',
@@ -1055,13 +1078,59 @@ export function registerRoutes(r, app) {
     const tmp = path.join(os.tmpdir(), `vestigo-backup-${Date.now()}.db`);
     // a read-only connection of its own: SQLite refuses VACUUM while a statement is running on the
     // app's connection (an export still downloading); either way it copies one consistent snapshot
-    const src = app.dbFile && app.dbFile !== ':memory:' ? new DatabaseSync(app.dbFile, { readOnly: true }) : db;
-    try { src.exec(`VACUUM INTO '${tmp.replace(/'/g, "''")}'`); } finally { if (src !== db) src.close(); }
+    snapshot({ db, dbFile: app.dbFile, dest: tmp });
     const buf = fs.readFileSync(tmp);
     fs.unlinkSync(tmp);
     c.sendRaw(200, buf, 'application/vnd.sqlite3', { 'Content-Disposition': `attachment; filename="vestigo-${new Date().toISOString().slice(0, 10)}.db"` });
     return undefined;
   }, { summary: 'Download a consistent SQLite backup' });
+
+  // automatic backups kept on the server (see services/backup.js)
+  const backups = () => { if (!app.backups) throw new HttpError(404, 'Backups are not available'); return app.backups; };
+  const backupFile = (name) => {
+    const b = backups();
+    if (!isBackupName(name) || !b.dir) throw new HttpError(404, 'No such backup');
+    const file = path.join(b.dir, name);
+    if (!fs.existsSync(file)) throw new HttpError(404, 'No such backup');
+    return file;
+  };
+  r.get('/api/v1/backups', () => backups().status(), {
+    summary: 'Automatic backups: schedule, folder and the files kept',
+    returns: '{ enabled, mode, time, keep, dir, count, total_bytes, last, next_at, last_error: { at, message } | null, files: [{ name, kind: scheduled|before-upgrade, at, bytes }] }',
+  });
+  r.post('/api/v1/backups', () => {
+    const b = backups();
+    if (!b.dir) throw new HttpError(409, 'Backups need a database file (this instance runs in memory)');
+    if (b.running) throw new HttpError(409, 'A backup is already running');
+    return b.run({ reason: 'manual' });
+  }, { summary: 'Make a backup now (kept with the scheduled ones)', returns: '{ name, bytes, removed: [names] }' });
+  r.get('/api/v1/backups/:name', (c) => {
+    const file = backupFile(c.params.name);
+    c.stream(200, 'application/vnd.sqlite3', { 'Content-Disposition': `attachment; filename="${c.params.name}"`, 'Content-Length': fs.statSync(file).size });
+    fs.createReadStream(file).on('error', () => c.res.destroy()).pipe(c.res);
+    return undefined;
+  }, { summary: 'Download one kept backup' });
+  r.delete('/api/v1/backups/:name', (c) => { fs.unlinkSync(backupFile(c.params.name)); return { ok: true }; }, { summary: 'Delete one kept backup' });
+
+  // ---------- weekly summary ----------
+  r.get('/api/v1/summary/week', (c) => {
+    const weeksAgo = c.query.weeks_ago == null ? 1 : toInt(c.query.weeks_ago);
+    if (!(weeksAgo >= 0 && weeksAgo <= 520)) throw new HttpError(400, 'weeks_ago must be 0..520');
+    const s = weeklySummary(db, { weeksAgo, weekStartsOn: settings.get('week_starts_on') });
+    return { ...s, text: summaryText(s) };
+  }, {
+    summary: 'A week in numbers: what the weekly webhook summary sends (tracked play only)',
+    query: { weeks_ago: '0 = this week so far, 1 = last week (default), …' },
+    returns: '{ week: { from, to, start_day, end_day, complete }, minutes, sessions, games_played, days_played, previous_minutes, change_percent, top_games, platforms, new_games, '
+      + 'achievements: { unlocked, points, rarest, platinums }, longest_session, busiest_day, streak_days, text }',
+  });
+  r.post('/api/v1/summary/week/send', async () => {
+    const url = settings.get('webhook_url');
+    if (!url) throw new HttpError(400, 'Set a webhook URL first');
+    const s = weeklySummary(db, { weeksAgo: 1, weekStartsOn: settings.get('week_starts_on') });
+    try { await sendSummary(url, s, summaryText(s)); } catch (err) { throw new HttpError(502, err.message); }
+    return { ok: true };
+  }, { summary: "Send last week's summary to the webhook now (a test; the scheduled one still goes out)" });
 
   // ---------- integrations ----------
   // ---------- history inference ----------
@@ -1218,6 +1287,8 @@ export function registerRoutes(r, app) {
         snapshots: count('SELECT COUNT(*) n FROM snapshots'), presence_spans: count('SELECT COUNT(*) n FROM presence'),
         logs: count('SELECT COUNT(*) n FROM logs'), achievements: count('SELECT COUNT(*) n FROM achievements'),
       },
+      backups: app.backups ? (({ files, ...b }) => ({ ...b, before_upgrade: files.filter((f) => f.kind === 'before-upgrade').length }))(app.backups.status()) : null,
+      weekly_summary: { enabled: !!(settings.get('weekly_summary') && settings.get('webhook_url')), time: settings.get('weekly_summary_time'), last_sent_week: settings.get('weekly_summary_sent') || null },
       errors_24h: count("SELECT COUNT(*) n FROM logs WHERE level = 'error' AND time > ?", Date.now() - 86_400_000),
       warnings_24h: count("SELECT COUNT(*) n FROM logs WHERE level = 'warn' AND time > ?", Date.now() - 86_400_000),
       accounts,

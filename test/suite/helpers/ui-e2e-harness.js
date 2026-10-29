@@ -104,8 +104,8 @@ export function installFetchGuard() {
 for (const k of ['CORS_ORIGIN', 'SECURE_COOKIE', 'PASSWORD', 'LOG_FILE'].flatMap((x) => [`VESTIGO_${x}`, `PLAYTRACKER_${x}`])) delete process.env[k];
 
 /** Start an in-memory app on a free port; `api` talks JSON to it (optionally with a cookie). */
-export async function startApp({ password = '' } = {}) {
-  const inst = createApp({ dbFile: ':memory:', password, log: QUIET, scheduler: false });
+export async function startApp({ password = '', dbFile = ':memory:' } = {}) {
+  const inst = createApp({ dbFile, password, log: QUIET, scheduler: false });
   await new Promise((r) => inst.server.listen(0, '127.0.0.1', r));
   const origin = `http://127.0.0.1:${inst.server.address().port}`;
   let cookie = '';

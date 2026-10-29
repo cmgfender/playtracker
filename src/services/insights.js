@@ -749,3 +749,129 @@ function highlights(x, { weekday, hours, total }) {
   if (x.first_session) add('first_session', `First tracked session: ${x.first_session.title} on ${x.first_session.day}.`, x.first_session.minutes, 'minutes', { game_id: x.first_session.game_id, day: x.first_session.day, session_id: x.first_session.session_id });
   return out;
 }
+
+// =====================================================================================
+// play style: focus, what became of the games started, staying power, comebacks
+// =====================================================================================
+// Tracked play only: estimated history is spread by inference, so it has no real rhythm.
+export const STYLE_RULES = {
+  tried: 60,       // a game started with less than this many minutes, on one day, was only tried
+  invested: 600,   // ... at least this many minutes: stuck with
+  recent: 14,      // played within this many days: still going
+  early: 7,        // staying power: the share of a game's hours in its first N days ...
+  settled: 30,     // ... for games started at least this many days ago
+  gap: 90,         // a return after this many days without play is a comeback
+  focused: 0.7,    // a week's top game with this share of the week, at the median: focused
+  varied: 0.45,    // ... at most this share: varied
+};
+const OUTCOMES = ['finished', 'playing', 'invested', 'faded', 'tried', 'dropped'];
+const median = (xs) => { if (!xs.length) return null; const s = [...xs].sort((a, b) => a - b); const m = s.length >> 1; return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; };
+const daysBetween = (a, b) => Math.round((parseDay(b) - parseDay(a)) / DAY);
+
+/**
+ * How you play, in a range: how focused your weeks are (games per week, the top game's share),
+ * what became of the games you started (finished, still going, stuck with, faded, only tried,
+ * dropped), how front-loaded a game's hours are, and the games you came back to after a long gap.
+ * Starts count games whose first play anywhere falls in the range and was tracked (not estimated).
+ */
+export function playStyle(db, { range = '365d', platform = null, weekStartsOn = 1, now = Date.now(), limit = 10, R = STYLE_RULES } = {}) {
+  return memo(db, `style:${range}:${platform}:${weekStartsOn}:${limit}`, () => {
+    const p = period(db, { range, now, weekStartsOn, platform, estimates: 'exclude' });
+    const pf = platform ? 'AND platform = ?' : '';
+    const pa = platform ? [platform] : [];
+    const today = dayKey(now);
+    // tracked minutes per game and day, all time: starts, staying power and comebacks look past the range
+    const byGame = new Map();
+    for (const x of db.prepare(`SELECT game_id, day, SUM(minutes) m FROM play_days INDEXED BY play_days_game
+        WHERE excluded = 0 AND estimated = 0 ${pf} GROUP BY game_id, day ORDER BY game_id, day`).all(...pa)) {
+      if (x.m < 0.5) continue;
+      let g = byGame.get(x.game_id);
+      if (!g) byGame.set(x.game_id, g = []);
+      g.push([x.day, x.m]);
+    }
+    const firstAny = new Map(db.prepare(`SELECT game_id, MIN(day) d FROM play_days WHERE excluded = 0 ${pf} GROUP BY game_id`).all(...pa).map((x) => [x.game_id, x.d]));
+    const inRange = (d) => d >= p.fromDay && d <= p.toDay;
+
+    // focus: per week, how many games and the top one's share
+    const wk = keyer('week', weekStartsOn);
+    const weeks = new Map();
+    for (const [id, list] of byGame) {
+      for (const [d, m] of list) {
+        if (!inRange(d)) continue;
+        const k = wk(d);
+        let w = weeks.get(k);
+        if (!w) weeks.set(k, w = new Map());
+        w.set(id, (w.get(id) || 0) + m);
+      }
+    }
+    const weekRows = [...weeks.entries()].sort((a, b) => (a[0] < b[0] ? -1 : 1)).map(([key, w]) => {
+      const vals = [...w.values()];
+      const total = vals.reduce((a, b) => a + b, 0);
+      // the week still under way is drawn but not counted in the typical week
+      return { key, games: w.size, minutes: r(total), top_share: share(Math.max(...vals), total), ...(key === wk(today) ? { partial: true } : {}) };
+    }).filter((w) => w.minutes >= 1);
+    const whole = weekRows.filter((w) => !w.partial).length ? weekRows.filter((w) => !w.partial) : weekRows;
+    const topShare = median(whole.map((w) => w.top_share));
+    const focus = weekRows.length ? {
+      weeks: whole.length,
+      games_per_week: Math.round((whole.reduce((a, w) => a + w.games, 0) / whole.length) * 10) / 10,
+      median_top_share: topShare,
+      style: topShare >= R.focused ? 'focused' : topShare <= R.varied ? 'varied' : 'balanced',
+      series: weekRows,
+    } : null;
+
+    // starts: first played in the range, tracked from that first day
+    const started = [...byGame.entries()].filter(([id, list]) => inRange(list[0][0]) && firstAny.get(id) === list[0][0]);
+    const ids = started.map(([id]) => id);
+    const info = new Map(ids.length ? db.prepare(`SELECT g.id, g.title, g.cover_url, g.status,
+        (SELECT SUM(a.unlocked) FROM achievements a JOIN entries e ON e.id = a.entry_id WHERE e.game_id = g.id AND e.excluded = 0) unlocked,
+        (SELECT COUNT(*) FROM achievements a JOIN entries e ON e.id = a.entry_id WHERE e.game_id = g.id AND e.excluded = 0) total
+      FROM games g WHERE g.id IN (SELECT value FROM json_each(?))`).all(JSON.stringify(ids)).map((g) => [g.id, g]) : []);
+    const starts = started.map(([id, list]) => {
+      const g = info.get(id) || {};
+      const minutes = list.reduce((a, [, m]) => a + m, 0);
+      const first = list[0][0]; const last = list[list.length - 1][0];
+      const since = daysBetween(last, today);
+      const early = list.filter(([d]) => daysBetween(first, d) < R.early).reduce((a, [, m]) => a + m, 0);
+      const outcome = ['completed', 'beaten'].includes(g.status) || (g.total && g.unlocked >= g.total) ? 'finished'
+        : g.status === 'dropped' ? 'dropped'
+          : since <= R.recent ? 'playing'
+            : minutes < R.tried && list.length === 1 ? 'tried'
+              : minutes >= R.invested ? 'invested' : 'faded';
+      return { game_id: id, title: g.title, cover_url: g.cover_url ?? null, status: g.status, first_day: first, last_day: last, minutes: r(minutes), days: list.length, span_days: daysBetween(first, last) + 1, outcome, early_share: share(early, minutes), settled: daysBetween(first, today) >= R.settled };
+    }).sort((a, b) => (a.first_day < b.first_day ? 1 : a.first_day > b.first_day ? -1 : b.minutes - a.minutes));
+    const counts = Object.fromEntries(OUTCOMES.map((o) => [o, starts.filter((s) => s.outcome === o).length]));
+    const settled = starts.filter((s) => s.settled && s.minutes >= R.tried);
+
+    // comebacks: a return to a game after a long gap, the return in the range
+    const comebacks = [];
+    for (const [id, list] of byGame) {
+      for (let i = 1; i < list.length; i++) {
+        const gap = daysBetween(list[i - 1][0], list[i][0]);
+        if (gap < R.gap || !inRange(list[i][0])) continue;
+        const after = list.slice(i).reduce((a, [, m]) => a + m, 0);
+        comebacks.push({ game_id: id, returned_on: list[i][0], gap_days: gap, minutes_since: r(after) });
+      }
+    }
+    comebacks.sort((a, b) => (a.returned_on < b.returned_on ? 1 : -1));
+    const cbInfo = gameInfo(db, [...new Set(comebacks.slice(0, limit).map((c) => c.game_id))]);
+
+    return {
+      range: { from: p.from, to: p.to, label: p.label },
+      rules: R,
+      focus,
+      starts: {
+        count: starts.length, outcomes: counts,
+        median_minutes: starts.length ? r(median(starts.map((s) => s.minutes))) : null,
+        median_days: starts.length ? median(starts.map((s) => s.days)) : null,
+        items: starts.slice(0, limit),
+      },
+      staying_power: settled.length ? {
+        games: settled.length,
+        median_early_share: median(settled.map((s) => s.early_share)),
+        median_span_days: median(settled.map((s) => s.span_days)),
+      } : null,
+      comebacks: { count: comebacks.length, items: comebacks.slice(0, limit).map((c) => ({ ...c, ...cbInfo.get(c.game_id) })) },
+    };
+  });
+}

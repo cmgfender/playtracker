@@ -63,7 +63,7 @@ export function mountSuggest(host, { card = true, platforms = [], close = null }
   const live = host.querySelector('[data-sg-live]');
   const say = (t) => { live.textContent = ''; requestAnimationFrame(() => { live.textContent = t; }); };
 
-  const fresh = () => ({ key: roundKey(p), seed: null, seen: [], data: null, order: null });
+  const fresh = () => ({ key: roundKey(p), seed: null, first: null, seen: [], data: null, order: null });
   let round = card && homeRound?.key === roundKey(p) ? homeRound : fresh();
   if (card) homeRound = round;
 
@@ -82,11 +82,14 @@ export function mountSuggest(host, { card = true, platforms = [], close = null }
       if (!d.picks.length && round.seen.length) {
         round.seen = [];
         delete q.exclude;
+        // the first round's seed: near-ties fall the same way, so it really is the best match again
+        if (round.first != null) q.seed = String(round.first);
         d = await api(`/suggest?${new URLSearchParams(q)}`);
         if (again && d.picks.length) toast('That was every match: starting over');
       }
       if (my !== seq || !host.isConnected) return;
       round.seed = d.seed;
+      round.first ??= d.seed;
       round.data = d;
       round.order = d.picks.map((_, i) => i);
       draw();
