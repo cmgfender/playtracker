@@ -68,17 +68,24 @@ function bigrams(s) {
   return out;
 }
 
+/** The string's bigrams (pairs of UTF-16 code units, whitespace removed) as sorted numbers, repeats kept. */
 function computeBigrams(s) {
   const t = s.replace(/\s/g, '');
-  const out = new Map();
-  for (let i = 0; i < t.length - 1; i++) {
-    const g = t.slice(i, i + 2);
-    out.set(g, (out.get(g) || 0) + 1);
-  }
-  return out;
+  const out = new Float64Array(Math.max(0, t.length - 1));
+  for (let i = 0; i < out.length; i++) out[i] = t.charCodeAt(i) * 65536 + t.charCodeAt(i + 1);
+  return out.sort();
 }
 
-const numbers = (t) => (t.match(/\b\d+\b/g) || []).sort().join(' ');
+// cached like bigrams: the duplicate finder compares each title with a few dozen neighbours
+const numberCache = new Map();
+function numbers(t) {
+  let n = numberCache.get(t);
+  if (n === undefined) {
+    if (numberCache.size > 200_000) numberCache.clear();
+    numberCache.set(t, n = (t.match(/\b\d+\b/g) || []).sort().join(' '));
+  }
+  return n;
+}
 
 /** Sørensen–Dice similarity of two (already normalised) strings, 0..1 */
 export function similarity(a, b) {
@@ -86,11 +93,12 @@ export function similarity(a, b) {
   if (a.length < 2 || b.length < 2) return 0;
   const A = bigrams(a);
   const B = bigrams(b);
+  // the size of the multiset intersection, merging the two sorted lists
   let inter = 0;
-  let total = 0;
-  for (const [g, n] of A) { total += n; if (B.has(g)) inter += Math.min(n, B.get(g)); }
-  for (const n of B.values()) total += n;
-  return (2 * inter) / total;
+  for (let i = 0, j = 0; i < A.length && j < B.length;) {
+    if (A[i] === B[j]) { inter++; i++; j++; } else if (A[i] < B[j]) i++; else j++;
+  }
+  return (2 * inter) / (A.length + B.length);
 }
 
 /**

@@ -27,11 +27,14 @@ function compute(db, threshold, limit) {
   const seen = new Set();
   const consider = (a, b) => {
     if (a.id === b.id) return;
+    // scored first: the pair's key is only built for the few that match (a pair both passes
+    // compare is scored twice, which is cheaper than a key for every comparison)
+    const score = matchScore(a.norm_title, b.norm_title);
+    if (score < threshold) return;
     const key = `merge:${Math.min(a.id, b.id)}:${Math.max(a.id, b.id)}`;
     if (seen.has(key) || dismissed.has(key)) return;
     seen.add(key);
-    const score = matchScore(a.norm_title, b.norm_title);
-    if (score >= threshold) suggestions.push({ key, score: Math.round(score * 100) / 100, games: [a, b].map(slim) });
+    suggestions.push({ key, score: Math.round(score * 100) / 100, games: [a, b].map(slim) });
   };
   const sweep = (list) => {
     for (let i = 0; i < list.length; i++) for (let j = i + 1; j <= i + WINDOW && j < list.length; j++) consider(list[i], list[j]);

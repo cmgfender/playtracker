@@ -1,10 +1,11 @@
 // Resource contracts: cached stats outlive writes no stat reads (API call accounting, presence
 // heartbeats, the error log, API token use) and are dropped by any other; the Stats page's
-// comparison and highlights are cached like the stats.
+// comparison and highlights are cached like the stats; title similarity is still Sørensen–Dice.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createApp } from '../src/server.js';
 import { computeStats, comparePeriod, periodHighlights, memo } from '../src/services/stats.js';
+import { similarity, normalizeTitle } from '../src/services/titles.js';
 import { createLogger } from '../src/logger.js';
 
 const MIN = 60_000;
@@ -86,4 +87,24 @@ test('the previous period and the highlights are cached until the next write (ex
     assert.equal(x.highlights.new_games.count, 1);
     assert.equal(x.previous.total_minutes, 0);
   } finally { close(); }
+});
+
+test('title similarity is the Sørensen–Dice coefficient of the bigram multisets', () => {
+  const reference = (a, b) => {
+    if (a === b) return 1;
+    if (a.length < 2 || b.length < 2) return 0;
+    const grams = (s) => { const t = s.replace(/\s/g, ''); const m = new Map(); for (let i = 0; i < t.length - 1; i++) m.set(t.slice(i, i + 2), (m.get(t.slice(i, i + 2)) || 0) + 1); return m; };
+    const A = grams(a); const B = grams(b);
+    let inter = 0; let total = 0;
+    for (const [g, n] of A) { total += n; if (B.has(g)) inter += Math.min(n, B.get(g)); }
+    for (const n of B.values()) total += n;
+    return (2 * inter) / total;
+  };
+  const titles = ['Hollow Knight', 'Hollow Knight: Voidheart Edition', 'Hades', 'Hades II', 'aaaa', 'aa aa', 'Ōkami HD', 'ŌKAMI', '日本のゲーム', 'Sid Meier\'s Civilization V', 'Civilization 5', 'The Witcher 3', 'Witcher 3: Wild Hunt', 'x y'];
+  for (const a of titles) for (const b of titles) {
+    const [x, y] = [normalizeTitle(a), normalizeTitle(b)];
+    const want = reference(x, y);
+    const got = similarity(x, y);
+    assert.ok(got === want || (Number.isNaN(got) && Number.isNaN(want)), `${a} / ${b}: ${got} vs ${want}`);
+  }
 });
