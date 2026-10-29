@@ -313,3 +313,26 @@ test('late minutes never go to a session that ended before the total last moved'
   assert.deepEqual(rows, [30, 20], 'the first session keeps what the platform credited');
   assert.deepEqual(consistent(db), []);
 });
+
+test('a game listed only after it was played becomes the sessions presence saw, not history', () => {
+  const { db, settings } = setup();
+  const acc = addAccount(db, 'steam');
+  const M = 60_000;
+  const t0 = new Date('2026-10-26T12:00:00').getTime();
+  db.prepare('UPDATE accounts SET created_at = ? WHERE id = ?').run(t0 - D, acc);
+  runSync(db, settings, acc, [{ extId: 1, title: 'Old Game', playtimeMin: 100, lastPlayedAt: t0 - 5 * D }], t0);
+  // played Tuesday evening; Steam lists the (free) game only a day later
+  const played = t0 + 8 * H;
+  db.prepare('INSERT INTO presence(account_id, ext_id, title, started_at, last_seen_at, ended_at) VALUES (?, ?, ?, ?, ?, ?)').run(acc, '2', 'Onion Voting Simulator', played, played + 4 * M, played + 4 * M);
+  runSync(db, settings, acc, [{ extId: 1, title: 'Old Game', playtimeMin: 100, lastPlayedAt: t0 - 5 * D }], t0 + 20 * H);
+  runSync(db, settings, acc, [{ extId: 1, title: 'Old Game', playtimeMin: 100, lastPlayedAt: t0 - 5 * D }, { extId: 2, title: 'Onion Voting Simulator', playtimeMin: 4, lastPlayedAt: played + 4 * M }], t0 + 32 * H);
+  const e = db.prepare("SELECT * FROM entries WHERE ext_id = '2'").get();
+  assert.equal(e.playtime_min, 4);
+  assert.equal(e.baseline_min, 0, 'no pre-tracking history');
+  const s = db.prepare("SELECT minutes, started_at, confidence FROM sessions WHERE entry_id = ? AND kind = 'play'").all(e.id).map((r) => ({ ...r }));
+  assert.deepEqual(s, [{ minutes: 4, started_at: played, confidence: 'exact' }]);
+  // a game listed late that presence never saw is still history
+  runSync(db, settings, acc, [{ extId: 1, title: 'Old Game', playtimeMin: 100, lastPlayedAt: t0 - 5 * D }, { extId: 2, title: 'Onion Voting Simulator', playtimeMin: 4, lastPlayedAt: played + 4 * M }, { extId: 3, title: 'Unseen', playtimeMin: 30, lastPlayedAt: t0 - 3 * D }], t0 + 40 * H);
+  assert.equal(db.prepare("SELECT baseline_min FROM entries WHERE ext_id = '3'").get().baseline_min, 30);
+  assert.deepEqual(consistent(db), []);
+});
