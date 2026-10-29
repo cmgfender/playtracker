@@ -20,7 +20,7 @@ import { modelFor } from '../services/model.js';
 import { entrySummaries, combineSummaries, gameAchievements, withSessionAchievements, achievementStats, achievementProgress } from '../services/achievements.js';
 import { punchcard, sessionLengths, platformSeries, timeline, gameCurve, libraryOverview, yearOverYear, records, playStyle } from '../services/insights.js';
 import { suggest, feedbackList, setFeedback, MODES } from '../services/suggest.js';
-import { snapshot, isBackupName } from '../services/backup.js';
+import { snapshotAsync, isBackupName } from '../services/backup.js';
 import { weeklySummary, summaryText } from '../services/digest.js';
 import { sendSummary } from '../services/webhook.js';
 import fsp from 'node:fs';
@@ -1075,14 +1075,16 @@ export function registerRoutes(r, app) {
       + '(achievements only on entries that have them; importing ignores them - they come back from the platform). CSV: unchanged columns.',
   });
 
-  r.get('/api/v1/backup', (c) => {
+  r.get('/api/v1/backup', async (c) => {
     const tmp = path.join(os.tmpdir(), `vestigo-backup-${Date.now()}.db`);
     // a read-only connection of its own: SQLite refuses VACUUM while a statement is running on the
-    // app's connection (an export still downloading); either way it copies one consistent snapshot
-    snapshot({ db, dbFile: app.dbFile, dest: tmp });
-    const buf = fs.readFileSync(tmp);
-    fs.unlinkSync(tmp);
-    c.sendRaw(200, buf, 'application/vnd.sqlite3', { 'Content-Disposition': `attachment; filename="vestigo-${new Date().toISOString().slice(0, 10)}.db"` });
+    // app's connection (an export still downloading); either way it copies one consistent snapshot.
+    // Made in a worker thread and streamed from disk: the server neither waits nor holds the copy in memory.
+    const bytes = await snapshotAsync({ db, dbFile: app.dbFile, dest: tmp });
+    const drop = () => fs.unlink(tmp, () => {});
+    c.stream(200, 'application/vnd.sqlite3', { 'Content-Disposition': `attachment; filename="vestigo-${new Date().toISOString().slice(0, 10)}.db"`, 'Content-Length': bytes });
+    c.res.on('close', drop);
+    fs.createReadStream(tmp).on('error', () => c.res.destroy()).pipe(c.res);
     return undefined;
   }, { summary: 'Download a consistent SQLite backup' });
 
@@ -1103,7 +1105,7 @@ export function registerRoutes(r, app) {
     const b = backups();
     if (!b.dir) throw new HttpError(409, 'Backups need a database file (this instance runs in memory)');
     if (b.running) throw new HttpError(409, 'A backup is already running');
-    return b.run({ reason: 'manual' });
+    return b.runAsync({ reason: 'manual' });
   }, { summary: 'Make a backup now (kept with the scheduled ones)', returns: '{ name, bytes, removed: [names] }' });
   r.get('/api/v1/backups/:name', (c) => {
     const file = backupFile(c.params.name);

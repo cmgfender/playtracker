@@ -4,6 +4,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { Worker } from 'node:worker_threads';
 import { DatabaseSync } from 'node:sqlite';
 import { env } from '../env.js';
 import { nextRun } from './schedule.js';
@@ -42,6 +43,40 @@ export function snapshot({ db, dbFile, dest }) {
     if (src !== db) src.close();
   }
   return fs.statSync(dest).size;
+}
+
+// VACUUM INTO on a connection of the worker's own (CommonJS: an eval'd worker is not a module)
+const VACUUM_WORKER = `
+const { workerData } = require('node:worker_threads');
+const { DatabaseSync } = require('node:sqlite');
+const db = new DatabaseSync(workerData.file, { readOnly: true });
+try { db.exec(workerData.sql); } finally { db.close(); }
+`;
+
+/**
+ * snapshot(), with the copy made in a worker thread: VACUUM INTO of a large database on a slow
+ * disk takes seconds, and the server keeps answering meanwhile. `track(worker, part)` is told
+ * the worker and the temporary file while it runs. An in-memory database is copied in place.
+ */
+export async function snapshotAsync({ db, dbFile, dest, track }) {
+  if (!dbFile || dbFile === ':memory:') return snapshot({ db, dbFile, dest });
+  const part = `${dest}.partial`;
+  try {
+    await fs.promises.rm(part, { force: true }); // none left over
+    await new Promise((resolve, reject) => {
+      const w = new Worker(VACUUM_WORKER, { eval: true, workerData: { file: dbFile, sql: `VACUUM INTO '${part.replace(/'/g, "''")}'` } });
+      track?.(w, part);
+      w.once('error', reject);
+      w.once('exit', (code) => (code ? reject(new Error(`The backup was stopped (worker exit ${code})`)) : resolve()));
+    });
+    await fs.promises.rename(part, dest);
+  } catch (err) {
+    await fs.promises.rm(part, { force: true }).catch(() => {}); // never written
+    throw err;
+  } finally {
+    track?.(null, null);
+  }
+  return (await fs.promises.stat(dest)).size;
 }
 
 /** The backups in `dir`, newest first: { name, kind: 'scheduled' | 'before-upgrade', at, bytes }. */
@@ -119,27 +154,53 @@ export class Backups {
     return next;
   }
 
-  /** Make a backup now and prune old ones. Returns { name, bytes, removed }. */
+  /** Make a backup now and prune old ones. Returns { name, bytes, removed }. The copy blocks the server meanwhile: see runAsync. */
   run({ reason = 'manual' } = {}) {
+    const job = this.begin();
+    try {
+      fs.mkdirSync(this.dir, { recursive: true });
+      return this.saved(job, snapshot({ db: this.db, dbFile: this.dbFile, dest: job.dest }), reason);
+    } catch (err) {
+      throw this.failed(err, reason);
+    } finally {
+      this.running = false;
+    }
+  }
+
+  /** run(), with the copy made in a worker thread (the scheduled and the API's backups). */
+  async runAsync({ reason = 'manual' } = {}) {
+    const job = this.begin();
+    try {
+      fs.mkdirSync(this.dir, { recursive: true });
+      const track = (worker, part) => { this.worker = worker; this.partial = part; };
+      return this.saved(job, await snapshotAsync({ db: this.db, dbFile: this.dbFile, dest: job.dest, track }), reason);
+    } catch (err) {
+      throw this.failed(err, reason);
+    } finally {
+      this.running = false;
+    }
+  }
+
+  begin() {
     if (!this.dir) throw new Error('Backups need a database file (this instance runs in memory)');
     if (this.running) throw new Error('A backup is already running');
     this.running = true;
     const t0 = Date.now();
-    try {
-      fs.mkdirSync(this.dir, { recursive: true });
-      const name = `vestigo-${stamp(t0)}.db`;
-      const bytes = snapshot({ db: this.db, dbFile: this.dbFile, dest: path.join(this.dir, name) });
-      const removed = prune(this.dir, 'scheduled', this.keep());
-      this.lastError = null;
-      this.log?.info(`Backup saved: ${name} (${(bytes / 1048576).toFixed(1)} MB, ${Date.now() - t0}ms)${removed.length ? `, removed ${removed.length} older` : ''}`, { reason });
-      return { name, bytes, removed };
-    } catch (err) {
-      this.lastError = { at: Date.now(), message: err.message };
-      this.log?.error(`Backup failed: ${err.message} (in ${this.dir}; tried again in ${RETRY_AFTER / HOUR} hours)`, { reason });
-      throw err;
-    } finally {
-      this.running = false;
-    }
+    const name = `vestigo-${stamp(t0)}.db`;
+    return { t0, name, dest: path.join(this.dir, name) };
+  }
+
+  saved({ t0, name }, bytes, reason) {
+    const removed = prune(this.dir, 'scheduled', this.keep());
+    this.lastError = null;
+    this.log?.info(`Backup saved: ${name} (${(bytes / 1048576).toFixed(1)} MB, ${Date.now() - t0}ms)${removed.length ? `, removed ${removed.length} older` : ''}`, { reason });
+    return { name, bytes, removed };
+  }
+
+  failed(err, reason) {
+    this.lastError = { at: Date.now(), message: err.message };
+    this.log?.error(`Backup failed: ${err.message} (in ${this.dir}; tried again in ${RETRY_AFTER / HOUR} hours)`, { reason });
+    return err;
   }
 
   keep() { return Math.min(90, Math.max(1, Math.floor(Number(this.settings.get('backup_keep')) || 7))); }
@@ -161,7 +222,7 @@ export class Backups {
     const tick = () => {
       if (this.running) return;
       const next = this.nextAt();
-      if (next != null && next <= Date.now()) { try { this.run({ reason: 'schedule' }); } catch { /* logged, retried later */ } }
+      if (next != null && next <= Date.now()) this.runAsync({ reason: 'schedule' }).catch(() => { /* logged, retried later */ });
     };
     // the first check waits a few minutes: an update's first backup runs once startup work is done
     this.first = setTimeout(tick, 3 * 60_000);
@@ -173,5 +234,7 @@ export class Backups {
   stop() {
     clearTimeout(this.first);
     clearInterval(this.timer);
+    // a copy still being written is abandoned: never left behind as a .partial file
+    if (this.worker) { this.worker.terminate().catch(() => {}); try { fs.unlinkSync(this.partial); } catch { /* not created yet */ } }
   }
 }

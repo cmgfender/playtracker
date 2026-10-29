@@ -1,8 +1,13 @@
 // Resource contracts: cached stats outlive writes no stat reads (API call accounting, presence
 // heartbeats, the error log, API token use) and are dropped by any other; the Stats page's
-// comparison and highlights are cached like the stats; title similarity is still Sørensen–Dice.
+// comparison and highlights are cached like the stats; title similarity is still Sørensen–Dice;
+// a backup made through the API leaves the server answering while it copies.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { createApp } from '../src/server.js';
 import { computeStats, comparePeriod, periodHighlights, memo } from '../src/services/stats.js';
 import { similarity, normalizeTitle } from '../src/services/titles.js';
@@ -106,5 +111,40 @@ test('title similarity is the Sørensen–Dice coefficient of the bigram multise
     const want = reference(x, y);
     const got = similarity(x, y);
     assert.ok(got === want || (Number.isNaN(got) && Number.isNaN(want)), `${a} / ${b}: ${got} vs ${want}`);
+  }
+});
+
+test('a backup through the API is copied off the main thread: the server keeps answering meanwhile', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vg-perf-'));
+  const file = path.join(dir, 'vestigo.db');
+  // ~48 MB of rows: copying it blocks for a noticeable time when done on the main thread
+  const pre = new DatabaseSync(file);
+  pre.exec("PRAGMA journal_mode = WAL; CREATE TABLE IF NOT EXISTS filler(b BLOB); WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 12000) INSERT INTO filler SELECT randomblob(4000) FROM n;");
+  pre.close();
+  const { app, close, server } = fixture(file);
+  try {
+    let t = performance.now();
+    app.backups.run(); // the blocking copy, for comparison
+    const blocking = performance.now() - t;
+    await new Promise((r) => server.listen(0, '127.0.0.1', r));
+    let worst = 0; let last = performance.now(); let ticks = 0;
+    const ticker = setInterval(() => { const n = performance.now(); worst = Math.max(worst, n - last); last = n; ticks++; }, 5);
+    t = performance.now();
+    const res = await fetch(`http://127.0.0.1:${server.address().port}/api/v1/backups`, { method: 'POST' });
+    const took = performance.now() - t;
+    clearInterval(ticker);
+    const out = await res.json();
+    assert.equal(res.status, 200, JSON.stringify(out));
+    assert.ok(out.bytes > 40 * 1048576, `a complete copy (${out.bytes} bytes)`);
+    const copy = new DatabaseSync(path.join(app.backups.dir, out.name), { readOnly: true });
+    assert.equal(copy.prepare('SELECT COUNT(*) n FROM filler').get().n, 12000);
+    copy.close();
+    assert.ok(!fs.readdirSync(app.backups.dir).some((f) => f.endsWith('.partial')));
+    assert.ok(ticks > 0);
+    // the event loop never stalled for anything like the copy itself
+    assert.ok(worst < Math.max(60, blocking / 2), `longest stall ${worst.toFixed(0)}ms during a ${took.toFixed(0)}ms backup (a blocking copy: ${blocking.toFixed(0)}ms)`);
+  } finally {
+    close();
+    fs.rmSync(dir, { recursive: true, force: true });
   }
 });
