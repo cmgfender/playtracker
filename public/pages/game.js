@@ -239,7 +239,9 @@ export async function game(view, id, stale) {
     const shown = hasAch ? Math.min(ACH_SHOWN, ach.summary.unlocked) : 0;
     let L = (curveCard ? 360 : 0) + 90 + Math.max(1, recent.length) * 66 + new Set(recent.map((x) => dayKey(x.ended_at || x.window_end || x.created_at))).size * 40 + baselines.length * 50;
     let R = (hasAch ? 230 + shown * 64 + (shown ? 40 : 0) + (ach.items.some((x) => !x.unlocked) ? 50 : 0) : 0) + 100 + g.entries.length * 76 + 190;
-    const left = [curveCard]; const right = [hasAch ? achBlock(ach) : '', platCard];
+    const about = aboutCard(g);
+    if (about) R += 240;
+    const left = [curveCard]; const right = [about, hasAch ? achBlock(ach) : '', platCard];
     // Activity follows the curve, History sits above Notes, each in the shorter column
     for (const [card, h] of [[heatCard, 260], [histCard, 110 + hist.length * 230]]) {
       if (!card) continue;
@@ -251,6 +253,7 @@ export async function game(view, id, stale) {
   }
   mountCharts(view);
   bindSessionEdits(view);
+  $('#g-meta-fix')?.addEventListener('click', () => metaModal(g));
   const patch = async (body, msg) => { try { await api(`/games/${id}`, { method: 'PATCH', body }); if (msg) toast(msg); } catch (e) { fail(e); } };
   /**
    * Status, rating, favourite and hidden change in place at once, are saved, and their toast can
@@ -445,6 +448,74 @@ function mergeModal(g) {
       el.querySelector('#mq').addEventListener('input', () => { clearTimeout(t); t = setTimeout(search, 180); });
       el.querySelector('#mr').addEventListener('change', (e) => { const v = Number(e.target.value); e.target.checked ? picked.add(v) : picked.delete(v); el.querySelector('#m-go').disabled = !picked.size; el.querySelector('#m-go').textContent = picked.size ? `Merge ${picked.size}` : 'Merge'; });
       el.querySelector('#m-go').addEventListener('click', async () => { try { await api(`/games/${g.id}/merge`, { method: 'POST', body: { source_ids: [...picked] } }); close(); toast('Merged'); rerender(); } catch (e) { fail(e); } });
+      search();
+    },
+  });
+}
+
+// ---------- IGDB metadata ----------
+const BY = { steam: 'its Steam id', title: 'its title', manual: 'you' };
+const tagLink = (kind, name) => `<a class="chip" href="/library?tag=${encodeURIComponent(`${kind}:${name}`)}" data-link>${esc(name)}</a>`;
+const hrs = (m) => fmtMin(m, { short: m >= 600 });
+
+/** About: genres and the rest of the IGDB record, the typical time to beat against yours. Nothing without IGDB. */
+function aboutCard(g) {
+  const m = g.meta;
+  if (!m) return '';
+  if (!m.igdb_id) {
+    return `<div class="card" id="g-about"><div class="card-h"><h2>About</h2></div><p class="small muted" style="margin:0">${m.matched_by === 'manual' ? 'You said IGDB has no entry for this game.' : 'IGDB has no game with this title.'} <button class="link linkbtn" id="g-meta-fix">Find it on IGDB</button></p></div>`;
+  }
+  const people = [
+    m.developers.length && ['Developer', m.developers.slice(0, 2).map((n) => `<a class="link" href="/library?tag=${encodeURIComponent(`developer:${n}`)}" data-link>${esc(n)}</a>`).join(', ')],
+    m.publishers.length && m.publishers.join() !== m.developers.join() && ['Publisher', m.publishers.slice(0, 2).map(esc).join(', ')],
+    m.franchises.length && ['Series', m.franchises.slice(0, 2).map((n) => `<a class="link" href="/library?tag=${encodeURIComponent(`franchise:${n}`)}" data-link>${esc(n)}</a>`).join(', ')],
+    m.release_date && ['Released', fmtDate(m.release_date, { year: 'numeric', month: 'short', day: 'numeric' })],
+    m.rating != null && ['IGDB rating', `${Math.round(m.rating)}<span class="tiny muted"> / 100${m.rating_count ? ` · ${m.rating_count.toLocaleString()} ratings` : ''}</span>`],
+  ].filter(Boolean);
+  const t = m.time_to_beat;
+  const mine = g.summary?.total_minutes || g.minutes || 0;
+  let ttb = '';
+  if (t) {
+    const marks = [['Main story', t.main], ['Main + extras', t.extra], ['Everything', t.complete]].filter(([, v]) => v);
+    const max = Math.max(mine, ...marks.map(([, v]) => v));
+    const ref = t.main || t.extra || t.complete;
+    const say = !mine ? '' : mine >= (t.complete || Infinity) ? 'more than a completionist run' : mine >= ref ? `${(mine / ref).toFixed(1)}× the ${t.main ? 'main story' : 'typical time'}` : `about ${hrs(ref - mine)} short of the ${t.main ? 'main story' : 'typical time'}`;
+    ttb = `<h3 class="ach-h">Time to beat</h3>
+      <div class="ttb">${marks.map(([l, v]) => `<div class="mrow"><span class="ml">${l}</span><span class="mbar"><i style="width:${(v / max) * 100}%;background:var(--accent2)"></i></span><span class="mv">${hrs(v)}</span></div>`).join('')}
+      ${mine ? `<div class="mrow"><span class="ml"><b>You</b></span><span class="mbar"><i style="width:${(mine / max) * 100}%;background:var(--accent-mark)"></i></span><span class="mv"><b>${hrs(mine)}</b></span></div>` : ''}</div>
+      ${say ? `<p class="tiny muted" style="margin:4px 0 0">You have played ${say}, by IGDB’s typical times.</p>` : ''}`;
+  }
+  const chips = [...m.genres.map((n) => tagLink('genre', n)), ...m.perspectives.map((n) => tagLink('perspective', n)), ...m.modes.map((n) => tagLink('mode', n))];
+  return `<div class="card" id="g-about"><div class="card-h"><h2>About</h2>${m.url ? `<a href="${esc(m.url)}" target="_blank" rel="noopener">IGDB ${icon('external', 'ic-inline')}</a>` : ''}</div>
+    ${chips.length ? `<div class="chips" style="margin-bottom:10px">${chips.join('')}</div>` : ''}
+    ${people.length ? `<dl class="kv">${people.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('')}</dl>` : ''}
+    ${m.themes.length ? `<p class="tiny muted" style="margin:8px 0 0">${m.themes.slice(0, 6).map(esc).join(' · ')}</p>` : ''}
+    ${ttb}
+    ${m.summary ? `<details style="margin-top:10px"><summary class="small muted" style="cursor:pointer">Summary</summary><p class="small" style="margin:6px 0 0">${esc(m.summary)}</p></details>` : ''}
+    <p class="tiny muted" style="margin:12px 0 0">From IGDB${m.name && m.name !== g.title ? ` as “${esc(m.name)}”` : ''}, matched by ${BY[m.matched_by] || m.matched_by}. <button class="link linkbtn" id="g-meta-fix">Wrong game?</button></p></div>`;
+}
+
+/** Pick the IGDB game by hand, say there is none, or go back to matching automatically. */
+function metaModal(g) {
+  const m = modal({
+    title: 'Match on IGDB',
+    body: `<form class="row" id="mm-f" style="gap:8px"><input class="input grow" id="mm-q" value="${esc(g.title)}" aria-label="Title to search for"><button class="btn">${icon('search')}Search</button></form>
+      <div class="list" id="mm-r" style="margin-top:10px" aria-live="polite"></div>`,
+    foot: `${g.meta?.locked ? '<button class="btn ghost" id="mm-auto">Match automatically</button>' : ''}<button class="btn ghost" id="mm-none">It isn’t on IGDB</button><span class="grow"></span><button class="btn" data-close>Cancel</button>`,
+    onMount(el) {
+      const out = el.querySelector('#mm-r');
+      const search = async () => {
+        out.innerHTML = '<p class="small muted pulse">Searching IGDB…</p>';
+        try {
+          const r = await api(`/igdb/search?q=${encodeURIComponent(el.querySelector('#mm-q').value)}`);
+          out.innerHTML = r.length ? r.map((x) => `<div class="item"><div class="grow"><div class="ttl ellipsis">${esc(x.name)}</div><div class="sub">${x.year || 'year unknown'}${x.main ? '' : ' · DLC, bundle or other edition'}${x.id === g.meta?.igdb_id ? ' · matched now' : ''}</div></div><button class="btn sm" data-pick="${x.id}">Use this</button></div>`).join('') : '<p class="small muted">Nothing found: try another spelling.</p>';
+        } catch (e) { out.innerHTML = `<p class="small" style="color:var(--bad-ink)">${esc(e.message)}</p>`; }
+      };
+      const set = async (body, msg) => { try { await api(`/games/${g.id}/meta`, body); m.close(); toast(msg); rerender(); } catch (e) { fail(e); } };
+      el.querySelector('#mm-f').addEventListener('submit', (e) => { e.preventDefault(); search(); });
+      out.addEventListener('click', (e) => { const b = e.target.closest('[data-pick]'); if (b) set({ method: 'PUT', body: { igdb_id: Number(b.dataset.pick) } }, 'Matched'); });
+      el.querySelector('#mm-none').addEventListener('click', () => set({ method: 'PUT', body: { igdb_id: null } }, 'Marked as not on IGDB'));
+      el.querySelector('#mm-auto')?.addEventListener('click', () => set({ method: 'DELETE' }, 'It will be matched again shortly'));
       search();
     },
   });

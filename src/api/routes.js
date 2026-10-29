@@ -247,12 +247,15 @@ export function registerRoutes(r, app) {
     if (q.played === 'false') where.push('agg.minutes = 0');
     if (q.multi === 'true') where.push('agg.entry_count > 1');
     if (q.recent === 'true') where.push('rec.recent_minutes > 0');
-    // tag=genre:Shooter,theme:Horror - every one must match (IGDB metadata)
-    for (const t of String(q.tag || '').split(',').map((x) => x.trim()).filter(Boolean)) {
+    // tag=genre:Shooter|genre:Indie|mode:Co-operative (IGDB metadata; | apart, as names hold commas):
+    // any of the names of a kind, and every kind given
+    const byKind = new Map();
+    for (const t of String(q.tag || '').split('|').map((x) => x.trim()).filter(Boolean)) {
       const i = t.indexOf(':');
       if (i < 1 || !TAG_KIND_NAMES.includes(t.slice(0, i))) throw new HttpError(400, `tag must be kind:name, the kind one of ${TAG_KIND_NAMES.join(', ')}`);
-      where.push('g.id IN (SELECT game_id FROM game_tags WHERE kind = ? AND name = ?)'); args.push(t.slice(0, i), t.slice(i + 1));
+      byKind.set(t.slice(0, i), [...(byKind.get(t.slice(0, i)) || []), t.slice(i + 1)]);
     }
+    for (const [kind, list] of byKind) { where.push(`g.id IN (SELECT game_id FROM game_tags WHERE kind = ? AND name IN (${list.map(() => '?').join(',')}))`); args.push(kind, ...list); }
     const order = GAME_SORTS[q.sort] || GAME_SORTS[settings.get('default_library_sort')] || GAME_SORTS.recent;
     const limit = Math.min(5000, Math.max(1, toInt(q.limit, 100)));
     const offset = Math.max(0, toInt(q.offset, 0));
@@ -260,7 +263,7 @@ export function registerRoutes(r, app) {
     const totals = memo(db, `games-count:${JSON.stringify(args)}:${where.join('|')}`, () => db.prepare(`SELECT COUNT(*) n, COALESCE(SUM(minutes), 0) m, COALESCE(MAX(minutes), 0) mx FROM (${base})`).get(...args));
     const items = db.prepare(`${base} ORDER BY ${order} LIMIT ? OFFSET ?`).all(...args, limit, offset).map(gameRow);
     return { total: totals.n, total_minutes: totals.m, max_minutes: totals.mx, limit, offset, items };
-  }, { summary: 'List / search the library (paginated)', query: { q: 'search', platform: 'steam,xbox,psn,…', status: 'comma list', sort: 'recent|playtime|title|added|rating|trending|released (IGDB release date)', tag: 'kind:name[,kind:name] (IGDB metadata, e.g. genre:Shooter)', played: 'true|false', favorite: 'true', hidden: 'true|only', multi: 'true = only games with several entries', recent: 'true = played in the last 14 days', limit: 'max 5000 (default 100)', offset: '' } });
+  }, { summary: 'List / search the library (paginated)', query: { q: 'search', platform: 'steam,xbox,psn,…', status: 'comma list', sort: 'recent|playtime|title|added|rating|trending|released (IGDB release date)', tag: 'kind:name[|kind:name…] (IGDB metadata, e.g. genre:Shooter|genre:Indie): any name of a kind, every kind', played: 'true|false', favorite: 'true', hidden: 'true|only', multi: 'true = only games with several entries', recent: 'true = played in the last 14 days', limit: 'max 5000 (default 100)', offset: '' } });
 
   r.post('/api/v1/games', (c) => {
     const title = typeof c.body.title === 'string' ? c.body.title.trim() : '';
@@ -764,6 +767,12 @@ export function registerRoutes(r, app) {
     query: { kind: TAG_KIND_NAMES.join('|'), range: '7d|30d|90d|365d|year:2026|all (default 365d)', group: 'day|week|month|year', platform: '', estimates: 'include|exclude|only', limit: 'tags listed and charted (default 12)' },
     returns: '{ kind, range, estimates, coverage: { games, matched_games, minutes, matched_minutes, untagged_minutes }, tags (how many in the range), items: [{ name, minutes, estimated_minutes, games, sessions, finished, share }], keys, series: [{ name, values }] }',
   });
+  r.get('/api/v1/tags', (c) => {
+    const kind = c.query.kind;
+    if (kind && !TAG_KIND_NAMES.includes(kind)) throw new HttpError(400, `kind must be one of ${TAG_KIND_NAMES.join(', ')}`);
+    return memo(db, `tag-list:${kind || ''}`, () => db.prepare(`SELECT t.kind, t.name, COUNT(*) games FROM game_tags t JOIN games g ON g.id = t.game_id AND g.hidden = 0
+      ${kind ? 'WHERE t.kind = ?' : ''} GROUP BY t.kind, t.name ORDER BY t.kind, games DESC, t.name`).all(...(kind ? [kind] : [])));
+  }, { summary: 'The IGDB tags in the library with how many games have each (hidden games left out)', query: { kind: TAG_KIND_NAMES.join('|') }, returns: '[{ kind, name, games }]' });
   r.get('/api/v1/stats/pace', (c) => paceStats(db, { limit: clamp(c.query.limit, 10, 1, 50) }), {
     summary: 'Your hours against IGDB\'s typical time to beat, for games marked Completed or Beaten',
     returns: '{ games, median_ratio (your time / typical; null without data), items: [{ game_id, title, minutes, typical_minutes, basis: main|extra, complete_minutes, ratio }] }',

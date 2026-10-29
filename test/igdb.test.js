@@ -194,7 +194,11 @@ describe('IGDB metadata', () => {
     assert.equal(pace.items[0].ratio, Math.round((300 / (51 * 60)) * 100) / 100);
     const shooters = (await api('/games?tag=genre:Shooter')).body;
     assert.deepEqual(shooters.items.map((x) => x.id), [ids.wolf]);
-    assert.equal((await api('/games?tag=genre:Shooter,mode:Single%20player')).body.total, 1);
+    assert.equal((await api('/games?tag=genre:Shooter|mode:Single%20player')).body.total, 1);
+    assert.equal((await api('/games?tag=genre:Shooter|genre:Indie')).body.total, 2, 'any genre of the list');
+    assert.equal((await api('/games?tag=genre:Shooter|perspective:Third%20person')).body.total, 0, 'every kind');
+    const tags = (await api('/tags?kind=genre')).body;
+    assert.deepEqual(tags.find((x) => x.name === 'Shooter'), { kind: 'genre', name: 'Shooter', games: 1 });
     assert.equal((await api('/games?tag=bad')).status, 400);
     const released = (await api('/games?sort=released')).body.items.map((x) => x.id);
     assert.deepEqual(released, [ids.hades, ids.wolf, ids.witcher, ids.home], 'newest release first, games without a date last');
@@ -217,6 +221,14 @@ describe('IGDB metadata', () => {
     const found = (await api('/igdb/search?q=Hades')).body;
     assert.ok(found.some((x) => x.id === 113112 && x.year === 2020 && x.main));
     assert.ok(found.some((x) => x.id === 999001 && !x.main));
+  });
+
+  test('Finish something: a game without achievements, by how much of the main story is left', async () => {
+    app.db.prepare('UPDATE game_meta SET ttb_main = 600 WHERE game_id = ?').run(ids.wolf);
+    const r = (await api('/suggest?mode=finish&count=5')).body;
+    const w = r.picks.find((p) => p.game_id === ids.wolf) || r.alternates?.find?.((p) => p.game_id === ids.wolf);
+    assert.ok(w, `Wolfenstein is suggested: ${JSON.stringify(r.picks.map((p) => p.title))}`);
+    assert.ok(w.reasons.some((x) => x.id === 'time_to_beat' && x.text === 'About 9h left of a typical main story (10h)'), JSON.stringify(w.reasons));
   });
 
   test('merging keeps the metadata when the target has none', () => {

@@ -1103,3 +1103,11 @@ a.wcard:hover { border-color: color-mix(in srgb, var(--text) 25%, var(--line)); 
 .recap .kpis.k4.strip { margin-bottom: 0; }
 .recap-x { margin: 12px 0 0; }
 @media (max-width: 900px) { .recap-b { grid-template-columns: minmax(0, 1fr); gap: 12px; } }
+/* Game page: About (IGDB) */
+.kv { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 6px 14px; margin: 0; font-size: 13px; }
+.kv dt { color: var(--muted); }
+.kv dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+#g-about .chips a.chip { text-decoration: none; }
+.ttb .mrow { margin: 6px 0; }
+a.mrow.mlink { color: inherit; text-decoration: none; border-radius: 6px; }
+a.mrow.mlink:hover .ml, a.mrow.mlink:focus-visible .ml { color: var(--accent-ink); text-decoration: underline; }
