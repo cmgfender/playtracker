@@ -145,6 +145,7 @@ export async function sessions(view, stale) {
     if (f.game_id) p.set('game_id', f.game_id);
     if (f.period !== 'all') p.set('period', f.period);
     if (f.period === 'custom') { if (f.from) p.set('from', f.from); if (f.to) p.set('to', f.to); }
+    if (f.platform) p.set('platform', f.platform);
     history.replaceState({}, '', `/sessions${p.toString() ? `?${p}` : ''}`);
   };
   let t;
@@ -163,7 +164,7 @@ export async function sessions(view, stale) {
   for (const [id, k] of [['#s-from', 'from'], ['#s-to', 'to']]) $(id).addEventListener('change', (e) => { f[k] = e.target.value; syncUrl(); load(); });
   $('#s-chips').addEventListener('click', (e) => {
     const c = e.target.closest('.chip'); if (!c) return;
-    if ('p' in c.dataset) { f.platform = c.dataset.p; $$('[data-p]', view).forEach((x) => x.classList.toggle('on', x === c)); }
+    if ('p' in c.dataset) { f.platform = c.dataset.p; $$('[data-p]', view).forEach((x) => x.classList.toggle('on', x === c)); syncUrl(); }
     if (c.dataset.src) { f.source = f.source === c.dataset.src ? '' : c.dataset.src; $$('[data-src]', view).forEach((x) => x.classList.toggle('on', x.dataset.src === f.source)); }
     if (c.dataset.kind) { f.kind = f.kind === 'baseline' ? 'play' : 'baseline'; c.classList.toggle('on', f.kind === 'baseline'); }
     load();

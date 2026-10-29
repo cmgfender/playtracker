@@ -118,11 +118,13 @@ export class WeeklySummary {
     if (!week || now < this.retryAt || this.busy) return false;
     // never sent before (just updated, or just turned on) and well past the slot: start with next week's
     if (s.weekly_summary_sent == null && now - slotTime(s, now) > 3600_000) { this.settings.set({ weekly_summary_sent: week }); return false; }
+    // one a week, even when the week now starts on another day (a changed week start names another week)
+    if (s.weekly_summary_sent_at && now - s.weekly_summary_sent_at < 6 * DAY) { this.settings.set({ weekly_summary_sent: week }); return false; }
     this.busy = true;
     try {
       const summary = weeklySummary(this.db, { weeksAgo: 1, weekStartsOn: s.week_starts_on ?? 1, now });
       await this.send(s.webhook_url, summary, summaryText(summary));
-      this.settings.set({ weekly_summary_sent: week });
+      this.settings.set({ weekly_summary_sent: week, weekly_summary_sent_at: now });
       this.failures = 0;
       this.log?.info(`Weekly summary sent for the week of ${week}`);
       return true;

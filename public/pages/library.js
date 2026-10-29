@@ -1,4 +1,4 @@
-import { $, $$, esc, fmtMin, fmtHours, ago, plat, platDot, STATUSES, cover, icon, api, fail, modal, navigate, state } from '../app.js';
+import { $, $$, esc, fmtMin, fmtHours, ago, plat, platDot, STATUSES, cover, icon, api, fail, modal, navigate, state, tagItem, splitTags } from '../app.js';
 import { emptyState, saveSettings } from './shared.js';
 
 // =====================================================================
@@ -11,7 +11,7 @@ function libState() {
   return {
     q: q.get('q') || '', platform: list('platform'), status: list('status'),
     // IGDB tags, kind:name, | apart (names hold commas)
-    tag: (q.get('tag') || '').split('|').map((x) => x.trim()).filter(Boolean),
+    tag: splitTags(q.get('tag')).map((t) => { const i = t.indexOf(':'); return i > 0 ? tagItem(t.slice(0, i), t.slice(i + 1)) : t; }),
     // one account at a time: GET /games takes a single account_id
     account: q.get('account_id') || '',
     sort: q.get('sort') || state.settings?.default_library_sort || 'recent', // the URL keeps any other sort
@@ -73,7 +73,7 @@ export async function library(view, stale) {
     if (st.q) p.set('q', st.q);
     if (st.platform.length) p.set('platform', st.platform.join(','));
     if (st.status.length) p.set('status', st.status.join(','));
-    if (st.tag.length) p.set('tag', st.tag.join('|'));
+    if (st.tag.length) p.set('tag', st.tag.join('|')); // items already escaped (tagItem)
     if (st.account) p.set('account_id', st.account);
     for (const [k] of LIB_FLAGS) if (st[k]) p.set(k, 'true');
     if (st.hidden) p.set('hidden', st.hidden);
@@ -149,7 +149,7 @@ export async function library(view, stale) {
     }
     if (kind === 'tag') {
       // a kind's names: any of them; several kinds: all of them (as GET /games reads tag=)
-      return TAG_MENU.filter(([k]) => tagList(k).length).map(([k, l]) => `<fieldset><legend>${l}</legend>${tagList(k).slice(0, k === 'theme' ? 12 : 30).map((t) => check('tag', `${k}:${t.name}`, st.tag.includes(`${k}:${t.name}`), esc(t.name), `<span class="tiny muted">${t.games}</span>`)).join('')}</fieldset>`).join('')
+      return TAG_MENU.filter(([k]) => tagList(k).length).map(([k, l]) => `<fieldset><legend>${l}</legend>${tagList(k).slice(0, k === 'theme' ? 12 : 30).map((t) => check('tag', tagItem(k, t.name), st.tag.includes(tagItem(k, t.name)), esc(t.name), `<span class="tiny muted">${t.games}</span>`)).join('')}</fieldset>`).join('')
         || '<p class="small muted">No genres yet: IGDB is still matching your games.</p>';
     }
     if (kind === 'status') return `<fieldset><legend>Status</legend>${Object.entries(STATUSES).map(([k, v]) => check('status', k, st.status.includes(k), esc(v.label), `<span class="tiny muted">${statusCount(k)}</span>`)).join('')}</fieldset>`;

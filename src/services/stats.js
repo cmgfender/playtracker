@@ -17,6 +17,13 @@ export function dayKey(t) {
 /** A YYYY-MM-DD local day -> its local noon (safe from DST shifts when stepping by days). */
 export const parseDay = (k) => new Date(`${k}T12:00:00`).getTime();
 
+/** `t` moved by whole calendar days, same wall-clock time (a DST change makes some days 23 or 25 hours). */
+export function addDays(t, n) {
+  const d = new Date(t);
+  d.setDate(d.getDate() + n);
+  return d.getTime();
+}
+
 export function startOfDay(t) {
   const d = new Date(t);
   d.setHours(0, 0, 0, 0);
@@ -94,7 +101,7 @@ export function resolveRange(range, now = Date.now(), weekStartsOn = 1) {
   if ((m = /^(\d+)d$/.exec(r))) {
     // capped at 100 years: the empty series walks every day of the range
     const n = Math.min(Number(m[1]), 36500);
-    return { from: startOfDay(now - (n - 1) * DAY), to: now, label: `Last ${n} days` };
+    return { from: startOfDay(addDays(now, -(n - 1))), to: now, label: `Last ${n} days` };
   }
   if ((m = /^year:(\d{4})$/.exec(r))) {
     const y = Number(m[1]);
@@ -362,8 +369,8 @@ export function previousPeriod(range, now = Date.now()) {
   const r = String(range || '30d');
   let m;
   const monthsBack = (t, n) => { const d = new Date(t); const day = d.getDate(); d.setDate(1); d.setMonth(d.getMonth() - n); d.setDate(Math.min(day, new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate())); return d.getTime(); };
-  if ((m = /^(\d+)d$/.exec(r))) return { range: r, now: now - Math.min(Number(m[1]), 36500) * DAY };
-  if (r === 'week') return { range: r, now: now - 7 * DAY };
+  if ((m = /^(\d+)d$/.exec(r))) return { range: r, now: addDays(now, -Math.min(Number(m[1]), 36500)) };
+  if (r === 'week') return { range: r, now: addDays(now, -7) };
   if (r === 'month') return { range: r, now: monthsBack(now, 1) };
   if (r === 'year') return { range: r, now: monthsBack(now, 12) };
   if ((m = /^year:(\d{4})$/.exec(r))) return { range: `year:${Number(m[1]) - 1}`, now: monthsBack(now, 12) };
@@ -405,7 +412,8 @@ export function periodHighlights(db, { range = '30d', platform = null, gameId = 
     const fromDay = dayKey(from); const toDay = dayKey(to);
     const pf = platform ? 'AND e.platform = ?' : '';
     const gf = gameId ? 'AND e.game_id = ?' : '';
-    const pargs = [platform, gameId].filter((x) => x != null && x !== '');
+    // the same values the SQL fragments below are added for (truthy ones)
+    const pargs = [platform || null, gameId || null].filter(Boolean);
     // a game is new when its first play day anywhere falls in the range (on this platform, when filtered)
     const fresh = db.prepare(`SELECT g.id game_id, g.title, g.cover_url, MIN(p.day) first FROM play_days p JOIN games g ON g.id = p.game_id
       WHERE p.excluded = 0 ${platform ? 'AND p.platform = ?' : ''} ${gameId ? 'AND p.game_id = ?' : ''} GROUP BY p.game_id HAVING first >= ? AND first <= ? ORDER BY first DESC`).all(...pargs, fromDay, toDay);

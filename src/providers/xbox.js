@@ -204,6 +204,11 @@ export const xbox = {
     const deferredIds = [];
     let missing = 0;
     const zeroChecked = { ...(account.state.zero_checked || {}) };
+    const statFailures = { ...(account.state.stat_failures || {}) };
+    // titles whose MinutesPlayed was read within an hour of their last play: the stat can still
+    // lag then, so it is read once more on a later sync (otherwise the late minutes would only
+    // arrive with the next play, on that day)
+    const readSoon = Object.fromEntries(Object.entries(account.state.read_soon || {}).filter(([, t]) => t > Date.now() - 7 * 86_400_000));
     // when each deferred title was first deferred: null = during the first import (its playtime
     // is history), else the sync before the deferral (its new play is counted from there)
     const deferredSince = Object.fromEntries((account.state.deferred_titles || []).map((id) => [id, account.state.deferred_since?.[id] ?? null]));
@@ -240,7 +245,8 @@ export const xbox = {
       // unchanged since last time: reuse the stored minutes (titles stuck at 0 are rechecked
       // weekly, or on the next sync when the 0 was read right after a session: the stat lags it)
       const zeroLag = zeroChecked[extId] && lastPlayedAt && zeroChecked[extId] - lastPlayedAt < 3_600_000;
-      if (existing && !changed && !(!existing.playtime_min && (recheckDue || zeroLag))) {
+      const lagged = readSoon[extId] && lastPlayedAt && readSoon[extId] - lastPlayedAt < 3_600_000;
+      if (existing && !changed && !lagged && !(!existing.playtime_min && (recheckDue || zeroLag))) {
         items.push({ ...base, playtimeMin: existing.playtime_min });
         continue;
       }
@@ -255,10 +261,18 @@ export const xbox = {
       } catch (err) {
         if (err.auth) throw err;
         if (err.rateLimited) { deferredIds.push(extId); budget = 0; continue; }
-        // a server or network error says nothing about the title: ask again next sync
-        if (!err.status || err.status >= 500) { deferredIds.push(extId); continue; }
+        // a server or network error says nothing about the title: ask again next sync - three
+        // times; a title that keeps failing then keeps its stored minutes, so it neither holds
+        // the account in back-fill syncs nor stops removed titles from being noticed
+        if (!err.status || err.status >= 500) {
+          statFailures[extId] = (statFailures[extId] || 0) + 1;
+          if (statFailures[extId] < 3) { deferredIds.push(extId); continue; }
+          if (existing) items.push({ ...base, playtimeMin: existing.playtime_min });
+          continue;
+        }
         failure = err.message;
       }
+      if (!failure) delete statFailures[extId];
       if (minutes == null) {
         missing++;
         zeroChecked[extId] = Date.now();
@@ -270,6 +284,7 @@ export const xbox = {
       } else {
         if (minutes === 0) zeroChecked[extId] = Date.now(); else delete zeroChecked[extId];
         delete unmetered[extId];
+        if (lastPlayedAt && Date.now() - lastPlayedAt < 3_600_000) readSoon[extId] = Date.now(); else delete readSoon[extId];
       }
       // a title first seen after being deferred during the first import is history, not new play;
       // one deferred on a later sync is judged from the sync before the deferral
@@ -289,6 +304,8 @@ export const xbox = {
     state.deferred_titles = deferredIds.slice(0, 5000);
     state.deferred_since = Object.fromEntries(state.deferred_titles.map((id) => [id, id in deferredSince ? deferredSince[id] : (account.last_sync_at ?? null)]));
     state.zero_checked = zeroChecked;
+    state.read_soon = readSoon;
+    state.stat_failures = statFailures;
     state.unmetered = unmetered;
     if (samples.length) state.missing_minutes_samples = samples;
     const deferred = deferredIds.length;

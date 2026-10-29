@@ -69,6 +69,9 @@ export function mergeGames(db, targetId, sourceIds) {
   for (const m of manuals) {
     const k = keep[m.excluded];
     if (!k) { keep[m.excluded] = m; continue; }
+    // an entry with history keeps it apart: its dated history is rebuilt from its own baseline and
+    // evidence, which folding would leave behind (the next re-dating would drop those minutes)
+    if (k.baseline_min > 0 || m.baseline_min > 0) continue;
     db.prepare('UPDATE sessions SET entry_id = ? WHERE entry_id = ?').run(k.id, m.id);
     db.prepare('UPDATE entries SET playtime_min = playtime_min + ? WHERE id = ?').run(m.playtime_min, k.id);
     db.prepare('DELETE FROM entries WHERE id = ?').run(m.id);

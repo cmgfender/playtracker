@@ -1,4 +1,4 @@
-import { $, $$, esc, fmtMin, fmtHours, fmtDate, plat, cover, icon, api, state, plural } from '../app.js';
+import { $, $$, esc, fmtMin, fmtHours, fmtDate, plat, cover, icon, api, state, plural, a11y, tagHref } from '../app.js';
 import { barChart, sparkline, donut, heatmap, topList, platformLegend, mountCharts, dayName } from '../charts.js';
 import { WD, hourLabel, stackedSeries, estimatedLegend, kpi, hoursVal, emptyState, logSessionModal, dayKey, D, rarityText } from './shared.js';
 
@@ -48,7 +48,8 @@ export async function stats(view, stale) {
   let range = q.get('range') || '30d';
   let platform = q.get('platform') || '';
   let estimates = q.get('estimates') || state.settings?.stats_estimates || 'include';
-  const [years, lt] = await Promise.all([api('/stats/years'), api('/stats/lifetime')]);
+  // offline (or a failing years call): the current year still gives the page its controls
+  const [years, lt] = await Promise.all([api('/stats/years').catch(() => [new Date().getFullYear()]), api('/stats/lifetime')]);
   if (stale()) return;
   let heatYear = /^year:\d{4}$/.test(range) && years.includes(Number(range.slice(5))) ? Number(range.slice(5)) : years[0];
   let weekdayMode = 'avg';
@@ -73,12 +74,23 @@ export async function stats(view, stale) {
     <div id="st-body"></div>
     <div class="card" style="margin-top:16px"><div class="card-h"><h2>Activity</h2><div class="seg" id="hm-year" aria-label="Activity year">${years.map((y) => `<button data-y="${y}" class="${y === heatYear ? 'on' : ''}">${y}</button>`).join('')}</div></div><div id="hm"></div></div>`;
   const body = $('#st-body');
+  // the latest choice wins: an answer for an earlier range that arrives late is dropped
+  let loadSeq = 0; let heatSeq = 0;
   const load = async () => {
+    const my = ++loadSeq;
     const p = new URLSearchParams({ range, estimates });
     if (platform) p.set('platform', platform);
     history.replaceState({}, '', `/stats?${p}`);
-    const [s, tags] = await Promise.all([api(`/stats?${p}&compare=true&highlights=true`), api(`/stats/tags?${p}&kind=genre&limit=8`).catch(() => null)]);
-    if (stale()) return;
+    let s; let tags;
+    try {
+      [s, tags] = await Promise.all([api(`/stats?${p}&compare=true&highlights=true`), api(`/stats/tags?${p}&kind=genre&limit=8`).catch(() => null)]);
+    } catch (e) {
+      if (my !== loadSeq || stale()) return;
+      body.innerHTML = `<div class="card">${emptyState('stats', 'Stats did not load', esc(e.message), '<button class="btn" data-st-retry>Try again</button>')}</div>`;
+      body.querySelector('[data-st-retry]').addEventListener('click', () => load());
+      return;
+    }
+    if (my !== loadSeq || stale()) return;
     const pv = s.previous;
     const hasHours = s.hours.some((h) => h > 0);
     if (!s.total_minutes) {
@@ -101,7 +113,7 @@ export async function stats(view, stale) {
         <div class="card"><div class="card-h"><h2>Top games</h2></div>${s.top_games.length ? topList(s.top_games, { coverFn: (g) => cover(g), limit: 10 }) : '<p class="muted">No play in this range.</p>'}</div>
         <div class="stack"><div class="card"><div class="card-h"><h2>Platforms</h2></div>
           ${s.platforms.length ? `<div class="donut-wrap">${donut(s.platforms.map((p) => ({ label: plat(p.platform).label, value: p.minutes, color: plat(p.platform).color })), { label: `${fmtHours(s.total_minutes)}h`, sub: 'played', title: 'Playtime by platform' })}
-          <div class="col" style="gap:4px;min-width:0">${s.platforms.map((p) => `<button type="button" class="row small plat-pick${platform === p.platform ? ' on' : ''}" data-st-plat="${platform === p.platform ? '' : esc(p.platform)}" aria-pressed="${platform === p.platform}" title="${platform === p.platform ? 'Show all platforms' : `Only ${esc(plat(p.platform).label)}`}"><span class="dot" style="background:${plat(p.platform).color}"></span><span class="grow ellipsis">${esc(plat(p.platform).label)}</span><b>${Math.round((p.minutes / Math.max(1, s.total_minutes)) * 100)}%</b></button>`).join('')}</div></div>` : '<p class="muted">—</p>'}
+          <div class="col" style="gap:4px;min-width:0">${s.platforms.map((p) => `<button type="button" class="row small st-plat${platform === p.platform ? ' on' : ''}" data-st-plat="${platform === p.platform ? '' : esc(p.platform)}" aria-pressed="${platform === p.platform}" title="${platform === p.platform ? 'Show all platforms' : `Only ${esc(plat(p.platform).label)}`}"><span class="dot" style="background:${plat(p.platform).color}"></span><span class="grow ellipsis">${esc(plat(p.platform).label)}</span><b>${Math.round((p.minutes / Math.max(1, s.total_minutes)) * 100)}%</b></button>`).join('')}</div></div>` : '<p class="muted">—</p>'}
           ${s.longest_session ? `<div style="margin-top:18px" class="small muted">Longest session</div><a href="/game/${s.longest_session.game_id}" data-link><b>${fmtMin(s.longest_session.minutes)}</b> · ${esc(s.longest_session.title)}</a>` : ''}
         </div>${genreCard(tags)}</div>
         <div class="card"><div class="card-h"><h2>By weekday</h2><div class="seg compact" id="st-wd" aria-label="Weekday values"><button data-wd="avg" class="${weekdayMode === 'avg' ? 'on' : ''}" title="Average per day: a weekday's play divided by how many of that weekday the range has">Avg</button><button data-wd="total" class="${weekdayMode === 'total' ? 'on' : ''}">Total</button></div></div>
@@ -110,12 +122,14 @@ export async function stats(view, stale) {
         </div>
       </div>`;
     mountCharts(body);
+    a11y(body); // the redrawn toggles get their roles and keys again
     body.querySelector('#st-wd')?.addEventListener('click', (e) => {
       const b = e.target.closest('[data-wd]');
       if (!b) return;
       weekdayMode = b.dataset.wd;
       $$('#st-wd button').forEach((x) => x.classList.toggle('on', x === b));
       $('#st-wdrows').innerHTML = weekdayRows(s);
+      a11y($('#st-wd'));
     });
     body.querySelectorAll('[data-st-plat]').forEach((b) => b.addEventListener('click', () => { platform = b.dataset.stPlat; $('#st-plat').value = platform; load(); }));
   };
@@ -129,7 +143,10 @@ export async function stats(view, stale) {
     return order.map((d) => `<div class="row small" style="margin:7px 0" title="${WD[d]}: ${fmtMin(s.weekday[d])} over ${plural(count[d], dayName(d, 'long'))}"><span style="width:34px" class="muted">${WD[d]}</span><div class="grow" style="height:8px;border-radius:9px;background:var(--bg2);overflow:hidden"><i style="display:block;height:100%;width:${(vals[d] / max) * 100}%;background:var(--accent2);border-radius:9px"></i></div><span style="width:62px;text-align:right" class="nowrap">${fmtMin(Math.round(vals[d]), { short: weekdayMode === 'total' })}</span></div>`).join('');
   }
   const loadHeat = async () => {
-    const h = await api(`/stats/heatmap?year=${heatYear}&estimates=${estimates}`);
+    const my = ++heatSeq;
+    const h = await api(`/stats/heatmap?year=${heatYear}&estimates=${estimates}`).catch(() => null);
+    if (my !== heatSeq || stale() || !$('#hm')) return;
+    if (!h) { $('#hm').innerHTML = '<p class="small muted">The activity heatmap did not load.</p>'; return; }
     $('#hm').innerHTML = heatmap(heatYear, h.days, { weekStartsOn: state.settings?.week_starts_on ?? 1, estimated: h.estimated_days || {} });
     mountCharts($('#hm'));
   };
@@ -168,6 +185,6 @@ function genreCard(t) {
   if (!t?.items?.length) return '';
   const max = t.items[0].minutes;
   return `<div class="card"><div class="card-h"><h2>Genres</h2><a href="/insights#ins-genres" data-link class="tiny">More</a></div>
-    ${t.items.map((x) => `<a class="mrow mlink" href="/library?tag=${encodeURIComponent(`genre:${x.name}`)}" data-link><span class="ml">${esc(x.name)}</span><span class="mbar"><i style="width:${(x.minutes / max) * 100}%;background:var(--accent2)"></i></span><span class="mv">${fmtMin(x.minutes, { short: true })}</span></a>`).join('')}
+    ${t.items.map((x) => `<a class="mrow mlink" href="${tagHref('genre', x.name)}" data-link><span class="ml">${esc(x.name)}</span><span class="mbar"><i style="width:${(x.minutes / max) * 100}%;background:var(--accent2)"></i></span><span class="mv">${fmtMin(x.minutes, { short: true })}</span></a>`).join('')}
     <p class="tiny muted" style="margin:8px 0 0">A game counts in each of its genres · ${t.coverage.matched_games} of ${plural(t.coverage.games, 'game')} have genres.</p></div>`;
 }

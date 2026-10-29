@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import { pipeline } from 'node:stream';
 import os from 'node:os';
 import path from 'node:path';
 import { tx } from '../db.js';
@@ -99,7 +100,7 @@ function gameRow(g) {
 // per-day rollup, never from scanning sessions, so it stays fast for huge libraries.
 const RECENT_DAYS = 14;
 function recentFromDay() {
-  const d = new Date(Date.now() - (RECENT_DAYS - 1) * 86_400_000);
+  const d = new Date(); d.setDate(d.getDate() - (RECENT_DAYS - 1)); // calendar days (DST-safe)
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 const GAME_LIST = `WITH agg AS (
@@ -134,6 +135,18 @@ function sessionRow(s) {
 
 const SESSION_SELECT = `SELECT s.*, e.game_id, e.platform, e.account_id, a.name account_name, g.title, g.cover_url
   FROM sessions s JOIN entries e ON e.id = s.entry_id JOIN games g ON g.id = e.game_id LEFT JOIN accounts a ON a.id = e.account_id`;
+
+/** tag=a|b: the items, with "\\|" and "\\\\" inside a name standing for | and \\ (names are free text). */
+function splitTags(v) {
+  const out = []; let cur = '';
+  const s = String(v || '');
+  for (let i = 0; i < s.length; i++) {
+    if (s[i] === '\\' && i + 1 < s.length) cur += s[++i];
+    else if (s[i] === '|') { out.push(cur); cur = ''; } else cur += s[i];
+  }
+  out.push(cur);
+  return out.map((x) => x.trim()).filter(Boolean);
+}
 
 // strict booleans (as in settings and imports): "false" or "0" must never read as true
 const flag = (v) => (v === true || v === 'true' || v === 1 || v === '1' ? 1 : 0);
@@ -251,7 +264,7 @@ export function registerRoutes(r, app) {
     // tag=genre:Shooter|genre:Indie|mode:Co-operative (IGDB metadata; | apart, as names hold commas):
     // any of the names of a kind, and every kind given
     const byKind = new Map();
-    for (const t of String(q.tag || '').split('|').map((x) => x.trim()).filter(Boolean)) {
+    for (const t of splitTags(q.tag)) {
       const i = t.indexOf(':');
       if (i < 1 || !TAG_KIND_NAMES.includes(t.slice(0, i))) throw new HttpError(400, `tag must be kind:name, the kind one of ${TAG_KIND_NAMES.join(', ')}`);
       byKind.set(t.slice(0, i), [...(byKind.get(t.slice(0, i)) || []), t.slice(i + 1)]);
@@ -259,12 +272,12 @@ export function registerRoutes(r, app) {
     for (const [kind, list] of byKind) { where.push(`g.id IN (SELECT game_id FROM game_tags WHERE kind = ? AND name IN (${list.map(() => '?').join(',')}))`); args.push(kind, ...list); }
     const order = GAME_SORTS[q.sort] || GAME_SORTS[settings.get('default_library_sort')] || GAME_SORTS.recent;
     const limit = Math.min(5000, Math.max(1, toInt(q.limit, 100)));
-    const offset = Math.max(0, toInt(q.offset, 0));
+    const offset = clamp(q.offset, 0, 0, 1e9);
     const base = `${GAME_LIST} ${where.length ? `WHERE ${where.join(' AND ')}` : ''}`;
     const totals = memo(db, `games-count:${JSON.stringify(args)}:${where.join('|')}`, () => db.prepare(`SELECT COUNT(*) n, COALESCE(SUM(minutes), 0) m, COALESCE(MAX(minutes), 0) mx FROM (${base})`).get(...args));
     const items = memo(db, `games:${JSON.stringify(args)}:${where.join('|')}:${order}:${limit}:${offset}`, () => db.prepare(`${base} ORDER BY ${order} LIMIT ? OFFSET ?`).all(...args, limit, offset).map(gameRow));
     return { total: totals.n, total_minutes: totals.m, max_minutes: totals.mx, limit, offset, items };
-  }, { summary: 'List / search the library (paginated)', query: { q: 'search', platform: 'steam,xbox,psn,…', status: 'comma list', sort: 'recent|playtime|title|added|rating|trending|released (IGDB release date)', tag: 'kind:name[|kind:name…] (IGDB metadata, e.g. genre:Shooter|genre:Indie): any name of a kind, every kind', played: 'true|false', favorite: 'true', hidden: 'true|only', multi: 'true = only games with several entries', recent: 'true = played in the last 14 days', limit: 'max 5000 (default 100)', offset: '' } });
+  }, { summary: 'List / search the library (paginated)', query: { q: 'search', platform: 'steam,xbox,psn,…', status: 'comma list', sort: 'recent|playtime|title|added|rating|trending|released (IGDB release date)', tag: 'kind:name[|kind:name…] (IGDB metadata, e.g. genre:Shooter|genre:Indie; a | or \\ inside a name is written \\| or \\\\): any name of a kind, every kind', played: 'true|false', favorite: 'true', hidden: 'true|only', multi: 'true = only games with several entries', recent: 'true = played in the last 14 days', limit: 'max 5000 (default 100)', offset: '' } });
 
   r.post('/api/v1/games', (c) => {
     const title = typeof c.body.title === 'string' ? c.body.title.trim() : '';
@@ -483,7 +496,7 @@ export function registerRoutes(r, app) {
     if (q.q) { where.push("s.entry_id IN (SELECT e2.id FROM entries e2 JOIN games g2 ON g2.id = e2.game_id WHERE g2.title LIKE ? ESCAPE '\\')"); args.push(likeText(q.q)); }
     const w = where.length ? `WHERE ${where.join(' AND ')}` : '';
     const limit = Math.min(1000, Math.max(1, toInt(q.limit, 100)));
-    const offset = Math.max(0, toInt(q.offset, 0));
+    const offset = clamp(q.offset, 0, 0, 1e9);
     const total = memo(db, `sess-count:${w}:${JSON.stringify(args)}`, () => db.prepare(`SELECT COUNT(*) n, COALESCE(SUM(s.minutes),0) m FROM sessions s ${w}`).get(...args));
     // Keyset pagination: pass back `next` as ?before= to page deep into huge histories cheaply.
     const pw = [...where]; const pargs = [...args];
@@ -776,6 +789,7 @@ export function registerRoutes(r, app) {
   }, { summary: 'The IGDB tags in the library with how many games have each (hidden games left out)', query: { kind: TAG_KIND_NAMES.join('|') }, returns: '[{ kind, name, games }]' });
   r.get('/api/v1/stats/pace', (c) => paceStats(db, { limit: clamp(c.query.limit, 10, 1, 50) }), {
     summary: 'Your hours against IGDB\'s typical time to beat, for games marked Completed or Beaten',
+    query: { limit: 'games listed (default 10)' },
     returns: '{ games, median_ratio (your time / typical; null without data), items: [{ game_id, title, minutes, typical_minutes, basis: main|extra, complete_minutes, ratio }] }',
   });
 
@@ -1042,14 +1056,14 @@ export function registerRoutes(r, app) {
   r.post('/api/v1/accounts/:id/licenses', (c) => {
     const a = sync.account(toInt(c.params.id));
     if (!a) throw new HttpError(404, 'Account not found');
-    const text = typeof c.body === 'string' ? c.body : c.body.text;
+    const text = c.rawType === 'csv' ? c.rawBody : c.body.text;
     if (!text || typeof text !== 'string') throw new HttpError(400, 'Send { text } with the table copied from store.steampowered.com/account/licenses');
     return preview(c, () => {
       const res = applyLicenses(db, a.id, text, { settings: settings.all() });
       relearnStyle(db, { settings: settings.all() });
       return res;
     });
-  }, { query: { dry_run: 'true = preview only' }, summary: 'Paste Steam\'s licenses page (date added per product) to bound pre-tracking history', body: '{ text }', bigBody: true });
+  }, { query: { dry_run: 'true = preview only' }, summary: 'Paste Steam\'s licenses page (date added per product) to bound pre-tracking history', body: '{ text } (or the table itself as text/plain)', bodyType: ['text/plain'], bigBody: true });
 
   r.get('/api/v1/now-playing', () => sync.nowPlaying(), { summary: 'Games currently being played (from presence)' });
 
@@ -1098,7 +1112,7 @@ export function registerRoutes(r, app) {
   // ---------- import / export / backup ----------
   r.post('/api/v1/import', (c) => {
     let rows;
-    if (typeof c.body === 'string' || c.rawType === 'csv') rows = parseCsv(c.rawBody);
+    if (c.rawType === 'csv') rows = parseCsv(c.rawBody);
     else if (Array.isArray(c.body)) rows = c.body;
     else if (Array.isArray(c.body.games)) rows = c.body.games;
     else if (typeof c.body.csv === 'string') rows = parseCsv(c.body.csv);
@@ -1108,14 +1122,14 @@ export function registerRoutes(r, app) {
       res.style_relearned = relearnStyle(db, { settings: settings.all(), log: app.log?.scoped?.('inference') });
       return res;
     });
-  }, { query: { dry_run: 'true = report what would happen without changing anything' }, summary: 'Import games/history (CSV or JSON). Joins what is here: synced games keep their platform totals and gain dates / exact past sessions; manual and imported games are updated; empty details are filled, never overwritten.', body: 'CSV text or { games: [{ title, platform?, playtime_minutes|playtime_hours, last_played?, status?, rating?, notes?, sessions?: [{ date|started_at, minutes }] }] }', bigBody: true });
+  }, { query: { dry_run: 'true = report what would happen without changing anything' }, summary: 'Import games/history (CSV or JSON). Joins what is here: synced games keep their platform totals and gain dates / exact past sessions; manual and imported games are updated; empty details are filled, never overwritten.', body: 'CSV text or { games: [{ title, platform?, playtime_minutes|playtime_hours, last_played?, status?, rating?, notes?, sessions?: [{ date|started_at, minutes }] }] }', bodyType: ['text/csv'], bigBody: true });
 
   r.post('/api/v1/import/gametrack', (c) => {
     const buf = c.rawBuffer;
     if (!isZip(buf)) throw new HttpError(400, 'Upload the GameTrack export .zip (Settings → Export in GameTrack)');
     const tables = gameTrackTables(readZip(buf));
     return preview(c, () => importGameTrack(db, tables, { settings: settings.all() }));
-  }, { query: { dry_run: 'true = preview only' }, summary: 'Import a GameTrack export ZIP: unlock times date synced history, untracked hours become history, statuses/ratings/covers fill gaps', body: 'the .zip file (Content-Type: application/zip)', bigBody: true, binary: true });
+  }, { query: { dry_run: 'true = preview only' }, summary: 'Import a GameTrack export ZIP: unlock times date synced history, untracked hours become history, statuses/ratings/covers fill gaps', body: 'the .zip file (Content-Type: application/zip)', bodyType: ['application/zip'], bigBody: true, binary: true });
 
   r.get('/api/v1/export', async (c) => {
     const csv = c.query.format === 'csv';
@@ -1145,11 +1159,15 @@ export function registerRoutes(r, app) {
     // a read-only connection of its own: SQLite refuses VACUUM while a statement is running on the
     // app's connection (an export still downloading); either way it copies one consistent snapshot.
     // Made in a worker thread and streamed from disk: the server neither waits nor holds the copy in memory.
-    const bytes = await snapshotAsync({ db, dbFile: app.dbFile, dest: tmp });
+    // the copy is removed however the download ends, even when it is cancelled while being made
     const drop = () => fs.unlink(tmp, () => {});
+    let gone = false;
+    c.res.on('close', () => { gone = true; });
+    let bytes;
+    try { bytes = await snapshotAsync({ db, dbFile: app.dbFile, dest: tmp }); } catch (err) { drop(); throw err; }
+    if (gone || c.res.destroyed) { drop(); return undefined; }
     c.stream(200, 'application/vnd.sqlite3', { 'Content-Disposition': `attachment; filename="vestigo-${new Date().toISOString().slice(0, 10)}.db"`, 'Content-Length': bytes });
-    c.res.on('close', drop);
-    fs.createReadStream(tmp).on('error', () => c.res.destroy()).pipe(c.res);
+    pipeline(fs.createReadStream(tmp), c.res, drop);
     return undefined;
   }, { summary: 'Download a consistent SQLite backup' });
 
@@ -1182,8 +1200,8 @@ export function registerRoutes(r, app) {
 
   // ---------- weekly summary ----------
   r.get('/api/v1/summary/week', (c) => {
-    const weeksAgo = c.query.weeks_ago == null ? 1 : toInt(c.query.weeks_ago);
-    if (!(weeksAgo >= 0 && weeksAgo <= 520)) throw new HttpError(400, 'weeks_ago must be 0..520');
+    const weeksAgo = c.query.weeks_ago == null || c.query.weeks_ago === '' ? 1 : toInt(c.query.weeks_ago);
+    if (!Number.isInteger(weeksAgo) || weeksAgo < 0 || weeksAgo > 520) throw new HttpError(400, 'weeks_ago must be 0..520');
     const s = weeklySummary(db, { weeksAgo, weekStartsOn: settings.get('week_starts_on') });
     return { ...s, text: summaryText(s) };
   }, {
