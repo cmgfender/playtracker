@@ -400,11 +400,14 @@ function migrate(db) {
   }
 }
 
+/** Inside a transaction? (db.isTransaction from Node 22.16; tx()'s own depth before that) */
+export const inTx = (db) => db.isTransaction ?? (db._inTx > 0);
+
 export function tx(db, fn) {
   // nested: join the outer transaction (it commits or rolls back everything)
-  if (db.isTransaction) return fn();
+  if (inTx(db)) return fn();
   db.exec('BEGIN IMMEDIATE');
-  db._inTx = true;
+  db._inTx = 1;
   try {
     const out = fn();
     db.exec('COMMIT');
@@ -413,6 +416,6 @@ export function tx(db, fn) {
     db.exec('ROLLBACK');
     throw err;
   } finally {
-    db._inTx = false;
+    db._inTx = 0;
   }
 }

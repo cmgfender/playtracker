@@ -349,9 +349,10 @@ export function importGameTrack(db, tables, { settings = null, now = Date.now() 
     for (const w of achWork) if (!w.entryId) w.entryId = importedEntry.get(w.platform, `import:gametrack:${w.norm}`)?.id ?? null;
     mergeAchievements(db, achWork, res, now);
     // set details on games created by the import
+    const importedTitles = new Set(rows.map((r) => normalizeTitle(r.title)));
     for (const g of tables.games) {
       const norm = normalizeTitle(String(g.title || ''));
-      if (!rows.some((r) => normalizeTitle(r.title) === norm)) continue;
+      if (!importedTitles.has(norm)) continue;
       const id = db.prepare('SELECT game_id FROM entries WHERE account_id IS NULL AND ext_id = ?').get(`import:gametrack:${norm}`)?.game_id;
       if (!id) continue;
       const status = STATUS.find(([re]) => re.test(g.status || ''))?.[1];

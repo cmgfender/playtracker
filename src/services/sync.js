@@ -72,7 +72,25 @@ function addDays(t, n) { const d = new Date(t); d.setDate(d.getDate() + n); retu
  * Pre-tracking playtime (first import, late-appearing titles) is never recorded as play:
  * it becomes the entry's history and is dated by the inference engine (inference.js).
  */
+/**
+ * Close the open presence spans of an account not seen for a while (see lapseAfter: a restart, an
+ * outage, polls paused for the API budget): each ends where it was last seen, so the minutes it
+ * covers stay on its own day instead of stretching it over the gap. Returns how many.
+ */
+// a span unseen for longer than this ended: three poll intervals, and never less than two hours,
+// as polls back off up to tenfold while an API is failing (a hiccup must not split a session)
+export const lapseAfter = (intervalSec) => Math.max(intervalSec * 3000, 2 * 3600_000);
+
+export function closeLapsedSpans(db, account, now = Date.now()) {
+  const sec = providers[account.platform]?.profile?.presence?.interval_sec;
+  if (!sec) return 0;
+  const rows = db.prepare('SELECT id, last_seen_at FROM presence WHERE account_id = ? AND ended_at IS NULL AND last_seen_at < ?').all(account.id, now - lapseAfter(sec));
+  for (const r of rows) db.prepare('UPDATE presence SET ended_at = ? WHERE id = ?').run(r.last_seen_at + (sec * 1000) / 2, r.id);
+  return rows.length;
+}
+
 export function applyItems(db, account, items, { settings, now = Date.now(), syncId = null, initial, source = 'sync', complete = true }) {
+  closeLapsedSpans(db, account, now);
   const model = modelFor(providers[account.platform], account);
   const minSession = Math.max(0, Number(settings.min_session_minutes) || 0);
   const overage = Math.max(0, Number(settings.max_overage_minutes) || 0);
@@ -363,7 +381,14 @@ export function applyItems(db, account, items, { settings, now = Date.now(), syn
       const d0 = startOfDay(ws);
       const n = Math.max(1, Math.round((startOfDay(end) - d0) / DAY) + 1);
       const weights = Array.from({ length: n }, (_, i) => 1 + (anchor ? 3 * Math.exp(-((n - 1 - i) ** 2) / 2) : 0));
-      const alloc = intSplit(remaining, allocate(remaining, weights, { cap: 600, minDay: 15 }));
+      // each day holds at most what fits in its part of the window (the first and last are cut
+      // by the syncs): a full share on a day the window barely covers would spill before it
+      const room = Array.from({ length: n }, (_, i) => {
+        const ds = Math.max(ws, addDays(d0, i)); const de = Math.min(end, addDays(d0, i + 1) - 1);
+        return Math.max(0, Math.min(600, Math.floor((de - ds) / MIN)));
+      });
+      const cap = room.reduce((a, x) => a + x, 0) >= remaining ? room : 600;
+      const alloc = intSplit(remaining, allocate(remaining, weights, { cap, minDay: 15 }));
       alloc.forEach((m, i) => {
         if (m <= 0) return;
         const ds = Math.max(ws, addDays(d0, i));
@@ -1038,16 +1063,20 @@ export class SyncService {
     const ids = new Set(playing.map((p) => String(p.extId)));
     const half = (intervalSec * 1000) / 2;
     let closed = 0;
+    // a span not seen for hours (a restart, an outage, polls paused for the API budget) ends where
+    // it was last seen: what happened in the gap is unknown, so it is not claimed
+    const gap = lapseAfter(intervalSec);
+    const lapsed = new Set(open.filter((s) => now - s.last_seen_at > gap).map((s) => s.id));
     tx(db, () => {
       for (const s of open) {
-        if (ids.has(s.ext_id)) unmemoized(db, db.prepare('UPDATE presence SET last_seen_at = ? WHERE id = ?').run(now, s.id));
+        if (ids.has(s.ext_id) && !lapsed.has(s.id)) unmemoized(db, db.prepare('UPDATE presence SET last_seen_at = ? WHERE id = ?').run(now, s.id));
         else {
           db.prepare('UPDATE presence SET ended_at = ? WHERE id = ?').run(Math.min(now, s.last_seen_at + half), s.id);
           closed++;
         }
       }
       for (const p of playing) {
-        if (open.some((s) => s.ext_id === String(p.extId))) continue;
+        if (open.some((s) => s.ext_id === String(p.extId) && !lapsed.has(s.id))) continue;
         const start = prev.lastPoll && now - prev.lastPoll < intervalSec * 3000 ? Math.round((prev.lastPoll + now) / 2) : now;
         db.prepare('INSERT INTO presence(account_id, ext_id, title, started_at, last_seen_at, device) VALUES (?, ?, ?, ?, ?, ?)').run(account.id, String(p.extId), p.title || null, start, now, p.device || null);
         this.plog.info(`${account.platform}/${account.name} started playing ${p.title || p.extId}`);
@@ -1194,6 +1223,11 @@ export class SyncService {
   }
 
   start() {
+    // syncs cut off by a restart (a container update mid-sync) would otherwise show as running forever
+    try {
+      const n = this.db.prepare("UPDATE syncs SET status = 'error', error = 'Interrupted by a restart', finished_at = COALESCE(finished_at, started_at) WHERE status = 'running'").run().changes;
+      if (n) this.log.info(`Marked ${n} sync${n > 1 ? 's' : ''} interrupted by the restart`);
+    } catch (e) { this.log.warn(`Could not tidy interrupted syncs: ${e.message}`); }
     // History inferred by an older algorithm version (or migrated installs) is redone once.
     try {
       flushRollups(this.db);
@@ -1234,7 +1268,13 @@ export class SyncService {
       try { this.kickAchievements(); } catch (e) { this.log.warn(`Reading achievements failed: ${e.message}`); }
     }, 20_000);
     this.coverTimer.unref?.();
-    const run = () => tick().catch((e) => this.log.error('Scheduler tick failed', e));
+    // one tick at a time: a platform hanging on a presence poll must not start another poll of
+    // the same account every 30 seconds (requests are bounded by their timeouts)
+    const run = () => {
+      if (this.ticking) return;
+      this.ticking = true;
+      tick().catch((e) => this.log.error('Scheduler tick failed', e)).finally(() => { this.ticking = false; });
+    };
     this.timer = setInterval(run, 30_000);
     this.timer.unref?.();
     this.firstTick = setTimeout(run, 5_000);
