@@ -255,13 +255,21 @@ export function summarize(title, items, fmt = (v) => fmtMin(v)) {
 
 // Hatched fill used for estimated (inferred) history.
 export const HATCH = '<defs><pattern id="pt-hatch" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="6" height="6" fill="color-mix(in srgb, var(--accent-mark) 22%, transparent)"/><line x1="0" y1="0" x2="0" y2="6" stroke="color-mix(in srgb, var(--accent-mark) 70%, transparent)" stroke-width="2.2"/></pattern>'
-  + '<pattern id="pt-hatch-ov" width="4" height="4" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><line x1="0" y1="0" x2="0" y2="4" stroke="var(--panel)" stroke-opacity=".55" stroke-width="1.6"/></pattern></defs>';
+  + '<pattern id="pt-hatch-ov" width="4" height="4" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><line x1="0" y1="0" x2="0" y2="4" stroke="var(--panel)" stroke-opacity=".55" stroke-width="1.6"/></pattern>'
+  // what history rests on (see BASIS_FILL): imported sessions dotted on a near-solid fill,
+  // estimates you confirmed cross-hatched, estimates anchored by an achievement unlock striped across
+  + '<pattern id="pt-imported" width="6" height="6" patternUnits="userSpaceOnUse"><rect width="6" height="6" fill="color-mix(in srgb, var(--accent-mark) 72%, transparent)"/><circle cx="3" cy="3" r="1.15" fill="var(--panel)" fill-opacity=".75"/></pattern>'
+  + '<pattern id="pt-confirmed" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="6" height="6" fill="color-mix(in srgb, var(--accent-mark) 26%, transparent)"/><line x1="0" y1="0" x2="0" y2="6" stroke="color-mix(in srgb, var(--accent-mark) 78%, transparent)" stroke-width="1.6"/><line x1="0" y1="0" x2="6" y2="0" stroke="color-mix(in srgb, var(--accent-mark) 78%, transparent)" stroke-width="1.6"/></pattern>'
+  + '<pattern id="pt-anchored" width="6" height="5" patternUnits="userSpaceOnUse"><rect width="6" height="5" fill="color-mix(in srgb, var(--accent-mark) 22%, transparent)"/><line x1="0" y1="1.2" x2="6" y2="1.2" stroke="color-mix(in srgb, var(--accent-mark) 75%, transparent)" stroke-width="2"/></pattern></defs>';
+/** The fill of each kind of history: imported sessions, estimates you confirmed, unlock-anchored, other estimates. */
+export const BASIS_FILL = { imported: 'url(#pt-imported)', confirmed: 'url(#pt-confirmed)', anchored: 'url(#pt-anchored)', estimated: 'url(#pt-hatch)' };
 
 // ---------- bar chart ----------
 // Stack order, bottom up: neighbours differ in lightness (Steam and PlayStation 2.7:1 apart in dark),
 // other keys follow in their own order, estimated history always on top.
 const STACK_ORDER = ['steam', 'psn', 'xbox', 'custom', 'manual', 'import'];
-const stackRank = (k) => (k === 'estimated' ? 99 : STACK_ORDER.includes(k) ? STACK_ORDER.indexOf(k) : 50);
+const HISTORY_ORDER = { imported: 60, confirmed: 70, anchored: 80, estimated: 99 };
+const stackRank = (k) => HISTORY_ORDER[k] ?? (STACK_ORDER.includes(k) ? STACK_ORDER.indexOf(k) : 50);
 
 registerChart('bar', (data, opts, box) => {
   const { color = 'var(--accent-mark)', unit = 'min' } = opts;

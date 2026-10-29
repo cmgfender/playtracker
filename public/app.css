@@ -1111,3 +1111,11 @@ a.wcard:hover { border-color: color-mix(in srgb, var(--text) 25%, var(--line)); 
 .ttb .mrow { margin: 6px 0; }
 a.mrow.mlink { color: inherit; text-decoration: none; border-radius: 6px; }
 a.mrow.mlink:hover .ml, a.mrow.mlink:focus-visible .ml { color: var(--accent-ink); text-decoration: underline; }
+/* What history rests on: the same patterns as the chart fills (charts.js BASIS_FILL) */
+.basis-tracked { background: var(--accent-mark); }
+.basis-imported { background: radial-gradient(circle, var(--panel) 0 1px, transparent 1.4px) 0 0 / 5px 5px, color-mix(in srgb, var(--accent-mark) 72%, transparent); }
+.basis-confirmed { background: repeating-linear-gradient(45deg, color-mix(in srgb, var(--accent-mark) 78%, transparent) 0 1.4px, transparent 1.4px 4.5px), repeating-linear-gradient(-45deg, color-mix(in srgb, var(--accent-mark) 78%, transparent) 0 1.4px, transparent 1.4px 4.5px), color-mix(in srgb, var(--accent-mark) 26%, transparent); }
+.basis-anchored { background: repeating-linear-gradient(0deg, color-mix(in srgb, var(--accent-mark) 75%, transparent) 0 2px, color-mix(in srgb, var(--accent-mark) 22%, transparent) 2px 5px); }
+.basis-estimated { background: repeating-linear-gradient(45deg, color-mix(in srgb, var(--accent-mark) 75%, transparent) 0 2px, color-mix(in srgb, var(--accent-mark) 20%, transparent) 2px 5px); }
+.badge.basis-b { gap: 5px; }
+.badge.basis-b .dot { width: 9px; height: 9px; border-radius: 2px; }

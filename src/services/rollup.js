@@ -5,6 +5,9 @@ import { spreadByDay, sessionInterval, dayKey } from './stats.js';
 // per-hour rows so stats never have to scan or re-spread the raw session table.
 
 const MIN = 60_000;
+// play_days.basis: what the minutes rest on (see migration 10)
+export const BASIS = { tracked: 0, imported: 1, anchored: 2, confirmed: 3, estimated: 4 };
+const basisOf = (s) => (s.kind === 'estimate' ? (s.basis === 'confirmed' ? 3 : s.basis === 'anchored' ? 2 : 4) : s.source === 'import' ? 1 : 0);
 const HOUR = 3_600_000;
 
 function spreadByHour(s) {
@@ -26,10 +29,10 @@ export function flushRollups(db, { batch = 5000 } = {}) {
   const pending = db.prepare('SELECT 1 FROM rollup_queue LIMIT 1').get() || db.prepare('SELECT 1 FROM rollup_entry_queue LIMIT 1').get();
   if (!pending) return 0;
   const take = db.prepare('SELECT session_id FROM rollup_queue LIMIT ?');
-  const get = db.prepare('SELECT s.id, s.entry_id, s.kind, s.minutes, s.window_start, s.window_end, s.started_at, s.ended_at, s.created_at, e.game_id, e.platform, e.excluded FROM sessions s JOIN entries e ON e.id = s.entry_id WHERE s.id = ?');
+  const get = db.prepare('SELECT s.id, s.entry_id, s.kind, s.source, s.basis, s.minutes, s.window_start, s.window_end, s.started_at, s.ended_at, s.created_at, e.game_id, e.platform, e.excluded FROM sessions s JOIN entries e ON e.id = s.entry_id WHERE s.id = ?');
   const delD = db.prepare('DELETE FROM play_days WHERE session_id = ?');
   const delH = db.prepare('DELETE FROM play_hours WHERE session_id = ?');
-  const insD = db.prepare('INSERT INTO play_days(session_id, entry_id, game_id, platform, excluded, estimated, day, minutes, ends) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)');
+  const insD = db.prepare('INSERT INTO play_days(session_id, entry_id, game_id, platform, excluded, estimated, basis, day, minutes, ends) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
   const insH = db.prepare('INSERT INTO play_hours(session_id, entry_id, game_id, platform, excluded, estimated, day, hour, minutes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)');
   const deq = db.prepare('DELETE FROM rollup_queue WHERE session_id = ?');
   const qEntry = db.prepare('INSERT OR IGNORE INTO rollup_entry_queue(entry_id) VALUES (?)');
@@ -48,7 +51,8 @@ export function flushRollups(db, { batch = 5000 } = {}) {
           if ((s.kind === 'play' || s.kind === 'estimate') && s.minutes > 0) {
             const est = s.kind === 'estimate' ? 1 : 0;
             const days = spreadByDay(s);
-            days.forEach(([day, m], i) => insD.run(id, s.entry_id, s.game_id, s.platform, s.excluded, est, day, m, (!est && i === days.length - 1) ? 1 : 0));
+            const b = basisOf(s);
+            days.forEach(([day, m], i) => insD.run(id, s.entry_id, s.game_id, s.platform, s.excluded, est, b, day, m, (!est && i === days.length - 1) ? 1 : 0));
             for (const [day, h, m] of spreadByHour(s)) insH.run(id, s.entry_id, s.game_id, s.platform, s.excluded, est, day, h, m);
           }
         }
@@ -75,9 +79,9 @@ export function flushRollups(db, { batch = 5000 } = {}) {
  */
 export function rebuildRollups(db) {
   const idx = db.prepare("SELECT name, sql FROM sqlite_master WHERE type = 'index' AND tbl_name IN ('play_days', 'play_hours') AND sql IS NOT NULL").all();
-  const insD = db.prepare('INSERT INTO play_days(session_id, entry_id, game_id, platform, excluded, estimated, day, minutes, ends) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)');
+  const insD = db.prepare('INSERT INTO play_days(session_id, entry_id, game_id, platform, excluded, estimated, basis, day, minutes, ends) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
   const insH = db.prepare('INSERT INTO play_hours(session_id, entry_id, game_id, platform, excluded, estimated, day, hour, minutes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)');
-  const all = db.prepare(`SELECT s.id, s.kind, s.entry_id, s.minutes, s.window_start, s.window_end, s.started_at, s.ended_at, s.created_at, e.game_id, e.platform, e.excluded
+  const all = db.prepare(`SELECT s.id, s.kind, s.source, s.basis, s.entry_id, s.minutes, s.window_start, s.window_end, s.started_at, s.ended_at, s.created_at, e.game_id, e.platform, e.excluded
     FROM sessions s JOIN entries e ON e.id = s.entry_id WHERE s.kind IN ('play', 'estimate') AND s.minutes > 0`);
   let n = 0;
   db.exec('BEGIN IMMEDIATE');
@@ -87,7 +91,8 @@ export function rebuildRollups(db) {
     for (const s of all.iterate()) {
       const est = s.kind === 'estimate' ? 1 : 0;
       const days = spreadByDay(s);
-      days.forEach(([day, m], k) => insD.run(s.id, s.entry_id, s.game_id, s.platform, s.excluded, est, day, m, (!est && k === days.length - 1) ? 1 : 0));
+      const b = basisOf(s);
+      days.forEach(([day, m], k) => insD.run(s.id, s.entry_id, s.game_id, s.platform, s.excluded, est, b, day, m, (!est && k === days.length - 1) ? 1 : 0));
       for (const [day, h, m] of spreadByHour(s)) insH.run(s.id, s.entry_id, s.game_id, s.platform, s.excluded, est, day, h, m);
       n++;
     }

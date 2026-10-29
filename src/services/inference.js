@@ -28,7 +28,7 @@
 import { flushRollups } from './rollup.js';
 import { spreadByDay } from './stats.js';
 
-export const INFER_VERSION = 5;
+export const INFER_VERSION = 6;
 const DAY = 86_400_000;
 
 function startOfDay(t) { const d = new Date(t); d.setHours(0, 0, 0, 0); return d.getTime(); }
@@ -325,6 +325,9 @@ export function inferHistory(e, { pacePerDay = 90, maxPerDay = 600, minDay = 15,
   result.confidence = conf.sort((a, b) => rank[a] - rank[b])[0] || null;
   const toPlace = total - result.undated;
   result.chunks = roundChunks(result.chunks, toPlace).sort((a, b) => a.start - b.start);
+  // what each stretch rests on: dates you set, or an achievement unlock inside it
+  const byYou = !!(e.manual?.start || e.manual?.end);
+  for (const ch of result.chunks) ch.basis = byYou && ch.why === 'history' ? 'confirmed' : anchors.some((a) => a >= ch.start && a <= ch.end) ? 'anchored' : null;
   // window covers recent part too
   if (result.chunks.length) result.window = [result.chunks[0].start, result.chunks.at(-1).end];
   return result;
@@ -483,16 +486,16 @@ export function reinferEntry(db, entryId, { account = null, load = null, setting
   if (style === undefined) style = settings?.history_learn === false ? null : styleOf(db);
   let res;
   if (manual?.chunks?.length && ev.mode !== 'undated' && manual.chunks.reduce((a, c) => a + c[2], 0) + (manual.undated || 0) === entry.baseline_min) {
-    const chunks = manual.chunks.map(([start, end, minutes, why]) => ({ start, end, minutes, confidence: 'high', why }));
+    const chunks = manual.chunks.map(([start, end, minutes, why]) => ({ start, end, minutes, confidence: 'high', why, basis: 'confirmed' }));
     const reasons = ['You confirmed this estimate', ...(h.inference?.reasons || []).filter((r) => r !== 'You confirmed this estimate')];
     res = { chunks, undated: manual.undated || 0, confidence: 'high', window: [chunks[0].start, chunks.at(-1).end], reasons };
   } else res = inferHistory(ev, { dayRoom: load ? (t) => load.room(t) : null, maxPerDay: Number(settings?.history_max_game_day_minutes) || 600, style });
   load?.add(res.chunks);
   const now = Date.now();
-  const ins = db.prepare(`INSERT INTO sessions(entry_id, source, kind, minutes, window_start, window_end, confidence, note, created_at)
-    VALUES (?, 'inferred', ?, ?, ?, ?, ?, ?, ?)`);
-  for (const c of res.chunks) ins.run(entryId, 'estimate', c.minutes, c.start, c.end, c.confidence, c.why === 'recent' ? 'Recent play before tracking' : 'Estimated from history', now);
-  if (res.undated > 0) ins.run(entryId, 'baseline', res.undated, null, ev.trackingStart, null, 'Undated history', now);
+  const ins = db.prepare(`INSERT INTO sessions(entry_id, source, kind, minutes, window_start, window_end, confidence, note, basis, created_at)
+    VALUES (?, 'inferred', ?, ?, ?, ?, ?, ?, ?, ?)`);
+  for (const c of res.chunks) ins.run(entryId, 'estimate', c.minutes, c.start, c.end, c.confidence, c.why === 'recent' ? 'Recent play before tracking' : 'Estimated from history', c.basis ?? null, now);
+  if (res.undated > 0) ins.run(entryId, 'baseline', res.undated, null, ev.trackingStart, null, 'Undated history', null, now);
   h.inference = { confidence: res.confidence, window: res.window, reasons: res.reasons, undated: res.undated, estimated: res.chunks.reduce((a, c) => a + c.minutes, 0), at: now };
   db.prepare('UPDATE entries SET hist = ?, inferred_v = ? WHERE id = ?').run(JSON.stringify(h), INFER_VERSION, entryId);
   return res;

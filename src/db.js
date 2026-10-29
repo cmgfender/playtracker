@@ -368,6 +368,28 @@ const MIGRATIONS = [
   ) WITHOUT ROWID;
   CREATE INDEX IF NOT EXISTS game_tags_kind ON game_tags(kind, name, game_id);
   `,
+  // 10: what a stretch of history rests on, so charts can tell it apart. sessions.basis (estimates):
+  //     'confirmed' (you confirmed it or set its dates) | 'anchored' (an achievement unlock falls in it) | NULL.
+  //     play_days.basis: 0 tracked live, 1 imported session, 2 unlock-anchored estimate,
+  //     3 confirmed estimate, 4 other estimate (estimated stays 0/1 as before). Safe to run again.
+  (db) => {
+    const cols = (t) => new Set(db.prepare(`PRAGMA table_info(${t})`).all().map((c) => c.name));
+    if (!cols('sessions').has('basis')) {
+      db.exec('ALTER TABLE sessions ADD COLUMN basis TEXT');
+      db.exec(`UPDATE sessions SET basis = 'confirmed' WHERE source = 'inferred' AND kind = 'estimate'
+        AND entry_id IN (SELECT id FROM entries WHERE json_extract(hist, '$.manual') IS NOT NULL)`);
+    }
+    if (!cols('play_days').has('basis')) {
+      db.exec('ALTER TABLE play_days ADD COLUMN basis INTEGER NOT NULL DEFAULT 0');
+      db.exec(`UPDATE play_days SET basis = CASE
+          WHEN estimated = 1 THEN (CASE WHEN (SELECT basis FROM sessions s WHERE s.id = play_days.session_id) = 'confirmed' THEN 3 ELSE 4 END)
+          WHEN (SELECT source FROM sessions s WHERE s.id = play_days.session_id) = 'import' THEN 1 ELSE 0 END`);
+    }
+    // the covering indexes carry basis too, so stats by basis stay index-only
+    const idx = (n) => db.prepare("SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?").get(n)?.sql || '';
+    if (!/basis/.test(idx('play_days_range'))) db.exec('DROP INDEX IF EXISTS play_days_range; CREATE INDEX play_days_range ON play_days(excluded, estimated, day, platform, game_id, minutes, ends, basis);');
+    if (!/basis/.test(idx('play_days_game'))) db.exec('DROP INDEX IF EXISTS play_days_game; CREATE INDEX play_days_game ON play_days(game_id, excluded, estimated, day, platform, minutes, ends, basis);');
+  },
 ];
 
 /** The schema version this build migrates a database to. */

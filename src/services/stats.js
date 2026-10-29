@@ -208,11 +208,24 @@ export function computeStats(db, opts = {}) {
     const dayTotals = new Map();
     let total = 0;
     let estTotal = 0;
-    for (const r of db.prepare(`SELECT p.day, p.platform, p.estimated, SUM(p.minutes) m ${f.sql} GROUP BY p.day, p.platform, p.estimated`).all(...f.args)) {
+    // what the minutes rest on (play_days.basis): imported sessions inside tracked play, and the
+    // kinds of estimated history, per bucket
+    const BASES = ['tracked', 'imported', 'anchored', 'confirmed', 'estimated'];
+    const byBasis = BASES.map(() => new Map());
+    const basisTotal = BASES.map(() => 0);
+    const importedPlat = new Map();
+    for (const r of db.prepare(`SELECT p.day, p.platform, p.estimated, p.basis, SUM(p.minutes) m ${f.sql} GROUP BY p.day, p.platform, p.estimated, p.basis`).all(...f.args)) {
       const t = parseDay(r.day);
       const k = groupKey(t, g, weekStartsOn);
       series.set(k, (series.get(k) || 0) + r.m);
       total += r.m;
+      const b = BASES[r.basis] ? r.basis : r.estimated ? 4 : 0;
+      byBasis[b].set(k, (byBasis[b].get(k) || 0) + r.m);
+      basisTotal[b] += r.m;
+      if (b === 1) {
+        if (!importedPlat.has(r.platform)) importedPlat.set(r.platform, new Map());
+        importedPlat.get(r.platform).set(k, (importedPlat.get(r.platform).get(k) || 0) + r.m);
+      }
       if (r.estimated) { seriesEst.set(k, (seriesEst.get(k) || 0) + r.m); estTotal += r.m; continue; }
       // platform stacks, weekday pattern, busiest day and days played use tracked play only
       if (!byPlat.has(r.platform)) byPlat.set(r.platform, new Map());
@@ -262,6 +275,11 @@ export function computeStats(db, opts = {}) {
       series: [...series.entries()].map(([key, minutes]) => ({ key, minutes: r(minutes), estimated: r(seriesEst.get(key) || 0) })),
       series_by_platform: Object.fromEntries([...byPlat.entries()].map(([p, m]) => [p, [...series.keys()].map((k) => r(m.get(k) || 0))])),
       series_estimated: [...series.keys()].map((k) => r(seriesEst.get(k) || 0)),
+      // the same buckets by what they rest on (tracked + imported + anchored + confirmed + estimated = series);
+      // imported sessions are also inside series_by_platform (they are play), listed apart here
+      series_by_basis: Object.fromEntries(BASES.map((b, i) => [b, [...series.keys()].map((k) => r(byBasis[i].get(k) || 0))])),
+      series_imported_by_platform: Object.fromEntries([...importedPlat.entries()].map(([p, m]) => [p, [...series.keys()].map((k) => r(m.get(k) || 0))])),
+      minutes_by_basis: Object.fromEntries(BASES.map((b, i) => [b, r(basisTotal[i])])),
       top_games: top.map((x) => ({ ...gameInfo.get(x.game_id), game_id: x.game_id, minutes: r(x.minutes), estimated_minutes: r(x.est || 0), sessions: x.sessions, platforms: String(x.platforms || '').split(','), last: parseDay(x.last_day) })),
       platforms: platforms.map((p) => ({ platform: p.platform, minutes: r(p.minutes) })),
       weekday: weekday.map(r),
