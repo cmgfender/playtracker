@@ -6,6 +6,7 @@ import { normalizeTitle, importedAccount } from './titles.js';
 import { nextRun } from './schedule.js';
 import { sendWebhook } from './webhook.js';
 import { flushRollups } from './rollup.js';
+import { unmemoized } from './stats.js';
 import { allocate } from './inference.js';
 import { reinferMany, mergeEvidence, reinferPending, relearnStyle } from './inference.js';
 import { asLogger } from '../logger.js';
@@ -660,9 +661,9 @@ export class SyncService {
       try { this.db.prepare("UPDATE accounts SET state = json_set(COALESCE(state, '{}'), '$.rate_limited_until', ?) WHERE id = ?").run(until, accountId); } catch { /* best effort */ }
     }
     try {
-      this.db.prepare(`INSERT INTO api_usage(account_id, hour, calls, errors, rate_limited) VALUES (?, ?, 1, ?, ?)
+      unmemoized(this.db, this.db.prepare(`INSERT INTO api_usage(account_id, hour, calls, errors, rate_limited) VALUES (?, ?, 1, ?, ?)
         ON CONFLICT(account_id, hour) DO UPDATE SET calls = calls + 1, errors = errors + excluded.errors, rate_limited = rate_limited + excluded.rate_limited`)
-        .run(accountId, hour, r.ok ? 0 : 1, r.rateLimited ? 1 : 0);
+        .run(accountId, hour, r.ok ? 0 : 1, r.rateLimited ? 1 : 0));
     } catch { /* never fail a request on accounting */ }
     if (counters) {
       counters.calls++;
@@ -1016,7 +1017,7 @@ export class SyncService {
     let closed = 0;
     tx(db, () => {
       for (const s of open) {
-        if (ids.has(s.ext_id)) db.prepare('UPDATE presence SET last_seen_at = ? WHERE id = ?').run(now, s.id);
+        if (ids.has(s.ext_id)) unmemoized(db, db.prepare('UPDATE presence SET last_seen_at = ? WHERE id = ?').run(now, s.id));
         else {
           db.prepare('UPDATE presence SET ended_at = ? WHERE id = ?').run(Math.min(now, s.last_seen_at + half), s.id);
           closed++;
