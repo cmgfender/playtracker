@@ -42,8 +42,10 @@ export async function insights(view, stale) {
     years: (q.get('years') || '').split(',').map(Number).filter((y) => y > 1970),
     yoy: q.get('yoy') === 'total' ? 'total' : 'month',
   };
-  const [lt, years] = await Promise.all([api('/stats/lifetime'), api('/stats/years')]);
+  const [lt, years, ig] = await Promise.all([api('/stats/lifetime'), api('/stats/years'), api('/igdb/status').catch(() => null)]);
   if (stale()) return;
+  // genres and the rest appear once IGDB has matched games (or while it is matching them)
+  const SECS = ig && (ig.coverage.matched || ig.running) ? [...SECTIONS.slice(0, 3), ['genres', 'Genres & series', 'From IGDB · a game counts in each of its genres', 900], ...SECTIONS.slice(3)] : SECTIONS;
   if (!f.years.length) f.years = years.slice(0, 2).reverse();
   const head = `<div class="page-h"><div><h1>Insights</h1><p>${lt.games ? `${plural(lt.games, 'game')} · ${fmtHours(lt.total_minutes)}h lifetime · ${fmtHours(lt.tracked_minutes)}h tracked` : 'When, what and how you play'}</p></div>
     <a class="btn ghost desk-only" href="/stats" data-link>${icon('stats')}Stats</a></div>`;
@@ -61,8 +63,8 @@ export async function insights(view, stale) {
       <label class="row small" style="gap:8px;cursor:pointer" title="Include playtime from before tracking began, dated by inference (hatched in charts)"><span class="switch"><input type="checkbox" id="in-est" ${f.estimates !== 'exclude' ? 'checked' : ''}><span></span></span>Estimated history</label>
       <select class="input" id="in-plat" style="width:auto" aria-label="Platform"><option value="">All platforms</option>${lt.platforms.map((p) => `<option value="${esc(p.platform)}" ${f.platform === p.platform ? 'selected' : ''}>${esc(plat(p.platform).label)}</option>`).join('')}</select>
     </div></div>
-    <div class="chips ins-toc" role="group" aria-label="Jump to a section">${SECTIONS.map(([id, t]) => `<button class="chip" data-quick data-jump="${id}">${t}</button>`).join('')}</div>
-    ${SECTIONS.map(([id, t, sub, ph]) => `<section class="ins-sec" id="ins-${id}" data-sec="${id}" aria-labelledby="ins-h-${id}">
+    <div class="chips ins-toc" role="group" aria-label="Jump to a section">${SECS.map(([id, t]) => `<button class="chip" data-quick data-jump="${id}">${t}</button>`).join('')}</div>
+    ${SECS.map(([id, t, sub, ph]) => `<section class="ins-sec" id="ins-${id}" data-sec="${id}" aria-labelledby="ins-h-${id}">
       <div class="ins-sh"><h2 id="ins-h-${id}">${t}</h2>${sub ? `<span class="small muted">${sub}</span>` : ''}</div>
       <div class="ins-body"><div class="ins-ph" style="height:${ph}px" aria-hidden="true"></div></div></section>`).join('')}`;
 
@@ -94,7 +96,7 @@ export async function insights(view, stale) {
       body.innerHTML = none(`Could not load this section: ${esc(e.message)}`);
     } finally { if (my === seq[id]) body.removeAttribute('aria-busy'); }
   }
-  const RENDER = { when, what, style, records, ach, yoy, library };
+  const RENDER = { when, what, style, genres, records, ach, yoy, library };
 
   async function when() {
     const [pc, sl] = await Promise.all([api(`/stats/punchcard?${params()}`), api(`/stats/session-lengths?${params()}`)]);
@@ -180,6 +182,36 @@ export async function insights(view, stale) {
       <div class="card"><div class="card-h"><h3>Games you started</h3><span class="tiny muted">${esc(s.range.label)}</span></div>${starts}</div>
       <div class="card"><div class="card-h"><h3>Comebacks</h3><span class="tiny muted">back after ${s.rules.gap}+ days</span></div>${comebacks}</div></div>`;
   }
+
+  async function genres() {
+    const p = params({ kind: 'genre', limit: '10' });
+    const [g, fr, dev, pace, st] = await Promise.all([api(`/stats/tags?${p}`), api(`/stats/tags?${params({ kind: 'franchise', limit: '6' })}`), api(`/stats/tags?${params({ kind: 'developer', limit: '6' })}`), api('/stats/pace?limit=6'), api('/igdb/status').catch(() => null)]);
+    // while IGDB is matching, the section fills in as it goes
+    clearTimeout(genreTimer);
+    if (st?.running) genreTimer = setTimeout(() => { if (!stale() && near(sel('genres'))) { loaded.delete('genres'); load('genres'); } }, 8000);
+    const cov = g.coverage;
+    const progress = st?.running ? `<p class="small muted pulse" style="margin:0 0 12px">Matching your games on IGDB: ${st.done.toLocaleString()} of ${st.total.toLocaleString()} in this pass. This section fills in as it goes.</p>` : '';
+    const coverage = cov.games ? note(`Metadata for ${cov.matched_games} of ${plural(cov.games, 'game')} played in this range (${pct(cov.minutes ? cov.matched_minutes / cov.minutes : 0)} of the time).${cov.matched_games < cov.games ? ' <a class="link" href="/settings#metadata" data-link>IGDB settings</a>' : ''}`) : '';
+    if (!g.items.length) return `${progress}${none(cov.games ? 'None of the games played in this range has genres yet.' : 'No play in this range.')}`;
+    const max = g.items[0].minutes;
+    const PALETTE = (i) => `var(--era-${i % ERA_COLORS})`;
+    const rows = g.items.map((t, i) => `<a class="mrow mlink" href="/library?tag=${encodeURIComponent(`genre:${t.name}`)}" data-link><span class="ml"><i class="dot" style="background:${PALETTE(i)}"></i>${esc(t.name)}</span><span class="mbar"><i style="width:${(t.minutes / max) * 100}%;background:${PALETTE(i)}"></i></span><span class="mv">${fmtMin(t.minutes, { short: t.minutes >= 600 })} · ${plural(t.games, 'game')}${t.finished ? ` · ${t.finished} finished` : ''}</span></a>`).join('');
+    const top = g.series.slice(0, 5);
+    const grp = g.range.group;
+    const chart = top.length && g.keys.length > 2 ? `${lineChart({ labels: g.keys.map((k) => ({ label: seriesLabel(k, grp), name: grp === 'week' ? `Week of ${seriesName(k, 'day')}` : seriesName(k, grp) })), series: top.map((t, i) => ({ name: t.name, color: PALETTE(i), values: t.values })) }, { mode: 'lines', size: 'card', title: `Top genres per ${grp}`, keys: `Top genres per ${grp}; arrow keys read each period` })}
+      <div class="legend">${top.map((t, i) => `<span><i class="dot" style="background:${PALETTE(i)}"></i>${esc(t.name)}</span>`).join('')}</div>` : '';
+    const list = (d, kind) => (d.items.length ? d.items.map((t) => meterRow(`<a class="link" href="/library?tag=${encodeURIComponent(`${kind}:${t.name}`)}" data-link>${esc(t.name)}</a>`, t.minutes, d.items[0].minutes, `${fmtMin(t.minutes, { short: t.minutes >= 600 })} · ${plural(t.games, 'game')}`, 'var(--accent2)')).join('') : none('Nothing yet.'));
+    const paceCard = pace.games ? `<p class="ins-lead">You finish games in <b>${pace.median_ratio.toFixed(1)}×</b> the typical main story time${pace.median_ratio >= 1.3 ? ': you take your time' : pace.median_ratio <= 0.8 ? ': you move fast' : ''}.</p>
+      <div class="list">${pace.items.map((x) => `<a class="item" href="/game/${x.game_id}" data-link>${cover(x)}<div class="grow"><div class="ttl ellipsis">${esc(x.title)}</div><div class="sub">${fmtMin(x.minutes, { short: x.minutes >= 600 })} against ${fmtMin(x.typical_minutes, { short: x.typical_minutes >= 600 })} typical${x.basis === 'extra' ? ' (main + extras)' : ''}</div></div><div class="amt">${x.ratio.toFixed(1)}×</div></a>`).join('')}</div>
+      ${note(`From ${plural(pace.games, 'finished game')} with IGDB’s times to beat (all time).`)}` : none('Mark games Completed or Beaten and, where IGDB knows a time to beat, your pace shows here.');
+    return `${progress}<div class="grid grid-2 ins-grid">
+      <div class="card"><div class="card-h"><h3>Genres</h3><span class="tiny muted">${esc(g.range.label)}</span></div>${rows}${coverage}</div>
+      <div class="card"><div class="card-h"><h3>Genres over time</h3><span class="tiny muted">top 5 · by ${grp}</span></div>${chart || none('A longer range shows how your genres change.')}</div>
+      <div class="card"><div class="card-h"><h3>Series</h3><span class="tiny muted">${esc(fr.range.label)}</span></div>${list(fr, 'franchise')}</div>
+      <div class="card"><div class="card-h"><h3>Developers</h3><span class="tiny muted">${esc(dev.range.label)}</span></div>${list(dev, 'developer')}</div>
+      <div class="card"><div class="card-h"><h3>Your pace</h3><span class="tiny muted">against the typical time to beat</span></div>${paceCard}</div></div>`;
+  }
+  let genreTimer;
 
   async function records() {
     const r = await api(`/stats/records?${params()}`);

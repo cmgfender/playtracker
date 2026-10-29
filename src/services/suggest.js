@@ -88,8 +88,9 @@ function libraryRows(db, now) {
       SELECT g.id, g.title, g.cover_url, g.status, g.rating, g.favorite, g.hidden, g.created_at,
         e.all_excluded, e.minutes, e.platforms, e.lp, e.added, e.steam_app,
         COALESCE(r.m60, 0) m60, COALESCE(r.m14, 0) m14, COALESCE(r.m3, 0) m3, r.last_tracked, d.last_day,
-        a.total ach_total, a.unlocked ach_unlocked
-      FROM games g JOIN e ON e.game_id = g.id LEFT JOIN r ON r.game_id = g.id LEFT JOIN d ON d.game_id = g.id LEFT JOIN a ON a.game_id = g.id`).all(d14, d3, d60);
+        a.total ach_total, a.unlocked ach_unlocked, gm.ttb_main
+      FROM games g JOIN e ON e.game_id = g.id LEFT JOIN r ON r.game_id = g.id LEFT JOIN d ON d.game_id = g.id LEFT JOIN a ON a.game_id = g.id
+        LEFT JOIN game_meta gm ON gm.game_id = g.id`).all(d14, d3, d60);
     // typical session length: tracked sessions with real times or a sync window of a day or so
     // (a weekly sync's delta is a week of play, not a session), one row per distinct length
     const freq = db.prepare(`SELECT e.game_id, s.minutes m, COUNT(*) n FROM sessions s JOIN entries e ON e.id = s.entry_id
@@ -180,6 +181,13 @@ function signals(g, ctx) {
         ? { text: `Beaten, ${plural(left, 'achievement')} left (${pct}%)`, value: pct }
         : { text: `${pct}% of achievements, ${left} left`, value: pct };
     }
+  }
+
+  // no achievements to go by: how far into IGDB's typical main story (when known)
+  if (s.finish == null && g.ttb_main > 0 && g.minutes >= 60 && g.minutes < g.ttb_main && !['completed', 'beaten', 'dropped'].includes(g.status)) {
+    const p = g.minutes / g.ttb_main;
+    s.finish = p * p * 0.8;
+    why.finish = { text: `About ${fmt(roughly(g.ttb_main - g.minutes))} left of a typical main story (${fmt(roughly(g.ttb_main))})`, value: Math.round(p * 100), id: 'time_to_beat' };
   }
 
   // dusty / fresh

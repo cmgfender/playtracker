@@ -55,6 +55,11 @@ export function mergeGames(db, targetId, sourceIds) {
       WHERE id = ?`).run(src.cover_url, src.rating, src.notes, src.notes, src.notes, src.favorite, src.status, now, targetId);
     // "Not now" / "Never suggest" follow the game into the merge (the target's own choice wins)
     db.prepare('UPDATE OR IGNORE suggest_feedback SET game_id = ? WHERE game_id = ?').run(targetId, sid);
+    // IGDB metadata too, when the target has none of its own
+    if (!db.prepare('SELECT 1 FROM game_meta WHERE game_id = ?').get(targetId) && db.prepare('SELECT 1 FROM game_meta WHERE game_id = ?').get(sid)) {
+      db.prepare('UPDATE game_meta SET game_id = ? WHERE game_id = ?').run(targetId, sid);
+      db.prepare('UPDATE game_tags SET game_id = ? WHERE game_id = ?').run(targetId, sid);
+    }
     db.prepare('DELETE FROM games WHERE id = ?').run(sid);
   }
   // consolidate multiple manual entries: one counted and one excluded at most, so a merge

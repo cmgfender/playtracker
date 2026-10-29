@@ -77,7 +77,7 @@ export async function stats(view, stale) {
     const p = new URLSearchParams({ range, estimates });
     if (platform) p.set('platform', platform);
     history.replaceState({}, '', `/stats?${p}`);
-    const s = await api(`/stats?${p}&compare=true&highlights=true`);
+    const [s, tags] = await Promise.all([api(`/stats?${p}&compare=true&highlights=true`), api(`/stats/tags?${p}&kind=genre&limit=8`).catch(() => null)]);
     if (stale()) return;
     const pv = s.previous;
     const hasHours = s.hours.some((h) => h > 0);
@@ -99,11 +99,11 @@ export async function stats(view, stale) {
       ${highlightsCard(s)}
       <div class="grid grid-3" style="margin-top:16px">
         <div class="card"><div class="card-h"><h2>Top games</h2></div>${s.top_games.length ? topList(s.top_games, { coverFn: (g) => cover(g), limit: 10 }) : '<p class="muted">No play in this range.</p>'}</div>
-        <div class="card"><div class="card-h"><h2>Platforms</h2></div>
+        <div class="stack"><div class="card"><div class="card-h"><h2>Platforms</h2></div>
           ${s.platforms.length ? `<div class="donut-wrap">${donut(s.platforms.map((p) => ({ label: plat(p.platform).label, value: p.minutes, color: plat(p.platform).color })), { label: `${fmtHours(s.total_minutes)}h`, sub: 'played', title: 'Playtime by platform' })}
           <div class="col" style="gap:4px;min-width:0">${s.platforms.map((p) => `<button type="button" class="row small plat-pick${platform === p.platform ? ' on' : ''}" data-st-plat="${platform === p.platform ? '' : esc(p.platform)}" aria-pressed="${platform === p.platform}" title="${platform === p.platform ? 'Show all platforms' : `Only ${esc(plat(p.platform).label)}`}"><span class="dot" style="background:${plat(p.platform).color}"></span><span class="grow ellipsis">${esc(plat(p.platform).label)}</span><b>${Math.round((p.minutes / Math.max(1, s.total_minutes)) * 100)}%</b></button>`).join('')}</div></div>` : '<p class="muted">—</p>'}
           ${s.longest_session ? `<div style="margin-top:18px" class="small muted">Longest session</div><a href="/game/${s.longest_session.game_id}" data-link><b>${fmtMin(s.longest_session.minutes)}</b> · ${esc(s.longest_session.title)}</a>` : ''}
-        </div>
+        </div>${genreCard(tags)}</div>
         <div class="card"><div class="card-h"><h2>By weekday</h2><div class="seg compact" id="st-wd" aria-label="Weekday values"><button data-wd="avg" class="${weekdayMode === 'avg' ? 'on' : ''}" title="Average per day: a weekday's play divided by how many of that weekday the range has">Avg</button><button data-wd="total" class="${weekdayMode === 'total' ? 'on' : ''}">Total</button></div></div>
           <div id="st-wdrows">${weekdayRows(s)}</div>
           ${hasHours ? `<div class="card-h" style="margin-top:18px;margin-bottom:6px"><h3>Time of day</h3><span class="tiny dim">exact sessions only</span></div>${barChart(s.hours.map((m, h) => ({ label: h % 6 === 0 ? hourLabel(h) : '', name: `${h}:00`, value: m, tip: `${h}:00 – ${h + 1}:00: ${fmtMin(m)}` })), { size: 'small', color: 'var(--accent2)', labelEvery: 1, maxBar: 14, title: 'Exact sessions by time of day' })}` : '<p class="tiny dim" style="margin-top:14px">Sync more often (or log sessions manually) to unlock time-of-day stats.</p>'}
@@ -161,4 +161,13 @@ function highlightsCard(s) {
     ${col('Achievements', a.unlocked ? `<div class="rv">${a.unlocked.toLocaleString()}</div><div class="small muted">unlocked in ${plural(a.games, 'game')}${a.points ? ` · ${a.points.toLocaleString()} G` : ''}</div>${a.rarest ? `<a class="item" style="margin-top:8px" href="/game/${a.rarest.game_id}" data-link><div class="grow"><div class="ttl ellipsis">Rarest: ${esc(a.rarest.name || 'Hidden')}</div><div class="sub ellipsis">${esc(a.rarest.title)}</div></div>${rarityText(a.rarest)}</a>` : ''}` : '<p class="small muted">None unlocked in this range.</p>')}
     ${col('Most varied day', v ? `<a class="rv" href="/sessions?from=${v.day}&to=${v.day}" data-link title="See the sessions">${plural(v.games, 'game')}</a><div class="small muted">on ${fmtDate(day(v.day), { weekday: 'long', month: 'short', day: 'numeric' })}</div>` : '<p class="small muted">One game a day at most.</p>')}
   </div></div>`;
+}
+
+/** Genres of the range (IGDB): only once games have them. */
+function genreCard(t) {
+  if (!t?.items?.length) return '';
+  const max = t.items[0].minutes;
+  return `<div class="card"><div class="card-h"><h2>Genres</h2><a href="/insights#ins-genres" data-link class="tiny">More</a></div>
+    ${t.items.map((x) => `<a class="mrow mlink" href="/library?tag=${encodeURIComponent(`genre:${x.name}`)}" data-link><span class="ml">${esc(x.name)}</span><span class="mbar"><i style="width:${(x.minutes / max) * 100}%;background:var(--accent2)"></i></span><span class="mv">${fmtMin(x.minutes, { short: true })}</span></a>`).join('')}
+    <p class="tiny muted" style="margin:8px 0 0">A game counts in each of its genres · ${t.coverage.matched_games} of ${plural(t.coverage.games, 'game')} have genres.</p></div>`;
 }

@@ -10,6 +10,8 @@ function libState() {
   const list = (k) => (q.get(k) || '').split(',').map((x) => x.trim()).filter(Boolean);
   return {
     q: q.get('q') || '', platform: list('platform'), status: list('status'),
+    // IGDB tags, kind:name, | apart (names hold commas)
+    tag: (q.get('tag') || '').split('|').map((x) => x.trim()).filter(Boolean),
     // one account at a time: GET /games takes a single account_id
     account: q.get('account_id') || '',
     sort: q.get('sort') || state.settings?.default_library_sort || 'recent', // the URL keeps any other sort
@@ -22,11 +24,15 @@ function libState() {
 
 export async function library(view, stale) {
   const st = libState();
-  const [platforms, accounts] = await Promise.all([api('/stats/lifetime'), api('/accounts').catch(() => [])]);
+  const [platforms, accounts, tags] = await Promise.all([api('/stats/lifetime'), api('/accounts').catch(() => []), api('/tags').catch(() => [])]);
   if (stale()) return;
   const platList = platforms.platforms.map((p) => p.platform);
   const playedDef = state.settings?.library_hide_unplayed ? 'true' : '';
-  const sortOpts = [['recent', 'Recently played'], ['trending', 'Trending (2 wks)'], ['playtime', 'Most played'], ['title', 'A–Z'], ['added', 'Recently added'], ['rating', 'Top rated']];
+  // the Genre menu and the release sort appear once IGDB has tagged games
+  const TAG_MENU = [['genre', 'Genre'], ['mode', 'Mode'], ['perspective', 'Perspective'], ['theme', 'Theme']];
+  const tagList = (kind) => tags.filter((t) => t.kind === kind);
+  const hasTags = TAG_MENU.some(([k]) => tagList(k).length) || st.tag.length;
+  const sortOpts = [['recent', 'Recently played'], ['trending', 'Trending (2 wks)'], ['playtime', 'Most played'], ['title', 'A–Z'], ['added', 'Recently added'], ['rating', 'Top rated'], ...(hasTags || st.sort === 'released' ? [['released', 'Release date']] : [])];
   view.innerHTML = `
     <div class="page-h"><div><h1>Library</h1><p id="lib-count">&nbsp;</p></div>
       <div class="row"><button class="btn desk-only" id="lib-add">${icon('plus')}Add game</button></div></div>
@@ -40,6 +46,7 @@ export async function library(view, stale) {
       <div class="lib-row2" id="lib-filters" role="group" aria-label="Filters">
         <button class="fbtn" data-menu="platform" aria-expanded="false" aria-haspopup="true"></button>
         <button class="fbtn" data-menu="status" aria-expanded="false" aria-haspopup="true"></button>
+        ${hasTags ? '<button class="fbtn" data-menu="tag" aria-expanded="false" aria-haspopup="true"></button>' : ''}
         <button class="fbtn" data-menu="more" aria-expanded="false" aria-haspopup="true"></button>
         <span class="pills" id="lib-pills"></span>
       </div>
@@ -66,6 +73,7 @@ export async function library(view, stale) {
     if (st.q) p.set('q', st.q);
     if (st.platform.length) p.set('platform', st.platform.join(','));
     if (st.status.length) p.set('status', st.status.join(','));
+    if (st.tag.length) p.set('tag', st.tag.join('|'));
     if (st.account) p.set('account_id', st.account);
     for (const [k] of LIB_FLAGS) if (st[k]) p.set(k, 'true');
     if (st.hidden) p.set('hidden', st.hidden);
@@ -130,7 +138,8 @@ export async function library(view, stale) {
   const statusCount = (k) => platforms.status?.[k] || 0;
   const MORE = [...LIB_FLAGS, ['never', 'Never played'], ...(playedDef ? [['unplayed', 'Include never-played']] : []), ['hidden-all', 'Include hidden'], ['hidden-only', 'Only hidden']];
   const moreOn = (k) => (k === 'never' ? st.played === 'false' : k === 'unplayed' ? st.played === '' : k === 'hidden-all' ? st.hidden === 'all' : k === 'hidden-only' ? st.hidden === 'only' : st[k]);
-  const counts = () => ({ platform: st.platform.length + (st.account ? 1 : 0), status: st.status.length, more: MORE.filter(([k]) => moreOn(k)).length });
+  const counts = () => ({ platform: st.platform.length + (st.account ? 1 : 0), status: st.status.length, tag: st.tag.length, more: MORE.filter(([k]) => moreOn(k)).length });
+  const tagName = (t) => t.slice(t.indexOf(':') + 1);
   const activeCount = () => Object.values(counts()).reduce((a, b) => a + b, 0);
   const check = (name, value, on, label, extra = '', type = 'checkbox') => `<label class="opt"><input type="${type}" class="check${type === 'radio' ? ' radio' : ''}" name="${name}" value="${esc(value)}" ${on ? 'checked' : ''}><span class="grow">${label}</span>${extra}</label>`;
   const menuBody = (kind) => {
@@ -138,10 +147,15 @@ export async function library(view, stale) {
       return `<fieldset><legend>Platforms</legend>${platList.map((p) => check('platform', p, st.platform.includes(p), `${platDot(p)}${esc(plat(p).label)}`, `<span class="tiny muted">${platforms.platforms.find((x) => x.platform === p)?.games ?? ''}</span>`)).join('')}</fieldset>
         ${accounts.length > 1 ? `<fieldset><legend>Account</legend>${check('account', '', !st.account, 'Any account', '', 'radio')}${accounts.map((a) => check('account', a.id, String(st.account) === String(a.id), `${platDot(a.platform)}${esc(a.name)}`, `<span class="tiny muted">${a.games ?? ''}</span>`, 'radio')).join('')}</fieldset>` : ''}`;
     }
+    if (kind === 'tag') {
+      // a kind's names: any of them; several kinds: all of them (as GET /games reads tag=)
+      return TAG_MENU.filter(([k]) => tagList(k).length).map(([k, l]) => `<fieldset><legend>${l}</legend>${tagList(k).slice(0, k === 'theme' ? 12 : 30).map((t) => check('tag', `${k}:${t.name}`, st.tag.includes(`${k}:${t.name}`), esc(t.name), `<span class="tiny muted">${t.games}</span>`)).join('')}</fieldset>`).join('')
+        || '<p class="small muted">No genres yet: IGDB is still matching your games.</p>';
+    }
     if (kind === 'status') return `<fieldset><legend>Status</legend>${Object.entries(STATUSES).map(([k, v]) => check('status', k, st.status.includes(k), esc(v.label), `<span class="tiny muted">${statusCount(k)}</span>`)).join('')}</fieldset>`;
     return `<fieldset><legend>Show</legend>${MORE.map(([k, l]) => check('more', k, moreOn(k), l)).join('')}</fieldset>`;
   };
-  const LABELS = { platform: 'Platform', status: 'Status', more: 'More' };
+  const LABELS = { platform: 'Platform', status: 'Status', tag: 'Genre', more: 'More' };
   const drawFilters = () => {
     const c = counts();
     for (const b of $$('[data-menu]', view)) {
@@ -154,13 +168,14 @@ export async function library(view, stale) {
       ...st.platform.map((p) => [`platform:${p}`, `${platDot(p)}${esc(plat(p).label)}`]),
       ...(st.account ? [[`account:${st.account}`, esc(accName(st.account))]] : []),
       ...st.status.map((s) => [`status:${s}`, esc(STATUSES[s]?.label || s)]),
+      ...st.tag.map((t) => [`tag:${t}`, esc(tagName(t))]),
       ...MORE.filter(([k]) => moreOn(k)).map(([k, l]) => [`more:${k}`, esc(l)]),
     ];
     $('#lib-pills').innerHTML = pills.map(([k, l]) => `<button class="pill" data-rm="${esc(k)}" aria-label="Remove filter: ${esc(l.replace(/<[^>]+>/g, ''))}">${l}${icon('x', 'ic-14')}</button>`).join('')
       + (pills.length ? '<button class="pill-clear" data-clear>Clear all</button>' : '');
   };
   const apply = (name, value, on) => {
-    if (name === 'platform' || name === 'status') st[name] = on ? [...new Set([...st[name], value])] : st[name].filter((x) => x !== value);
+    if (name === 'platform' || name === 'status' || name === 'tag') st[name] = on ? [...new Set([...st[name], value])] : st[name].filter((x) => x !== value);
     else if (name === 'account') st.account = on ? value : '';
     else if (value === 'never') st.played = on ? 'false' : playedDef;
     else if (value === 'unplayed') st.played = on ? '' : playedDef;
@@ -170,7 +185,7 @@ export async function library(view, stale) {
     sync();
   };
   const clearAll = () => {
-    Object.assign(st, { platform: [], status: [], account: '', played: playedDef, hidden: '', ...Object.fromEntries(LIB_FLAGS.map(([k]) => [k, false])) });
+    Object.assign(st, { platform: [], status: [], tag: [], account: '', played: playedDef, hidden: '', ...Object.fromEntries(LIB_FLAGS.map(([k]) => [k, false])) });
     sync();
   };
   let menu = null; // the open popover: { el, btn, close }
@@ -204,6 +219,7 @@ export async function library(view, stale) {
           el.querySelector('[data-clear-menu]').addEventListener('click', () => {
             if (kind === 'platform') Object.assign(st, { platform: [], account: '' });
             else if (kind === 'status') st.status = [];
+            else if (kind === 'tag') st.tag = [];
             else Object.assign(st, { played: playedDef, hidden: '', ...Object.fromEntries(LIB_FLAGS.map(([k]) => [k, false])) });
             sync();
             el.querySelector('.fbody').innerHTML = menuBody(kind);

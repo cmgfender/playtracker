@@ -24,6 +24,26 @@ export function backupBox(b) {
     ${b.files.length ? `<details style="margin-top:10px"><summary class="small muted" style="cursor:pointer">${b.files.length} kept · ${mb(b.total_bytes)}</summary><div class="list" style="margin-top:6px">${rows}</div></details>` : ''}`;
 }
 
+/** IGDB in one badge: not set up, matching, or how many games have metadata. */
+function igdbBadge(st) {
+  if (!st.configured) return '<span class="badge">Off</span>';
+  if (st.running) return '<span class="badge accent">Matching…</span>';
+  return st.last_error ? '<span class="badge bad">Error</span>' : `<span class="badge good">${st.coverage.matched.toLocaleString()} games</span>`;
+}
+
+/** What IGDB has done: matched so far, the pass running now, the last error. */
+export function igdbStatus(st) {
+  if (!st.configured) return st.credentials ? '<span class="muted">Turned off.</span>' : '';
+  const c = st.coverage;
+  const pct = c.total ? Math.round(((c.matched + c.unmatched) / c.total) * 100) : 0;
+  const by = [c.by.steam && `${c.by.steam.toLocaleString()} by Steam id`, c.by.title && `${c.by.title.toLocaleString()} by title`, c.by.manual && `${c.by.manual} by you`].filter(Boolean).join(', ');
+  return `${st.running ? `<div class="split-bar" style="margin-bottom:8px" role="progressbar" aria-valuemin="0" aria-valuemax="${st.total}" aria-valuenow="${st.done}" aria-label="Matching games"><i style="width:${st.total ? (st.done / st.total) * 100 : 0}%;background:var(--accent-mark)"></i></div>
+      <p style="margin:0 0 6px">${st.phase === 'details' ? 'Reading details' : 'Matching'}: ${st.done.toLocaleString()} of ${st.total.toLocaleString()} games in this pass…</p>` : ''}
+    <p class="muted" style="margin:0">${c.matched.toLocaleString()} of ${c.total.toLocaleString()} games have metadata${by ? ` (${by})` : ''}${c.unmatched ? ` · ${c.unmatched.toLocaleString()} not found` : ''}${c.pending ? ` · ${c.pending.toLocaleString()} still to look up` : ''} · ${pct}% looked at.</p>
+    ${st.last_error ? `<p style="color:var(--bad-ink);margin:6px 0 0">The last pass failed ${ago(st.last_error.at)}: ${esc(st.last_error.message)}</p>` : ''}
+    ${!st.running ? `<button class="btn sm" id="ig-run" style="margin-top:8px">${icon('sync')}Match now</button>` : ''}`;
+}
+
 const ACCENTS = [['#7656ff', 'Violet (default)'], ['#22d3ee', 'Cyan'], ['#34d399', 'Mint'], ['#f472b6', 'Rose'], ['#fb923c', 'Ember'], ['#facc15', 'Gold'], ['#ef4444', 'Red'], ['#60a5fa', 'Sky']];
 function segSetting(key, title, opts, s, desc = '') {
   return `<div class="setting"><div><div class="t">${title}</div>${desc ? `<div class="d">${desc}</div>` : ''}</div><div class="seg" data-seg="${key}">${opts.map(([v, l]) => `<button data-v="${v}" class="${String(s[key]) === v ? 'on' : ''}">${l}</button>`).join('')}</div></div>`;
@@ -54,7 +74,7 @@ function savedTick(at, what) {
 }
 
 export async function settings(view, stale) {
-  const [s, tokens, auth, bk] = await Promise.all([api('/settings'), api('/tokens'), api('/auth/status'), api('/backups').catch(() => null)]);
+  const [s, tokens, auth, bk, ig] = await Promise.all([api('/settings'), api('/tokens'), api('/auth/status'), api('/backups').catch(() => null), api('/igdb/status').catch(() => null)]);
   if (stale()) return;
   const sw = (key, title, desc) => `<div class="setting"><div><div class="t">${title}</div><div class="d">${desc}</div></div><label class="switch"><input type="checkbox" data-set="${key}" ${s[key] ? 'checked' : ''} aria-label="${esc(title)}"><span></span></label></div>`;
   const accent = accentOf(s);
@@ -110,6 +130,18 @@ export async function settings(view, stale) {
           <div class="setting"><div><div class="t">Keep</div><div class="d">The oldest are removed beyond this many. A copy made before an update changes the database is kept apart (the last 3).</div></div><input class="input" type="number" min="1" max="90" data-num="backup_keep" value="${s.backup_keep}" style="width:90px" aria-label="Backups kept"></div>
           <div id="bk-box">${backupBox(bk)}</div>` : ''}
         </div>
+        ${ig ? `<div class="card" id="metadata"><div class="card-h"><h2>Game metadata</h2><span id="ig-badge">${igdbBadge(ig)}</span></div>
+          <p class="small muted" style="margin-top:-6px">Optional. With <a class="link" href="https://www.igdb.com" target="_blank" rel="noopener">IGDB</a> (run by Twitch), Vestigo adds genres, developers, series, release dates and typical times to beat to your games. That unlocks genre stats on Stats and Insights, a Genre filter in the library, and an About card on each game. Only game titles and Steam app ids are sent.</p>
+          ${ig.from_env ? '<p class="small muted">The client id and secret are set with <code>VESTIGO_IGDB_CLIENT_ID</code> / <code>VESTIGO_IGDB_CLIENT_SECRET</code>.</p>' : `<form class="stack" id="ig-f" autocomplete="off">
+            <div class="field"><label for="ig-id">Twitch client ID</label><input class="input" id="ig-id" value="${esc(s.igdb_client_id || '')}" spellcheck="false"></div>
+            <div class="field"><label for="ig-secret">Client secret</label><input class="input" id="ig-secret" type="password" placeholder="${s.igdb_secret_set ? 'Saved (type a new one to replace it)' : ''}" spellcheck="false"></div>
+            <details><summary class="small muted" style="cursor:pointer">How to get these (free, 2 minutes)</summary><ol class="small" style="margin:6px 0 0;padding-left:18px">
+              <li>Sign in at <a class="link" href="https://dev.twitch.tv/console/apps" target="_blank" rel="noopener">dev.twitch.tv/console/apps</a> (a Twitch account with two-factor authentication).</li>
+              <li><b>Register Your Application</b>: any name, OAuth redirect URL <code>http://localhost</code>, category <b>Application Integration</b>, client type <b>Confidential</b>.</li>
+              <li>Open it: copy the <b>Client ID</b>, then <b>New Secret</b> and copy the secret.</li></ol></details>
+            <div class="row wrap"><button class="btn primary">${icon('check')}Save &amp; test</button>${ig.credentials ? '<button type="button" class="btn ghost danger" id="ig-off">Remove</button>' : ''}</div></form>`}
+          <div id="ig-st" class="small" style="margin-top:12px" aria-live="polite">${igdbStatus(ig)}</div>
+        </div>` : ''}
         <div class="card" id="notifications"><div class="card-h"><h2>Notifications</h2></div>
           <div class="field"><label>Webhook URL</label><input class="input" data-str="webhook_url" value="${esc(s.webhook_url)}" placeholder="https://discord.com/api/webhooks/…"><div class="help">Discord and Slack get a formatted message; anything else gets JSON. Works with ntfy, Gotify bridges, Home Assistant, n8n…</div></div>
           <div class="setting"><div class="t">Send when</div><select class="input" data-str="webhook_on" style="width:auto"><option value="sessions" ${s.webhook_on === 'sessions' ? 'selected' : ''}>New sessions or errors</option><option value="always" ${s.webhook_on === 'always' ? 'selected' : ''}>Every sync</option><option value="errors" ${s.webhook_on === 'errors' ? 'selected' : ''}>Errors only</option></select></div>
@@ -226,6 +258,30 @@ export async function settings(view, stale) {
     e.preventDefault();
     try { const r = await api('/auth/password', { method: 'PUT', body: { current: e.target.current?.value, password: e.target.password.value } }); state.authEnabled = r.auth_enabled; toast(r.auth_enabled ? 'Password saved' : 'Password removed'); rerender(); } catch (err) { fail(err); }
   });
+  // IGDB: save and test the credentials, match now, follow a pass while it runs
+  let igTimer;
+  const igShow = (st) => { $('#ig-st').innerHTML = igdbStatus(st); $('#ig-badge').innerHTML = igdbBadge(st); clearTimeout(igTimer); if (st.running && !stale()) igTimer = setTimeout(async () => { if (!stale() && $('#ig-st')) igShow(await api('/igdb/status').catch(() => st)); }, 3000); };
+  if (ig) igShow(ig);
+  $('#ig-f')?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const body = { igdb_client_id: $('#ig-id').value.trim(), igdb_enabled: true };
+    if ($('#ig-secret').value.trim()) body.igdb_client_secret = $('#ig-secret').value.trim();
+    try {
+      await api('/settings', { method: 'PUT', body });
+      $('#ig-secret').value = '';
+      await api('/igdb/test', { method: 'POST' });
+      toast('IGDB works: matching your games now');
+      igShow(await api('/igdb/status'));
+    } catch (err) { fail(err); igShow(await api('/igdb/status').catch(() => ig)); }
+  });
+  $('#ig-off')?.addEventListener('click', async () => {
+    if (!(await confirmBox('Vestigo stops asking IGDB. The metadata already matched stays; remove the client id and secret?', { ok: 'Remove', danger: true, title: 'Remove IGDB?' }))) return;
+    try { await api('/settings', { method: 'PUT', body: { igdb_client_id: '', igdb_client_secret: '' } }); rerender(); } catch (err) { fail(err); }
+  });
+  $('#ig-st')?.addEventListener('click', async (e) => {
+    if (!e.target.closest('#ig-run')) return;
+    try { igShow(await api('/igdb/run', { method: 'POST' })); } catch (err) { fail(err); }
+  });
   $('#wk-preview').addEventListener('click', async () => {
     try {
       const w = await api('/summary/week?weeks_ago=1');
@@ -274,5 +330,5 @@ export async function settings(view, stale) {
     if (!(await confirmBox('Anything using this token will stop working. This cannot be undone.', { ok: 'Revoke', danger: true, title: 'Revoke token?' }))) return;
     await api(`/tokens/${b.dataset.revoke}`, { method: 'DELETE' }); rerender();
   });
-  if (/^#(appearance|schedule|detection|import|export|backups|notifications|security|tokens)$/.test(location.hash)) setTimeout(() => $(location.hash)?.scrollIntoView({ behavior: scrollMotion() }), 100);
+  if (/^#(appearance|schedule|detection|import|export|backups|metadata|notifications|security|tokens)$/.test(location.hash)) setTimeout(() => $(location.hash)?.scrollIntoView({ behavior: scrollMotion() }), 100);
 }

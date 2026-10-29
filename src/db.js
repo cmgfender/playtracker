@@ -342,6 +342,32 @@ const MIGRATIONS = [
     if (!cols('achievements').has('source')) db.exec('ALTER TABLE achievements ADD COLUMN source TEXT'); // 'gametrack' | NULL = the platform
     if (!cols('entries').has('ach_total')) db.exec('ALTER TABLE entries ADD COLUMN ach_total INTEGER');
   },
+  // 9: game metadata from IGDB (optional): the match and its details per game, and its tags
+  //    (genres, themes, modes, perspectives, franchises, developers, publishers) for grouping.
+  //    Safe to run again on a database that has them.
+  `
+  CREATE TABLE IF NOT EXISTS game_meta (
+    game_id INTEGER PRIMARY KEY REFERENCES games(id) ON DELETE CASCADE,
+    igdb_id INTEGER,               -- NULL: looked up, nothing matched
+    matched_by TEXT NOT NULL,      -- 'steam' (the Steam app id) | 'title' | 'manual' | 'none'
+    locked INTEGER NOT NULL DEFAULT 0, -- chosen by hand: never matched again on its own
+    name TEXT, slug TEXT, url TEXT, summary TEXT,
+    release_date INTEGER,          -- first release, epoch ms
+    rating REAL, rating_count INTEGER,
+    ttb_main INTEGER, ttb_extra INTEGER, ttb_complete INTEGER, -- typical minutes to beat
+    cover_image TEXT,
+    tries INTEGER NOT NULL DEFAULT 0,
+    fetched_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS game_meta_igdb ON game_meta(igdb_id);
+  CREATE TABLE IF NOT EXISTS game_tags (
+    game_id INTEGER NOT NULL REFERENCES games(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL,            -- genre | theme | mode | perspective | franchise | developer | publisher
+    name TEXT NOT NULL,
+    PRIMARY KEY (game_id, kind, name)
+  ) WITHOUT ROWID;
+  CREATE INDEX IF NOT EXISTS game_tags_kind ON game_tags(kind, name, game_id);
+  `,
 ];
 
 /** The schema version this build migrates a database to. */
@@ -351,6 +377,10 @@ export function openDb(file) {
   if (file !== ':memory:') fs.mkdirSync(path.dirname(file), { recursive: true });
   const db = new DatabaseSync(file);
   db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000; PRAGMA synchronous = NORMAL;');
+  // an 8 MB page cache (SQLite's default is 2 MB: stats over a large library re-read the same pages
+  // from the OS on every query), and a WAL that shrinks back to 32 MB once checkpointed instead of
+  // keeping the size a big import or index rebuild once grew it to
+  db.exec('PRAGMA cache_size = -8192; PRAGMA journal_size_limit = 33554432;');
   migrate(db);
   return db;
 }

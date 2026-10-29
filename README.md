@@ -139,6 +139,29 @@ These differences are declared as per-platform **history models** that drive the
 
 Every platform's advantages and limits, and exactly how each is used, are documented in **[docs/PLATFORMS.md](docs/PLATFORMS.md)**. The same information is shown in the app under Accounts → "What each platform reports".
 
+## Game metadata from IGDB (optional)
+
+With a free Twitch app, Vestigo adds IGDB's metadata to your games: genres, themes, modes, perspectives, series, developers, publishers, release dates, ratings and typical times to beat. New parts of the UI appear once games are matched, and fill in while matching runs:
+
+- **Insights:** Genres & series (genres over time, series, developers, your pace against the typical time to beat).
+- **Stats:** a Genres card.
+- **Library:** a Genre filter and a Release date sort.
+- **Game page:** an About card with links and the time to beat against yours.
+- **What should I play?:** "Finish something" also uses how much of a main story is left.
+
+To set it up:
+
+1. Sign in at [dev.twitch.tv/console/apps](https://dev.twitch.tv/console/apps). The Twitch account needs two-factor authentication.
+2. Register an application: any name, OAuth redirect URL `http://localhost`, category Application Integration, client type Confidential.
+3. Copy the Client ID, create a secret, and paste both under **Settings → Game metadata** (or set `VESTIGO_IGDB_CLIENT_ID` and `VESTIGO_IGDB_CLIENT_SECRET`).
+
+How matching works:
+
+- Steam games are matched by their app id. Others are matched by title, and only when IGDB has the same title (or an alternative name of it).
+- Games without a safe match are tried again later. **Wrong game?** on a game page lets you pick the match yourself, and that choice is kept.
+- Only titles and Steam app ids are sent to IGDB. Requests stay under IGDB's limit of 4 a second.
+- An IGDB cover is used only for games that have none.
+
 ## How sessions are computed
 
 ```
@@ -209,6 +232,7 @@ Main endpoints:
 - **Sessions and stats:** `sessions` (list, create, edit, bulk), `stats`, `stats/heatmap`, `stats/year/:year`
 - **Charts and insights:** `stats/punchcard`, `stats/session-lengths`, `stats/platforms` (or `?by=device`), `stats/timeline`, `games/:id/stats`, `stats/library`, `stats/year-over-year`, `stats/records`, `stats/style` (focus, the games started, comebacks), `stats?compare=true&highlights=true` (the previous period and a range's highlights) (tracked play and estimated history always apart; shapes in `/api/openapi.json`)
 - **Weekly summary:** `summary/week?weeks_ago=1`, `summary/week/send`
+- **IGDB metadata:** `igdb/status`, `igdb/test`, `igdb/run`, `igdb/search`, `games/:id/meta` (match by hand), `tags`, `stats/tags?kind=genre`, `stats/pace`, `games?tag=genre:Indie|mode:Co-operative`, `games?sort=released`
 - **Duplicates:** `duplicates`
 - **What should I play?:** `suggest?minutes=60&mode=finish` (picks with reasons), `suggest/feedback` (not now, never, reset)
 - **Accounts and syncing:** `accounts`, `accounts/:id/sync`, `accounts/:id/report`, `syncs`
@@ -246,6 +270,7 @@ Main endpoints:
 | `VESTIGO_DATA` | `/data` | The data folder. It holds `vestigo.db`, or the `playtracker.db` an earlier version created (used in place). |
 | `VESTIGO_DB` | | Full path to the database file instead (overrides `VESTIGO_DATA`) |
 | `VESTIGO_BACKUP_DIR` | `<data>/backups` | Where automatic backups go |
+| `VESTIGO_IGDB_CLIENT_ID` / `VESTIGO_IGDB_CLIENT_SECRET` | | A Twitch app's id and secret for IGDB metadata, instead of Settings (see above) |
 | `VESTIGO_PASSWORD` | | Password for the UI and API. You can also set one in Settings. With no password, access is open (fine on a trusted LAN). |
 | `VESTIGO_SECURE_COOKIE` | `false` | Set to `true` when served over HTTPS |
 | `VESTIGO_CORS_ORIGIN` | | Lets another origin call the API from a browser |
@@ -259,6 +284,7 @@ Every `VESTIGO_` variable (here and in the logging table above) also works under
 | `VESTIGO_DATA` | `PLAYTRACKER_DATA` |
 | `VESTIGO_DB` | `PLAYTRACKER_DB` |
 | `VESTIGO_BACKUP_DIR` | `PLAYTRACKER_BACKUP_DIR` |
+| `VESTIGO_IGDB_CLIENT_ID` / `_SECRET` | `PLAYTRACKER_IGDB_CLIENT_ID` / `_SECRET` |
 | `VESTIGO_PASSWORD` | `PLAYTRACKER_PASSWORD` |
 | `VESTIGO_SECURE_COOKIE` | `PLAYTRACKER_SECURE_COOKIE` |
 | `VESTIGO_CORS_ORIGIN` | `PLAYTRACKER_CORS_ORIGIN` |
