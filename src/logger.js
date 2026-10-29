@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { env } from './env.js';
+import { unmemoized } from './services/stats.js';
 
 // Structured logger:
 //  - stdout (what `docker logs` / the Unraid log viewer shows), pretty or JSON
@@ -70,7 +71,7 @@ export function createLogger({
     if (recent.length > 300) recent.shift();
     if (db && LEVELS[lvl] >= LEVELS.warn) {
       try {
-        insert.run(time.getTime(), lvl, source, entry.message.slice(0, 2000), ctx ? contextJson(ctx) : null, err?.stack ? String(err.stack).slice(0, 20000) : null);
+        unmemoized(db, insert.run(time.getTime(), lvl, source, entry.message.slice(0, 2000), ctx ? contextJson(ctx) : null, err?.stack ? String(err.stack).slice(0, 20000) : null));
         if (++persisted % 200 === 0) prune();
       } catch { /* db may be closing */ }
     }

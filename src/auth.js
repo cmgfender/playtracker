@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import { unmemoized } from './services/stats.js';
 
 const SESSION_DAYS = 30;
 const sha = (s) => crypto.createHash('sha256').update(s).digest('hex');
@@ -88,7 +89,8 @@ export class Auth {
     if (bearer) {
       const row = this.db.prepare('SELECT id FROM api_tokens WHERE token_hash = ?').get(sha(String(bearer).trim()));
       if (row) {
-        this.db.prepare('UPDATE api_tokens SET last_used_at = ? WHERE id = ?').run(Date.now(), row.id);
+        // (a dashboard widget polling with a token must not void the cached stats on every call)
+        unmemoized(this.db, this.db.prepare('UPDATE api_tokens SET last_used_at = ? WHERE id = ?').run(Date.now(), row.id));
         return { ok: true, via: 'token' };
       }
       if (this.enabled()) return { ok: false, via: 'token' };

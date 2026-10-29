@@ -21,7 +21,7 @@ import { entrySummaries, combineSummaries, gameAchievements, withSessionAchievem
 import { punchcard, sessionLengths, platformSeries, timeline, gameCurve, libraryOverview, yearOverYear, records, playStyle, tagStats, paceStats, TAG_KIND_NAMES } from '../services/insights.js';
 import { gameMeta } from '../services/igdb.js';
 import { suggest, feedbackList, setFeedback, MODES } from '../services/suggest.js';
-import { snapshot, isBackupName } from '../services/backup.js';
+import { snapshotAsync, isBackupName } from '../services/backup.js';
 import { weeklySummary, summaryText } from '../services/digest.js';
 import { sendSummary } from '../services/webhook.js';
 import fsp from 'node:fs';
@@ -224,7 +224,8 @@ export function registerRoutes(r, app) {
     const month = computeStats(db, { range: '30d', group: 'day', weekStartsOn, estimates: estimatesParam({}, settings) });
     const today = computeStats(db, { range: '1d', group: 'day', weekStartsOn, estimates: 'exclude' });
     const recent = db.prepare(`${SESSION_SELECT} WHERE s.kind = 'play' AND e.excluded = 0 ORDER BY s.sort_time DESC LIMIT 12`).all().map(sessionRow);
-    const nowPlaying = db.prepare(`${GAME_LIST} WHERE rec.recent_minutes > 0 AND g.hidden = 0 ORDER BY agg.last_session DESC LIMIT 12`).all(recentFromDay()).map(gameRow);
+    // (the library aggregate behind it is most of this call: kept until the next write)
+    const nowPlaying = memo(db, `now-playing:${recentFromDay()}`, () => db.prepare(`${GAME_LIST} WHERE rec.recent_minutes > 0 AND g.hidden = 0 ORDER BY agg.last_session DESC LIMIT 12`).all(recentFromDay()).map(gameRow));
     const accounts = db.prepare('SELECT * FROM accounts ORDER BY id').all().map(parseAccount).map((a) => publicAccount(a, sync));
     const pending = db.prepare("SELECT COUNT(*) n FROM sessions WHERE kind = 'play' AND sort_time > ? AND created_at > ?").get(Date.now() - 30 * 86_400_000, Date.now() - 86_400_000).n;
     const errors24h = db.prepare("SELECT COUNT(*) n FROM logs WHERE level = 'error' AND time > ?").get(Date.now() - 86_400_000).n;
@@ -261,7 +262,7 @@ export function registerRoutes(r, app) {
     const offset = Math.max(0, toInt(q.offset, 0));
     const base = `${GAME_LIST} ${where.length ? `WHERE ${where.join(' AND ')}` : ''}`;
     const totals = memo(db, `games-count:${JSON.stringify(args)}:${where.join('|')}`, () => db.prepare(`SELECT COUNT(*) n, COALESCE(SUM(minutes), 0) m, COALESCE(MAX(minutes), 0) mx FROM (${base})`).get(...args));
-    const items = db.prepare(`${base} ORDER BY ${order} LIMIT ? OFFSET ?`).all(...args, limit, offset).map(gameRow);
+    const items = memo(db, `games:${JSON.stringify(args)}:${where.join('|')}:${order}:${limit}:${offset}`, () => db.prepare(`${base} ORDER BY ${order} LIMIT ? OFFSET ?`).all(...args, limit, offset).map(gameRow));
     return { total: totals.n, total_minutes: totals.m, max_minutes: totals.mx, limit, offset, items };
   }, { summary: 'List / search the library (paginated)', query: { q: 'search', platform: 'steam,xbox,psn,…', status: 'comma list', sort: 'recent|playtime|title|added|rating|trending|released (IGDB release date)', tag: 'kind:name[|kind:name…] (IGDB metadata, e.g. genre:Shooter|genre:Indie): any name of a kind, every kind', played: 'true|false', favorite: 'true', hidden: 'true|only', multi: 'true = only games with several entries', recent: 'true = played in the last 14 days', limit: 'max 5000 (default 100)', offset: '' } });
 
@@ -619,11 +620,11 @@ export function registerRoutes(r, app) {
     const opts = { range: c.query.range, group: c.query.group, gameId: toInt(c.query.game_id), platform: c.query.platform, weekStartsOn: settings.get('week_starts_on'), estimates: estimatesParam(c.query, settings) };
     const s = computeStats(db, opts);
     if (c.query.compare !== 'true' && c.query.highlights !== 'true') return s;
-    const now = Date.now();
+    // no explicit `now`: like the stats themselves, both are kept until the next write
     return {
       ...s,
-      ...(c.query.compare === 'true' ? { previous: comparePeriod(db, { ...opts, now }) } : {}),
-      ...(c.query.highlights === 'true' ? { highlights: periodHighlights(db, { range: opts.range, platform: opts.platform || null, gameId: opts.gameId, weekStartsOn: opts.weekStartsOn, now }) } : {}),
+      ...(c.query.compare === 'true' ? { previous: comparePeriod(db, opts) } : {}),
+      ...(c.query.highlights === 'true' ? { highlights: periodHighlights(db, { range: opts.range, platform: opts.platform || null, gameId: opts.gameId, weekStartsOn: opts.weekStartsOn }) } : {}),
     };
   }, {
     summary: 'Aggregated stats for a range. Inferred pre-tracking history is included (and reported separately) unless estimates=exclude',
@@ -1139,14 +1140,16 @@ export function registerRoutes(r, app) {
       + '(achievements only on entries that have them; importing ignores them - they come back from the platform). CSV: unchanged columns.',
   });
 
-  r.get('/api/v1/backup', (c) => {
+  r.get('/api/v1/backup', async (c) => {
     const tmp = path.join(os.tmpdir(), `vestigo-backup-${Date.now()}.db`);
     // a read-only connection of its own: SQLite refuses VACUUM while a statement is running on the
-    // app's connection (an export still downloading); either way it copies one consistent snapshot
-    snapshot({ db, dbFile: app.dbFile, dest: tmp });
-    const buf = fs.readFileSync(tmp);
-    fs.unlinkSync(tmp);
-    c.sendRaw(200, buf, 'application/vnd.sqlite3', { 'Content-Disposition': `attachment; filename="vestigo-${new Date().toISOString().slice(0, 10)}.db"` });
+    // app's connection (an export still downloading); either way it copies one consistent snapshot.
+    // Made in a worker thread and streamed from disk: the server neither waits nor holds the copy in memory.
+    const bytes = await snapshotAsync({ db, dbFile: app.dbFile, dest: tmp });
+    const drop = () => fs.unlink(tmp, () => {});
+    c.stream(200, 'application/vnd.sqlite3', { 'Content-Disposition': `attachment; filename="vestigo-${new Date().toISOString().slice(0, 10)}.db"`, 'Content-Length': bytes });
+    c.res.on('close', drop);
+    fs.createReadStream(tmp).on('error', () => c.res.destroy()).pipe(c.res);
     return undefined;
   }, { summary: 'Download a consistent SQLite backup' });
 
@@ -1167,7 +1170,7 @@ export function registerRoutes(r, app) {
     const b = backups();
     if (!b.dir) throw new HttpError(409, 'Backups need a database file (this instance runs in memory)');
     if (b.running) throw new HttpError(409, 'A backup is already running');
-    return b.run({ reason: 'manual' });
+    return b.runAsync({ reason: 'manual' });
   }, { summary: 'Make a backup now (kept with the scheduled ones)', returns: '{ name, bytes, removed: [names] }' });
   r.get('/api/v1/backups/:name', (c) => {
     const file = backupFile(c.params.name);

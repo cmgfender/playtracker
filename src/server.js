@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import zlib from 'node:zlib';
 import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
 import { openDb, SCHEMA_VERSION } from './db.js';
 import { Backups, backupBeforeUpgrade } from './services/backup.js';
 import { WeeklySummary } from './services/digest.js';
@@ -48,7 +49,14 @@ function acceptsEncoding(header, coding) {
 /** If-None-Match matches `etag`: "*" or any entry of the list, W/ ignored (weak comparison, RFC 9110 §13.1.2). */
 const etagMatches = (header, etag) => !!header && (header.trim() === '*' || header.split(',').some((t) => t.trim().replace(/^W\//, '') === etag));
 
-/** Static files are read once and kept pre-compressed in memory. */
+const brotli = promisify(zlib.brotliCompress);
+const gzip = promisify(zlib.gzip);
+
+/**
+ * Static files are read once and kept compressed in memory: each encoding the first time a
+ * browser asks for it, on the thread pool (brotli at quality 9 takes about a quarter of a second
+ * for the whole app, which would otherwise hold up every request after a restart).
+ */
 function staticServer(dir, { dev }) {
   const cache = new Map();
   const load = (file) => {
@@ -56,17 +64,16 @@ function staticServer(dir, { dev }) {
     let raw;
     try { raw = fs.readFileSync(file); } catch { return null; }
     const ext = path.extname(file);
-    const compressible = /text|json|svg|javascript|manifest/.test(MIME[ext] || '');
     const entry = {
       raw, type: MIME[ext] || 'application/octet-stream',
-      br: compressible ? zlib.brotliCompressSync(raw, { params: { [zlib.constants.BROTLI_PARAM_QUALITY]: 9 } }) : null,
-      gz: compressible ? zlib.gzipSync(raw, { level: 9 }) : null,
+      compressible: /text|json|svg|javascript|manifest/.test(MIME[ext] || ''),
       etag: `"${raw.length.toString(36)}-${Buffer.from(String(fs.statSync(file).mtimeMs)).toString('base64url').slice(-8)}"`,
     };
     cache.set(file, entry);
     return entry;
   };
-  return (req, res, pathname) => {
+  const encoded = (f, coding) => (f[coding] ??= (coding === 'br' ? brotli(f.raw, { params: { [zlib.constants.BROTLI_PARAM_QUALITY]: 9 } }) : gzip(f.raw, { level: 9 })));
+  return async (req, res, pathname) => {
     let rel;
     try { rel = decodeURIComponent(pathname); } catch { return false; } // malformed %-escapes
     if (rel === '/' || !path.extname(rel)) rel = '/index.html'; // SPA fallback
@@ -82,7 +89,9 @@ function staticServer(dir, { dev }) {
     if (etagMatches(req.headers['if-none-match'], f.etag)) { res.writeHead(304, headers); res.end(); return true; }
     const ae = req.headers['accept-encoding'];
     let body = f.raw;
-    if (f.br && acceptsEncoding(ae, 'br')) { body = f.br; headers['Content-Encoding'] = 'br'; } else if (f.gz && acceptsEncoding(ae, 'gzip')) { body = f.gz; headers['Content-Encoding'] = 'gzip'; }
+    const coding = !f.compressible ? null : acceptsEncoding(ae, 'br') ? 'br' : acceptsEncoding(ae, 'gzip') ? 'gzip' : null;
+    const packed = coding && await encoded(f, coding === 'br' ? 'br' : 'gz').catch(() => null);
+    if (packed) { body = packed; headers['Content-Encoding'] = coding; }
     headers['Content-Length'] = body.length;
     res.writeHead(200, headers);
     res.end(req.method === 'HEAD' ? undefined : body);
@@ -154,7 +163,7 @@ export function createApp({ dbFile, password, passwordEnv, log: rawLog, schedule
     if (pathname === '/metrics') return metrics(req, res, url);
     if (!pathname.startsWith('/api/')) {
       if (req.method !== 'GET' && req.method !== 'HEAD') { res.writeHead(405, { Allow: 'GET, HEAD' }); return res.end(); }
-      if (!serveStatic(req, res, pathname)) { res.writeHead(404, { 'Content-Type': 'text/plain' }); res.end('Not found'); }
+      if (!(await serveStatic(req, res, pathname))) { res.writeHead(404, { 'Content-Type': 'text/plain' }); res.end('Not found'); }
       return;
     }
 

@@ -57,17 +57,35 @@ export function spreadByDay(s, from = -Infinity, to = Infinity) {
 }
 
 // ---------- small result cache, invalidated by any write on the connection ----------
+// Answers are kept for one data version (the connection's change count, less the writes that no
+// cached answer reads - see unmemoized) and one local day; a new version drops the old answers
+// at once, so stale ones never pile up in memory.
 const caches = new WeakMap();
+function cacheOf(db) {
+  let c = caches.get(db);
+  if (!c) caches.set(db, c = { changes: db.prepare('SELECT total_changes() v'), ignored: 0, ver: null, map: new Map() });
+  return c;
+}
 export function memo(db, key, fn) {
-  let cache = caches.get(db);
-  if (!cache) { cache = new Map(); caches.set(db, cache); }
-  const ver = db.prepare('SELECT total_changes() v').get().v;
-  const k = `${key}|${ver}|${dayKey(Date.now())}`;
-  if (cache.has(k)) return cache.get(k);
+  const c = cacheOf(db);
+  const ver = `${c.changes.get().v - c.ignored}|${dayKey(Date.now())}`;
+  if (ver !== c.ver) { c.ver = ver; c.map = new Map(); }
+  const cache = c.map;
+  if (cache.has(key)) return cache.get(key);
   const v = fn();
   if (cache.size > 300) cache.delete(cache.keys().next().value);
-  cache.set(k, v);
+  cache.set(key, v);
   return v;
+}
+
+/**
+ * Record a write that no memoized answer reads (API call accounting, presence heartbeats, the
+ * error log, API token use), so it keeps cached stats valid: while presence is on these come every
+ * minute and would otherwise make every page compute its stats afresh. `res` is what run() returned.
+ */
+export function unmemoized(db, res) {
+  if (res?.changes) cacheOf(db).ignored += Number(res.changes);
+  return res;
 }
 
 export function resolveRange(range, now = Date.now(), weekStartsOn = 1) {
@@ -359,6 +377,11 @@ export function previousPeriod(range, now = Date.now()) {
 
 /** The previous period's headline numbers (see previousPeriod), or null. */
 export function comparePeriod(db, opts = {}) {
+  // like computeStats: without an explicit `now` the answer holds until the next write (or day)
+  return memo(db, `compare:${JSON.stringify(opts)}`, () => previousNumbers(db, opts));
+}
+
+function previousNumbers(db, opts) {
   const { range = '30d', now = Date.now() } = opts;
   const p = previousPeriod(range, now);
   if (!p) return null;
@@ -375,9 +398,10 @@ export function comparePeriod(db, opts = {}) {
  * history counts as played, so a game tracked only lately is not "new"), achievements unlocked
  * (with the rarest) and the day with the most different games.
  */
-export function periodHighlights(db, { range = '30d', platform = null, gameId = null, weekStartsOn = 1, now = Date.now(), limit = 12 } = {}) {
-  return memo(db, `highlights:${range}:${platform}:${gameId}:${weekStartsOn}:${limit}:${now}`, () => {
-    const { from, to } = resolveRange(range, now, weekStartsOn);
+export function periodHighlights(db, { range = '30d', platform = null, gameId = null, weekStartsOn = 1, now, limit = 12 } = {}) {
+  // an explicit `now` is part of the key; without one the answer holds until the next write (or day), like computeStats
+  return memo(db, `highlights:${range}:${platform}:${gameId}:${weekStartsOn}:${limit}:${now ?? ''}`, () => {
+    const { from, to } = resolveRange(range, now ?? Date.now(), weekStartsOn);
     const fromDay = dayKey(from); const toDay = dayKey(to);
     const pf = platform ? 'AND e.platform = ?' : '';
     const gf = gameId ? 'AND e.game_id = ?' : '';
