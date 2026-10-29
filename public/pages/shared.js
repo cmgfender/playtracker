@@ -3,6 +3,7 @@ import {
   esc, fmtMin, fmtHours, fmtDate, fmtTime, dayLabel, plat, platDot, platTag, cover, icon, api, toast, undoToast, fail, modal,
   confirmBox, rerender, state, applyTheme, plural,
 } from '../app.js';
+import { BASIS_FILL } from '../charts.js';
 
 export const arrow = () => icon('arrowR', 'ic-inline'); // trailing "go there" arrow on links
 
@@ -37,20 +38,42 @@ function seriesTip(key, group, minutes) {
 }
 
 // Tracked play stacks by platform; inferred pre-tracking history sits on top, hatched.
+// What history rests on, as charts and legends show it (with the fills of charts.js BASIS_FILL)
+export const BASIS = [
+  ['imported', 'Imported sessions', 'Exact past sessions from an import (JSON/CSV, GameTrack)'],
+  ['confirmed', 'History you confirmed', 'Estimated history whose dates you confirmed or set yourself'],
+  ['anchored', 'Dated by unlocks', 'Estimated history on days with an achievement or trophy unlock'],
+  ['estimated', 'Estimated history', 'Playtime from before tracking began, dated from first/last played and release dates'],
+];
+
+// Tracked play stacks by platform; imported sessions and the kinds of estimated history sit on
+// top, each in its own pattern. Older answers without series_by_basis: all estimates hatched.
 export function stackedSeries(stats) {
   const plats = Object.keys(stats.series_by_platform || {});
+  const imp = stats.series_imported_by_platform || {};
+  const by = stats.series_by_basis;
   const est = stats.series_estimated || [];
-  return stats.series.map((s, i) => ({
-    label: seriesLabel(s.key, stats.range.group),
-    name: seriesName(s.key, stats.range.group),
-    value: s.minutes,
-    tip: seriesTip(s.key, stats.range.group, s.minutes) + (est[i] ? ` (${fmtMin(est[i])} estimated from history)` : ''),
-    stack: [...plats.map((p) => ({ key: p, value: stats.series_by_platform[p][i] || 0, color: plat(p).color })), ...(est[i] ? [{ key: 'estimated', value: est[i], color: 'url(#pt-hatch)' }] : [])],
-  }));
+  return stats.series.map((s, i) => {
+    const parts = by ? BASIS.map(([k, label]) => [k, label, by[k]?.[i] || 0]).filter(([, , v]) => v > 0) : (est[i] ? [['estimated', 'estimated from history', est[i]]] : []);
+    const extra = parts.map(([, label, v]) => `${fmtMin(v)} ${label.toLowerCase()}`).join(', ');
+    return {
+      label: seriesLabel(s.key, stats.range.group),
+      name: seriesName(s.key, stats.range.group),
+      value: s.minutes,
+      tip: seriesTip(s.key, stats.range.group, s.minutes) + (extra ? ` (${extra})` : ''),
+      stack: [
+        ...plats.map((p) => ({ key: p, value: Math.max(0, (stats.series_by_platform[p][i] || 0) - (imp[p]?.[i] || 0)), color: plat(p).color })),
+        ...parts.map(([k, , v]) => ({ key: k, value: v, color: BASIS_FILL[k] })),
+      ],
+    };
+  });
 }
 
+/** Legend entries for the kinds of history in the range, each with its pattern and minutes. */
 export function estimatedLegend(stats) {
-  return stats.estimated_minutes ? `<span title="Playtime from before tracking began, dated from first/last played, achievements and release dates"><i class="dot hatch-dot"></i>Estimated history · ${fmtMin(stats.estimated_minutes, { short: true })}</span>` : '';
+  const m = stats.minutes_by_basis;
+  if (!m) return stats.estimated_minutes ? `<span title="${BASIS[3][2]}"><i class="dot hatch-dot"></i>Estimated history · ${fmtMin(stats.estimated_minutes, { short: true })}</span>` : '';
+  return BASIS.filter(([k]) => m[k] > 0).map(([k, label, why]) => `<span title="${esc(why)}"><i class="dot basis-${k}"></i>${label} · ${fmtMin(m[k], { short: true })}</span>`).join('');
 }
 
 const CONF = {
@@ -97,12 +120,16 @@ function sourceBadge(s) {
   // the "≈" badges carry the session's note too: on a phone the note itself is not shown
   const approx = (t) => esc(s.note ? `${t} · ${s.note}` : t);
   if (s.kind === 'baseline') return '<span class="badge">history</span>';
-  if (s.kind === 'estimate') return `<span class="badge" title="${esc(CONF[s.confidence]?.[2] || '')}">estimated · ${esc(s.confidence || '')}</span>`;
+  if (s.kind === 'estimate') {
+    const k = s.basis === 'confirmed' ? 'confirmed' : s.basis === 'anchored' ? 'anchored' : 'estimated';
+    const label = { confirmed: 'confirmed', anchored: 'by unlocks', estimated: `estimated · ${s.confidence || ''}` }[k];
+    return `<span class="badge basis-b" title="${esc(BASIS.find(([x]) => x === k)[2])}${k === 'estimated' && CONF[s.confidence] ? ` (${esc(CONF[s.confidence][2])})` : ''}"><i class="dot basis-${k}" aria-hidden="true"></i>${esc(label)}</span>`;
+  }
   if (s.source === 'manual') return '<span class="badge accent">manual</span>';
   if (s.note?.startsWith('Length estimated')) return '<span class="badge" title="The platform reports no playtime for this game and live presence missed this session: it ends at the reported last-played time, with your typical session length. Edit it if you know better.">≈ length</span>';
   if (s.confidence === 'exact') return `<span class="badge good" title="${CONF.exact[2]}">● live</span>${s.device ? `<span class="badge">${esc(s.device)}</span>` : ''}`;
   if (s.device) return `<span class="badge">${esc(s.device)}</span>${s.precise ? '' : `<span class="badge" title="${approx('Exact time unknown — spread across the sync window')}">≈</span>`}`;
-  if (s.source === 'import') return '<span class="badge">imported</span>';
+  if (s.source === 'import') return `<span class="badge basis-b" title="${BASIS[0][2]}"><i class="dot basis-imported" aria-hidden="true"></i>imported</span>`;
   if (s.source === 'api') return '<span class="badge">api</span>';
   return s.precise ? '' : `<span class="badge" title="${approx('Exact time unknown — spread across the sync window')}">≈</span>`;
 }

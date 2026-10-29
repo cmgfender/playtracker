@@ -221,8 +221,10 @@ describe('insights on a hand-built library', () => {
     assert.equal(c.group, 'month');
     assert.equal(c.series.length, 13, '2025-03 .. 2026-03');
     const k = Object.fromEntries(c.series.map((s) => [s.key, s]));
-    assert.deepEqual(k['2025-03'], { key: '2025-03', minutes: 45, tracked: 45, estimated: 0, sessions: 1, unlocked: 1, cumulative_tracked: 45, cumulative_estimated: 0, cumulative_unlocked: 1 });
-    assert.deepEqual(k['2026-02'], { key: '2026-02', minutes: 210, tracked: 210, estimated: 0, sessions: 1, unlocked: 2, cumulative_tracked: 315, cumulative_estimated: 0, cumulative_unlocked: 3 });
+    // by_basis / cumulative_by_basis: what the minutes rest on (all tracked live here)
+    const plain = ({ by_basis: b, cumulative_by_basis: cb, ...x }) => { assert.equal(b.tracked, x.tracked); assert.equal(cb.tracked, x.cumulative_tracked); return x; };
+    assert.deepEqual(plain(k['2025-03']), { key: '2025-03', minutes: 45, tracked: 45, estimated: 0, sessions: 1, unlocked: 1, cumulative_tracked: 45, cumulative_estimated: 0, cumulative_unlocked: 1 });
+    assert.deepEqual(plain(k['2026-02']), { key: '2026-02', minutes: 210, tracked: 210, estimated: 0, sessions: 1, unlocked: 2, cumulative_tracked: 315, cumulative_estimated: 0, cumulative_unlocked: 3 });
     assert.deepEqual([k['2025-12'].cumulative_tracked, k['2026-01'].cumulative_tracked, k['2026-03'].cumulative_tracked], [45, 105, 315]);
     assert.deepEqual(c.totals, { minutes: 315, tracked_minutes: 315, estimated_minutes: 0, baseline_minutes: 0, sessions: 3 });
     assert.deepEqual(c.achievements, { total: 4, unlocked: 3, undated: 0, percent: 75 });

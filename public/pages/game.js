@@ -2,8 +2,8 @@ import {
   $, $$, esc, fmtMin, ago, fmtDate, fmtTime, dayLabel, plat, platDot, platTag, platIcon, STATUSES, cover, icon, api, toast,
   undoToast, fail, modal, confirmBox, navigate, rerender, state, plural, setTitle, coverHue, tagHref,
 } from '../app.js';
-import { barChart, heatmap, mountCharts, curveChart } from '../charts.js';
-import { arrow, seriesLabel, seriesName, kpi, sessionItem, groupByDay, rarityText, achIcon, logSessionModal, bindSessionEdits, dayKey } from './shared.js';
+import { barChart, heatmap, mountCharts, curveChart, BASIS_FILL } from '../charts.js';
+import { arrow, seriesLabel, seriesName, kpi, sessionItem, groupByDay, rarityText, achIcon, logSessionModal, bindSessionEdits, dayKey, BASIS } from './shared.js';
 
 // =====================================================================
 // Game detail
@@ -57,10 +57,19 @@ function popover(btn, { title, html, onMount }) {
 /** The game's curve: the running total (tracked over hatched history, sessions and unlocks below) or minutes per month. */
 function gameCurve(series, mode, g) {
   if (mode === 'month') {
-    return barChart(series.slice(-36).map((x) => ({ label: x.label, name: x.name, value: x.minutes, tip: `${x.name}: ${x.minutes ? fmtMin(x.minutes) : 'no play'}${x.estimated ? ` (${fmtMin(x.estimated)} estimated)` : ''}${x.sessions ? ` · ${plural(x.sessions, 'session')}` : ''}${x.unlocked ? ` · ${x.unlocked} unlocked` : ''}`,
-      stack: [{ value: x.tracked, color: 'var(--accent-mark)' }, { key: 'estimated', value: x.estimated || 0, color: 'url(#pt-hatch)' }] })), { size: 'page', title: `${g.title}, playtime by month` });
+    // tracked live solid; imported sessions and each kind of history in its own pattern
+    const parts = (x) => (x.by_basis ? BASIS.map(([k, l]) => [k, l, x.by_basis[k] || 0]) : [['estimated', 'Estimated history', x.estimated || 0]]).filter(([, , m]) => m > 0);
+    return barChart(series.slice(-36).map((x) => ({ label: x.label, name: x.name, value: x.minutes, tip: `${x.name}: ${x.minutes ? fmtMin(x.minutes) : 'no play'}${parts(x).length ? ` (${parts(x).map(([, l, m]) => `${fmtMin(m)} ${l.toLowerCase()}`).join(', ')})` : ''}${x.sessions ? ` · ${plural(x.sessions, 'session')}` : ''}${x.unlocked ? ` · ${x.unlocked} unlocked` : ''}`,
+      stack: [{ key: 'tracked', value: x.by_basis ? x.by_basis.tracked : x.tracked, color: 'var(--accent-mark)' }, ...parts(x).map(([k, , m]) => ({ key: k, value: m, color: BASIS_FILL[k] }))] })), { size: 'page', title: `${g.title}, playtime by month` });
   }
   return curveChart({ series }, { title: `${g.title}, playtime over time`, keys: `${g.title} over time; arrow keys read each month` });
+}
+
+/** Legend entries for the kinds of history on a game's curve (its last cumulative point has them all). */
+function curveKinds(series) {
+  const last = series.at(-1)?.cumulative_by_basis;
+  if (!last) return series.some((x) => x.cumulative_estimated) ? '<span><i class="dot hatch-dot"></i>Estimated history</span>' : '';
+  return BASIS.filter(([k]) => last[k] > 0).map(([k, label, why]) => `<span title="${esc(why)}"><i class="dot basis-${k}"></i>${label}</span>`).join('');
 }
 
 /** When a group of unlocks happened, in words: the session, before tracking, or a day. */
@@ -209,7 +218,7 @@ export async function game(view, id, stale) {
   function columns() {
     const curveCard = series.length ? `<div class="card"><div class="card-h"><h2>Playtime over time</h2><div class="seg" id="g-curve-mode" aria-label="Show"><button data-cm="total" class="on">Running total</button><button data-cm="month">By month</button></div></div>
           <div id="g-curve">${gameCurve(series, 'total', g)}</div>
-          <div class="legend"><span><i class="dot" style="background:var(--accent-mark)"></i>Tracked</span>${curve.totals.estimated_minutes ? '<span><i class="dot hatch-dot"></i>Estimated history</span>' : ''}${series.some((x) => x.sessions) ? '<span><i class="dot" style="background:var(--accent2)"></i>Sessions</span>' : ''}${series.some((x) => x.unlocked) ? '<span><i class="dot" style="background:var(--star)"></i>Unlocks</span>' : ''}</div>
+          <div class="legend"><span><i class="dot" style="background:var(--accent-mark)"></i>Tracked</span>${curveKinds(series)}${series.some((x) => x.sessions) ? '<span><i class="dot" style="background:var(--accent2)"></i>Sessions</span>' : ''}${series.some((x) => x.unlocked) ? '<span><i class="dot" style="background:var(--star)"></i>Unlocks</span>' : ''}</div>
           ${curve.totals.baseline_minutes ? `<p class="tiny muted" style="margin:8px 0 0">${fmtMin(curve.totals.baseline_minutes)} has no date: it counts toward lifetime, not on the curve.</p>` : ''}</div>` : '';
     const heatCard = years.length ? `<div class="card"><div class="card-h"><h2>Activity</h2>${years.length > 1 ? `<div class="seg" id="g-hm-year" aria-label="Activity year">${years.map((y, i) => `<button data-y="${y}" class="${i ? '' : 'on'}">${y}</button>`).join('')}</div>` : `<span class="tiny muted">${years[0]}</span>`}</div><div id="g-heat"><div class="ins-ph short" aria-hidden="true"></div></div></div>` : '';
     const baselines = g.sessions.filter((x) => x.kind === 'baseline' && x.source !== 'inferred');

@@ -71,7 +71,7 @@ const ACH_ITEM_DOC = '{ id (platform id: Steam apiname, Xbox achievement id, Pla
   + 'icon_url, icon_locked_url, unlocked, unlocked_at (null: locked, or the platform has no time), rarity (% of players), points (Xbox gamerscore), '
   + 'grade (PlayStation bronze|silver|gold|platinum), hidden, group (PlayStation trophy group) }';
 const SESSION_ACH_DOC = 'achievements: { count, items: [{ id, entry_id, name, icon_url, rarity, points, grade, unlocked_at }] } - the unlocks that belong to the session (by time; see GET /games/{id}/achievements)';
-const SESSION_DOC = '{ id, game_id, entry_id, title, cover_url, platform, account_id, account_name, source, kind, minutes, window_start, window_end, started_at, ended_at, precise, confidence, device, note, sync_id, created_at, '
+const SESSION_DOC = '{ id, game_id, entry_id, title, cover_url, platform, account_id, account_name, source, kind, minutes, window_start, window_end, started_at, ended_at, precise, confidence, device, note, sync_id, created_at, basis (tracked|imported|confirmed|anchored|estimated; null for undated history), '
   + `${SESSION_ACH_DOC} }`;
 
 const ESTIMATES = new Set(['include', 'exclude', 'only']);
@@ -130,6 +130,8 @@ function sessionRow(s) {
     window_start: s.window_start, window_end: s.window_end, started_at: s.started_at, ended_at: s.ended_at,
     precise: !!(s.started_at && s.ended_at), confidence: s.confidence || (s.started_at && s.ended_at ? 'pinned' : s.kind === 'play' ? 'window' : null),
     device: s.device || null, note: s.note, sync_id: s.sync_id, created_at: s.created_at,
+    // what it rests on: tracked | imported (play), confirmed | anchored | estimated (estimate), null otherwise
+    basis: s.kind === 'play' ? (s.source === 'import' ? 'imported' : 'tracked') : s.kind === 'estimate' ? (s.basis || 'estimated') : null,
   };
 }
 
@@ -1246,7 +1248,8 @@ export function registerRoutes(r, app) {
       h.inference = { ...h.inference, confidence: 'high', reasons: ['You confirmed this estimate', ...(h.inference.reasons || []).filter((r) => r !== 'You confirmed this estimate')] };
       tx(db, () => {
         db.prepare('UPDATE entries SET hist = ? WHERE id = ?').run(JSON.stringify(h), id);
-        db.prepare("UPDATE sessions SET confidence = 'high' WHERE entry_id = ? AND source = 'inferred' AND kind = 'estimate'").run(id);
+        db.prepare("UPDATE sessions SET confidence = 'high', basis = 'confirmed' WHERE entry_id = ? AND source = 'inferred' AND kind = 'estimate'").run(id);
+        db.prepare("INSERT OR IGNORE INTO rollup_queue(session_id) SELECT id FROM sessions WHERE entry_id = ? AND source = 'inferred' AND kind = 'estimate'").run(id);
         flushRollups(db);
       });
       return getGame(e.game_id);
