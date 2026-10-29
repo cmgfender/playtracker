@@ -91,6 +91,22 @@ export const STATUSES = {
   wishlist: { label: 'Wishlist', cls: '' },
 };
 
+/** A library tag filter item, kind:name, with | and \\ in the name escaped (as GET /games reads tag=). */
+export const tagItem = (kind, name) => `${kind}:${String(name).replace(/[\\|]/g, (c) => `\\${c}`)}`;
+/** The items of a tag= value (see tagItem). */
+export function splitTags(v) {
+  const out = []; let cur = '';
+  const s = String(v || '');
+  for (let i = 0; i < s.length; i++) {
+    if (s[i] === '\\' && i + 1 < s.length) cur += s[++i];
+    else if (s[i] === '|') { out.push(cur); cur = ''; } else cur += s[i];
+  }
+  out.push(cur);
+  return out.map((x) => x.trim()).filter(Boolean);
+}
+/** A link to the library filtered by one tag. */
+export const tagHref = (kind, name) => `/library?tag=${encodeURIComponent(tagItem(kind, name))}`;
+
 /** A title's placeholder hue (0-359): the same game always gets the same colours. */
 export function coverHue(s) { let h = 0; for (const c of String(s)) h = (h * 33 + c.charCodeAt(0)) % 360; return h; }
 

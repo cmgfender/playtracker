@@ -49,7 +49,9 @@ async function exchangeNpsso(ctx, npsso) {
 async function getToken(account, ctx) {
   const s = account.state || {};
   const now = Date.now();
-  if (s.access_token && s.access_expires_at > now) return s;
+  // the token fields only: callers return them as the account's new state, and the rest of it may
+  // have changed meanwhile (a long enrichment) - handing the whole old state back would undo that
+  if (s.access_token && s.access_expires_at > now) return { access_token: s.access_token, access_expires_at: s.access_expires_at, refresh_token: s.refresh_token, refresh_expires_at: s.refresh_expires_at };
   if (s.refresh_token && s.refresh_expires_at > now) {
     try {
       return await tokenRequest(ctx, { refresh_token: s.refresh_token, grant_type: 'refresh_token', token_format: 'jwt', scope: SCOPE });
@@ -171,7 +173,8 @@ export const psn = {
    */
   async enrich(account, entries, ctx, { maxCalls = 120, knownSets = false } = {}) {
     const tok = await getToken(account, ctx);
-    if (tok.access_token !== account.state.access_token) Object.assign(account.state, tok);
+    const renewed = tok.access_token !== account.state.access_token;
+    if (renewed) Object.assign(account.state, tok);
     const headers = { Authorization: `Bearer ${tok.access_token}`, 'Accept-Language': 'en-US' };
     const gap = spacer(3200);
     const updates = [];
@@ -225,7 +228,8 @@ export const psn = {
         updates.push(u);
       }
     }
-    return { updates, state: tok };
+    // state only when the token was renewed here: anything else written meanwhile must stand
+    return { updates, ...(renewed ? { state: tok } : {}) };
   },
 
   /**
@@ -260,7 +264,8 @@ export const psn = {
 
   async presence(account, ctx) {
     const tok = await getToken(account, ctx);
-    if (tok.access_token !== account.state.access_token) Object.assign(account.state, tok); // caller persists state
+    const renewed = tok.access_token !== account.state.access_token;
+    if (renewed) Object.assign(account.state, tok); // caller persists state
     const ids = [account.state.account_id, 'me'].filter(Boolean);
     let lastErr;
     for (const id of ids) {
@@ -270,7 +275,7 @@ export const psn = {
         const playing = (p.gameTitleInfoList || []).map((g) => ({ extId: g.npTitleId, title: g.titleName, device: g.launchPlatform || g.format || null }));
         const status = p.primaryPlatformInfo?.onlineStatus || p.availability;
         const online = !status ? null : /^online$|^availabletoplay$/i.test(status) ? 'Online' : /offline|unavailable/i.test(status) ? 'Offline' : String(status);
-        return { playing, online, seen: playing.map((g) => ({ id: g.extId, name: g.title, device: g.device })), state: tok };
+        return { playing, online, seen: playing.map((g) => ({ id: g.extId, name: g.title, device: g.device })), ...(renewed ? { state: tok } : {}) };
       } catch (err) {
         if (err.rateLimited || err.auth || err.blocked) throw err; // the fallback id would only cost another call
         lastErr = err;

@@ -1,4 +1,5 @@
 import { spreadByDay, sessionInterval, dayKey } from './stats.js';
+import { inTx } from '../db.js';
 
 // Sessions are written in many places (sync, import, API, edits). Triggers put every
 // touched session id into rollup_queue; flushRollups() turns them into per-day and
@@ -36,7 +37,7 @@ export function flushRollups(db, { batch = 5000 } = {}) {
   const insH = db.prepare('INSERT INTO play_hours(session_id, entry_id, game_id, platform, excluded, estimated, day, hour, minutes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)');
   const deq = db.prepare('DELETE FROM rollup_queue WHERE session_id = ?');
   const qEntry = db.prepare('INSERT OR IGNORE INTO rollup_entry_queue(entry_id) VALUES (?)');
-  const nested = db.isTransaction ?? db._inTx;
+  const nested = inTx(db);
   let total = 0;
   for (;;) {
     const ids = take.all(batch).map((r) => r.session_id);

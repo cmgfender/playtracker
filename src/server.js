@@ -154,7 +154,9 @@ export function createApp({ dbFile, password, passwordEnv, log: rawLog, schedule
   const trustProxy = env('SECURE_COOKIE') === 'true';
 
   const handler = async (req, res) => {
-    const url = new URL(req.url, 'http://localhost');
+    let url;
+    // a request target that is not a URL ("//[") is the client's error, not a server one
+    try { url = new URL(req.url, 'http://localhost'); } catch { res.writeHead(400, { 'Content-Type': 'text/plain' }); return res.end('Bad request'); }
     const pathname = url.pathname;
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Referrer-Policy', 'same-origin');
@@ -216,10 +218,13 @@ export function createApp({ dbFile, password, passwordEnv, log: rawLog, schedule
         const raw = m.route.doc.binary ? '' : buf.toString('utf8');
         ctx.rawBody = raw;
         const type = String(req.headers['content-type'] || '');
-        if (/csv|text\/plain/.test(type)) { ctx.rawType = 'csv'; ctx.body = raw; } else if (raw.trim()) {
+        // text bodies (CSV imports, license lists) stay in rawBody; body is always an object, so a
+        // route reading c.body.x never meets a string
+        if (/csv|text\/plain/.test(type)) ctx.rawType = 'csv';
+        else if (raw.trim()) {
           try { ctx.body = JSON.parse(raw); } catch { throw new HttpError(400, 'Invalid JSON body'); }
         }
-        if (ctx.body === null || typeof ctx.body !== 'object') ctx.body = ctx.rawType ? ctx.body : {};
+        if (ctx.body === null || typeof ctx.body !== 'object') ctx.body = {};
       }
       const t = Date.now();
       http_.requests++;

@@ -25,6 +25,7 @@
 // The result is stored as 'estimate' sessions: charted (and flagged) in stats, excluded
 // from streaks; anything we can't date at all stays 'baseline' (lifetime totals only).
 
+import { inTx } from '../db.js';
 import { flushRollups } from './rollup.js';
 import { spreadByDay } from './stats.js';
 
@@ -438,7 +439,7 @@ export function relearnStyle(db, { settings = null, log = null, now = Date.now()
   } else db.prepare("DELETE FROM settings WHERE key = 'history_style'").run();
   db.prepare("UPDATE entries SET inferred_v = 0 WHERE baseline_min > 0").run();
   log?.info?.(next ? `Learned play style from ${next.games} fully known games; re-dating history` : 'Play-style learning off; re-dating history with the default shape');
-  if (!db.isTransaction) { flushRollups(db); reinferPending(db, { log, settings }); flushRollups(db); }
+  if (!inTx(db)) { flushRollups(db); reinferPending(db, { log, settings }); flushRollups(db); }
   return true;
 }
 

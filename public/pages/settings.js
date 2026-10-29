@@ -260,7 +260,12 @@ export async function settings(view, stale) {
   });
   // IGDB: save and test the credentials, match now, follow a pass while it runs
   let igTimer;
-  const igShow = (st) => { $('#ig-st').innerHTML = igdbStatus(st); $('#ig-badge').innerHTML = igdbBadge(st); clearTimeout(igTimer); if (st.running && !stale()) igTimer = setTimeout(async () => { if (!stale() && $('#ig-st')) igShow(await api('/igdb/status').catch(() => st)); }, 3000); };
+  const igShow = (st) => {
+    if (stale() || !$('#ig-st')) return; // left the page while a status call was out
+    $('#ig-st').innerHTML = igdbStatus(st); $('#ig-badge').innerHTML = igdbBadge(st);
+    clearTimeout(igTimer);
+    if (st.running) igTimer = setTimeout(async () => { if (!stale() && $('#ig-st')) igShow(await api('/igdb/status').catch(() => st)); }, 3000);
+  };
   if (ig) igShow(ig);
   $('#ig-f')?.addEventListener('submit', async (e) => {
     e.preventDefault();
@@ -294,6 +299,16 @@ export async function settings(view, stale) {
     try { await api('/summary/week/send', { method: 'POST' }); toast('Weekly summary sent'); } catch (err) { fail(err); } finally { b.disabled = false; }
   });
   const bkBox = $('#bk-box');
+  // redraw the list keeping it open, and put focus back near where it was
+  const bkRedraw = async (focus) => {
+    const open = !!bkBox.querySelector('details')?.open;
+    const b = await api('/backups').catch(() => null);
+    if (stale() || !bkBox.isConnected) return;
+    bkBox.innerHTML = backupBox(b);
+    const d = bkBox.querySelector('details');
+    if (d && open) d.open = true;
+    (focus(bkBox) || bkBox.querySelector('#bk-now'))?.focus();
+  };
   bkBox?.addEventListener('click', async (e) => {
     const go = e.target.closest('#bk-now');
     const del = e.target.closest('[data-bk-del]');
@@ -301,11 +316,13 @@ export async function settings(view, stale) {
       go.disabled = true;
       go.innerHTML = `${icon('sync')}Backing up…`;
       try { const r = await api('/backups', { method: 'POST' }); toast(`Backup saved: ${r.name}`); } catch (err) { fail(err); }
-      bkBox.innerHTML = backupBox(await api('/backups').catch(() => null));
+      await bkRedraw(() => null);
     } else if (del) {
+      const rows = [...bkBox.querySelectorAll('[data-bk-del]')];
+      const at = rows.indexOf(del);
       if (!(await confirmBox(`Delete ${del.dataset.bkDel}? This cannot be undone.`, { ok: 'Delete', danger: true, title: 'Delete backup?' }))) return;
       try { await api(`/backups/${encodeURIComponent(del.dataset.bkDel)}`, { method: 'DELETE' }); } catch (err) { fail(err); }
-      bkBox.innerHTML = backupBox(await api('/backups').catch(() => null));
+      await bkRedraw((box) => { const left = box.querySelectorAll('[data-bk-del]'); return left[Math.min(at, left.length - 1)] || box.querySelector('details summary'); });
     }
   });
   $('#tok-new').addEventListener('click', () => modal({

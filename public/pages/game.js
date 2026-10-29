@@ -1,6 +1,6 @@
 import {
   $, $$, esc, fmtMin, ago, fmtDate, fmtTime, dayLabel, plat, platDot, platTag, platIcon, STATUSES, cover, icon, api, toast,
-  undoToast, fail, modal, confirmBox, navigate, rerender, state, plural, setTitle, coverHue,
+  undoToast, fail, modal, confirmBox, navigate, rerender, state, plural, setTitle, coverHue, tagHref,
 } from '../app.js';
 import { barChart, heatmap, mountCharts, curveChart } from '../charts.js';
 import { arrow, seriesLabel, seriesName, kpi, sessionItem, groupByDay, rarityText, achIcon, logSessionModal, bindSessionEdits, dayKey } from './shared.js';
@@ -455,7 +455,7 @@ function mergeModal(g) {
 
 // ---------- IGDB metadata ----------
 const BY = { steam: 'its Steam id', title: 'its title', manual: 'you' };
-const tagLink = (kind, name) => `<a class="chip" href="/library?tag=${encodeURIComponent(`${kind}:${name}`)}" data-link>${esc(name)}</a>`;
+const tagLink = (kind, name) => `<a class="chip" href="${tagHref(kind, name)}" data-link>${esc(name)}</a>`;
 const hrs = (m) => fmtMin(m, { short: m >= 600 });
 
 /** About: genres and the rest of the IGDB record, the typical time to beat against yours. Nothing without IGDB. */
@@ -466,9 +466,9 @@ function aboutCard(g) {
     return `<div class="card" id="g-about"><div class="card-h"><h2>About</h2></div><p class="small muted" style="margin:0">${m.matched_by === 'manual' ? 'You said IGDB has no entry for this game.' : 'IGDB has no game with this title.'} <button class="link linkbtn" id="g-meta-fix">Find it on IGDB</button></p></div>`;
   }
   const people = [
-    m.developers.length && ['Developer', m.developers.slice(0, 2).map((n) => `<a class="link" href="/library?tag=${encodeURIComponent(`developer:${n}`)}" data-link>${esc(n)}</a>`).join(', ')],
+    m.developers.length && ['Developer', m.developers.slice(0, 2).map((n) => `<a class="link" href="${tagHref('developer', n)}" data-link>${esc(n)}</a>`).join(', ')],
     m.publishers.length && m.publishers.join() !== m.developers.join() && ['Publisher', m.publishers.slice(0, 2).map(esc).join(', ')],
-    m.franchises.length && ['Series', m.franchises.slice(0, 2).map((n) => `<a class="link" href="/library?tag=${encodeURIComponent(`franchise:${n}`)}" data-link>${esc(n)}</a>`).join(', ')],
+    m.franchises.length && ['Series', m.franchises.slice(0, 2).map((n) => `<a class="link" href="${tagHref('franchise', n)}" data-link>${esc(n)}</a>`).join(', ')],
     m.release_date && ['Released', fmtDate(m.release_date, { year: 'numeric', month: 'short', day: 'numeric' })],
     m.rating != null && ['IGDB rating', `${Math.round(m.rating)}<span class="tiny muted"> / 100${m.rating_count ? ` · ${m.rating_count.toLocaleString()} ratings` : ''}</span>`],
   ].filter(Boolean);
@@ -504,12 +504,15 @@ function metaModal(g) {
     foot: `${g.meta?.locked ? '<button class="btn ghost" id="mm-auto">Match automatically</button>' : ''}<button class="btn ghost" id="mm-none">It isn’t on IGDB</button><span class="grow"></span><button class="btn" data-close>Cancel</button>`,
     onMount(el) {
       const out = el.querySelector('#mm-r');
+      let seq = 0; // the latest search wins: the one run on opening must not replace yours
       const search = async () => {
+        const my = ++seq;
         out.innerHTML = '<p class="small muted pulse">Searching IGDB…</p>';
         try {
           const r = await api(`/igdb/search?q=${encodeURIComponent(el.querySelector('#mm-q').value)}`);
+          if (my !== seq || !el.isConnected) return;
           out.innerHTML = r.length ? r.map((x) => `<div class="item"><div class="grow"><div class="ttl ellipsis">${esc(x.name)}</div><div class="sub">${x.year || 'year unknown'}${x.main ? '' : ' · DLC, bundle or other edition'}${x.id === g.meta?.igdb_id ? ' · matched now' : ''}</div></div><button class="btn sm" data-pick="${x.id}">Use this</button></div>`).join('') : '<p class="small muted">Nothing found: try another spelling.</p>';
-        } catch (e) { out.innerHTML = `<p class="small" style="color:var(--bad-ink)">${esc(e.message)}</p>`; }
+        } catch (e) { if (my === seq && el.isConnected) out.innerHTML = `<p class="small" style="color:var(--bad-ink)">${esc(e.message)}</p>`; }
       };
       const set = async (body, msg) => { try { await api(`/games/${g.id}/meta`, body); m.close(); toast(msg); rerender(); } catch (e) { fail(e); } };
       el.querySelector('#mm-f').addEventListener('submit', (e) => { e.preventDefault(); search(); });

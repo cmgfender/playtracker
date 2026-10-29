@@ -145,10 +145,20 @@ function bindTip(ch) {
   };
   ch.addEventListener('pointermove', show);
   ch.addEventListener('pointerdown', show);
-  ch.addEventListener('pointerleave', () => { if (document.activeElement !== ch) tip.classList.remove('on'); });
+  // a finger lifting off "leaves" at once: on touch the tip stays until a tap elsewhere
+  ch.addEventListener('pointerleave', (e) => { if (e.pointerType !== 'touch' && document.activeElement !== ch) tip.classList.remove('on'); });
   // marks with an href open it on click; on a touch screen the first tap shows the tip, a second opens
   let touch = false; let armed = null;
-  ch.addEventListener('pointerdown', (e) => { touch = e.pointerType === 'touch'; });
+  const away = (e) => {
+    if (ch.contains(e.target)) return;
+    armed = null;
+    tip.classList.remove('on');
+    document.removeEventListener('pointerdown', away, true);
+  };
+  ch.addEventListener('pointerdown', (e) => {
+    touch = e.pointerType === 'touch';
+    if (touch) document.addEventListener('pointerdown', away, true);
+  });
   ch.addEventListener('click', (e) => {
     const t = e.target.closest?.('[data-href]');
     if (!t) { armed = null; return; }

@@ -45,9 +45,11 @@ export class Router {
           ...Object.entries(r.doc.query || {}).map(([name, description]) => ({ name, in: 'query', required: false, description, schema: { type: 'string' } })),
         ],
         // `returns`: the response's fields, for clients (the web UI, scripts, mobile apps)
-        responses: { 200: { description: r.doc.returns || 'OK' }, 401: { description: 'Unauthorized' } },
+        responses: { 200: { description: r.doc.returns || 'OK' }, ...(r.doc.public ? {} : { 401: { description: 'Unauthorized' } }) },
       };
-      if (r.doc.body) op.requestBody = { content: { 'application/json': { schema: { type: 'object', description: r.doc.body } } } };
+      if (r.doc.public) op.security = []; // health, login: no token needed
+      // bodyType: what else the body may be (CSV imports, a ZIP upload); JSON otherwise
+      if (r.doc.body) op.requestBody = { content: Object.fromEntries([r.doc.binary ? null : 'application/json', ...(r.doc.bodyType || [])].filter(Boolean).map((t) => [t, { schema: { type: t === 'application/json' ? 'object' : 'string', ...(t === 'application/zip' ? { format: 'binary' } : {}), description: r.doc.body } }])) };
       paths[p][r.method.toLowerCase()] = op;
     }
     return {

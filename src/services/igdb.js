@@ -61,9 +61,14 @@ const isMain = (c) => {
  * an alternative name) must equal the title once normalized. Ties prefer main games, the
  * platforms the game is owned on here, and more ratings.
  */
+// a lighter normalization that keeps edition words ("Legendary Edition", "Definitive Edition"):
+// among candidates that are the same title once normalized, the one named exactly like it wins
+const light = (s) => String(s || '').toLowerCase().replace(/[™®©℠]/g, '').normalize('NFKD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, ' ').trim();
+
 export function pickMatch(title, candidates, platforms = []) {
   const want = normalizeTitle(title);
   if (!want) return null;
+  const exactName = light(title);
   const wantedPlatforms = new Set(platforms.flatMap((p) => PLATFORM_IDS[p] || []));
   let best = null;
   for (const c of candidates || []) {
@@ -72,7 +77,8 @@ export function pickMatch(title, candidates, platforms = []) {
     const alt = !exact && (c.alternative_names || []).some((a) => normalizeTitle(a?.name) === want);
     if (!exact && !alt) continue;
     const plats = (c.platforms || []).map((p) => (typeof p === 'object' ? p.id : p));
-    const score = (exact ? 4 : 2) + (isMain(c) ? 3 : 0) + (plats.some((p) => wantedPlatforms.has(p)) ? 2 : 0) + Math.min(1, Math.log10(1 + (c.total_rating_count || c.rating_count || 0)) / 3);
+    const named = light(c.name) === exactName || (c.alternative_names || []).some((a) => light(a?.name) === exactName);
+    const score = (exact ? 4 : 2) + (named ? 3 : 0) + (isMain(c) ? 3 : 0) + (plats.some((p) => wantedPlatforms.has(p)) ? 2 : 0) + Math.min(1, Math.log10(1 + (c.total_rating_count || c.rating_count || 0)) / 3);
     if (!best || score > best.score) best = { c, score };
   }
   return best ? best.c : null;
@@ -103,7 +109,8 @@ export class Igdb {
     const { id, secret } = this.creds();
     if (!id || !secret) throw new ProviderError('IGDB is not set up: add a Twitch client id and secret', { auth: true });
     const kept = this.settings.get('igdb_token');
-    if (!force && kept?.access_token && kept.client_id === id && kept.expires_at - Date.now() > DAY) return kept.access_token;
+    // renewed a day before it expires, or a tenth of its life for short-lived ones (a 401 renews it anyway)
+    if (!force && kept?.access_token && kept.client_id === id && kept.expires_at - Date.now() > Math.min(DAY, Math.max(60_000, (kept.expires_at - (kept.issued_at || kept.expires_at - DAY)) / 10))) return kept.access_token;
     const u = new URL(this.tokenUrl);
     u.searchParams.set('client_id', id); u.searchParams.set('client_secret', secret); u.searchParams.set('grant_type', 'client_credentials');
     let r;
@@ -112,7 +119,7 @@ export class Igdb {
       throw err;
     }
     if (!r?.access_token) throw new ProviderError('Twitch returned no access token for IGDB', { auth: true });
-    this.settings.set({ igdb_token: { access_token: r.access_token, client_id: id, expires_at: Date.now() + (Number(r.expires_in) || 3600) * 1000 } });
+    this.settings.set({ igdb_token: { access_token: r.access_token, client_id: id, issued_at: Date.now(), expires_at: Date.now() + (Number(r.expires_in) || 3600) * 1000 } });
     return r.access_token;
   }
 
@@ -176,6 +183,8 @@ export class Igdb {
   store(gameId, rec, matchedBy, { locked = false } = {}) {
     const db = this.db;
     const now = Date.now();
+    // merged or deleted while the pass waited on IGDB: nothing to store
+    if (!db.prepare('SELECT 1 FROM games WHERE id = ?').get(gameId)) return;
     const min = (s) => (Number(s) > 0 ? Math.round(Number(s) / 60) : null);
     tx(db, () => {
       if (!rec) {
@@ -244,6 +253,7 @@ export class Igdb {
     try {
       const ids = new Map(); // game id -> [igdb id, how]
       const refresh = list.filter((g) => g.igdb_id != null);
+      const refreshing = new Set(refresh.map((g) => g.id));
       for (const g of refresh) ids.set(g.id, [g.igdb_id, g.matched_by]);
       const fresh = list.filter((g) => g.igdb_id == null && !g.locked);
       const steam = fresh.filter((g) => g.steam_appid);
@@ -266,9 +276,14 @@ export class Igdb {
       const recs = want.length ? await this.details(want) : new Map();
       for (const [gameId, [igdbId, how]] of ids) {
         const rec = recs.get(igdbId);
+        if (!rec && refreshing.has(gameId)) {
+          // a refresh IGDB did not answer for (an id it merged, a partial reply): keep the match as it is
+          this.db.prepare('UPDATE game_meta SET fetched_at = ? WHERE game_id = ?').run(Date.now(), gameId);
+          continue;
+        }
         if (!rec) { this.store(gameId, null, 'none'); counts.none++; continue; }
         this.store(gameId, rec, how, { locked: how === 'manual' });
-        if (refresh.some((g) => g.id === gameId)) counts.refreshed++;
+        if (refreshing.has(gameId)) counts.refreshed++;
         else { counts.matched++; counts[how === 'steam' ? 'by_steam' : 'by_title']++; }
       }
       this.state.done = list.length;
