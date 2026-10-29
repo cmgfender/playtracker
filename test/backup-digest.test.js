@@ -258,6 +258,11 @@ describe('weekly summary', () => {
       assert.equal(sent[0].summary.minutes, 285);
       assert.match(sent[0].text, /your week/);
       assert.equal(a.settings.public().weekly_summary_sent, undefined);
+      // the week start changed right after a send: the overlapping week is not sent again
+      a.settings.set({ week_starts_on: 0 });
+      assert.equal(await w.tick(local(2026, 3, 16, 10, 0)), false, 'the Sunday week Mar 8-14 overlaps the week just sent');
+      assert.equal(sent.length, 1);
+      a.settings.set({ week_starts_on: 1 });
       // first run long after the slot (an update on a Wednesday): last week is marked, not sent
       a.settings.set({ weekly_summary_sent: null });
       const quietly = new WeeklySummary({ db: a.db, settings: a.settings, log: quiet, send: async () => { throw new Error('must not send'); } });

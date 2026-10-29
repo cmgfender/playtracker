@@ -6,7 +6,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createApp } from '../src/server.js';
-import { previousPeriod, comparePeriod, periodHighlights } from '../src/services/stats.js';
+import { previousPeriod, comparePeriod, periodHighlights, resolveRange, dayKey } from '../src/services/stats.js';
 import { flushRollups } from '../src/services/rollup.js';
 
 const MIN = 60_000;
@@ -135,4 +135,17 @@ test('playStyle: focus per week, what became of the games started, staying power
     assert.ok(['focused', 'balanced', 'varied'].includes(s.focus.style));
     assert.ok(s.focus.series.every((w) => w.games >= 1 && w.top_share > 0 && w.top_share <= 1));
   } finally { close(); }
+});
+
+test('day-count ranges and the previous period step by calendar days across DST changes', () => {
+  // US changes: Mar 8 and Nov 1 2026 (run with TZ=America/New_York to exercise them)
+  for (const now of [local(2026, 3, 9, 0, 30), local(2026, 11, 5, 23, 30), local(2026, 11, 1, 23, 30), local(2026, 3, 29, 1, 30)]) {
+    const r = resolveRange('7d', now);
+    assert.equal(dayKey(r.from), dayKey(new Date(new Date(now).setDate(new Date(now).getDate() - 6))), `7d from ${new Date(now)}`);
+    assert.equal(new Date(r.from).getHours(), 0);
+  }
+  const w = previousPeriod('week', local(2026, 3, 9, 0, 30));
+  assert.equal(new Date(w.now).toString(), new Date(local(2026, 3, 2, 0, 30)).toString());
+  const d1 = previousPeriod('1d', local(2026, 3, 9, 0, 30));
+  assert.equal(dayKey(d1.now), '2026-03-08');
 });

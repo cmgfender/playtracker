@@ -43,6 +43,7 @@ function fakeIgdb() {
   const calls = { token: 0, games: 0, multiquery: 0, external_games: 0, ttb: 0, unauthorized: 0 };
   let token = 'tok-1';
   let reject = 0; // reject this many API calls with 401 (an expired token)
+  let lifetime = 5_000_000;
   const server = http.createServer((req, res) => {
     let body = '';
     req.on('data', (c) => { body += c; });
@@ -53,7 +54,7 @@ function fakeIgdb() {
         calls.token++;
         if (u.searchParams.get('client_secret') !== 'shh') return send(400, { status: 400, message: 'invalid client secret' });
         token = `tok-${calls.token}`;
-        return send(200, { access_token: token, expires_in: 5_000_000, token_type: 'bearer' });
+        return send(200, { access_token: token, expires_in: lifetime, token_type: 'bearer' });
       }
       if (req.headers['client-id'] !== 'cid' || req.headers.authorization !== `Bearer ${token}` || reject > 0) { reject = Math.max(0, reject - 1); calls.unauthorized++; return send(401, { message: 'Authorization Failure' }); }
       const ids = (re) => [...(body.match(re)?.[1] || '').matchAll(/"?([^",()\s]+)"?/g)].map((m) => m[1]);
@@ -83,7 +84,7 @@ function fakeIgdb() {
       send(404, { message: 'no such endpoint' });
     });
   });
-  return { server, calls, expire: (n = 1) => { reject = n; } };
+  return { server, calls, expire: (n = 1) => { reject = n; }, lifetime: (s) => { lifetime = s; } };
 }
 
 describe('IGDB metadata', () => {
@@ -231,6 +232,29 @@ describe('IGDB metadata', () => {
     assert.ok(w.reasons.some((x) => x.id === 'time_to_beat' && x.text === 'About 9h left of a typical main story (10h)'), JSON.stringify(w.reasons));
   });
 
+  test('a short-lived token is reused, not fetched again before every request', async () => {
+    fake.lifetime(12 * 3600);
+    await igdb.token(true);
+    const before = fake.calls.token;
+    for (let i = 0; i < 4; i++) await igdb.query('games', 'fields name; limit 1;');
+    assert.equal(fake.calls.token, before);
+    fake.lifetime(5_000_000);
+  });
+
+  test('a refresh IGDB does not answer keeps a match chosen by hand; a game gone mid-pass is skipped', async () => {
+    const db = app.db;
+    assert.equal(db.prepare('SELECT igdb_id, locked FROM game_meta WHERE game_id = ?').get(ids.home).igdb_id, 777);
+    const i = CATALOG.findIndex((g) => g.id === 777);
+    const [gone] = CATALOG.splice(i, 1);
+    try {
+      await igdb.run({ now: Date.now() + 31 * DAY });
+      const m = db.prepare('SELECT igdb_id, matched_by, locked FROM game_meta WHERE game_id = ?').get(ids.home);
+      assert.deepEqual({ ...m }, { igdb_id: 777, matched_by: 'manual', locked: 1 });
+    } finally { CATALOG.splice(i, 0, gone); }
+    assert.doesNotThrow(() => igdb.store(987654, CATALOG[0], 'title'));
+    assert.equal(db.prepare('SELECT 1 FROM game_meta WHERE game_id = 987654').get(), undefined);
+  });
+
   test('merging keeps the metadata when the target has none', () => {
     const db = app.db;
     const extra = Number(db.prepare("INSERT INTO games(title, norm_title, created_at, updated_at) VALUES ('Witcher copy', 'witcher copy', 0, 0)").run().lastInsertRowid);
@@ -259,6 +283,11 @@ describe('pickMatch and tagsOf', () => {
     assert.equal(pickMatch('', c), null);
     // a newer IGDB names the field game_type
     assert.equal(pickMatch('Hades', [{ id: 3, name: 'Hades', game_type: 1 }, { id: 4, name: 'Hades', game_type: { id: 0 } }]).id, 4);
+    // a re-release named like the game wins over the original (and the other way round)
+    const me = [{ id: 20, name: 'Mass Effect', category: 0, total_rating_count: 900 }, { id: 21, name: 'Mass Effect Legendary Edition', category: 9, total_rating_count: 300 }];
+    assert.equal(pickMatch('Mass Effect Legendary Edition', me).id, 21);
+    assert.equal(pickMatch('Mass Effect', me).id, 20);
+    assert.equal(pickMatch('Mafia', [{ id: 30, name: 'Mafia: Definitive Edition', category: 8, total_rating_count: 500 }, { id: 31, name: 'Mafia', category: 0, total_rating_count: 200 }]).id, 31);
     // platforms owned here break a tie between two main games of the same name
     assert.equal(pickMatch('Prey', [{ id: 10, name: 'Prey', category: 0, platforms: [6] }, { id: 11, name: 'Prey', category: 0, platforms: [48] }], ['psn']).id, 11);
   });
