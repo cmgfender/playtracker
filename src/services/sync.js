@@ -1,5 +1,6 @@
 import { tx } from '../db.js';
 import { providers } from '../providers/index.js';
+import { PC_DEVICE } from '../providers/xbox.js';
 import { httpJson } from '../providers/http.js';
 import { findOrCreateGame } from './library.js';
 import { normalizeTitle, importedAccount } from './titles.js';
@@ -17,6 +18,11 @@ const MIN = 60_000;
 const HOUR = 60 * MIN;
 const DAY = 24 * HOUR;
 const PIN_MAX = 360; // a single delta up to 6h is treated as one continuous session
+// Xbox services on a PC report games started from Steam too, and can keep reporting one for hours
+// after it closes, or report it again later with nothing running. A run of PC sightings of a game
+// (its spans at most this far apart) during which Steam's presence saw that game played is this
+// echo, not play: such spans are marked session_id = 0 (see steamEcho) - never shown or counted.
+const ECHO_GAP = 6 * HOUR;
 const TYPICAL_SESSION = { median: 120, long: 240 }; // until learned from exactly observed sessions
 
 // Achievements read per enrichment run, after the history pass: titles played since they were
@@ -186,6 +192,20 @@ export function applyItems(db, account, items, { settings, now = Date.now(), syn
   // a recorded session claims any live-presence span it covers, so a span is never used twice
   const claimSpans = db.prepare(`UPDATE presence SET session_id = ? WHERE account_id = ? AND ext_id = ? AND session_id IS NULL
     AND started_at < ? AND COALESCE(ended_at, last_seen_at) > ?`);
+  // the part of a Steam echo (see ECHO_GAP) Steam's presence saw the game played in: where minutes
+  // the platform credits for it go (Xbox counts some games played from Steam too), never linked to
+  // the echo, so it stays hidden; a session already starting there is extended
+  const steamSaw = db.prepare(`SELECT MIN(p.started_at) s, MAX(COALESCE(p.ended_at, p.last_seen_at)) e FROM presence p
+    JOIN accounts a ON a.id = p.account_id AND a.platform = 'steam' JOIN entries e ON e.account_id = p.account_id AND e.ext_id = p.ext_id
+    JOIN games g ON g.id = e.game_id WHERE (e.game_id = ? OR g.norm_title = ?) AND p.started_at < ? AND COALESCE(p.ended_at, p.last_seen_at) > ?`);
+  const sessionAt = db.prepare("SELECT id FROM sessions WHERE entry_id = ? AND kind = 'play' AND started_at = ? ORDER BY id DESC LIMIT 1");
+  const steamPart = (entry, sp) => {
+    const end = sp.ended_at ?? sp.last_seen_at;
+    const st = steamSaw.get(entry.game_id ?? -1, normalizeTitle(entry.title || sp.title || '') || null, end, sp.started_at);
+    const from = Math.max(sp.started_at, st?.s ?? Infinity);
+    const to = Math.min(end, st?.e ?? -Infinity);
+    return to > from ? { id: null, session_id: sessionAt.get(entry.id, from)?.id ?? null, started_at: from, ended_at: to, last_seen_at: to, device: sp.device } : null;
+  };
   const lastPlay = db.prepare("SELECT * FROM sessions WHERE entry_id = ? AND kind = 'play' ORDER BY sort_time DESC, id DESC LIMIT 1");
   const pinnedAt = db.prepare("SELECT * FROM sessions WHERE entry_id = ? AND kind = 'play' AND started_at = ? AND confidence = 'pinned'");
   const unpin = db.prepare("UPDATE sessions SET started_at = NULL, ended_at = NULL, window_start = ?, window_end = ?, confidence = 'window', note = ? WHERE id = ?");
@@ -237,6 +257,7 @@ export function applyItems(db, account, items, { settings, now = Date.now(), syn
     const spanLen = (sp) => Math.max(1, ((sp.ended_at ?? sp.last_seen_at) - sp.started_at) / MIN);
     const spanUsed = (sp) => (sp.session_id ? (sessionMinutes.get(sp.session_id)?.minutes || 0) : 0);
     const spans = spansFor.all(account.id, String(it.extId), we + 15 * MIN, ws - model.max_session_min * MIN)
+      .map((sp) => (sp.session_id === 0 ? steamPart(entry, sp) : sp)).filter(Boolean)
       .filter((sp) => model.spanReported(sp, ws, we) && (!sp.session_id || model.countsInProgress())
         // a finished span its session already fully credited is used up
         && !(sp.session_id && sp.ended_at != null && spanLen(sp) - spanUsed(sp) <= 0));
@@ -246,7 +267,7 @@ export function applyItems(db, account, items, { settings, now = Date.now(), syn
     const reached = entry.playtime_min > 0 ? reachedAt.get(entry.id, entry.playtime_min)?.t : null;
     const pending = reached && reached < ws
       ? endedSpans.all(account.id, String(it.extId), Math.max(reached, now - 7 * DAY), we)
-        .filter((sp) => !spans.some((x) => x.id === sp.id) && spanLen(sp) - spanUsed(sp) >= 1)
+        .filter((sp) => sp.session_id !== 0 && !spans.some((x) => x.id === sp.id) && spanLen(sp) - spanUsed(sp) >= 1)
       : [];
     if (spans.length || pending.length) {
       const credit = (sp, m, wsFor, weFor) => {
@@ -654,7 +675,8 @@ export class SyncService {
     const soon = this.soon.get(account.id);
     if (soon == null) return null;
     const interval = (providers[account.platform]?.profile?.presence?.interval_sec || 120) * 1000;
-    const playing = this.db.prepare('SELECT 1 FROM presence WHERE account_id = ? AND ended_at IS NULL AND last_seen_at > ? LIMIT 1').get(account.id, now - 3 * interval);
+    // (Steam's play echoed by Xbox is not a game played on this account)
+    const playing = this.db.prepare('SELECT 1 FROM presence WHERE account_id = ? AND ended_at IS NULL AND last_seen_at > ? AND (session_id IS NULL OR session_id != 0) LIMIT 1').get(account.id, now - 3 * interval);
     return playing ? null : soon;
   }
 
@@ -1072,7 +1094,7 @@ export class SyncService {
         if (ids.has(s.ext_id) && !lapsed.has(s.id)) unmemoized(db, db.prepare('UPDATE presence SET last_seen_at = ? WHERE id = ?').run(now, s.id));
         else {
           db.prepare('UPDATE presence SET ended_at = ? WHERE id = ?').run(Math.min(now, s.last_seen_at + half), s.id);
-          closed++;
+          if (s.session_id !== 0) closed++; // (an echo ending is not play ending)
         }
       }
       for (const p of playing) {
@@ -1080,6 +1102,12 @@ export class SyncService {
         const start = prev.lastPoll && now - prev.lastPoll < intervalSec * 3000 ? Math.round((prev.lastPoll + now) / 2) : now;
         db.prepare('INSERT INTO presence(account_id, ext_id, title, started_at, last_seen_at, device) VALUES (?, ?, ?, ?, ?, ?)').run(account.id, String(p.extId), p.title || null, start, now, p.device || null);
         this.plog.info(`${account.platform}/${account.name} started playing ${p.title || p.extId}`);
+      }
+      // (also one a sync credited before Steam's presence saw the game: the session keeps its minutes)
+      for (const s of db.prepare('SELECT * FROM presence WHERE account_id = ? AND ended_at IS NULL AND (session_id IS NULL OR session_id > 0) AND device IS NOT NULL').all(account.id)) {
+        if (!this.steamEcho(account, s)) continue;
+        db.prepare('UPDATE presence SET session_id = 0 WHERE id = ?').run(s.id);
+        this.plog.info(`${account.platform}/${account.name}: ${s.title || s.ext_id} on a PC is Steam's play, reported by Xbox too - not counted`);
       }
       // keep presence history bounded
       db.prepare('DELETE FROM presence WHERE account_id = ? AND ended_at IS NOT NULL AND ended_at < ?').run(account.id, now - 90 * DAY);
@@ -1118,7 +1146,8 @@ export class SyncService {
         const minutes = Math.round((sp.ended_at - sp.started_at) / MIN);
         // too short, or the same game played then on another account that counts its playtime
         // (a Steam game signing in to Xbox services shows up in Xbox presence too)
-        if (minutes < minMin || playedElsewhere(db, entry, sp.started_at, sp.ended_at)) { db.prepare('UPDATE presence SET session_id = 0 WHERE id = ?').run(sp.id); continue; }
+        // (or Steam's play echoed by Xbox on a PC - see ECHO_GAP)
+        if (minutes < minMin || this.steamEcho(account, sp) || playedElsewhere(db, entry, sp.started_at, sp.ended_at)) { db.prepare('UPDATE presence SET session_id = 0 WHERE id = ?').run(sp.id); continue; }
         const r = db.prepare(`INSERT INTO sessions(entry_id, sync_id, source, kind, minutes, window_start, window_end, started_at, ended_at, confidence, device, note, created_at)
           VALUES (?, NULL, 'presence', 'play', ?, ?, ?, ?, ?, 'exact', ?, ?, ?)`)
           .run(entry.id, minutes, sp.started_at, sp.ended_at, sp.started_at, sp.ended_at, sp.device || null, 'From live presence (platform reports no playtime for this title)', now);
@@ -1148,6 +1177,10 @@ export class SyncService {
           const gap = f.prev ? Math.floor((f.at - f.prev) / MIN) : Infinity;
           const minutes = Math.max(minMin, Math.min(typical, gap, 360));
           const start = f.at - minutes * MIN;
+          // a last-played time Steam's play echoed by Xbox moved after presence lapsed (the echo's
+          // span was closed by then, so `seen` misses it): judged as part of the title's run
+          const device = db.prepare('SELECT device FROM presence WHERE account_id = ? AND ext_id = ? AND started_at < ? ORDER BY started_at DESC LIMIT 1').get(accountId, f.extId, f.at)?.device;
+          if (this.steamEcho(account, { ext_id: f.extId, title: entry.title, device, started_at: start, ended_at: f.at })) continue;
           const r = db.prepare(`INSERT INTO sessions(entry_id, sync_id, source, kind, minutes, window_start, window_end, started_at, ended_at, confidence, device, note, created_at)
             VALUES (?, NULL, 'sync', 'play', ?, ?, ?, ?, ?, 'pinned', NULL, ?, ?)`)
             .run(entry.id, minutes, start, f.at, start, f.at, 'Length estimated: the platform reports no playtime for this title and live presence missed this session', now);
@@ -1160,6 +1193,68 @@ export class SyncService {
     if (made) this.plog.info(`${account.platform}/${account.name}: ${made} session${made > 1 ? 's' : ''} recorded from presence (title reports no playtime)`);
     if (estimated) this.plog.info(`${account.platform}/${account.name}: ${estimated} session${estimated > 1 ? 's' : ''} with estimated length (no playtime reported and presence missed ${estimated > 1 ? 'them' : 'it'})`);
     return made + estimated;
+  }
+
+  /**
+   * Is this span (open or finished) of a title on a PC Steam's play echoed by Xbox (see ECHO_GAP)?
+   * The run it belongs to: the earlier PC spans of the title, each ending within ECHO_GAP of the
+   * next one's start (Xbox reported the game again, polls paused). Steam's live presence must have
+   * seen the same game - by grouping, or by title - while the run went on.
+   */
+  steamEcho(account, span) {
+    if (account.platform === 'steam' || !PC_DEVICE.test(span.device || '')) return false;
+    const db = this.db;
+    const earlier = db.prepare(`SELECT started_at, ended_at, device FROM presence WHERE account_id = ? AND ext_id = ? AND id != ?
+      AND started_at < ? AND ended_at IS NOT NULL ORDER BY started_at DESC`).all(account.id, span.ext_id, span.id ?? -1, span.started_at);
+    let from = span.started_at;
+    for (const p of earlier) {
+      if (!PC_DEVICE.test(p.device || '')) continue;
+      if (p.ended_at < from - ECHO_GAP) break;
+      from = Math.min(from, p.started_at);
+    }
+    const entry = db.prepare('SELECT game_id, title FROM entries WHERE account_id = ? AND ext_id = ?').get(account.id, span.ext_id);
+    const norm = normalizeTitle(entry?.title || span.title || '') || null;
+    // (a Steam span still open runs on past its last poll)
+    return !!db.prepare(`SELECT 1 FROM presence p JOIN accounts a ON a.id = p.account_id AND a.platform = 'steam'
+      JOIN entries e ON e.account_id = p.account_id AND e.ext_id = p.ext_id JOIN games g ON g.id = e.game_id
+      WHERE (e.game_id = ? OR g.norm_title = ?) AND p.started_at < ? AND COALESCE(p.ended_at, p.last_seen_at + ?) > ? LIMIT 1`)
+      .get(entry?.game_id ?? -1, norm, span.ended_at ?? span.last_seen_at, 10 * MIN, from);
+  }
+
+  /**
+   * Steam echoes an earlier version took for play: open spans of one are marked (no longer
+   * "playing now"), and the presence-only sessions made from them are removed with the minutes
+   * they added - for titles still without a playtime stat (once one is read, the title's total is
+   * reconciled with it, and taking minutes out would count them again as new play). Only as far
+   * back as presence is kept (90 days): older sessions have no Steam presence to compare. Returns
+   * the sessions removed.
+   */
+  dropSteamEchoes() {
+    const db = this.db;
+    const accounts = new Map();
+    const acc = (id) => { if (!accounts.has(id)) accounts.set(id, this.account(id)); return accounts.get(id); };
+    let n = 0;
+    tx(db, () => {
+      for (const sp of db.prepare('SELECT * FROM presence WHERE ended_at IS NULL AND (session_id IS NULL OR session_id > 0) AND device IS NOT NULL').all()) {
+        const a = acc(sp.account_id);
+        if (a && this.steamEcho(a, sp)) db.prepare('UPDATE presence SET session_id = 0 WHERE id = ?').run(sp.id);
+      }
+      const spanOf = new Map(db.prepare('SELECT id, session_id FROM presence WHERE session_id > 0').all().map((r) => [r.session_id, r.id]));
+      const rows = db.prepare(`SELECT s.id, s.minutes, s.entry_id, s.started_at, s.ended_at, s.device, e.account_id, e.ext_id, e.title
+        FROM sessions s JOIN entries e ON e.id = s.entry_id
+        WHERE s.source = 'presence' AND s.kind = 'play' AND e.account_id IS NOT NULL AND s.device IS NOT NULL AND s.started_at > ?`).all(Date.now() - 91 * DAY);
+      for (const r of rows) {
+        const a = acc(r.account_id);
+        if (!a?.state?.unmetered?.[r.ext_id]) continue;
+        if (!this.steamEcho(a, { id: spanOf.get(r.id), ext_id: r.ext_id, title: r.title, device: r.device, started_at: r.started_at, ended_at: r.ended_at })) continue;
+        db.prepare('DELETE FROM sessions WHERE id = ?').run(r.id);
+        db.prepare('UPDATE presence SET session_id = 0 WHERE session_id = ?').run(r.id);
+        db.prepare('UPDATE entries SET playtime_min = MAX(0, playtime_min - ?) WHERE id = ?').run(r.minutes, r.entry_id);
+        n++;
+      }
+      if (n) flushRollups(db);
+    });
+    return n;
   }
 
   async pollPresence(account) {
@@ -1179,6 +1274,10 @@ export class SyncService {
       if (res.shape) st.shape = { at: now, ...res.shape };
       else if (res.online) st.online = res.online;
       this.applyPresence(account, res.playing || [], { intervalSec: provider.profile.presence.interval_sec, now });
+      if (res.seen?.length) {
+        const echoes = new Set(this.db.prepare('SELECT ext_id FROM presence WHERE account_id = ? AND ended_at IS NULL AND session_id = 0').all(account.id).map((r) => r.ext_id));
+        for (const r of st.seen.titles) if (echoes.has(r.id) && PC_DEVICE.test(r.device || '')) r.skipped = 'steam echo';
+      }
       if (st.failures >= 3) this.plog.info(`${account.platform}/${account.name}: presence recovered`);
       st.failures = 0;
     } catch (err) {
@@ -1193,12 +1292,16 @@ export class SyncService {
   }
 
   nowPlaying() {
-    return this.db.prepare(`SELECT p.account_id, p.ext_id, p.title presence_title, p.started_at, p.last_seen_at, a.platform, a.name account_name,
+    const rows = this.db.prepare(`SELECT p.account_id, p.ext_id, p.title presence_title, p.started_at, p.last_seen_at, p.device, a.platform, a.name account_name,
         e.game_id, g.title, g.cover_url
       FROM presence p JOIN accounts a ON a.id = p.account_id
       LEFT JOIN entries e ON e.account_id = p.account_id AND e.ext_id = p.ext_id LEFT JOIN games g ON g.id = e.game_id
-      WHERE p.ended_at IS NULL AND p.last_seen_at > ?`).all(Date.now() - 20 * MIN)
+      WHERE p.ended_at IS NULL AND p.last_seen_at > ? AND (p.session_id IS NULL OR p.session_id != 0)`).all(Date.now() - 20 * MIN)
       .map((r) => ({ ...r, title: r.title || r.presence_title || r.ext_id, minutes: Math.round((r.last_seen_at - r.started_at) / MIN) }));
+    // Steam's play Xbox reported from the PC before its next poll marks it an echo
+    const steam = rows.filter((r) => r.platform === 'steam');
+    const onSteam = (r) => steam.some((x) => (x.game_id != null && x.game_id === r.game_id) || normalizeTitle(x.title) === normalizeTitle(r.title));
+    return rows.filter((r) => r.platform === 'steam' || !PC_DEVICE.test(r.device || '') || !onSteam(r));
   }
 
   presenceInfo(accountId) {
@@ -1233,6 +1336,8 @@ export class SyncService {
       flushRollups(this.db);
       const doubled = dropDoubledPresence(this.db);
       if (doubled) this.log.info(`Removed ${doubled} presence session${doubled > 1 ? 's' : ''} another account already counts`);
+      const echoes = this.dropSteamEchoes();
+      if (echoes) this.log.info(`Removed ${echoes} presence session${echoes > 1 ? 's' : ''} of Steam play that Xbox reported from the PC too`);
       if (!relearnStyle(this.db, { settings: this.settings.all(), log: this.log })) reinferPending(this.db, { log: this.log, settings: this.settings.all() });
       flushRollups(this.db);
     } catch (e) { this.log.error('History inference failed', e); }
