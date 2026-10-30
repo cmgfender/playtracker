@@ -87,10 +87,10 @@ Microsoft has no public consumer API, so Vestigo uses [OpenXBL](https://xbl.io).
 - Enrichment also reads `dvr/screenshots` and `dvr/gameclips` (2 requests per run). Capture dates are moments of real play and anchor history like achievements do. Only captures still stored by Xbox are returned, so this mostly helps recent history.
 - Titles are checked most recently played first.
 
-**Steam games on a Windows PC:** Xbox services on a PC report games started from Steam as well, and can keep reporting one for hours after it closes. For games in a Steam library whose live presence is on, Steam is the one that counts:
-- Xbox PC presence for them is ignored (it shows as `skipped: "steam"` in diagnostics). The same game on an Xbox console still counts.
-- They never get presence-only or "≈ length" Xbox sessions. Sessions an earlier version recorded this way are removed on start, for titles Xbox still reports no playtime for.
-- If you play the PC Game Pass copy of a game you also own on Steam, it doesn't show as playing now. Its Xbox playtime still syncs, if Xbox reports a `MinutesPlayed` stat for it.
+**Steam games on a Windows PC:** Xbox services on a PC report games started from Steam too. They can keep reporting one for hours after it closes, or report it again later with nothing running. When Steam's live presence saw a game played during a run of Xbox PC sightings of it, that run is Steam's play echoed, not Xbox play. A run is spans of the title no more than 6 hours apart.
+- An echo never shows as playing now. It never becomes an Xbox session, and a sync never puts the title's minutes on it. Diagnostics list it as `skipped: "steam echo"`.
+- Sessions an earlier version made from an echo are removed on start, with their minutes. This only applies to titles Xbox still reports no playtime for.
+- Play on an Xbox console, and the PC Game Pass copy of a game you also have on Steam, count as before when Steam didn't play that game in the same run. The same is true when Steam presence is off.
 
 **Hourly budget:**
 - Every request is counted per account, per hour (shown on the System page).

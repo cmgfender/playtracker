@@ -332,9 +332,6 @@ export const xbox = {
         seen.push(row);
         if (!id || HOME_TITLE_IDS.has(id) || (SHELL_NAMES.test(String(t.name || '').trim()) && !ctx.getEntry?.(id))) { row.skipped = 'home'; continue; }
         if (t.state && t.state !== 'Active') { row.skipped = 'inactive'; continue; }
-        // Xbox services on a PC also report games started from Steam, and can keep reporting them
-        // for hours after they close: for games in a Steam library, Steam's presence is the one
-        if (pc && ctx.steamHas?.(id, t.name)) { row.skipped = 'steam'; continue; }
         if (t.placement && !['Full', 'Fill', 'Snapped'].includes(t.placement) && !(pc && ctx.getEntry?.(id))) { row.skipped = 'background'; continue; }
         playing.push({ extId: id, title: t.name || null, device: d.type || null });
       }
