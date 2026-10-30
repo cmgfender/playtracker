@@ -20,6 +20,7 @@ import { ensureRollupTimezone, flushRollups, rebuildRollups } from './services/r
 import { createLogger, asLogger } from './logger.js';
 import { env, envSource, dataDir, resolveDbFile } from './env.js';
 import os from 'node:os';
+import net from 'node:net';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
@@ -124,6 +125,42 @@ function sendJson(req, res, status, data) {
 
 export const DEFAULT_PORT = 7720;
 
+// Local names nobody outside the network can point at this server: mDNS (.local), what home
+// routers hand out (.lan, .home, .localdomain, .fritz.box), and the reserved private-use ones
+const LOCAL_SUFFIXES = ['localhost', 'local', 'lan', 'home', 'home.arpa', 'internal', 'localdomain', 'fritz.box'];
+
+/** The name in a Host header, lower case, without port, brackets or a trailing dot ('' when none). */
+export function hostName(header) {
+  let h = String(header || '').trim().toLowerCase();
+  if (h.startsWith('[')) return h.slice(1, h.indexOf(']') > 0 ? h.indexOf(']') : undefined); // [::1]:7720
+  if (h.indexOf(':') === h.lastIndexOf(':')) h = h.replace(/:\d*$/, ''); // one colon: a port (more: a bare IPv6 address)
+  return h.replace(/\.$/, '');
+}
+
+/**
+ * DNS rebinding: a site whose name is pointed at this server's address after its page loaded is
+ * the same site to the browser, so its script could read and change everything an instance
+ * without a password serves. Its requests still carry its own name in Host, so such an instance
+ * only answers to names an outsider cannot point here: IP addresses, single-label names (tower,
+ * a container's name), localhost and local domains, the host of VESTIGO_CORS_ORIGIN, and the
+ * names in VESTIGO_ALLOWED_HOSTS (comma separated; ".example.com" also allows its subdomains,
+ * "*" allows any name). A request without a Host header (no browser sends one) is allowed.
+ */
+export function hostAllowed(header, { allowed = env('ALLOWED_HOSTS', ''), cors = env('CORS_ORIGIN') } = {}) {
+  const h = hostName(header);
+  if (!h || net.isIP(h) || !h.includes('.')) return true;
+  if (LOCAL_SUFFIXES.some((s) => h === s || h.endsWith(`.${s}`))) return true;
+  try { if (cors && new URL(cors).hostname.toLowerCase().replace(/^\[|\]$/g, '') === h) return true; } catch { /* not a URL */ }
+  for (let a of String(allowed || '').toLowerCase().split(/[\s,]+/)) {
+    if (a.includes('://')) { try { a = new URL(a).host; } catch { /* kept as written */ } } // a pasted address
+    if (a.startsWith('*.')) a = a.slice(1); // *.example.com reads as .example.com
+    if (a === '*') return true;
+    if (!a) continue;
+    if (a.startsWith('.') ? h === a.slice(1) || h.endsWith(a) : h === hostName(a)) return true;
+  }
+  return false;
+}
+
 /**
  * dbFile: undefined = from the environment and the data folder (resolveDbFile).
  * password: undefined = VESTIGO_PASSWORD / PLAYTRACKER_PASSWORD; passwordEnv names the variable a given one stands for.
@@ -153,6 +190,22 @@ export function createApp({ dbFile, password, passwordEnv, log: rawLog, schedule
   const serveStatic = staticServer(PUBLIC_DIR, { dev });
   const trustProxy = env('SECURE_COOKIE') === 'true';
 
+  // a name refused by hostAllowed (only checked while there is no password: a cookie never
+  // reaches a rebound name, so a password already stops the attack); each is logged once
+  const refusedHosts = new Set();
+  const refuseHost = (req, res, json) => {
+    const host = hostName(req.headers.host);
+    const name = envSource('ALLOWED_HOSTS') || 'VESTIGO_ALLOWED_HOSTS';
+    if (!refusedHosts.has(host) && refusedHosts.size < 100) {
+      refusedHosts.add(host);
+      apiLog.warn(`Refused requests for "${host}": with no password set, Vestigo only answers to IP addresses, localhost and local names (protection against DNS rebinding). If this is how you reach it (a reverse proxy with its own domain), add it to ${name} (${name}=${host}), or set a password.`);
+    }
+    const msg = `"${host}" is not an allowed address for this Vestigo: without a password it only answers to IP addresses, localhost and local names. Add it to ${name}, or set a password.`;
+    if (json) return sendJson(req, res, 403, { error: msg });
+    res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.end(msg);
+  };
+
   const handler = async (req, res) => {
     let url;
     // a request target that is not a URL ("//[") is the client's error, not a server one
@@ -161,10 +214,12 @@ export function createApp({ dbFile, password, passwordEnv, log: rawLog, schedule
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Referrer-Policy', 'same-origin');
     res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+    const wrongHost = !auth.enabled() && !hostAllowed(req.headers.host);
 
-    if (pathname === '/metrics') return metrics(req, res, url);
+    if (pathname === '/metrics') return metrics(req, res, url, wrongHost);
     if (!pathname.startsWith('/api/')) {
       if (req.method !== 'GET' && req.method !== 'HEAD') { res.writeHead(405, { Allow: 'GET, HEAD' }); return res.end(); }
+      if (wrongHost) return refuseHost(req, res, false);
       if (!(await serveStatic(req, res, pathname))) { res.writeHead(404, { 'Content-Type': 'text/plain' }); res.end('Not found'); }
       return;
     }
@@ -182,6 +237,8 @@ export function createApp({ dbFile, password, passwordEnv, log: rawLog, schedule
     const cookies = parseCookies(req.headers.cookie);
     const who = auth.identify(req, cookies, url);
     if (!who.ok && !m.route.doc.public) return sendJson(req, res, 401, { error: 'Unauthorized' });
+    // an API token is no browser's (a rebound page has none); the health check tells nothing
+    if (wrongHost && who.via !== 'token' && pathname !== '/api/v1/health') return refuseHost(req, res, true);
     // CSRF: browser writes (cookie login, or an instance without a password) must come from our
     // own origin or the configured CORS origin. Token requests are not sent by browsers on their own.
     if (who.via !== 'token' && !['GET', 'HEAD'].includes(req.method) && req.headers.origin) {
@@ -260,9 +317,10 @@ export function createApp({ dbFile, password, passwordEnv, log: rawLog, schedule
     return { 'Access-Control-Allow-Origin': origin, 'Access-Control-Allow-Headers': 'Authorization, Content-Type, X-API-Key', 'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS' };
   }
 
-  function metrics(req, res, url) {
+  function metrics(req, res, url, wrongHost) {
     const who = auth.identify(req, parseCookies(req.headers.cookie), url);
     if (!who.ok) { res.writeHead(401); return res.end('Unauthorized'); }
+    if (wrongHost && who.via !== 'token') return refuseHost(req, res, false);
     const l = lifetime(db);
     const accounts = db.prepare('SELECT id, platform, name, last_sync_at, last_status FROM accounts').all();
     const series = (p) => [

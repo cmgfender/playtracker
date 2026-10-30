@@ -274,6 +274,7 @@ Main endpoints:
 | `VESTIGO_PASSWORD` | | Password for the UI and API. You can also set one in Settings. With no password, access is open (fine on a trusted LAN). |
 | `VESTIGO_SECURE_COOKIE` | `false` | Set to `true` when served over HTTPS |
 | `VESTIGO_CORS_ORIGIN` | | Lets another origin call the API from a browser |
+| `VESTIGO_ALLOWED_HOSTS` | | Only matters without a password. Such an instance answers only to IP addresses, `localhost`, single-label names (`tower`) and local domains (`.local`, `.lan`, `.home`, `.home.arpa`, `.internal`, `.localdomain`, `.fritz.box`), so a website cannot reach it through DNS rebinding. Reach it by another name (a reverse proxy with its own domain)? List that name here, comma separated: `vestigo.example.com`, or `.example.com` for a domain and its subdomains, or `*` for any name. A refused name gets a 403 and one warning in the log that names it. The host of `VESTIGO_CORS_ORIGIN` and requests with an API token are always allowed. |
 | `PUID` / `PGID` | `99` / `100` | User and group the container runs as. It starts as root, fixes `/data` ownership, then drops to this user. |
 | `VESTIGO_PORT_FALLBACK` | `true` | With host networking, move to the next free port if the chosen one is taken |
 
@@ -288,6 +289,7 @@ Every `VESTIGO_` variable (here and in the logging table above) also works under
 | `VESTIGO_PASSWORD` | `PLAYTRACKER_PASSWORD` |
 | `VESTIGO_SECURE_COOKIE` | `PLAYTRACKER_SECURE_COOKIE` |
 | `VESTIGO_CORS_ORIGIN` | `PLAYTRACKER_CORS_ORIGIN` |
+| `VESTIGO_ALLOWED_HOSTS` | `PLAYTRACKER_ALLOWED_HOSTS` |
 | `VESTIGO_PORT_FALLBACK` | `PLAYTRACKER_PORT_FALLBACK` |
 | `VESTIGO_LOG_FILE` | `PLAYTRACKER_LOG_FILE` |
 
