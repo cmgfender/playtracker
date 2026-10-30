@@ -4,8 +4,11 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { createApp } from '../src/server.js';
+import { openDb } from '../src/db.js';
+import { Settings } from '../src/services/settings.js';
 import { flushRollups } from '../src/services/rollup.js';
 import { computeStats, dayKey } from '../src/services/stats.js';
+import { WeeklySummary } from '../src/services/digest.js';
 
 const MIN = 60_000;
 const DAY = 86_400_000;
@@ -69,5 +72,43 @@ describe('all time starts with the first play the filter counts', () => {
       assert.ok(years.includes(2016));
       assert.ok(!years.includes(2018), `years: ${years}`);
     } finally { close(); }
+  });
+});
+
+describe('weekly summary', () => {
+  const settingsFor = (db, extra = {}) => {
+    const settings = new Settings(db);
+    settings.set({ webhook_url: 'https://example.invalid/hook', weekly_summary: true, weekly_summary_time: '09:00', week_starts_on: 1, ...extra });
+    return settings;
+  };
+
+  test('a summary sent more than a day late does not cost the next week its summary', async () => {
+    for (const lateHours of [20, 25, 30, 60]) {
+      const db = openDb(':memory:');
+      const settings = settingsFor(db, { weekly_summary_sent: '2026-08-24', weekly_summary_sent_at: local(2026, 8, 31, 9) });
+      const failUntil = local(2026, 9, 7, 9) + lateHours * 3600_000; // the webhook is down from the Monday slot on
+      const sent = [];
+      let now = local(2026, 9, 7, 0);
+      const w = new WeeklySummary({ db, settings, log: null, send: async (url, s) => { if (now < failUntil) throw new Error('webhook down'); sent.push(s.week.start_day); } });
+      // ticks once a minute around each Monday, every 10 minutes otherwise (the back-off needs minutes)
+      for (const end = local(2026, 10, 6); now < end; now += 10 * MIN) await w.tick(now);
+      assert.deepEqual(sent, ['2026-08-31', '2026-09-07', '2026-09-14', '2026-09-21', '2026-09-28'], `webhook down for ${lateHours} h`);
+      db.close();
+    }
+  });
+
+  test('still one a week when the week start moves', async () => {
+    const db = openDb(':memory:');
+    const settings = settingsFor(db, { weekly_summary_sent: '2026-03-02', weekly_summary_sent_at: local(2026, 3, 9, 9) });
+    const sent = [];
+    const w = new WeeklySummary({ db, settings, log: null, send: async (url, s) => { sent.push(s.week.start_day); } });
+    assert.equal(await w.tick(local(2026, 3, 16, 9, 1)), true);
+    // weeks now start on Tuesday: Tuesday's week (Mar 10-16) mostly overlaps the one just sent
+    settings.set({ week_starts_on: 2 });
+    assert.equal(await w.tick(local(2026, 3, 17, 9, 1)), false);
+    assert.equal(settings.get('weekly_summary_sent'), '2026-03-10');
+    assert.equal(await w.tick(local(2026, 3, 24, 9, 1)), true);
+    assert.deepEqual(sent, ['2026-03-09', '2026-03-17']);
+    db.close();
   });
 });
