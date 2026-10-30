@@ -8,7 +8,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { openDb, tx } from '../src/db.js';
 import { Settings } from '../src/services/settings.js';
-import { applyItems, parseAccount, SyncService } from '../src/services/sync.js';
+import { applyItems, closeLapsedSpans, parseAccount, SyncService } from '../src/services/sync.js';
 
 const MIN = 60_000; const HOUR = 60 * MIN; const DAY = 24 * HOUR;
 const quiet = { info() {}, warn() {}, error() {}, debug() {} };
@@ -99,7 +99,15 @@ test('the Game Pass copy of a game also on Steam, not played on Steam then, stil
   for (let t = e0 + 8 * HOUR; t <= e0 + 9 * HOUR; t += 5 * MIN) s2.xboxPoll(t, [['1817966081', 'WindowsOneCore']]);
   s2.xboxPoll(e0 + 9 * HOUR + 5 * MIN, []);
   assert.ok(s2.minutes(s2.off) >= 60);
-  assert.deepEqual(s.sums(), []); assert.deepEqual(s2.sums(), []);
+  // started minutes after the Steam copy closed: no Steam play in its run either
+  const s3 = setup();
+  const g0 = Date.now() - 6 * HOUR;
+  for (let t = g0; t <= g0 + HOUR; t += 2 * MIN) s3.steamPoll(t, true);
+  s3.steamPoll(g0 + HOUR + 2 * MIN, false);
+  for (let t = g0 + 70 * MIN; t <= g0 + 130 * MIN; t += 5 * MIN) s3.xboxPoll(t, [['1817966081', 'WindowsOneCore']]);
+  s3.xboxPoll(g0 + 135 * MIN, []);
+  assert.ok(s3.minutes(s3.off) >= 55);
+  for (const x of [s, s2, s3]) assert.deepEqual(x.sums(), []);
 });
 
 test('the same game on a console, and PC games Steam is not playing, still show while Steam plays', () => {
@@ -121,11 +129,15 @@ test("a sync's minutes for a title never land on its echo", () => {
   s.db.prepare("INSERT INTO entries(account_id, game_id, platform, ext_id, title, playtime_min, first_seen_at) VALUES (?, (SELECT game_id FROM entries WHERE id = ?), 'steam', '1240440', 'Halo Infinite', 0, 0)").run(s.steam, s.halo);
   s.db.prepare('UPDATE accounts SET state = ? WHERE id = ?').run(JSON.stringify({ xuid: '1', unmetered: {} }), s.xb);
   tx(s.db, () => applyItems(s.db, a(), [{ extId: '555', title: 'Halo Infinite', playtimeMin: 500, lastPlayedAt: t0 - DAY }], { settings: s.settings.all(), now: t0 - HOUR, initial: true }));
+  s.db.prepare('UPDATE accounts SET last_sync_at = ? WHERE id = ?').run(t0 - HOUR, s.xb);
   for (let t = t0; t <= t0 + HOUR; t += 2 * MIN) s.svc.applyPresence(s.A(s.steam), [{ extId: '1240440', title: 'Halo Infinite' }], { intervalSec: 120, now: t });
   for (let t = t0 + MIN; t <= t0 + 2 * HOUR; t += 5 * MIN) s.xboxPoll(t, [['555', 'WindowsOneCore']]);
   tx(s.db, () => applyItems(s.db, a(), [{ extId: '555', title: 'Halo Infinite', playtimeMin: 560, lastPlayedAt: t0 + HOUR }], { settings: s.settings.all(), now: t0 + 2 * HOUR }));
   assert.equal(s.db.prepare("SELECT session_id FROM presence WHERE account_id = ? AND ext_id = '555'").get(s.xb).session_id, 0, 'the echo stays unclaimed');
   assert.deepEqual(s.playing(), ['steam:Halo Infinite'], 'and hidden');
+  // Xbox counted the Steam play too: its minutes go where Steam saw the game played, not over the echo's hours
+  const ses = s.db.prepare("SELECT minutes, started_at, ended_at, confidence FROM sessions WHERE entry_id = ? AND kind = 'play'").all(s.halo);
+  assert.deepEqual(ses.map((r) => ({ ...r })), [{ minutes: 60, started_at: t0 + MIN, ended_at: t0 + HOUR, confidence: 'exact' }]);
   assert.deepEqual(s.sums(), []);
 });
 
@@ -171,4 +183,62 @@ test('diagnostics name the echo among the titles Xbox reported', async () => {
   assert.equal(seen[0].skipped, 'steam echo');
   assert.equal(seen[0].modified, '2026-10-30T03:24:00Z', 'with when Xbox last changed the record');
   assert.deepEqual(s.svc.nowPlaying().map((p) => p.platform), ['steam']);
+});
+
+test('a last-played time the echo moved after presence lapsed gets no "≈ length" session', () => {
+  const s = setup();
+  const t0 = Date.now() - 10 * HOUR;
+  for (let t = t0; t <= t0 + HOUR; t += 2 * MIN) s.steamPoll(t, true);
+  s.steamPoll(t0 + HOUR + 2 * MIN, false);
+  for (let t = t0 + MIN; t <= t0 + 2 * HOUR; t += 5 * MIN) s.xboxPoll(t, [['1817966081', 'WindowsOneCore']]);
+  // Xbox presence then down for hours: a sync closes the lapsed echo; Xbox's last-played time moved on
+  closeLapsedSpans(s.db, s.A(s.xb), t0 + 5 * HOUR);
+  const missed = { extId: '1817966081', at: t0 + 4 * HOUR, prev: t0 - 3 * DAY };
+  s.svc.presenceSessions(s.xb, { now: t0 + 5 * HOUR, fallbacks: [missed] });
+  assert.equal(s.minutes(s.off), 0);
+  // play presence missed with no echo before it still gets its estimate
+  const g = setup();
+  g.svc.presenceSessions(g.xb, { now: t0 + 5 * HOUR, fallbacks: [missed] });
+  assert.ok(g.minutes(g.off) > 0);
+});
+
+test("Xbox reporting Steam's play before its next poll marks it is not shown as a second game", () => {
+  const s = setup();
+  const now = Date.now();
+  s.xboxPoll(now - 3 * MIN, [['1817966081', 'WindowsOneCore']]);
+  s.steamPoll(now - MIN, true);
+  assert.deepEqual(s.svc.nowPlaying().map((p) => p.platform), ['steam']);
+});
+
+test('an echo a sync credited before Steam saw the game is let go, its session kept', () => {
+  const s = setup();
+  const t0 = Date.now() - 2 * HOUR;
+  const a = () => s.A(s.xb);
+  s.db.prepare("INSERT INTO entries(account_id, game_id, platform, ext_id, title, playtime_min, first_seen_at) VALUES (?, (SELECT game_id FROM entries WHERE id = ?), 'steam', '1240440', 'Halo Infinite', 0, 0)").run(s.steam, s.halo);
+  s.db.prepare('UPDATE accounts SET state = ? WHERE id = ?').run(JSON.stringify({ xuid: '1', unmetered: {} }), s.xb);
+  tx(s.db, () => applyItems(s.db, a(), [{ extId: '555', title: 'Halo Infinite', playtimeMin: 500, lastPlayedAt: t0 - DAY }], { settings: s.settings.all(), now: t0 - HOUR, initial: true }));
+  s.db.prepare('UPDATE accounts SET last_sync_at = ? WHERE id = ?').run(t0 - HOUR, s.xb);
+  for (let t = t0; t <= t0 + 30 * MIN; t += 5 * MIN) s.xboxPoll(t, [['555', 'WindowsOneCore']]);
+  tx(s.db, () => applyItems(s.db, a(), [{ extId: '555', title: 'Halo Infinite', playtimeMin: 525, lastPlayedAt: t0 + 30 * MIN }], { settings: s.settings.all(), now: t0 + 31 * MIN }));
+  assert.ok(s.db.prepare("SELECT session_id FROM presence WHERE account_id = ? AND ext_id = '555'").get(s.xb).session_id > 0, 'credited while nothing said it was Steam');
+  // Steam's presence (late, after an outage) then sees Halo played since before the Xbox span began
+  s.db.prepare("INSERT INTO presence(account_id, ext_id, title, started_at, last_seen_at) VALUES (?, '1240440', 'Halo Infinite', ?, ?)").run(s.steam, t0 - 2 * MIN, t0 + 34 * MIN);
+  s.xboxPoll(t0 + 35 * MIN, [['555', 'WindowsOneCore']]);
+  assert.equal(s.db.prepare("SELECT session_id FROM presence WHERE account_id = ? AND ext_id = '555'").get(s.xb).session_id, 0);
+  assert.deepEqual(s.playing(), ['steam:Halo Infinite']);
+  assert.equal(s.minutes(s.halo), 525, 'the session keeps its minutes');
+  assert.deepEqual(s.sums(), []);
+});
+
+test('an echo Xbox keeps dropping and reporting again stays one run, however many spans it makes', () => {
+  const s = setup();
+  const t0 = Date.now() - 16 * HOUR;
+  for (let t = t0; t <= t0 + HOUR; t += 2 * MIN) s.steamPoll(t, true);
+  s.steamPoll(t0 + HOUR + 2 * MIN, false);
+  let i = 0;
+  for (let t = t0 + MIN; t <= t0 + 15 * HOUR; t += 5 * MIN) s.xboxPoll(t, i++ % 2 ? [] : [['1817966081', 'WindowsOneCore']]);
+  s.xboxPoll(t0 + 15 * HOUR + 5 * MIN, []);
+  assert.ok(s.db.prepare('SELECT COUNT(*) n FROM presence WHERE account_id = ?').get(s.xb).n > 80);
+  assert.equal(s.minutes(s.off), 0);
+  assert.deepEqual(s.playing(), []);
 });
