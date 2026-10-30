@@ -69,7 +69,11 @@ for (const merged of [false, true]) {
     assert.equal(s.db.prepare('SELECT COUNT(*) n FROM presence WHERE account_id = ?').get(s.xb).n, 2, 'two runs of Xbox sightings');
     assert.equal(s.db.prepare('SELECT COUNT(*) n FROM presence WHERE account_id = ? AND ended_at IS NULL AND session_id = 0').get(s.xb).n, 1, 'the one still reported is marked');
     assert.equal(s.svc.soon.get(s.xb), undefined, 'an echo ending is not a session ending (no Xbox sync)');
-    s.xboxPoll(end + 10 * MIN, []);
+    // a real Xbox session ending meanwhile gets its sync: the echo still reported never holds it back
+    s.xboxPoll(end + 5 * MIN, [['1817966081', 'WindowsOneCore'], ['555', 'Scarlett']]);
+    s.xboxPoll(end + 10 * MIN, [['1817966081', 'WindowsOneCore']]);
+    assert.ok(s.svc.soonFor(s.A(s.xb), end + 10 * MIN) > end + 10 * MIN, 'the Halo session\'s sync is armed and not held back');
+    s.xboxPoll(end + 15 * MIN, []);
     assert.deepEqual(s.playing(), [], 'nothing playing in the morning');
     assert.equal(s.minutes(s.off), 0, 'no session from the echo');
     // Xbox's last-played time moved with the echo: no "≈ length" session either (the title is also on consoles)

@@ -660,7 +660,8 @@ export class SyncService {
     const soon = this.soon.get(account.id);
     if (soon == null) return null;
     const interval = (providers[account.platform]?.profile?.presence?.interval_sec || 120) * 1000;
-    const playing = this.db.prepare('SELECT 1 FROM presence WHERE account_id = ? AND ended_at IS NULL AND last_seen_at > ? LIMIT 1').get(account.id, now - 3 * interval);
+    // (Steam's play echoed by Xbox is not a game played on this account)
+    const playing = this.db.prepare('SELECT 1 FROM presence WHERE account_id = ? AND ended_at IS NULL AND last_seen_at > ? AND (session_id IS NULL OR session_id != 0) LIMIT 1').get(account.id, now - 3 * interval);
     return playing ? null : soon;
   }
 
