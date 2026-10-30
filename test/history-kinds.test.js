@@ -98,3 +98,45 @@ test('migration 10 sorts the history of an existing database', () => {
   assert.match(db.prepare("SELECT sql FROM sqlite_master WHERE name = 'play_days_range'").get().sql, /basis/);
   db.close();
 });
+
+test('migration 10 marks history exactly as re-dating by v6 would, so nothing is re-dated on upgrade', async () => {
+  const { importRows } = await import('../src/services/importer.js');
+  const { reinferPending, mergeEvidence, reinferMany, INFER_VERSION } = await import('../src/services/inference.js');
+  const { Settings } = await import('../src/services/settings.js');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vg-basis-'));
+  const file = path.join(dir, 'lib.db');
+  const db0 = openDb(file);
+  const settings = new Settings(db0);
+  const now = Date.now();
+  const day = (n) => new Date(now - n * DAY).toISOString();
+  importRows(db0, Array.from({ length: 12 }, (_, i) => ({ title: `Game ${i}`, platform: 'switch', playtime_minutes: 300 + i * 97, first_played: day(400 - i * 20), last_played: day(60 + i * 5) })), { settings: settings.all(), now });
+  const ids = db0.prepare('SELECT id FROM entries ORDER BY id').all().map((r) => r.id);
+  // unlock times on some, a confirmed estimate and dates set by hand on others
+  for (const id of ids.slice(0, 5)) mergeEvidence(db0, id, { anchors: [now - (300 - id * 7) * DAY, now - (250 - id * 5) * DAY, now - (120 - id) * DAY] });
+  reinferMany(db0, ids.slice(0, 5), { settings: settings.all() });
+  const h = (id) => JSON.parse(db0.prepare('SELECT hist FROM entries WHERE id = ?').get(id).hist);
+  const setHist = (id, x) => db0.prepare('UPDATE entries SET hist = ?, inferred_v = 0 WHERE id = ?').run(JSON.stringify(x), id);
+  setHist(ids[6], { ...h(ids[6]), manual: { start: now - 200 * DAY, end: now - 100 * DAY } });
+  reinferPending(db0, { settings: settings.all() });
+  const w = h(ids[7]).inference.window;
+  setHist(ids[7], { ...h(ids[7]), manual: { start: w[0], end: w[1], confirmed: true } });
+  reinferPending(db0, { settings: settings.all() });
+  flushRollups(db0);
+  const snap = (db) => db.prepare("SELECT id, basis FROM sessions WHERE source = 'inferred' AND kind = 'estimate' ORDER BY id").all().map((r) => `${r.id}:${r.basis}`).join(',');
+  const pd = (db) => db.prepare('SELECT session_id, day, basis FROM play_days ORDER BY session_id, day').all().map((r) => `${r.session_id}/${r.day}:${r.basis}`).join(',');
+  const want = snap(db0); const wantDays = pd(db0);
+  assert.match(want, /anchored/); assert.match(want, /confirmed/); assert.match(want, /:null/);
+  db0.close();
+  // back to how the previous release left it: no basis columns, history dated by v5
+  const raw = new DatabaseSync(file);
+  raw.exec('DROP INDEX play_days_range; DROP INDEX play_days_game;');
+  raw.exec('CREATE INDEX play_days_range ON play_days(excluded, estimated, day, platform, game_id, minutes, ends); CREATE INDEX play_days_game ON play_days(game_id, excluded, estimated, day, platform, minutes, ends);');
+  raw.exec('ALTER TABLE play_days DROP COLUMN basis; ALTER TABLE sessions DROP COLUMN basis; UPDATE entries SET inferred_v = 5 WHERE baseline_min > 0; PRAGMA user_version = 9;');
+  raw.close();
+  const db = openDb(file);
+  assert.equal(snap(db), want, 'sessions marked as re-dating would');
+  assert.equal(pd(db), wantDays, 'per-day rows marked as re-dating would');
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM entries WHERE baseline_min > 0 AND inferred_v < ?').get(INFER_VERSION).n, 0, 'nothing left to re-date');
+  assert.match(db.prepare("SELECT sql FROM sqlite_master WHERE name = 'play_days_range'").get().sql, /platform, basis/);
+  db.close();
+});

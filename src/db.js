@@ -372,22 +372,37 @@ const MIGRATIONS = [
   //     'confirmed' (you confirmed it or set its dates) | 'anchored' (an achievement unlock falls in it) | NULL.
   //     play_days.basis: 0 tracked live, 1 imported session, 2 unlock-anchored estimate,
   //     3 confirmed estimate, 4 other estimate (estimated stays 0/1 as before). Safe to run again.
+  //     Worked out in SQL by the rules inferHistory applies (v6), so history dated by v5 needs no
+  //     re-dating on the first start: the upgrade takes a fraction of a second, not seconds.
   (db) => {
     const cols = (t) => new Set(db.prepare(`PRAGMA table_info(${t})`).all().map((c) => c.name));
     if (!cols('sessions').has('basis')) {
       db.exec('ALTER TABLE sessions ADD COLUMN basis TEXT');
-      db.exec(`UPDATE sessions SET basis = 'confirmed' WHERE source = 'inferred' AND kind = 'estimate'
-        AND entry_id IN (SELECT id FROM entries WHERE json_extract(hist, '$.manual') IS NOT NULL)`);
+      // a confirmed estimate kept as it was (manual.chunks) is confirmed throughout; dates you set
+      // confirm its history part; otherwise an achievement unlock inside the stretch anchors it
+      db.exec(`UPDATE sessions SET basis = (
+          SELECT CASE
+            WHEN json_extract(e.hist, '$.manual.chunks') IS NOT NULL AND json_extract(e.hist, '$.mode') IS NOT 'undated' THEN 'confirmed'
+            WHEN (json_extract(e.hist, '$.manual.start') IS NOT NULL OR json_extract(e.hist, '$.manual.end') IS NOT NULL) AND sessions.note IS NOT 'Recent play before tracking' THEN 'confirmed'
+            WHEN EXISTS (SELECT 1 FROM json_each(e.hist, '$.anchors') x WHERE x.value >= sessions.window_start AND x.value <= sessions.window_end) THEN 'anchored'
+          END FROM entries e WHERE e.id = sessions.entry_id)
+        WHERE source = 'inferred' AND kind = 'estimate'`);
+      // history dated by v5 is now what v6 would date (the basis was the only change)
+      db.exec('UPDATE entries SET inferred_v = 6 WHERE inferred_v = 5 AND baseline_min > 0');
     }
     if (!cols('play_days').has('basis')) {
+      // ALTER ... DEFAULT 0 already reads 0 (tracked): only the other rows are written, before the
+      // indexes below are rebuilt (so they are never maintained row by row)
       db.exec('ALTER TABLE play_days ADD COLUMN basis INTEGER NOT NULL DEFAULT 0');
-      db.exec(`UPDATE play_days SET basis = CASE
-          WHEN estimated = 1 THEN (CASE WHEN (SELECT basis FROM sessions s WHERE s.id = play_days.session_id) = 'confirmed' THEN 3 ELSE 4 END)
-          WHEN (SELECT source FROM sessions s WHERE s.id = play_days.session_id) = 'import' THEN 1 ELSE 0 END`);
+      db.exec(`UPDATE play_days SET basis = 4 WHERE estimated = 1;
+        UPDATE play_days SET basis = 3 WHERE estimated = 1 AND session_id IN (SELECT id FROM sessions WHERE basis = 'confirmed');
+        UPDATE play_days SET basis = 2 WHERE estimated = 1 AND session_id IN (SELECT id FROM sessions WHERE basis = 'anchored');
+        UPDATE play_days SET basis = 1 WHERE estimated = 0 AND session_id IN (SELECT id FROM sessions WHERE source = 'import');`);
     }
-    // the covering indexes carry basis too, so stats by basis stay index-only
+    // the covering indexes carry basis too, so stats by basis stay index-only; in the range index
+    // it follows platform, so GROUP BY day, platform, estimated, basis streams off the index
     const idx = (n) => db.prepare("SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?").get(n)?.sql || '';
-    if (!/basis/.test(idx('play_days_range'))) db.exec('DROP INDEX IF EXISTS play_days_range; CREATE INDEX play_days_range ON play_days(excluded, estimated, day, platform, game_id, minutes, ends, basis);');
+    if (!/platform, basis/.test(idx('play_days_range'))) db.exec('DROP INDEX IF EXISTS play_days_range; CREATE INDEX play_days_range ON play_days(excluded, estimated, day, platform, basis, game_id, minutes, ends);');
     if (!/basis/.test(idx('play_days_game'))) db.exec('DROP INDEX IF EXISTS play_days_game; CREATE INDEX play_days_game ON play_days(game_id, excluded, estimated, day, platform, minutes, ends, basis);');
   },
 ];

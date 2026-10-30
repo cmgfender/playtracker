@@ -1,3 +1,4 @@
+import { nextRun } from '../src/services/schedule.js';
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { createApp } from '../src/server.js';
@@ -388,7 +389,8 @@ test('the sync after a session waits while a game is still being played, then ru
   assert.ok(armed > t0 + 25 * MIN, 'a sync is armed when the game drops out');
   play(t0 + 35 * MIN, true); play(Date.now(), true);
   assert.equal(s.soonFor(a()), null, 'it waits while the game is played again');
-  assert.ok(s.computeNext(a()) > Date.now() + 60 * MIN, 'the next sync is the scheduled one');
+  // (the schedule itself may be due within the hour - 04:00 by default - so compare with it)
+  assert.equal(s.computeNext(a()), nextRun(s.scheduleFor(a()), a().last_sync_at, Date.now()), 'the next sync is the scheduled one');
   play(Date.now() + 1, false);
   assert.ok(s.soonFor(a()) > Date.now(), 'armed again when the game ends');
   assert.equal(s.computeNext(a()), s.soonFor(a()));
