@@ -7,6 +7,8 @@ const TITLE_HISTORY_CAP = 1000;
 const HOME_TITLE_IDS = new Set(['750323071', '1022622766', '714681658', '704208617']);
 // presence words some shells report as their title; never a game unless the library has it
 const SHELL_NAMES = /^(home|online|away|busy|offline|xbox( app)?)$/i;
+// a presence device that is a Windows PC (Xbox app, Game Bar, Game Pass titles)
+export const PC_DEVICE = /windows|win32|pc/i;
 
 /** Walk an arbitrary stats payload and return the MinutesPlayed value, if any. */
 export function findMinutesPlayed(obj) {
@@ -323,13 +325,16 @@ export const xbox = {
     const seen = []; // everything reported, for diagnostics (which titles were skipped and why)
     for (const d of me?.devices || []) {
       // on a PC a running game is often not reported as the full-screen foreground title
-      const pc = /windows|win32|pc/i.test(String(d.type || ''));
+      const pc = PC_DEVICE.test(String(d.type || ''));
       for (const t of d.titles || []) {
         const id = String(t.id ?? t.titleId ?? '');
-        const row = { id, name: t.name || null, device: d.type || null, placement: t.placement || null, state: t.state || null };
+        const row = { id, name: t.name || null, device: d.type || null, placement: t.placement || null, state: t.state || null, ...(t.lastModified ? { modified: t.lastModified } : {}) };
         seen.push(row);
         if (!id || HOME_TITLE_IDS.has(id) || (SHELL_NAMES.test(String(t.name || '').trim()) && !ctx.getEntry?.(id))) { row.skipped = 'home'; continue; }
         if (t.state && t.state !== 'Active') { row.skipped = 'inactive'; continue; }
+        // Xbox services on a PC also report games started from Steam, and can keep reporting them
+        // for hours after they close: for games in a Steam library, Steam's presence is the one
+        if (pc && ctx.steamHas?.(id, t.name)) { row.skipped = 'steam'; continue; }
         if (t.placement && !['Full', 'Fill', 'Snapped'].includes(t.placement) && !(pc && ctx.getEntry?.(id))) { row.skipped = 'background'; continue; }
         playing.push({ extId: id, title: t.name || null, device: d.type || null });
       }

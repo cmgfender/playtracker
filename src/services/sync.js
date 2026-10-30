@@ -1,5 +1,6 @@
 import { tx } from '../db.js';
 import { providers } from '../providers/index.js';
+import { PC_DEVICE } from '../providers/xbox.js';
 import { httpJson } from '../providers/http.js';
 import { findOrCreateGame } from './library.js';
 import { normalizeTitle, importedAccount } from './titles.js';
@@ -729,6 +730,7 @@ export class SyncService {
     return {
       http: (url, opts, cfg = {}) => httpJson(url, opts, { ...cfg, onResult: (r) => { if (live()) this.recordCall(account.id, r, counters); } }),
       getEntry: (ext) => getEntry.get(account.id, String(ext)),
+      steamHas: (ext, title) => this.steamHas(account, ext, title),
       // our own count for this hour, tightened by what the API itself reports (it also counts
       // calls made elsewhere with the same key)
       remainingBudget: (limit) => {
@@ -1118,7 +1120,8 @@ export class SyncService {
         const minutes = Math.round((sp.ended_at - sp.started_at) / MIN);
         // too short, or the same game played then on another account that counts its playtime
         // (a Steam game signing in to Xbox services shows up in Xbox presence too)
-        if (minutes < minMin || playedElsewhere(db, entry, sp.started_at, sp.ended_at)) { db.prepare('UPDATE presence SET session_id = 0 WHERE id = ?').run(sp.id); continue; }
+        // (or a PC echo of a game Steam counts - see steamEcho)
+        if (minutes < minMin || this.steamEcho(account, entry, sp.device) || playedElsewhere(db, entry, sp.started_at, sp.ended_at)) { db.prepare('UPDATE presence SET session_id = 0 WHERE id = ?').run(sp.id); continue; }
         const r = db.prepare(`INSERT INTO sessions(entry_id, sync_id, source, kind, minutes, window_start, window_end, started_at, ended_at, confidence, device, note, created_at)
           VALUES (?, NULL, 'presence', 'play', ?, ?, ?, ?, ?, 'exact', ?, ?, ?)`)
           .run(entry.id, minutes, sp.started_at, sp.ended_at, sp.started_at, sp.ended_at, sp.device || null, 'From live presence (platform reports no playtime for this title)', now);
@@ -1144,7 +1147,7 @@ export class SyncService {
           // (one that ended by the previous last-played time belongs to that earlier play)
           const covered = db.prepare(`SELECT 1 FROM sessions WHERE entry_id = ? AND kind = 'play' AND COALESCE(ended_at, window_end) BETWEEN ? AND ? LIMIT 1`)
             .get(entry.id, Math.max(f.at - 30 * MIN, (f.prev ?? -Infinity) + 1), f.at + 30 * MIN);
-          if (seen || covered || playedElsewhere(db, entry, f.at - 30 * MIN, f.at + 5 * MIN)) continue;
+          if (seen || covered || this.steamEcho(account, entry) || playedElsewhere(db, entry, f.at - 30 * MIN, f.at + 5 * MIN)) continue;
           const gap = f.prev ? Math.floor((f.at - f.prev) / MIN) : Infinity;
           const minutes = Math.max(minMin, Math.min(typical, gap, 360));
           const start = f.at - minutes * MIN;
@@ -1160,6 +1163,62 @@ export class SyncService {
     if (made) this.plog.info(`${account.platform}/${account.name}: ${made} session${made > 1 ? 's' : ''} recorded from presence (title reports no playtime)`);
     if (estimated) this.plog.info(`${account.platform}/${account.name}: ${estimated} session${estimated > 1 ? 's' : ''} with estimated length (no playtime reported and presence missed ${estimated > 1 ? 'them' : 'it'})`);
     return made + estimated;
+  }
+
+  /**
+   * Is this title of another account in a Steam library whose live presence is on? Xbox services
+   * on a PC report games started from Steam too - and can keep reporting them for hours after they
+   * close - so for those games Steam's presence and playtime are what count.
+   */
+  steamHas(account, extId, title) {
+    if (account.platform === 'steam') return false;
+    const db = this.db;
+    const steam = db.prepare("SELECT * FROM accounts WHERE platform = 'steam' AND enabled = 1").all().map(parseAccount).filter((a) => this.presenceEnabled(a)).map((a) => a.id);
+    if (!steam.length) return false;
+    const entry = db.prepare('SELECT game_id, title FROM entries WHERE account_id = ? AND ext_id = ?').get(account.id, String(extId));
+    const norm = normalizeTitle(entry?.title || title || '') || null;
+    return !!db.prepare(`SELECT 1 FROM entries e JOIN games g ON g.id = e.game_id
+      WHERE e.account_id IN (${steam.map(() => '?').join(', ')}) AND (e.game_id = ? OR g.norm_title = ?) LIMIT 1`).get(...steam, entry?.game_id ?? -1, norm);
+  }
+
+  /**
+   * Is play of `entry` seen on `device` (or, without one, on the devices its platform lists for
+   * the title) only a PC echo of a game Steam counts (see steamHas)?
+   */
+  steamEcho(account, entry, device) {
+    if (device != null) return PC_DEVICE.test(device) && this.steamHas(account, entry.ext_id, entry.title);
+    const devices = safeJson(entry.meta, {}).devices;
+    return Array.isArray(devices) && devices.length > 0 && devices.every((d) => PC_DEVICE.test(String(d))) && this.steamHas(account, entry.ext_id, entry.title);
+  }
+
+  /**
+   * Presence-only sessions an earlier version recorded from such echoes (and the spans still open
+   * for one) are removed, with the minutes they added - of titles still without a playtime stat
+   * (once the platform reports one, its total includes them). Returns the sessions removed.
+   */
+  dropSteamEchoes() {
+    const db = this.db;
+    const accounts = new Map();
+    const acc = (id) => { if (!accounts.has(id)) accounts.set(id, this.account(id)); return accounts.get(id); };
+    let n = 0;
+    tx(db, () => {
+      for (const sp of db.prepare('SELECT id, account_id, ext_id, title, device FROM presence WHERE ended_at IS NULL AND device IS NOT NULL').all()) {
+        const a = acc(sp.account_id);
+        if (a && PC_DEVICE.test(sp.device) && this.steamHas(a, sp.ext_id, sp.title)) db.prepare('UPDATE presence SET ended_at = last_seen_at, session_id = 0 WHERE id = ?').run(sp.id);
+      }
+      const rows = db.prepare(`SELECT s.id, s.minutes, s.device, s.entry_id, e.account_id, e.ext_id, e.title, e.meta FROM sessions s JOIN entries e ON e.id = s.entry_id
+        WHERE s.kind = 'play' AND e.account_id IS NOT NULL AND (s.source = 'presence' OR (s.source = 'sync' AND s.note LIKE 'Length estimated:%'))`).all();
+      for (const r of rows) {
+        const a = acc(r.account_id);
+        if (!a?.state?.unmetered?.[r.ext_id] || !this.steamEcho(a, r, r.device)) continue;
+        db.prepare('DELETE FROM sessions WHERE id = ?').run(r.id);
+        db.prepare('UPDATE presence SET session_id = 0 WHERE session_id = ?').run(r.id);
+        db.prepare('UPDATE entries SET playtime_min = MAX(0, playtime_min - ?) WHERE id = ?').run(r.minutes, r.entry_id);
+        n++;
+      }
+      if (n) flushRollups(db);
+    });
+    return n;
   }
 
   async pollPresence(account) {
@@ -1233,6 +1292,8 @@ export class SyncService {
       flushRollups(this.db);
       const doubled = dropDoubledPresence(this.db);
       if (doubled) this.log.info(`Removed ${doubled} presence session${doubled > 1 ? 's' : ''} another account already counts`);
+      const echoes = this.dropSteamEchoes();
+      if (echoes) this.log.info(`Removed ${echoes} Xbox PC session${echoes > 1 ? 's' : ''} of games Steam tracks (Xbox reports Steam play too, and keeps reporting it after the game closes)`);
       if (!relearnStyle(this.db, { settings: this.settings.all(), log: this.log })) reinferPending(this.db, { log: this.log, settings: this.settings.all() });
       flushRollups(this.db);
     } catch (e) { this.log.error('History inference failed', e); }
