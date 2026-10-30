@@ -7,8 +7,8 @@ import { createApp } from '../src/server.js';
 import { openDb } from '../src/db.js';
 import { Settings } from '../src/services/settings.js';
 import { flushRollups } from '../src/services/rollup.js';
-import { computeStats, dayKey } from '../src/services/stats.js';
-import { WeeklySummary } from '../src/services/digest.js';
+import { computeStats, periodHighlights, firstPlayedIn, dayKey } from '../src/services/stats.js';
+import { weeklySummary, WeeklySummary } from '../src/services/digest.js';
 
 const MIN = 60_000;
 const DAY = 86_400_000;
@@ -109,6 +109,69 @@ describe('weekly summary', () => {
     assert.equal(settings.get('weekly_summary_sent'), '2026-03-10');
     assert.equal(await w.tick(local(2026, 3, 24, 9, 1)), true);
     assert.deepEqual(sent, ['2026-03-09', '2026-03-17']);
+    db.close();
+  });
+
+  test('kept until the next write; new games found from the week, the same as from every game', () => {
+    const db = openDb(':memory:');
+    const w = writer(db);
+    const NOW = local(2026, 3, 18, 15); // weeks start on Monday: last week is Mar 9 - 15
+    const a = w.entry(w.game('Alpha'), 'steam');
+    const b = w.entry(w.game('Beta'), 'xbox');
+    const c = w.entry(w.game('Gamma'), 'psn');
+    w.play(a, local(2026, 1, 5, 20), 60); // Alpha was played long before: never new last week
+    w.play(a, local(2026, 3, 10, 20), 30);
+    w.play(b, local(2026, 3, 11, 19), 120);
+    w.play(c, local(2026, 3, 11, 21), 45); // Beta and Gamma both start on the 11th: id order
+    w.play(c, local(2026, 3, 8, 20), 200, 'estimate'); // ...but Gamma's history is older
+    flushRollups(db);
+    assertTotals(db);
+    const s = weeklySummary(db, { now: NOW });
+    assert.deepEqual(s.new_games.map((g) => g.title), ['Beta']);
+    assert.equal(weeklySummary(db, { now: NOW }), s, 'the same answer object until a write');
+    w.play(w.entry(w.game('Delta'), 'steam'), local(2026, 3, 12, 20), 10);
+    flushRollups(db);
+    const s2 = weeklySummary(db, { now: NOW });
+    assert.notEqual(s2, s);
+    assert.deepEqual(s2.new_games.map((g) => g.title), ['Beta', 'Delta']);
+    // this week so far ends now: never answered from a minute ago
+    const t0 = weeklySummary(db, { weeksAgo: 0, now: NOW });
+    const t1 = weeklySummary(db, { weeksAgo: 0, now: NOW + MIN });
+    assert.equal(t1.week.to, NOW + MIN);
+    assert.notEqual(t0, t1);
+    // highlights: newest first, ties by id
+    const h = periodHighlights(db, { range: 'week', now: local(2026, 3, 15, 23) });
+    assert.deepEqual(h.new_games.items.map((g) => [g.title, g.first_day]), [['Delta', '2026-03-12'], ['Beta', '2026-03-11']]);
+    db.close();
+  });
+
+  test('firstPlayedIn gives what the first day of every game gives, for any range and platform', () => {
+    const db = openDb(':memory:');
+    const w = writer(db);
+    let seed = 7;
+    const rnd = () => { seed = (seed * 48271) % 2147483647; return seed / 2147483647; };
+    const platforms = ['steam', 'xbox', 'psn'];
+    for (let i = 0; i < 60; i++) {
+      const g = w.game(`Game ${i}`);
+      for (const p of platforms) {
+        if (rnd() < 0.4) continue;
+        const e = w.entry(g, p, { excluded: rnd() < 0.15 ? 1 : 0 });
+        for (let k = 0; k < 4; k++) w.play(e, local(2025, 1, 1, 20) + Math.floor(rnd() * 600) * DAY, 10 + Math.floor(rnd() * 100), rnd() < 0.3 ? 'estimate' : 'play');
+      }
+    }
+    flushRollups(db);
+    assertTotals(db);
+    const naive = (fromDay, toDay, platform) => db.prepare(`SELECT p.game_id, MIN(p.day) first FROM play_days p WHERE p.excluded = 0 ${platform ? 'AND p.platform = ?' : ''}
+      GROUP BY p.game_id HAVING first >= ? AND first <= ? ORDER BY first, p.game_id`).all(...(platform ? [platform] : []), fromDay, toDay).map((r) => [r.game_id, r.first]);
+    let checked = 0;
+    for (const [fromDay, toDay] of [['2025-01-01', '2025-01-31'], ['2025-03-01', '2025-03-07'], ['2025-06-01', '2026-06-01'], ['1969-12-31', '2030-01-01'], ['2026-08-01', '2026-08-02']]) {
+      for (const platform of [null, ...platforms]) {
+        const got = firstPlayedIn(db, { fromDay, toDay, platform }).map((r) => [r.game_id, r.first]);
+        assert.deepEqual(got, naive(fromDay, toDay, platform), `${fromDay}..${toDay} ${platform}`);
+        checked += got.length;
+      }
+    }
+    assert.ok(checked > 100, 'the ranges hold new games');
     db.close();
   });
 });
