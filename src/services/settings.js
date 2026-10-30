@@ -102,6 +102,7 @@ export class Settings {
     s.igdb_secret_set = !!s.igdb_client_secret;
     delete s.igdb_client_secret;
     delete s.igdb_token;
+    delete s.igdb_match_v;
     return s;
   }
 }

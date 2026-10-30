@@ -40,7 +40,7 @@ const STEAM = { 292030: 1942 };
 const TTB = { 1942: { id: 1, game_id: 1942, hastily: 51 * 3600, normally: 104 * 3600, completely: 173 * 3600, count: 400 } };
 
 function fakeIgdb() {
-  const calls = { token: 0, games: 0, multiquery: 0, external_games: 0, ttb: 0, unauthorized: 0 };
+  const calls = { token: 0, games: 0, search: 0, multiquery: 0, external_games: 0, ttb: 0, unauthorized: 0 };
   let token = 'tok-1';
   let reject = 0; // reject this many API calls with 401 (an expired token)
   let lifetime = 5_000_000;
@@ -62,6 +62,12 @@ function fakeIgdb() {
         calls.external_games++;
         const uids = ids(/uid = \(([^)]*)\)/);
         return send(200, uids.flatMap((x) => (STEAM[x] ? [{ id: Number(x) + 5, uid: x, game: STEAM[x], category: 1 }, { id: 1, uid: x, game: 5, category: 5 }] : [])));
+      }
+      if (u.pathname === '/v4/games' && /search "/.test(body)) {
+        calls.search++;
+        const q = body.match(/search "((?:[^"\\]|\\.)*)";/)[1];
+        const words = q.toLowerCase().split(/\W+/).filter(Boolean);
+        return send(200, CATALOG.filter((g) => words.some((w) => g.name.toLowerCase().includes(w)) || (g.alternative_names || []).some((a) => a.name.toLowerCase() === q.toLowerCase())));
       }
       if (u.pathname === '/v4/games') {
         calls.games++;
@@ -151,7 +157,9 @@ describe('IGDB metadata', () => {
     assert.deepEqual({ ...meta(ids.wolf) }, { igdb_id: 25076, matched_by: 'title' }, 'by its alternative name');
     assert.deepEqual({ ...meta(ids.home) }, { igdb_id: null, matched_by: 'none' });
     assert.equal(fake.calls.external_games, 1);
-    assert.equal(fake.calls.multiquery, 1, 'three title searches in one request');
+    assert.equal(fake.calls.search, 3, 'one title search per request');
+    assert.equal(fake.calls.multiquery, 0);
+    assert.ok(igdb.state.samples.some((x) => x.title === 'Wolfenstein 2' && x.matched === 'Wolfenstein II: The New Colossus'), 'samples for the diagnostics');
 
     const g = (await api(`/games/${ids.witcher}`)).body;
     assert.deepEqual(g.meta.genres, ['Adventure', 'Role-playing (RPG)']);
@@ -163,6 +171,16 @@ describe('IGDB metadata', () => {
     assert.equal(g.meta.rating, 92.3);
     assert.equal(g.cover_url, 'https://cdn.example/w3.jpg', 'its own cover stays');
     assert.equal((await api(`/games/${ids.hades}`)).body.cover_url, 'https://images.igdb.com/igdb/image/upload/t_cover_big/cohades.jpg', 'a cover where there was none');
+  });
+
+  test('games the old matcher found nothing for are looked up again once', async () => {
+    app.db.prepare("UPDATE game_meta SET igdb_id = NULL, matched_by = 'none', tries = 1, fetched_at = ? WHERE game_id = ?").run(Date.now(), ids.wolf);
+    app.settings.set({ igdb_match_v: 1 });
+    const c = await igdb.run();
+    assert.equal(c.matched, 1);
+    assert.equal(app.db.prepare('SELECT igdb_id FROM game_meta WHERE game_id = ?').get(ids.wolf).igdb_id, 25076);
+    assert.equal(app.settings.get('igdb_match_v'), 2);
+    assert.equal(app.db.prepare("SELECT matched_by FROM game_meta WHERE game_id = ?").get(ids.home).matched_by, 'none', 'nothing to find there');
   });
 
   test('the next pass has nothing to do; a non-match is tried again two weeks later; details refresh after 30 days', async () => {

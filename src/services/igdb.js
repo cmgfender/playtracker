@@ -11,7 +11,7 @@
 // tried again later; a match chosen by hand (PUT /games/:id/meta) is never replaced.
 //
 // IGDB allows 4 requests a second: requests here are spaced to ~3 a second, one at a time, and
-// title searches go 10 to a request (multiquery). Details are refreshed every 30 days.
+// title searches go one to a request. Details are refreshed every 30 days.
 // Field lists use `*` plus expansions of long-standing fields, so a field IGDB renames later
 // does not turn every request into a 400.
 
@@ -27,7 +27,8 @@ export const TAG_KINDS = ['genre', 'theme', 'mode', 'perspective', 'franchise', 
 const REFRESH_AFTER = 30 * DAY;     // details of a matched game
 const RETRY_NONE_AFTER = 14 * DAY;  // a game nothing matched
 const MAX_TRIES = 6;                // ... at most this many times
-const SEARCH_PER_REQUEST = 10;      // multiquery limit
+const SEARCH_BATCH = 50;            // titles searched between progress updates
+const MATCH_VERSION = 2;            // 2: searches one title per request (games nothing matched before are looked up again)
 const IDS_PER_REQUEST = 200;
 // IGDB platform ids of the platforms tracked here (a candidate on one of them is preferred)
 const PLATFORM_IDS = { steam: [6, 14, 3], xbox: [49, 169, 12, 11], psn: [48, 167, 9, 46, 8] };
@@ -36,6 +37,8 @@ const COVER = (id) => `https://images.igdb.com/igdb/image/upload/t_cover_big/${i
 const DETAIL_FIELDS = 'fields *, genres.name, themes.name, game_modes.name, player_perspectives.name, franchises.name, involved_companies.developer, involved_companies.publisher, involved_companies.company.name, cover.image_id, alternative_names.name';
 const SEARCH_FIELDS = 'fields *, alternative_names.name';
 
+// the title as searched: trademark signs and platform tags only confuse IGDB's search
+const searchText = (t) => String(t || '').replace(/[™®©℠]/g, '').replace(/\s*[([](?:pc|windows(?: 10)?|xbox(?: one| series x\|s)?|ps[45]|playstation [45])[)\]]\s*/gi, ' ').replace(/\s+/g, ' ').trim();
 const quote = (s) => `"${String(s).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
 const chunks = (list, n) => { const out = []; for (let i = 0; i < list.length; i += n) out.push(list.slice(i, i + n)); return out; };
 const names = (list) => [...new Set((list || []).map((x) => (typeof x === 'object' ? x?.name : null)).filter((x) => typeof x === 'string' && x.trim()).map((x) => x.trim()))];
@@ -135,16 +138,15 @@ export class Igdb {
     }
   }
 
-  /** Search titles, 10 to a request: Map(key -> candidates). */
+  /**
+   * Search titles, one request each (IGDB's documented form; a search inside a multiquery is not
+   * applied, so every title came back unmatched): Map(key -> candidates).
+   */
   async search(items) {
     const out = new Map();
-    for (const part of chunks(items, SEARCH_PER_REQUEST)) {
-      const body = part.map((x, i) => `query games "q${i}" { ${SEARCH_FIELDS}; search ${quote(x.title)}; limit 8; };`).join('\n');
-      const res = await this.query('multiquery', body);
-      for (const r of res || []) {
-        const i = Number(String(r.name).slice(1));
-        if (part[i]) out.set(part[i].key, r.result || []);
-      }
+    for (const x of items) {
+      const q = searchText(x.title);
+      out.set(x.key, q ? (await this.query('games', `${SEARCH_FIELDS}; search ${quote(q)}; limit 10;`)) || [] : []);
     }
     return out;
   }
@@ -246,6 +248,11 @@ export class Igdb {
    */
   async run({ limit = 300, now = Date.now() } = {}) {
     if (!this.configured() || this.state.running) return null;
+    // a better matcher looks again at the games the last one found nothing for
+    if ((this.settings.get('igdb_match_v') || 1) < MATCH_VERSION) {
+      this.db.prepare("DELETE FROM game_meta WHERE igdb_id IS NULL AND matched_by = 'none' AND locked = 0").run();
+      this.settings.set({ igdb_match_v: MATCH_VERSION });
+    }
     const list = this.candidates(limit, now);
     if (!list.length) { this.state.last_run_at = Date.now(); return { looked: 0 }; }
     Object.assign(this.state, { running: true, phase: 'matching', done: 0, total: list.length, started_at: Date.now(), last_error: null });
@@ -262,15 +269,22 @@ export class Igdb {
         for (const g of steam) { const id = found.get(String(g.steam_appid)); if (id) ids.set(g.id, [id, 'steam']); }
       }
       const rest = fresh.filter((g) => !ids.has(g.id));
-      for (const part of chunks(rest, SEARCH_PER_REQUEST * 5)) {
+      let answered = 0;
+      for (const part of chunks(rest, SEARCH_BATCH)) {
         const found = await this.search(part.map((g) => ({ key: g.id, title: g.title })));
         for (const g of part) {
-          const m = pickMatch(g.title, found.get(g.id), String(g.platforms || '').split(','));
+          const cands = found.get(g.id) || [];
+          if (cands.length) answered++;
+          const m = pickMatch(g.title, cands, String(g.platforms || '').split(','));
+          // what came back for the last few titles, for diagnostics
+          this.state.samples = [{ title: g.title, searched: searchText(g.title), candidates: cands.slice(0, 5).map((c) => c.name), matched: m ? m.name : null }, ...(this.state.samples || [])].slice(0, 8);
           if (m) ids.set(g.id, [m.id, 'title']); else this.store(g.id, null, 'none');
           if (!m) counts.none++;
         }
         this.state.done += part.length;
       }
+      counts.searched = rest.length;
+      if (rest.length >= 10 && !answered) this.log?.warn(`IGDB: ${rest.length} title searches all came back empty - see samples in the diagnostics`);
       this.state.phase = 'details';
       const want = [...new Set([...ids.values()].map(([id]) => id))];
       const recs = want.length ? await this.details(want) : new Map();

@@ -1377,7 +1377,7 @@ export function registerRoutes(r, app) {
         logs: count('SELECT COUNT(*) n FROM logs'), achievements: count('SELECT COUNT(*) n FROM achievements'),
       },
       backups: app.backups ? (({ files, ...b }) => ({ ...b, before_upgrade: files.filter((f) => f.kind === 'before-upgrade').length }))(app.backups.status()) : null,
-      igdb: app.igdb ? (({ configured, running, last_run_at, last_error, last_counts, coverage }) => ({ configured, running, last_run_at, last_error, last_counts, coverage }))(app.igdb.status()) : null,
+      igdb: app.igdb ? (({ configured, running, last_run_at, last_error, last_counts, coverage, samples }) => ({ configured, running, last_run_at, last_error, last_counts, coverage, samples: samples || [] }))(app.igdb.status()) : null,
       weekly_summary: { enabled: !!(settings.get('weekly_summary') && settings.get('webhook_url')), time: settings.get('weekly_summary_time'), last_sent_week: settings.get('weekly_summary_sent') || null },
       errors_24h: count("SELECT COUNT(*) n FROM logs WHERE level = 'error' AND time > ?", Date.now() - 86_400_000),
       warnings_24h: count("SELECT COUNT(*) n FROM logs WHERE level = 'warn' AND time > ?", Date.now() - 86_400_000),
