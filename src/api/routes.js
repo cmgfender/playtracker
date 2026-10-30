@@ -655,9 +655,10 @@ export function registerRoutes(r, app) {
     return yearInReview(db, toInt(c.params.year), { weekStartsOn: settings.get('week_starts_on'), estimates: estimatesParam(c.query, settings) });
   }, { summary: 'Year in review', query: { estimates: 'include|exclude' } });
   r.get('/api/v1/stats/years', () => {
-    const first = db.prepare('SELECT MIN(day) d FROM play_days').get().d;
+    // years with play that counts (an excluded entry's play is in no stats)
+    const first = db.prepare('SELECT MIN(day) d FROM play_days WHERE excluded = 0 AND estimated IN (0, 1)').get().d;
     const ys = [];
-    if (first) for (let y = new Date().getFullYear(); y >= Number(first.slice(0, 4)); y--) if (db.prepare('SELECT 1 FROM play_days WHERE day >= ? AND day <= ? LIMIT 1').get(`${y}-01-01`, `${y}-12-31`)) ys.push(y);
+    if (first) for (let y = new Date().getFullYear(); y >= Number(first.slice(0, 4)); y--) if (db.prepare('SELECT 1 FROM play_days WHERE excluded = 0 AND estimated IN (0, 1) AND day >= ? AND day <= ? LIMIT 1').get(`${y}-01-01`, `${y}-12-31`)) ys.push(y);
     const cur = new Date().getFullYear();
     if (!ys.includes(cur)) ys.unshift(cur);
     return ys;
