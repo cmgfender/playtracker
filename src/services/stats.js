@@ -188,8 +188,10 @@ export function computeStreaks(dayMinutes, now = Date.now()) {
   return { current, longest, longest_end: longestEnd };
 }
 
-export function firstPlayDay(db, estimates = 'include') {
-  return db.prepare(`SELECT MIN(day) d FROM play_days WHERE excluded = 0 AND estimated ${estimates === 'exclude' ? '= 0' : 'IN (0, 1)'}`).get().d;
+/** The first day with play that `opts` ({ gameId, platform, estimates }, as filter) counts, or null. */
+export function firstPlayDay(db, opts = {}) {
+  const f = filter('p', typeof opts === 'string' ? { estimates: opts } : opts);
+  return db.prepare(`SELECT MIN(p.day) d ${f.sql}`).get(...f.args).d;
 }
 
 export function computeStats(db, opts = {}) {
@@ -198,9 +200,9 @@ export function computeStats(db, opts = {}) {
   return memo(db, `stats:${range}:${group}:${gameId}:${platform}:${weekStartsOn}:${topLimit}:${estimates}:${opts.now ?? ''}`, () => {
     let { from, to, label } = resolveRange(range, now, weekStartsOn);
     if (from === 0) {
-      const first = gameId
-        ? db.prepare(`SELECT MIN(day) d FROM play_days WHERE game_id = ? AND estimated ${estimates === 'exclude' ? '= 0' : 'IN (0, 1)'}`).get(gameId).d
-        : firstPlayDay(db, estimates);
+      // all time starts with the first play the rows below count (this platform or game, never
+      // an excluded entry): an earlier start would add empty years to the buckets and the daily average
+      const first = firstPlayDay(db, { gameId, platform, estimates });
       from = first ? parseDay(first) - 12 * 3600_000 : startOfDay(now);
     }
     const span = Math.max(1, (to - from) / DAY);
