@@ -17,6 +17,13 @@ export function dayKey(t) {
 /** A YYYY-MM-DD local day -> its local noon (safe from DST shifts when stepping by days). */
 export const parseDay = (k) => new Date(`${k}T12:00:00`).getTime();
 
+/** `t` moved by whole calendar days, same wall-clock time (a DST change makes some days 23 or 25 hours). */
+export function addDays(t, n) {
+  const d = new Date(t);
+  d.setDate(d.getDate() + n);
+  return d.getTime();
+}
+
 export function startOfDay(t) {
   const d = new Date(t);
   d.setHours(0, 0, 0, 0);
@@ -94,7 +101,7 @@ export function resolveRange(range, now = Date.now(), weekStartsOn = 1) {
   if ((m = /^(\d+)d$/.exec(r))) {
     // capped at 100 years: the empty series walks every day of the range
     const n = Math.min(Number(m[1]), 36500);
-    return { from: startOfDay(now - (n - 1) * DAY), to: now, label: `Last ${n} days` };
+    return { from: startOfDay(addDays(now, -(n - 1))), to: now, label: `Last ${n} days` };
   }
   if ((m = /^year:(\d{4})$/.exec(r))) {
     const y = Number(m[1]);
@@ -208,11 +215,24 @@ export function computeStats(db, opts = {}) {
     const dayTotals = new Map();
     let total = 0;
     let estTotal = 0;
-    for (const r of db.prepare(`SELECT p.day, p.platform, p.estimated, SUM(p.minutes) m ${f.sql} GROUP BY p.day, p.platform, p.estimated`).all(...f.args)) {
+    // what the minutes rest on (play_days.basis): imported sessions inside tracked play, and the
+    // kinds of estimated history, per bucket
+    const BASES = ['tracked', 'imported', 'anchored', 'confirmed', 'estimated'];
+    const byBasis = BASES.map(() => new Map());
+    const basisTotal = BASES.map(() => 0);
+    const importedPlat = new Map();
+    for (const r of db.prepare(`SELECT p.day, p.platform, p.estimated, p.basis, SUM(p.minutes) m ${f.sql} GROUP BY p.day, p.platform, p.estimated, p.basis`).all(...f.args)) {
       const t = parseDay(r.day);
       const k = groupKey(t, g, weekStartsOn);
       series.set(k, (series.get(k) || 0) + r.m);
       total += r.m;
+      const b = BASES[r.basis] ? r.basis : r.estimated ? 4 : 0;
+      byBasis[b].set(k, (byBasis[b].get(k) || 0) + r.m);
+      basisTotal[b] += r.m;
+      if (b === 1) {
+        if (!importedPlat.has(r.platform)) importedPlat.set(r.platform, new Map());
+        importedPlat.get(r.platform).set(k, (importedPlat.get(r.platform).get(k) || 0) + r.m);
+      }
       if (r.estimated) { seriesEst.set(k, (seriesEst.get(k) || 0) + r.m); estTotal += r.m; continue; }
       // platform stacks, weekday pattern, busiest day and days played use tracked play only
       if (!byPlat.has(r.platform)) byPlat.set(r.platform, new Map());
@@ -262,6 +282,11 @@ export function computeStats(db, opts = {}) {
       series: [...series.entries()].map(([key, minutes]) => ({ key, minutes: r(minutes), estimated: r(seriesEst.get(key) || 0) })),
       series_by_platform: Object.fromEntries([...byPlat.entries()].map(([p, m]) => [p, [...series.keys()].map((k) => r(m.get(k) || 0))])),
       series_estimated: [...series.keys()].map((k) => r(seriesEst.get(k) || 0)),
+      // the same buckets by what they rest on (tracked + imported + anchored + confirmed + estimated = series);
+      // imported sessions are also inside series_by_platform (they are play), listed apart here
+      series_by_basis: Object.fromEntries(BASES.map((b, i) => [b, [...series.keys()].map((k) => r(byBasis[i].get(k) || 0))])),
+      series_imported_by_platform: Object.fromEntries([...importedPlat.entries()].map(([p, m]) => [p, [...series.keys()].map((k) => r(m.get(k) || 0))])),
+      minutes_by_basis: Object.fromEntries(BASES.map((b, i) => [b, r(basisTotal[i])])),
       top_games: top.map((x) => ({ ...gameInfo.get(x.game_id), game_id: x.game_id, minutes: r(x.minutes), estimated_minutes: r(x.est || 0), sessions: x.sessions, platforms: String(x.platforms || '').split(','), last: parseDay(x.last_day) })),
       platforms: platforms.map((p) => ({ platform: p.platform, minutes: r(p.minutes) })),
       weekday: weekday.map(r),
@@ -362,8 +387,8 @@ export function previousPeriod(range, now = Date.now()) {
   const r = String(range || '30d');
   let m;
   const monthsBack = (t, n) => { const d = new Date(t); const day = d.getDate(); d.setDate(1); d.setMonth(d.getMonth() - n); d.setDate(Math.min(day, new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate())); return d.getTime(); };
-  if ((m = /^(\d+)d$/.exec(r))) return { range: r, now: now - Math.min(Number(m[1]), 36500) * DAY };
-  if (r === 'week') return { range: r, now: now - 7 * DAY };
+  if ((m = /^(\d+)d$/.exec(r))) return { range: r, now: addDays(now, -Math.min(Number(m[1]), 36500)) };
+  if (r === 'week') return { range: r, now: addDays(now, -7) };
   if (r === 'month') return { range: r, now: monthsBack(now, 1) };
   if (r === 'year') return { range: r, now: monthsBack(now, 12) };
   if ((m = /^year:(\d{4})$/.exec(r))) return { range: `year:${Number(m[1]) - 1}`, now: monthsBack(now, 12) };
@@ -405,7 +430,8 @@ export function periodHighlights(db, { range = '30d', platform = null, gameId = 
     const fromDay = dayKey(from); const toDay = dayKey(to);
     const pf = platform ? 'AND e.platform = ?' : '';
     const gf = gameId ? 'AND e.game_id = ?' : '';
-    const pargs = [platform, gameId].filter((x) => x != null && x !== '');
+    // the same values the SQL fragments below are added for (truthy ones)
+    const pargs = [platform || null, gameId || null].filter(Boolean);
     // a game is new when its first play day anywhere falls in the range (on this platform, when filtered)
     const fresh = db.prepare(`SELECT g.id game_id, g.title, g.cover_url, MIN(p.day) first FROM play_days p JOIN games g ON g.id = p.game_id
       WHERE p.excluded = 0 ${platform ? 'AND p.platform = ?' : ''} ${gameId ? 'AND p.game_id = ?' : ''} GROUP BY p.game_id HAVING first >= ? AND first <= ? ORDER BY first DESC`).all(...pargs, fromDay, toDay);

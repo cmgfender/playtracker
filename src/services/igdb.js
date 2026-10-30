@@ -11,7 +11,7 @@
 // tried again later; a match chosen by hand (PUT /games/:id/meta) is never replaced.
 //
 // IGDB allows 4 requests a second: requests here are spaced to ~3 a second, one at a time, and
-// title searches go 10 to a request (multiquery). Details are refreshed every 30 days.
+// title searches go one to a request. Details are refreshed every 30 days.
 // Field lists use `*` plus expansions of long-standing fields, so a field IGDB renames later
 // does not turn every request into a 400.
 
@@ -27,7 +27,8 @@ export const TAG_KINDS = ['genre', 'theme', 'mode', 'perspective', 'franchise', 
 const REFRESH_AFTER = 30 * DAY;     // details of a matched game
 const RETRY_NONE_AFTER = 14 * DAY;  // a game nothing matched
 const MAX_TRIES = 6;                // ... at most this many times
-const SEARCH_PER_REQUEST = 10;      // multiquery limit
+const SEARCH_BATCH = 50;            // titles searched between progress updates
+const MATCH_VERSION = 2;            // 2: searches one title per request (games nothing matched before are looked up again)
 const IDS_PER_REQUEST = 200;
 // IGDB platform ids of the platforms tracked here (a candidate on one of them is preferred)
 const PLATFORM_IDS = { steam: [6, 14, 3], xbox: [49, 169, 12, 11], psn: [48, 167, 9, 46, 8] };
@@ -36,6 +37,8 @@ const COVER = (id) => `https://images.igdb.com/igdb/image/upload/t_cover_big/${i
 const DETAIL_FIELDS = 'fields *, genres.name, themes.name, game_modes.name, player_perspectives.name, franchises.name, involved_companies.developer, involved_companies.publisher, involved_companies.company.name, cover.image_id, alternative_names.name';
 const SEARCH_FIELDS = 'fields *, alternative_names.name';
 
+// the title as searched: trademark signs and platform tags only confuse IGDB's search
+const searchText = (t) => String(t || '').replace(/[™®©℠]/g, '').replace(/\s*[([](?:pc|windows(?: 10)?|xbox(?: one| series x\|s)?|ps[45]|playstation [45])[)\]]\s*/gi, ' ').replace(/\s+/g, ' ').trim();
 const quote = (s) => `"${String(s).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
 const chunks = (list, n) => { const out = []; for (let i = 0; i < list.length; i += n) out.push(list.slice(i, i + n)); return out; };
 const names = (list) => [...new Set((list || []).map((x) => (typeof x === 'object' ? x?.name : null)).filter((x) => typeof x === 'string' && x.trim()).map((x) => x.trim()))];
@@ -61,9 +64,14 @@ const isMain = (c) => {
  * an alternative name) must equal the title once normalized. Ties prefer main games, the
  * platforms the game is owned on here, and more ratings.
  */
+// a lighter normalization that keeps edition words ("Legendary Edition", "Definitive Edition"):
+// among candidates that are the same title once normalized, the one named exactly like it wins
+const light = (s) => String(s || '').toLowerCase().replace(/[™®©℠]/g, '').normalize('NFKD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, ' ').trim();
+
 export function pickMatch(title, candidates, platforms = []) {
   const want = normalizeTitle(title);
   if (!want) return null;
+  const exactName = light(title);
   const wantedPlatforms = new Set(platforms.flatMap((p) => PLATFORM_IDS[p] || []));
   let best = null;
   for (const c of candidates || []) {
@@ -72,7 +80,8 @@ export function pickMatch(title, candidates, platforms = []) {
     const alt = !exact && (c.alternative_names || []).some((a) => normalizeTitle(a?.name) === want);
     if (!exact && !alt) continue;
     const plats = (c.platforms || []).map((p) => (typeof p === 'object' ? p.id : p));
-    const score = (exact ? 4 : 2) + (isMain(c) ? 3 : 0) + (plats.some((p) => wantedPlatforms.has(p)) ? 2 : 0) + Math.min(1, Math.log10(1 + (c.total_rating_count || c.rating_count || 0)) / 3);
+    const named = light(c.name) === exactName || (c.alternative_names || []).some((a) => light(a?.name) === exactName);
+    const score = (exact ? 4 : 2) + (named ? 3 : 0) + (isMain(c) ? 3 : 0) + (plats.some((p) => wantedPlatforms.has(p)) ? 2 : 0) + Math.min(1, Math.log10(1 + (c.total_rating_count || c.rating_count || 0)) / 3);
     if (!best || score > best.score) best = { c, score };
   }
   return best ? best.c : null;
@@ -103,7 +112,8 @@ export class Igdb {
     const { id, secret } = this.creds();
     if (!id || !secret) throw new ProviderError('IGDB is not set up: add a Twitch client id and secret', { auth: true });
     const kept = this.settings.get('igdb_token');
-    if (!force && kept?.access_token && kept.client_id === id && kept.expires_at - Date.now() > DAY) return kept.access_token;
+    // renewed a day before it expires, or a tenth of its life for short-lived ones (a 401 renews it anyway)
+    if (!force && kept?.access_token && kept.client_id === id && kept.expires_at - Date.now() > Math.min(DAY, Math.max(60_000, (kept.expires_at - (kept.issued_at || kept.expires_at - DAY)) / 10))) return kept.access_token;
     const u = new URL(this.tokenUrl);
     u.searchParams.set('client_id', id); u.searchParams.set('client_secret', secret); u.searchParams.set('grant_type', 'client_credentials');
     let r;
@@ -112,7 +122,7 @@ export class Igdb {
       throw err;
     }
     if (!r?.access_token) throw new ProviderError('Twitch returned no access token for IGDB', { auth: true });
-    this.settings.set({ igdb_token: { access_token: r.access_token, client_id: id, expires_at: Date.now() + (Number(r.expires_in) || 3600) * 1000 } });
+    this.settings.set({ igdb_token: { access_token: r.access_token, client_id: id, issued_at: Date.now(), expires_at: Date.now() + (Number(r.expires_in) || 3600) * 1000 } });
     return r.access_token;
   }
 
@@ -128,16 +138,15 @@ export class Igdb {
     }
   }
 
-  /** Search titles, 10 to a request: Map(key -> candidates). */
+  /**
+   * Search titles, one request each (IGDB's documented form; a search inside a multiquery is not
+   * applied, so every title came back unmatched): Map(key -> candidates).
+   */
   async search(items) {
     const out = new Map();
-    for (const part of chunks(items, SEARCH_PER_REQUEST)) {
-      const body = part.map((x, i) => `query games "q${i}" { ${SEARCH_FIELDS}; search ${quote(x.title)}; limit 8; };`).join('\n');
-      const res = await this.query('multiquery', body);
-      for (const r of res || []) {
-        const i = Number(String(r.name).slice(1));
-        if (part[i]) out.set(part[i].key, r.result || []);
-      }
+    for (const x of items) {
+      const q = searchText(x.title);
+      out.set(x.key, q ? (await this.query('games', `${SEARCH_FIELDS}; search ${quote(q)}; limit 10;`)) || [] : []);
     }
     return out;
   }
@@ -176,6 +185,8 @@ export class Igdb {
   store(gameId, rec, matchedBy, { locked = false } = {}) {
     const db = this.db;
     const now = Date.now();
+    // merged or deleted while the pass waited on IGDB: nothing to store
+    if (!db.prepare('SELECT 1 FROM games WHERE id = ?').get(gameId)) return;
     const min = (s) => (Number(s) > 0 ? Math.round(Number(s) / 60) : null);
     tx(db, () => {
       if (!rec) {
@@ -237,6 +248,11 @@ export class Igdb {
    */
   async run({ limit = 300, now = Date.now() } = {}) {
     if (!this.configured() || this.state.running) return null;
+    // a better matcher looks again at the games the last one found nothing for
+    if ((this.settings.get('igdb_match_v') || 1) < MATCH_VERSION) {
+      this.db.prepare("DELETE FROM game_meta WHERE igdb_id IS NULL AND matched_by = 'none' AND locked = 0").run();
+      this.settings.set({ igdb_match_v: MATCH_VERSION });
+    }
     const list = this.candidates(limit, now);
     if (!list.length) { this.state.last_run_at = Date.now(); return { looked: 0 }; }
     Object.assign(this.state, { running: true, phase: 'matching', done: 0, total: list.length, started_at: Date.now(), last_error: null });
@@ -244,6 +260,7 @@ export class Igdb {
     try {
       const ids = new Map(); // game id -> [igdb id, how]
       const refresh = list.filter((g) => g.igdb_id != null);
+      const refreshing = new Set(refresh.map((g) => g.id));
       for (const g of refresh) ids.set(g.id, [g.igdb_id, g.matched_by]);
       const fresh = list.filter((g) => g.igdb_id == null && !g.locked);
       const steam = fresh.filter((g) => g.steam_appid);
@@ -252,23 +269,35 @@ export class Igdb {
         for (const g of steam) { const id = found.get(String(g.steam_appid)); if (id) ids.set(g.id, [id, 'steam']); }
       }
       const rest = fresh.filter((g) => !ids.has(g.id));
-      for (const part of chunks(rest, SEARCH_PER_REQUEST * 5)) {
+      let answered = 0;
+      for (const part of chunks(rest, SEARCH_BATCH)) {
         const found = await this.search(part.map((g) => ({ key: g.id, title: g.title })));
         for (const g of part) {
-          const m = pickMatch(g.title, found.get(g.id), String(g.platforms || '').split(','));
+          const cands = found.get(g.id) || [];
+          if (cands.length) answered++;
+          const m = pickMatch(g.title, cands, String(g.platforms || '').split(','));
+          // what came back for the last few titles, for diagnostics
+          this.state.samples = [{ title: g.title, searched: searchText(g.title), candidates: cands.slice(0, 5).map((c) => c.name), matched: m ? m.name : null }, ...(this.state.samples || [])].slice(0, 8);
           if (m) ids.set(g.id, [m.id, 'title']); else this.store(g.id, null, 'none');
           if (!m) counts.none++;
         }
         this.state.done += part.length;
       }
+      counts.searched = rest.length;
+      if (rest.length >= 10 && !answered) this.log?.warn(`IGDB: ${rest.length} title searches all came back empty - see samples in the diagnostics`);
       this.state.phase = 'details';
       const want = [...new Set([...ids.values()].map(([id]) => id))];
       const recs = want.length ? await this.details(want) : new Map();
       for (const [gameId, [igdbId, how]] of ids) {
         const rec = recs.get(igdbId);
+        if (!rec && refreshing.has(gameId)) {
+          // a refresh IGDB did not answer for (an id it merged, a partial reply): keep the match as it is
+          this.db.prepare('UPDATE game_meta SET fetched_at = ? WHERE game_id = ?').run(Date.now(), gameId);
+          continue;
+        }
         if (!rec) { this.store(gameId, null, 'none'); counts.none++; continue; }
         this.store(gameId, rec, how, { locked: how === 'manual' });
-        if (refresh.some((g) => g.id === gameId)) counts.refreshed++;
+        if (refreshing.has(gameId)) counts.refreshed++;
         else { counts.matched++; counts[how === 'steam' ? 'by_steam' : 'by_title']++; }
       }
       this.state.done = list.length;

@@ -98,9 +98,11 @@ export class Settings {
     delete s.password_hash;
     delete s.history_style; // learned data, not a setting
     delete s.weekly_summary_sent; // the last week summarized
+    delete s.weekly_summary_sent_at;
     s.igdb_secret_set = !!s.igdb_client_secret;
     delete s.igdb_client_secret;
     delete s.igdb_token;
+    delete s.igdb_match_v;
     return s;
   }
 }

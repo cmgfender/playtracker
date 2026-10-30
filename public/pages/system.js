@@ -35,7 +35,7 @@ export async function apidocs(view, stale) {
     <div class="card" style="margin-top:16px">${Object.entries(groups).map(([tag, ops]) => `<h2 style="margin:18px 0 8px;text-transform:capitalize">${esc(tag)}</h2>
       <div class="scroll-x"><table class="tbl api-table">${ops.map(({ p, m, op }) => `<tr><td style="width:70px"><span class="method m-${m}">${m.toUpperCase()}</span></td><td><span class="mono">${esc(p)}</span><div class="small muted">${esc(op.summary)}</div>
         ${op.parameters.filter((x) => x.in === 'query').length ? `<div class="tiny dim">query: ${op.parameters.filter((x) => x.in === 'query').map((x) => `<code>${esc(x.name)}</code>${x.description ? ` ${esc(x.description)}` : ''}`).join(' · ')}</div>` : ''}
-        ${op.requestBody ? `<div class="tiny dim">body: <code>${esc(op.requestBody.content['application/json'].schema.description)}</code></div>` : ''}</td></tr>`).join('')}</table></div>`).join('')}</div>`;
+        ${op.requestBody ? `<div class="tiny dim">body: <code>${esc(Object.values(op.requestBody.content)[0]?.schema?.description || '')}</code>${Object.keys(op.requestBody.content).filter((t) => t !== 'application/json').map((t) => ` <span class="badge">${esc(t)}</span>`).join('')}</div>` : ''}</td></tr>`).join('')}</table></div>`).join('')}</div>`;
 }
 
 // =====================================================================

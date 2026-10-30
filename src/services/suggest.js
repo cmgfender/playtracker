@@ -17,7 +17,7 @@
 // with seeded weights instead. The aggregates come from indexed SQL (entries, the per-day rollup,
 // achievements, session-length frequencies) and are memoized until the next write.
 import { HttpError, fmtMinutes } from '../util.js';
-import { memo, dayKey, parseDay } from './stats.js';
+import { memo, dayKey, parseDay, addDays } from './stats.js';
 
 const DAY = 86_400_000;
 const HOUR = 3_600_000;
@@ -71,7 +71,7 @@ function hash01(seed, n) {
 // ---------------------------------------------------------------- per-game aggregates (SQL)
 function libraryRows(db, now) {
   return memo(db, `suggest-rows:${dayKey(now)}`, () => {
-    const d60 = dayKey(now - 59 * DAY); const d14 = dayKey(now - 13 * DAY); const d3 = dayKey(now - 2 * DAY);
+    const d60 = dayKey(addDays(now, -59)); const d14 = dayKey(addDays(now, -13)); const d3 = dayKey(addDays(now, -2));
     const rows = db.prepare(`WITH e AS (
         SELECT game_id, MIN(excluded) all_excluded,
           SUM(CASE WHEN excluded = 0 THEN playtime_min ELSE 0 END) minutes,

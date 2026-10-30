@@ -1,4 +1,4 @@
-import { $, $$, esc, fmtMin, fmtHours, fmtDate, plat, platDot, cover, icon, api, state, plural, STATUSES } from './app.js';
+import { $, $$, esc, fmtMin, fmtHours, fmtDate, plat, platDot, cover, icon, api, state, plural, STATUSES, a11y, tagHref } from './app.js';
 import { mountCharts, punchcard, histogram, areaChart, swimlanes, scatterChart, lineChart, barChart, dayName, chart, registerChart, textWidth } from './charts.js';
 import { seriesLabel, seriesName, hourLabel, emptyState, kpi, rarityText, achIcon } from './pages.js';
 
@@ -90,6 +90,7 @@ export async function insights(view, stale) {
       if (my !== seq[id] || stale()) return;
       body.innerHTML = html;
       mountCharts(body);
+      a11y(body); // toggles drawn after the page's first render get their roles and keys too
     } catch (e) {
       if (my !== seq[id] || stale()) return;
       loaded.delete(id);
@@ -188,19 +189,20 @@ export async function insights(view, stale) {
     const [g, fr, dev, pace, st] = await Promise.all([api(`/stats/tags?${p}`), api(`/stats/tags?${params({ kind: 'franchise', limit: '6' })}`), api(`/stats/tags?${params({ kind: 'developer', limit: '6' })}`), api('/stats/pace?limit=6'), api('/igdb/status').catch(() => null)]);
     // while IGDB is matching, the section fills in as it goes
     clearTimeout(genreTimer);
-    if (st?.running) genreTimer = setTimeout(() => { if (!stale() && near(sel('genres'))) { loaded.delete('genres'); load('genres'); } }, 8000);
+    // off screen when the timer fires: marked to load fresh when it comes back into view
+    if (st?.running) genreTimer = setTimeout(() => { if (stale()) return; loaded.delete('genres'); if (near(sel('genres'))) load('genres'); }, 8000);
     const cov = g.coverage;
     const progress = st?.running ? `<p class="small muted pulse" style="margin:0 0 12px">Matching your games on IGDB: ${st.done.toLocaleString()} of ${st.total.toLocaleString()} in this pass. This section fills in as it goes.</p>` : '';
     const coverage = cov.games ? note(`Metadata for ${cov.matched_games} of ${plural(cov.games, 'game')} played in this range (${pct(cov.minutes ? cov.matched_minutes / cov.minutes : 0)} of the time).${cov.matched_games < cov.games ? ' <a class="link" href="/settings#metadata" data-link>IGDB settings</a>' : ''}`) : '';
     if (!g.items.length) return `${progress}${none(cov.games ? 'None of the games played in this range has genres yet.' : 'No play in this range.')}`;
     const max = g.items[0].minutes;
     const PALETTE = (i) => `var(--era-${i % ERA_COLORS})`;
-    const rows = g.items.map((t, i) => `<a class="mrow mlink" href="/library?tag=${encodeURIComponent(`genre:${t.name}`)}" data-link><span class="ml"><i class="dot" style="background:${PALETTE(i)}"></i>${esc(t.name)}</span><span class="mbar"><i style="width:${(t.minutes / max) * 100}%;background:${PALETTE(i)}"></i></span><span class="mv">${fmtMin(t.minutes, { short: t.minutes >= 600 })} · ${plural(t.games, 'game')}${t.finished ? ` · ${t.finished} finished` : ''}</span></a>`).join('');
+    const rows = g.items.map((t, i) => `<a class="mrow mlink" href="${tagHref('genre', t.name)}" data-link><span class="ml"><i class="dot" style="background:${PALETTE(i)}"></i>${esc(t.name)}</span><span class="mbar"><i style="width:${(t.minutes / max) * 100}%;background:${PALETTE(i)}"></i></span><span class="mv">${fmtMin(t.minutes, { short: t.minutes >= 600 })} · ${plural(t.games, 'game')}${t.finished ? ` · ${t.finished} finished` : ''}</span></a>`).join('');
     const top = g.series.slice(0, 5);
     const grp = g.range.group;
     const chart = top.length && g.keys.length > 2 ? `${lineChart({ labels: g.keys.map((k) => ({ label: seriesLabel(k, grp), name: grp === 'week' ? `Week of ${seriesName(k, 'day')}` : seriesName(k, grp) })), series: top.map((t, i) => ({ name: t.name, color: PALETTE(i), values: t.values })) }, { mode: 'lines', size: 'card', title: `Top genres per ${grp}`, keys: `Top genres per ${grp}; arrow keys read each period` })}
       <div class="legend">${top.map((t, i) => `<span><i class="dot" style="background:${PALETTE(i)}"></i>${esc(t.name)}</span>`).join('')}</div>` : '';
-    const list = (d, kind) => (d.items.length ? d.items.map((t) => meterRow(`<a class="link" href="/library?tag=${encodeURIComponent(`${kind}:${t.name}`)}" data-link>${esc(t.name)}</a>`, t.minutes, d.items[0].minutes, `${fmtMin(t.minutes, { short: t.minutes >= 600 })} · ${plural(t.games, 'game')}`, 'var(--accent2)')).join('') : none('Nothing yet.'));
+    const list = (d, kind) => (d.items.length ? d.items.map((t) => meterRow(`<a class="link" href="${tagHref(kind, t.name)}" data-link>${esc(t.name)}</a>`, t.minutes, d.items[0].minutes, `${fmtMin(t.minutes, { short: t.minutes >= 600 })} · ${plural(t.games, 'game')}`, 'var(--accent2)')).join('') : none('Nothing yet.'));
     const paceCard = pace.games ? `<p class="ins-lead">You finish games in <b>${pace.median_ratio.toFixed(1)}×</b> the typical main story time${pace.median_ratio >= 1.3 ? ': you take your time' : pace.median_ratio <= 0.8 ? ': you move fast' : ''}.</p>
       <div class="list">${pace.items.map((x) => `<a class="item" href="/game/${x.game_id}" data-link>${cover(x)}<div class="grow"><div class="ttl ellipsis">${esc(x.title)}</div><div class="sub">${fmtMin(x.minutes, { short: x.minutes >= 600 })} against ${fmtMin(x.typical_minutes, { short: x.typical_minutes >= 600 })} typical${x.basis === 'extra' ? ' (main + extras)' : ''}</div></div><div class="amt">${x.ratio.toFixed(1)}×</div></a>`).join('')}</div>
       ${note(`From ${plural(pace.games, 'finished game')} with IGDB’s times to beat (all time).`)}` : none('Mark games Completed or Beaten and, where IGDB knows a time to beat, your pace shows here.');
@@ -385,6 +387,12 @@ export async function insights(view, stale) {
   $$('[data-sec]', view).forEach((s) => io.observe(s));
   // the first section is part of the page's first render (no empty card flashing in)
   await load('when');
+  // a link to a section (/insights#ins-genres): load it and go there
+  const hashSec = /^#ins-(\w+)$/.exec(location.hash)?.[1];
+  if (hashSec && RENDER[hashSec] && $(`#ins-${hashSec}`) && !stale()) {
+    await load(hashSec);
+    $(`#ins-${hashSec}`)?.scrollIntoView({ block: 'start' });
+  }
 }
 
 // ---------------------------------------------------------------- eras

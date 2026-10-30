@@ -11,7 +11,8 @@ const API_MAX = 60;
 function cacheable(url) {
   const p = url.pathname.replace(/^\/api\/v1/, '');
   const q = url.searchParams;
-  if (['/summary', '/settings', '/accounts', '/stats/lifetime'].includes(p)) return !url.search;
+  if (['/summary', '/settings', '/accounts', '/stats/lifetime', '/stats/years'].includes(p)) return !url.search;
+  if (p === '/stats/heatmap') return !q.get('game_id');
   if (/^\/games\/\d+$/.test(p)) return true;
   if (p === '/games') return !q.get('q') && (q.get('offset') || '0') === '0';
   if (p === '/stats') return (q.get('range') || '30d') === '30d' && !q.get('platform') && !q.get('game_id');

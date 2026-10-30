@@ -1089,9 +1089,9 @@ a.wcard:hover { border-color: color-mix(in srgb, var(--text) 25%, var(--line)); 
 .delta { display: inline-flex; align-items: center; gap: 2px; margin-right: 4px; font-weight: 700; color: var(--muted); white-space: nowrap; }
 .delta.up { color: var(--good-ink); }
 .seg.compact button { padding: 3px 10px; font-size: 12px; }
-.plat-pick { display: flex; flex-wrap: nowrap; align-items: center; gap: 8px; width: 100%; border: 0; background: transparent; color: inherit; font: inherit; text-align: left; padding: 4px 6px; margin: 0 -6px; border-radius: 8px; cursor: pointer; }
-.plat-pick:hover { background: var(--bg2); }
-.plat-pick.on { background: color-mix(in srgb, var(--accent) 16%, transparent); }
+.st-plat { display: flex; flex-wrap: nowrap; align-items: center; gap: 8px; width: 100%; border: 0; background: transparent; color: inherit; font: inherit; text-align: left; padding: 4px 6px; margin: 0 -6px; border-radius: 8px; cursor: pointer; }
+.st-plat:hover { background: var(--bg2); }
+.st-plat.on { background: color-mix(in srgb, var(--accent) 16%, transparent); }
 .hl-cols { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 20px; }
 .hlc { min-width: 0; }
 .hlc .rv { display: block; margin: 4px 0 2px; font-size: 24px; font-weight: 800; letter-spacing: -.03em; font-variant-numeric: tabular-nums; color: inherit; text-decoration: none; }
@@ -1111,3 +1111,11 @@ a.wcard:hover { border-color: color-mix(in srgb, var(--text) 25%, var(--line)); 
 .ttb .mrow { margin: 6px 0; }
 a.mrow.mlink { color: inherit; text-decoration: none; border-radius: 6px; }
 a.mrow.mlink:hover .ml, a.mrow.mlink:focus-visible .ml { color: var(--accent-ink); text-decoration: underline; }
+/* What history rests on: the same patterns as the chart fills (charts.js BASIS_FILL) */
+.basis-tracked { background: var(--accent-mark); }
+.basis-imported { background: radial-gradient(circle, var(--panel) 0 1px, transparent 1.4px) 0 0 / 5px 5px, color-mix(in srgb, var(--accent-mark) 72%, transparent); }
+.basis-confirmed { background: repeating-linear-gradient(45deg, color-mix(in srgb, var(--accent-mark) 78%, transparent) 0 1.4px, transparent 1.4px 4.5px), repeating-linear-gradient(-45deg, color-mix(in srgb, var(--accent-mark) 78%, transparent) 0 1.4px, transparent 1.4px 4.5px), color-mix(in srgb, var(--accent-mark) 26%, transparent); }
+.basis-anchored { background: repeating-linear-gradient(0deg, color-mix(in srgb, var(--accent-mark) 75%, transparent) 0 2px, color-mix(in srgb, var(--accent-mark) 22%, transparent) 2px 5px); }
+.basis-estimated { background: repeating-linear-gradient(45deg, color-mix(in srgb, var(--accent-mark) 75%, transparent) 0 2px, color-mix(in srgb, var(--accent-mark) 20%, transparent) 2px 5px); }
+.badge.basis-b { gap: 5px; }
+.badge.basis-b .dot { width: 9px; height: 9px; border-radius: 2px; }

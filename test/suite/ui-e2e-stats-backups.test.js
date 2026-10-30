@@ -81,6 +81,21 @@ describe('Stats, Insights, Home recap, backups', UI, () => {
     } finally { await h.close(); }
   });
 
+  test('Stats: a slow answer for an earlier range never replaces the latest one', async () => {
+    const h = await visit('/stats?range=30d');
+    const { page } = h;
+    try {
+      await page.locator('#st-body .kpis').waitFor();
+      await page.route('**/api/v1/stats?range=365d*', async (route) => { await new Promise((r) => setTimeout(r, 1200)); await route.continue(); });
+      await page.locator('#st-range [data-r="365d"]').click();
+      await page.locator('#st-range [data-r="7d"]').click();
+      await waitUntil(async () => /vs the 7 days before/.test((await page.locator('#st-body .kpi .delta').first().getAttribute('title')) || ''), { message: '7 days shown' });
+      await page.waitForTimeout(1500);
+      assert.match(await page.locator('#st-body .kpi .delta').first().getAttribute('title'), /vs the 7 days before/, 'still 7 days after the slow answer');
+      clean(h);
+    } finally { await h.close(); }
+  });
+
   test('Insights: How you play has focus, staying power, the games started and comebacks', async () => {
     const h = await visit('/insights?range=all');
     const { page } = h;
@@ -153,6 +168,14 @@ describe('Stats, Insights, Home recap, backups', UI, () => {
       assert.match(await h.page.locator('.cap-table').first().innerText(), /Backups\s+last just now/);
       clean(h);
     } finally { await h.close(); }
+    // the account dialog's platform grid keeps its own layout (a Stats class once shared its name)
+    const a = await visit('/accounts?add=1', PHONE_SMALL);
+    try {
+      const pp = a.page.locator('.modal .plat-pick');
+      await pp.waitFor();
+      assert.equal(await pp.evaluate((el) => getComputedStyle(el).display), 'grid');
+      assert.ok(await pp.evaluate((el) => el.scrollWidth <= el.clientWidth + 1), 'every platform fits');
+    } finally { await a.close(); }
     for (const url of ['/stats?range=90d', '/insights?range=all', '/', '/settings']) {
       const p = await visit(url, PHONE_SMALL);
       try {

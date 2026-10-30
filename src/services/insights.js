@@ -17,6 +17,8 @@ import { memo, resolveRange, groupFor, groupKey, emptySeries, filter, dayKey, pa
 
 const DAY = 86_400_000;
 const r = (x) => Math.round(x);
+// play_days.basis, by index (see migration 10)
+const BASES = ['tracked', 'imported', 'anchored', 'confirmed', 'estimated'];
 const zeros = (n) => Array(n).fill(0);
 
 export const STATUSES = ['unset', 'backlog', 'playing', 'paused', 'completed', 'beaten', 'dropped', 'wishlist'];
@@ -422,7 +424,7 @@ export function gameCurve(db, gameId, { group = 'month', estimates = 'include', 
     const game = db.prepare('SELECT id, title, cover_url, status FROM games WHERE id = ?').get(gameId);
     if (!game) throw new HttpError(404, 'Game not found');
     const f = filter('p', { gameId, estimates });
-    const days = db.prepare(`SELECT p.day, p.estimated, SUM(p.minutes) m, SUM(p.ends) n ${f.sql} GROUP BY p.day, p.estimated ORDER BY p.day`).all(...f.args);
+    const days = db.prepare(`SELECT p.day, p.estimated, p.basis, SUM(p.minutes) m, SUM(p.ends) n ${f.sql} GROUP BY p.day, p.estimated, p.basis ORDER BY p.day`).all(...f.args);
     const unlocks = db.prepare(`SELECT a.unlocked_at t FROM achievements a JOIN entries e ON e.id = a.entry_id
       WHERE e.game_id = ? AND e.excluded = 0 AND a.unlocked = 1 AND a.unlocked_at IS NOT NULL ORDER BY a.unlocked_at`).all(gameId).map((x) => x.t);
     // per entry, what the platform says it has when more than stored (Xbox titles read in part)
@@ -441,18 +443,26 @@ export function gameCurve(db, gameId, { group = 'month', estimates = 'include', 
       const keys = emptySeries(from, to, group, weekStartsOn);
       const idx = keyIndex(keys);
       const key = keyer(group, weekStartsOn);
-      series = keys.map((k) => ({ key: k, minutes: 0, tracked: 0, estimated: 0, sessions: 0, unlocked: 0, cumulative_tracked: 0, cumulative_estimated: 0, cumulative_unlocked: 0 }));
+      series = keys.map((k) => ({ key: k, minutes: 0, tracked: 0, estimated: 0, sessions: 0, unlocked: 0, cumulative_tracked: 0, cumulative_estimated: 0, cumulative_unlocked: 0, by: zeros(BASES.length) }));
       for (const d of days) {
         const s = series[idx.get(key(d.day))];
         if (!s) continue;
         s[d.estimated ? 'estimated' : 'tracked'] += d.m;
+        s.by[BASES[d.basis] ? d.basis : d.estimated ? 4 : 0] += d.m;
         if (!d.estimated) s.sessions += d.n;
       }
       for (const t of unlocks) { const s = series[idx.get(groupKey(t, group, weekStartsOn))]; if (s) s.unlocked++; }
       let ct = 0; let ce = 0; let cu = 0;
-      series = series.map((s) => {
+      const cb = zeros(BASES.length);
+      series = series.map(({ by, ...s }) => {
         ct += s.tracked; ce += s.estimated; cu += s.unlocked;
-        return { ...s, minutes: r(s.tracked + s.estimated), tracked: r(s.tracked), estimated: r(s.estimated), cumulative_tracked: r(ct), cumulative_estimated: r(ce), cumulative_unlocked: cu };
+        by.forEach((m, i) => { cb[i] += m; });
+        return {
+          ...s, minutes: r(s.tracked + s.estimated), tracked: r(s.tracked), estimated: r(s.estimated), cumulative_tracked: r(ct), cumulative_estimated: r(ce), cumulative_unlocked: cu,
+          // what the minutes rest on (tracked + imported = tracked; anchored + confirmed + estimated = estimated)
+          by_basis: Object.fromEntries(BASES.map((b, i) => [b, r(by[i])])),
+          cumulative_by_basis: Object.fromEntries(BASES.map((b, i) => [b, r(cb[i])])),
+        };
       });
     }
     const tracked = kinds.play?.m || 0; const est = kinds.estimate?.m || 0; const base = kinds.baseline?.m || 0;

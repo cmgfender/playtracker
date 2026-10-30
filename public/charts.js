@@ -145,10 +145,20 @@ function bindTip(ch) {
   };
   ch.addEventListener('pointermove', show);
   ch.addEventListener('pointerdown', show);
-  ch.addEventListener('pointerleave', () => { if (document.activeElement !== ch) tip.classList.remove('on'); });
+  // a finger lifting off "leaves" at once: on touch the tip stays until a tap elsewhere
+  ch.addEventListener('pointerleave', (e) => { if (e.pointerType !== 'touch' && document.activeElement !== ch) tip.classList.remove('on'); });
   // marks with an href open it on click; on a touch screen the first tap shows the tip, a second opens
   let touch = false; let armed = null;
-  ch.addEventListener('pointerdown', (e) => { touch = e.pointerType === 'touch'; });
+  const away = (e) => {
+    if (ch.contains(e.target)) return;
+    armed = null;
+    tip.classList.remove('on');
+    document.removeEventListener('pointerdown', away, true);
+  };
+  ch.addEventListener('pointerdown', (e) => {
+    touch = e.pointerType === 'touch';
+    if (touch) document.addEventListener('pointerdown', away, true);
+  });
   ch.addEventListener('click', (e) => {
     const t = e.target.closest?.('[data-href]');
     if (!t) { armed = null; return; }
@@ -255,13 +265,23 @@ export function summarize(title, items, fmt = (v) => fmtMin(v)) {
 
 // Hatched fill used for estimated (inferred) history.
 export const HATCH = '<defs><pattern id="pt-hatch" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="6" height="6" fill="color-mix(in srgb, var(--accent-mark) 22%, transparent)"/><line x1="0" y1="0" x2="0" y2="6" stroke="color-mix(in srgb, var(--accent-mark) 70%, transparent)" stroke-width="2.2"/></pattern>'
-  + '<pattern id="pt-hatch-ov" width="4" height="4" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><line x1="0" y1="0" x2="0" y2="4" stroke="var(--panel)" stroke-opacity=".55" stroke-width="1.6"/></pattern></defs>';
+  + '<pattern id="pt-hatch-ov" width="4" height="4" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><line x1="0" y1="0" x2="0" y2="4" stroke="var(--panel)" stroke-opacity=".55" stroke-width="1.6"/></pattern>'
+  // what history rests on (see BASIS_FILL): imported sessions dotted on a near-solid fill,
+  // estimates you confirmed cross-hatched, estimates anchored by an achievement unlock striped across
+  + '<pattern id="vg-imported" width="6" height="6" patternUnits="userSpaceOnUse"><rect width="6" height="6" fill="color-mix(in srgb, var(--accent-mark) 72%, transparent)"/><circle cx="3" cy="3" r="1.15" fill="var(--panel)" fill-opacity=".75"/></pattern>'
+  + '<pattern id="vg-confirmed" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="6" height="6" fill="color-mix(in srgb, var(--accent-mark) 26%, transparent)"/><line x1="0" y1="0" x2="0" y2="6" stroke="color-mix(in srgb, var(--accent-mark) 78%, transparent)" stroke-width="1.6"/><line x1="0" y1="0" x2="6" y2="0" stroke="color-mix(in srgb, var(--accent-mark) 78%, transparent)" stroke-width="1.6"/></pattern>'
+  + '<pattern id="vg-anchored" width="6" height="5" patternUnits="userSpaceOnUse"><rect width="6" height="5" fill="color-mix(in srgb, var(--accent-mark) 22%, transparent)"/><line x1="0" y1="1.2" x2="6" y2="1.2" stroke="color-mix(in srgb, var(--accent-mark) 75%, transparent)" stroke-width="2"/></pattern></defs>';
+/** The kinds of history in words, for tooltips. */
+const HISTORY_KINDS = [['imported', 'imported'], ['confirmed', 'confirmed by you'], ['anchored', 'dated by unlocks'], ['estimated', 'estimated']];
+/** The fill of each kind of history: imported sessions, estimates you confirmed, unlock-anchored, other estimates. */
+export const BASIS_FILL = { imported: 'url(#vg-imported)', confirmed: 'url(#vg-confirmed)', anchored: 'url(#vg-anchored)', estimated: 'url(#pt-hatch)' };
 
 // ---------- bar chart ----------
 // Stack order, bottom up: neighbours differ in lightness (Steam and PlayStation 2.7:1 apart in dark),
 // other keys follow in their own order, estimated history always on top.
 const STACK_ORDER = ['steam', 'psn', 'xbox', 'custom', 'manual', 'import'];
-const stackRank = (k) => (k === 'estimated' ? 99 : STACK_ORDER.includes(k) ? STACK_ORDER.indexOf(k) : 50);
+const HISTORY_ORDER = { imported: 60, confirmed: 70, anchored: 80, estimated: 99 };
+const stackRank = (k) => HISTORY_ORDER[k] ?? (STACK_ORDER.includes(k) ? STACK_ORDER.indexOf(k) : 50);
 
 registerChart('bar', (data, opts, box) => {
   const { color = 'var(--accent-mark)', unit = 'min' } = opts;
@@ -660,8 +680,19 @@ registerChart('curve', ({ series }, opts, box) => {
   const all = xs.map((_, i) => est[i] + v('cumulative_tracked', i));
   const band = (lo, hi) => pts([...xs.map((x, i) => [x, Y(hi[i])]), ...xs.map((x, i) => [x, Y(lo[i])]).reverse()]);
   let marks = '';
-  if (est.some((x) => x > 0)) marks += `<polygon class="mk" data-key="estimated" points="${band(xs.map(() => 0), est)}" fill="url(#pt-hatch)"/>`;
-  marks += `<polygon class="mk" data-key="tracked" points="${band(est, all)}" fill="color-mix(in srgb, var(--accent-mark) 55%, transparent)"/>`;
+  if (series[0]?.cumulative_by_basis) {
+    // bottom up: the kinds of history, imported sessions, then play tracked live
+    const cb = (k, i) => (n === 1 ? series[0] : series[i]).cumulative_by_basis[k] || 0;
+    let lo = xs.map(() => 0);
+    for (const k of ['estimated', 'anchored', 'confirmed', 'imported', 'tracked']) {
+      const hi = lo.map((y, i) => y + cb(k, i));
+      if (hi.some((y, i) => y > lo[i])) marks += `<polygon class="mk" data-key="${k}" points="${band(lo, hi)}" fill="${k === 'tracked' ? 'color-mix(in srgb, var(--accent-mark) 55%, transparent)' : BASIS_FILL[k]}"/>`;
+      lo = hi;
+    }
+  } else {
+    if (est.some((x) => x > 0)) marks += `<polygon class="mk" data-key="estimated" points="${band(xs.map(() => 0), est)}" fill="url(#pt-hatch)"/>`;
+    marks += `<polygon class="mk" data-key="tracked" points="${band(est, all)}" fill="color-mix(in srgb, var(--accent-mark) 55%, transparent)"/>`;
+  }
   marks += `<polyline points="${pts(xs.map((x, i) => [x, Y(all[i])]))}" fill="none" stroke="var(--accent-mark)" stroke-width="2" stroke-linejoin="round"/>`;
   let strip = ''; let side = '';
   let sy = a.y + a.h + 6;
@@ -685,7 +716,8 @@ registerChart('curve', ({ series }, opts, box) => {
   let hits = '';
   series.forEach((s, i) => {
     const x0 = Math.max(a.x, X(i) - slot / 2);
-    const tip = `${s.name}: ${s.minutes ? fmtMin(s.minutes) : 'no play'}${s.estimated ? ` (${fmtMin(s.estimated)} estimated)` : ''} · ${s.sessions} session${s.sessions === 1 ? '' : 's'}${hasU ? ` · ${s.unlocked} unlocked` : ''} · ${fmtMin(totals[i])} in all`;
+    const kinds = s.by_basis ? HISTORY_KINDS.filter(([k]) => s.by_basis[k] > 0).map(([k, l]) => `${fmtMin(s.by_basis[k])} ${l}`).join(', ') : s.estimated ? `${fmtMin(s.estimated)} estimated` : '';
+    const tip = `${s.name}: ${s.minutes ? fmtMin(s.minutes) : 'no play'}${kinds ? ` (${kinds})` : ''} · ${s.sessions} session${s.sessions === 1 ? '' : 's'}${hasU ? ` · ${s.unlocked} unlocked` : ''} · ${fmtMin(totals[i])} in all`;
     hits += hit(x0, a.y, Math.min(a.x + a.w, X(i) + slot / 2) - x0, a.h + strips, tip, Y(totals[i]));
   });
   const every = everyFor(series, a.w);
