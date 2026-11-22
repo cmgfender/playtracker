@@ -66,6 +66,7 @@ export const PLATFORMS = {
   steam: { label: 'Steam', color: 'var(--steam)', short: 'S' },
   xbox: { label: 'Xbox', color: 'var(--xbox)', short: 'X' },
   psn: { label: 'PlayStation', color: 'var(--psn)', short: 'P' },
+  nintendo: { label: 'Nintendo', color: 'var(--nintendo)', short: 'N' },
   custom: { label: 'Custom', color: 'var(--custom)', short: 'C' },
   manual: { label: 'Manual', color: 'var(--manual)', short: 'M' },
   import: { label: 'Imported', color: 'var(--import)', short: 'I' },

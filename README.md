@@ -6,7 +6,7 @@ A self-hosted game playtime and session tracker for Docker and Unraid. It's fast
 
 Steam, Xbox and PlayStation tell you **how long you've played in total**, but not **when**. Vestigo saves your lifetime playtime on a schedule (hourly, daily, weekly, monthly or every *X* days/hours). The difference between two snapshots becomes a **play session**.
 
-- **Platforms:** Steam (Web API), Xbox (OpenXBL), PlayStation (NPSSO), plus **custom accounts** you push totals to over the API (Switch, Epic, GOG, emulators, Playnite…). You can also add games by hand and log sessions manually.
+- **Platforms:** Steam (Web API), Xbox (OpenXBL), PlayStation (NPSSO), Nintendo Switch (Nintendo Account sign-in, the Nintendo Switch Online app's play history), plus **custom accounts** you push totals to over the API (Epic, GOG, emulators, Playnite…). You can also add games by hand and log sessions manually.
 - **Live presence:** Vestigo watches what you're playing right now on Steam, PlayStation and Xbox.
   - Sessions get **exact start and end times**.
   - A sync runs right after you stop playing.
@@ -103,6 +103,7 @@ Switching to the new names later is optional:
 | Platform | What you need | Notes |
 |---|---|---|
 | **Steam** | A [Web API key](https://steamcommunity.com/dev/apikey) and your SteamID64, vanity name or profile URL | Profile → Privacy → *Game details* must be **Public**. Reports lifetime minutes, last-2-weeks minutes and the last played time. |
+| **Nintendo** | A sign-in link: **Open Nintendo sign-in** in the account form, sign in, then copy the link of "Select this person" (right-click, or long-press on a phone) | It's exchanged for a session token that lasts about 2 years. Covers Switch and Switch 2 play history: total minutes, first/last played, and the last 7 days day by day. No live presence or achievements. |
 | **PlayStation** | An NPSSO token: sign in on playstation.com, then open `https://ca.account.sony.com/api/v1/ssocookie` | It's exchanged for a refresh token, which lasts about 2 months; re-enter the NPSSO when it expires. Covers PS4 and PS5 titles with play duration and first/last played times. |
 | **Xbox** | An [OpenXBL](https://xbl.io) API key (sign in with your Microsoft account) | Reads title history and the `MinutesPlayed` stat for each title. Only titles whose last-played time changed are looked up again, which keeps you under OpenXBL's free rate limits. A large first import can take a couple of syncs. |
 | **Custom** | Nothing | Push lifetime totals to `POST /api/v1/accounts/:id/report`. They are compared with the previous report exactly like a platform sync. |

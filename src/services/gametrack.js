@@ -34,7 +34,7 @@ const PLATFORM = [
   [/xbox|xone|x360|series x|xsx|xss/i, 'xbox'],
   [/^pc$|windows|steam deck|mac|linux/i, 'pc'],
 ];
-const SYNCED_FAMILY = { pc: ['steam', 'xbox'], xbox: ['xbox'], psn: ['psn'], steam: ['steam'], switch: [] };
+const SYNCED_FAMILY = { pc: ['steam', 'xbox'], xbox: ['xbox'], psn: ['psn'], steam: ['steam'], switch: ['nintendo'] };
 
 const t = (v) => {
   if (!v) return null;
