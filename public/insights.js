@@ -556,8 +556,8 @@ export function eraStrip(tl, { through } = {}) {
     ${note(`${plural(games.length, 'era')} of ${plural(new Set(games.map((e) => e.game_id)).size, 'game')}${returns ? `, ${plural(returns, 'return')}` : ''}. An era is a run of months one game led; a narrow one-month detour does not split it.`)}`;
 }
 
-/** A pattern of GET /stats/records as a line, the number first (its own text otherwise). */
-function pattern(h) {
+/** A pattern of GET /stats/records as a line, the number first (its own text otherwise). Also used by the game page. */
+export function pattern(h) {
   const span = (a, b) => `${fmtDate(day(a))} – ${longDay(b)}`;
   switch (h.id) {
     case 'trend': return h.value === 0 ? `<b>${fmtMin(h.minutes, { short: h.minutes >= 600 })}</b>, the same as the ${h.days} days before.`

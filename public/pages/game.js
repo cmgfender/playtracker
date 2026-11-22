@@ -288,6 +288,15 @@ export async function game(view, id, stale) {
   const fav = $('#g-fav'); // swapped in place: no re-render, keyboard focus stays on the button
   const showFav = (v) => { fav.innerHTML = icon(v ? 'heartFill' : 'heart'); fav.classList.toggle('fav-on', !!v); fav.setAttribute('aria-pressed', String(!!v)); };
   fav.addEventListener('click', () => undoable('favorite', !g.favorite, showFav, !g.favorite ? 'Added to favorites' : 'Removed from favorites'));
+  // How you play it: the patterns of this game's tracked days (what Insights shows for a range),
+  // loaded after the page and added below Notes, so nothing above it moves. Days with play out of
+  // all days since it was first played says little for one game, and is left out.
+  Promise.all([api(`/stats/records?range=all&game_id=${id}`), import('../insights.js')]).then(([r, ins]) => {
+    const lines = (r.patterns || []).filter((h) => h.id !== 'days_played' && h.id !== 'trend').map(ins.pattern).filter(Boolean);
+    const notes = $('#g-notes')?.closest('.card');
+    if (stale() || !lines.length || !notes || $('#g-patterns')) return;
+    notes.insertAdjacentHTML('afterend', `<div class="card" id="g-patterns"><div class="card-h"><h2>How you play it</h2><span class="tiny muted">tracked play</span></div><ul class="hl">${lines.map((x) => `<li>${x}</li>`).join('')}</ul></div>`);
+  }).catch(() => { /* the page stands without it */ });
   let nt;
   $('#g-notes').addEventListener('input', (e) => { $('#g-notes-st').textContent = 'Saving…'; clearTimeout(nt); nt = setTimeout(async () => {
     // "Saved" only when it was: a failed save says so, and the next keystroke tries again
