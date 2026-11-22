@@ -200,10 +200,10 @@ export async function settings(view, stale) {
       ${li(r.merged_synced, `${r.merged_synced} game${r.merged_synced === 1 ? '' : 's'} your synced accounts already track: their totals stay${r.synced_updated ? `, the file adds dates and details${r.sessions_restored ? ` and ${r.sessions_restored} exact past sessions (replacing estimates)` : ''}` : ''}`)}
       ${li(r.entries_created, `${r.entries_created} new game${r.entries_created === 1 ? '' : 's'} / entries`)}
       ${li(r.entries_updated, `${r.entries_updated} existing manual or imported entr${r.entries_updated === 1 ? 'y' : 'ies'} joined (totals only grow, never shrink)`)}
-      ${li(r.sessions, `${r.sessions} sessions (${fmtMin(r.tracked_minutes)})`)}
+      ${li(r.sessions, `${r.sessions} session${r.sessions === 1 ? '' : 's'} (${fmtMin(r.tracked_minutes)})`)}
       ${li(r.baseline_minutes, `${fmtHours(r.baseline_minutes)}h added as history, dated from the file`)}
-      ${li(r.details_filled, `${r.details_filled} games get a status, rating or notes they did not have (yours are never replaced)`)}
-      ${li(r.skipped, `<span class="muted">${r.skipped} rows skipped (no title or unreadable)</span>`)}
+      ${li(r.details_filled, `${r.details_filled} game${r.details_filled === 1 ? ' gets' : 's get'} a status, rating or notes ${r.details_filled === 1 ? 'it' : 'they'} did not have (yours are never replaced)`)}
+      ${li(r.skipped, `<span class="muted">${r.skipped} row${r.skipped === 1 ? '' : 's'} skipped (no title or unreadable)</span>`)}
       ${r.unchanged && !r.entries_created && !r.entries_updated && !r.synced_updated ? '<li>Nothing new — everything in this file is already here.</li>' : ''}
     </ul>`;
   const gameTrackSummary = (r) => {

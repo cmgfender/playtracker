@@ -1906,7 +1906,7 @@ describe('Vestigo web UI (no password)', UI, () => {
       const preview = await out.innerText();
       assert.match(preview, /Nothing has changed yet/);
       assert.match(preview, /1 game your synced accounts already track: their totals stay/);
-      assert.match(preview, /1 rows skipped/);
+      assert.match(preview, /1 row skipped/);
       await h.settle();
       assert.deepEqual(await snapshot(), s0, 'a preview changes nothing');
 
@@ -2001,7 +2001,7 @@ describe('Vestigo web UI (no password)', UI, () => {
       await page.locator('#imp-file').setInputFiles(good);
       await out.locator('b', { hasText: 'Preview: tracker.json' }).waitFor();
       assert.match(await out.innerText(), /1 new game/);
-      assert.match(await out.innerText(), /1 sessions \(2h\)/);
+      assert.match(await out.innerText(), /1 session \(2h\)/);
       assert.equal((await S.ok('/games?q=Inscryption')).total, 0, 'preview only');
       await out.locator('#imp-apply').click();
       await out.locator('b', { hasText: '✓ Imported tracker.json' }).waitFor();

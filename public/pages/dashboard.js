@@ -280,20 +280,26 @@ export function layoutEditor(host, layout, onChange) {
       <button class="btn icon ghost sm" data-up ${i === 0 ? 'disabled' : ''} aria-label="Move up">${icon('up')}</button><button class="btn icon ghost sm" data-down ${i === list.length - 1 ? 'disabled' : ''} aria-label="Move down">${icon('down')}</button></div>`).join('')}</div>
       <p class="tiny muted" style="margin:8px 0 0">Two half-width sections next to each other share a row.</p>`;
   };
+  // the list is redrawn on every edit: focus goes back to the control used, in the row's new place
+  // (its other arrow when that one is disabled at the top or bottom), so the same key works again
+  const refocus = (i, sel) => {
+    const row = host.querySelector(`[data-i="${i}"]`);
+    (row?.querySelector(`${sel}:not([disabled])`) || row?.querySelector('[data-up]:not([disabled]), [data-down]:not([disabled])'))?.focus();
+  };
   host.addEventListener('click', (e) => {
     const row = e.target.closest('[data-i]');
     if (!row) return;
     const i = Number(row.dataset.i);
-    if (e.target.closest('[data-up]') && i > 0) [list[i - 1], list[i]] = [list[i], list[i - 1]];
-    else if (e.target.closest('[data-down]') && i < list.length - 1) [list[i + 1], list[i]] = [list[i], list[i + 1]];
-    else return;
-    draw(); onChange(layoutString(list));
+    const to = e.target.closest('[data-up]') ? i - 1 : e.target.closest('[data-down]') ? i + 1 : -1;
+    if (to < 0 || to >= list.length) return;
+    [list[to], list[i]] = [list[i], list[to]];
+    draw(); refocus(to, to < i ? '[data-up]' : '[data-down]'); onChange(layoutString(list));
   });
   host.addEventListener('change', (e) => {
     const row = e.target.closest('[data-i]');
     if (!row || !e.target.matches('[data-on]')) return;
     list[Number(row.dataset.i)].on = e.target.checked;
-    draw(); onChange(layoutString(list));
+    draw(); refocus(row.dataset.i, '[data-on]'); onChange(layoutString(list));
   });
   draw();
 }
