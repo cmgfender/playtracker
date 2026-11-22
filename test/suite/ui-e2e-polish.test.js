@@ -1,6 +1,7 @@
 // Vestigo web UI, end to end: polish. The Home sections editor keeps keyboard focus, Log session
 // saves once however often Save is pressed, Edit game keeps what was typed when a save fails, and
-// every Sessions filter is kept in the URL.
+// every Sessions filter is kept in the URL. On a one-game library: Notes says when a save failed,
+// Add a game adds one game, Done gives focus back to Select, and one day is "1 day".
 // Run: node --disable-warning=ExperimentalWarning --test test/suite/ui-e2e-polish.test.js
 import { describe, test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
@@ -207,7 +208,8 @@ describe('Vestigo web UI, polish', UI, () => {
       await h.settle();
       const want = (await S.ok('/sessions?source=manual&q=celeste&limit=1')).total;
       assert.equal(want, 2);
-      assert.equal(await total(), want);
+      // the URL is written before the filtered list is back: wait for the list, not only the URL
+      await waitUntil(async () => (await total()) === want, { message: 'the list shows the filtered sessions' });
 
       await page.reload();
       await waitView(page);
@@ -246,6 +248,85 @@ describe('Vestigo web UI, polish', UI, () => {
       await h.settle();
       assert.equal(await page.locator('#s-chips [aria-pressed="true"]').count(), 1, 'only All platforms is on');
       assert.equal(await total(), (await S.ok('/sessions?limit=1')).total);
+      clean(h);
+    } finally { await h.close(); }
+  });
+});
+
+describe('Vestigo web UI, polish on a one-game library', UI, () => {
+  let T; let solo;
+  before(async () => {
+    T = await startApp();
+    solo = (await T.ok('/games', { method: 'POST', body: { title: 'Solo', status: 'playing' } })).id;
+    await T.ok('/sessions', { method: 'POST', body: { game_id: solo, minutes: 45, ended_at: NOW - 60_000 } });
+  });
+  after(() => { T?.close(); });
+
+  test('Notes: a save that fails says "Not saved", not "Saved"; the next keystroke saves', async () => {
+    const h = await visit(T, `/game/${solo}`);
+    const { page } = h;
+    try {
+      const status = () => page.locator('#g-notes-st').innerText();
+      await failOnce(page, `/games/${solo}`, 'PATCH');
+      await page.locator('#g-notes').fill('Left off at the lighthouse');
+      await toast(page, 'The database is busy');
+      await waitUntil(async () => (await status()).trim() === 'Not saved', { message: 'the status says the note was not saved' });
+      assert.equal((await T.ok(`/games/${solo}`)).notes || '', '', 'nothing was saved');
+      await page.locator('#g-notes').pressSequentially('.');
+      await waitUntil(async () => (await status()).trim() === 'Saved', { message: 'the next keystroke saves' });
+      assert.equal((await T.ok(`/games/${solo}`)).notes, 'Left off at the lighthouse.');
+      clean(h, [500]);
+    } finally { await h.close(); }
+  });
+
+  test('Add a game: an empty title says so; pressing Add game twice adds one game', async () => {
+    const h = await visit(T, '/library');
+    const { page } = h;
+    try {
+      const count = async () => T.db.prepare('SELECT COUNT(*) n FROM games').get().n;
+      const before_ = await count();
+      await page.locator('#lib-add').click();
+      await modalReady(page);
+      await page.locator('#ag-save').click();
+      await toast(page, 'Enter a title');
+      assert.equal(await page.locator('.modal').count(), 1, 'the dialog is still open');
+      assert.equal(await page.evaluate(() => document.activeElement?.getAttribute('name')), 'title', 'focus is in the title field');
+      await page.locator('.modal [name=title]').fill('Twice Pressed');
+      // two presses before the first answer is back
+      await page.evaluate(() => { const b = document.querySelector('#ag-save'); b.click(); b.click(); });
+      await page.waitForURL(/\/game\/\d+$/);
+      await waitView(page);
+      await h.settle();
+      assert.equal(await count(), before_ + 1, 'one game was added');
+      assert.equal(T.db.prepare("SELECT COUNT(*) n FROM games WHERE title = 'Twice Pressed'").get().n, 1);
+      clean(h);
+    } finally { await h.close(); }
+  });
+
+  test('Sessions: Done in the selection bar gives keyboard focus back to Select', async () => {
+    const h = await visit(T, '/sessions');
+    const { page } = h;
+    try {
+      await page.locator('#s-select').focus();
+      await page.keyboard.press('Enter');
+      await page.locator('#s-bulk:not(.hide)').waitFor();
+      await page.locator('#s-bulk-x').focus();
+      await page.keyboard.press('Enter');
+      await page.locator('#s-bulk.hide').waitFor({ state: 'attached' });
+      assert.equal(await page.evaluate(() => document.activeElement?.id), 's-select', 'focus is on Select, not lost to the page');
+      clean(h);
+    } finally { await h.close(); }
+  });
+
+  test('Stats: a longest streak of one day is "1 day"', async () => {
+    const h = await visit(T, '/stats?range=30d');
+    const { page } = h;
+    try {
+      const want = await T.ok('/stats?range=30d');
+      assert.equal(want.streaks.longest, 1, 'one day played');
+      const text = await page.locator('#view').innerText();
+      assert.match(text, /longest 1 day\b(?!s)/i);
+      assert.doesNotMatch(text, /longest 1 days/i);
       clean(h);
     } finally { await h.close(); }
   });

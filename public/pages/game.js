@@ -232,7 +232,7 @@ export async function game(view, id, stale) {
               ${e.icon_url ? `<img src="${esc(e.icon_url)}" width="32" height="32" style="border-radius:8px" alt="" loading="lazy" onerror="this.style.visibility='hidden'">` : platIcon(e.platform, 32)}
               <div class="grow"><div class="ttl ellipsis">${esc(e.account_name || plat(e.platform).label)}</div>
                 <div class="sub">${platDot(e.platform)}${esc(e.title !== g.title ? e.title : plat(e.platform).label)}${e.excluded ? ' · <b>excluded</b>' : ''}</div>
-                <div class="sub">${e.last_played_at ? `Played ${ago(e.last_played_at)}` : ''}${e.meta?.devices?.deck ? ` · Deck ${fmtMin(e.meta.devices.deck)}` : ''}${e.play_count ? ` · ${e.play_count} launches` : ''}${e.achievements?.total ? ` · ${e.achievements.unlocked} of ${e.achievements.total} unlocked` : ''}${e.missing_since ? ` · <span style="color:var(--warn)">no longer in library since ${fmtDate(e.missing_since)}</span>` : ''}</div></div>
+                <div class="sub">${e.last_played_at ? `Played ${ago(e.last_played_at)}` : ''}${e.meta?.devices?.deck ? ` · Deck ${fmtMin(e.meta.devices.deck)}` : ''}${e.play_count ? ` · ${e.play_count} launch${e.play_count === 1 ? '' : 'es'}` : ''}${e.achievements?.total ? ` · ${e.achievements.unlocked} of ${e.achievements.total} unlocked` : ''}${e.missing_since ? ` · <span style="color:var(--warn)">no longer in library since ${fmtDate(e.missing_since)}</span>` : ''}</div></div>
               <div class="amt">${fmtMin(e.playtime_min)}</div>
               <button class="btn ghost sm icon" data-entry-menu="${e.id}" aria-label="Entry options">${icon('more')}</button>
             </div>`).join('')}</div>
@@ -289,7 +289,12 @@ export async function game(view, id, stale) {
   const showFav = (v) => { fav.innerHTML = icon(v ? 'heartFill' : 'heart'); fav.classList.toggle('fav-on', !!v); fav.setAttribute('aria-pressed', String(!!v)); };
   fav.addEventListener('click', () => undoable('favorite', !g.favorite, showFav, !g.favorite ? 'Added to favorites' : 'Removed from favorites'));
   let nt;
-  $('#g-notes').addEventListener('input', (e) => { $('#g-notes-st').textContent = 'Saving…'; clearTimeout(nt); nt = setTimeout(async () => { await patch({ notes: e.target.value }); $('#g-notes-st').textContent = 'Saved'; }, 600); });
+  $('#g-notes').addEventListener('input', (e) => { $('#g-notes-st').textContent = 'Saving…'; clearTimeout(nt); nt = setTimeout(async () => {
+    // "Saved" only when it was: a failed save says so, and the next keystroke tries again
+    let ok = true;
+    try { await api(`/games/${id}`, { method: 'PATCH', body: { notes: e.target.value } }); } catch (err) { ok = false; fail(err); }
+    const st = $('#g-notes-st'); if (st) st.textContent = ok ? 'Saved' : 'Not saved';
+  }, 600); });
   $('#g-log').addEventListener('click', () => logSessionModal(g));
   // the ⋯ menu: edit, merge, hide, block auto-merge, delete (what the old Details card held)
   const toggleItem = (id, on, label, desc) => `<button class="mitem" id="${id}" role="menuitemcheckbox" aria-checked="${!!on}"><span class="mcheck" aria-hidden="true">${icon('check')}</span><span class="grow">${label}<span class="d">${desc}</span></span></button>`;
@@ -394,7 +399,12 @@ export async function game(view, id, stale) {
             rerender();
           } catch (err) { fail(err); }
         });
-        el.querySelector('#en-split')?.addEventListener('click', async () => { const ng = await api(`/entries/${en.id}/split`, { method: 'POST' }); close(); toast('Split into a separate game'); navigate(`/game/${ng.id}`); });
+        el.querySelector('#en-split')?.addEventListener('click', async () => {
+          // a split that fails says why and leaves the dialog open
+          let ng;
+          try { ng = await api(`/entries/${en.id}/split`, { method: 'POST' }); } catch (e) { return fail(e); }
+          close(); toast('Split into a separate game'); navigate(`/game/${ng.id}`);
+        });
       },
     });
   });

@@ -186,7 +186,8 @@ export async function sessions(view, stale) {
   });
   const toggleSelect = (on) => { selecting = on; sel.clear(); lastPick = null; $('#s-bulk').classList.toggle('hide', !on); draw(); };
   $('#s-select').addEventListener('click', () => toggleSelect(!selecting));
-  $('#s-bulk-x').addEventListener('click', () => toggleSelect(false));
+  // Done hides the bar it is in: focus goes back to Select, which opened it
+  $('#s-bulk-x').addEventListener('click', () => { toggleSelect(false); $('#s-select').focus(); });
   const mark = (id, on) => {
     if (on) sel.add(id); else sel.delete(id);
     const box = list.querySelector(`[data-sel="${id}"]`);
