@@ -158,3 +158,37 @@ describe('facts: the standing fact of a day', () => {
     assert.ok(picked.UTC.every((e, i) => e && (!i || e !== picked.UTC[i - 1])), `another fact each day: ${picked.UTC}`);
   });
 });
+
+describe('forecast and backlog in words', () => {
+  let h; let nearly;
+  const meta = (id, main) => h.db.prepare("INSERT INTO game_meta(game_id, matched_by, ttb_main, fetched_at) VALUES (?, 'title', ?, ?)").run(id, main, NOW);
+  before(async () => {
+    guardNetwork();
+    // a library five months old ...
+    clock.install(local(2025, 10, 10, 12));
+    h = await startApp();
+    await logSession(h, await addGame(h, 'First'), local(2025, 10, 10, 10), 60);
+    // ... with three games added in the last three months: one nearly finished, one waiting
+    clock.install(local(2026, 2, 20, 12));
+    nearly = await addGame(h, 'Nearly'); meta(nearly, 600);
+    const waiting = await addGame(h, 'Waiting'); meta(waiting, 600);
+    await h.patch(`/games/${waiting}`, { status: 'backlog' });
+    await addGame(h, 'Third');
+    clock.install(NOW);
+    // 9h 20m of a typical 10 hours, all in the last four weeks
+    for (const d of [2, 6, 10, 14]) await logSession(h, nearly, local(2026, 3, d, 19), 140);
+  });
+  after(async () => { await h?.close(); clock.uninstall(); restoreNetwork(); });
+
+  test('a game days from its end: the sentence starts with a capital', async () => {
+    const f = await h.get(`/games/${nearly}/forecast`);
+    assert.deepEqual([f.state, f.weeks, f.remaining_minutes], ['playing', 0.3, 40]);
+    assert.equal(f.text, 'Under a week to finish: 40m left of 10h typical, at 2h 20m a week.');
+  });
+
+  test('a backlog of one game "holds", and one game a month is not "1 games"', async () => {
+    const b = await h.get('/stats/backlog');
+    assert.deepEqual([b.games, b.remaining_minutes, b.added_per_month, b.finished_per_month], [1, 600, 1, 0]);
+    assert.equal(b.text, '1 game in the backlog holds about 10h of play: about 3 months if all your play went to it (47m a week). You add 1 game a month and finish 0.');
+  });
+});

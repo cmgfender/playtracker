@@ -77,7 +77,7 @@ export function finishForecast(db, gameId, { now = Date.now() } = {}) {
     const length = `${fmtMinutes(expected)}${pace.personal ? ' at your pace' : ' typical'}`;
     out.text = out.state === 'past' ? `Past the ${length}: ${fmtMinutes(played)} played.`
       : out.state === 'idle' ? `About ${fmtMinutes(remaining)} left of ${length}. Not played in the last four weeks.`
-        : `${spanText(out.weeks).replace(/^a/, 'A')} to finish: ${fmtMinutes(remaining)} left of ${length}, at ${fmtMinutes(out.weekly_minutes)} a week.`;
+        : `${spanText(out.weeks).replace(/^./, (c) => c.toUpperCase())} to finish: ${fmtMinutes(remaining)} left of ${length}, at ${fmtMinutes(out.weekly_minutes)} a week.`;
     return out;
   });
 }
@@ -127,8 +127,8 @@ export function backlogReality(db, { now = Date.now() } = {}) {
     };
     if (rows.length && remaining && weeks != null) {
       // all of it: in practice much of a week goes to games already being played, so this is the least it would take
-      out.text = `${plural(rows.length, 'game')} in the backlog hold about ${fmtMinutes(remaining)} of play: ${spanText(weeks)} if all your play went to it (${fmtMinutes(out.weekly_minutes)} a week).`
-        + (out.added_per_month != null ? ` You add ${out.added_per_month} games a month and finish ${out.finished_per_month}.` : '');
+      out.text = `${plural(rows.length, 'game')} in the backlog hold${rows.length === 1 ? 's' : ''} about ${fmtMinutes(remaining)} of play: ${spanText(weeks)} if all your play went to it (${fmtMinutes(out.weekly_minutes)} a week).`
+        + (out.added_per_month != null ? ` You add ${plural(out.added_per_month, 'game')} a month and finish ${out.finished_per_month}.` : '');
     }
     return out;
   });
