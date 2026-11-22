@@ -40,7 +40,9 @@ describe('Vestigo web UI: facts, forecast and backlog', UI, () => {
     anniversary = await add('Anniversary <Edition>');
     rpg = await add('Long RPG'); meta(rpg, 1800);
     for (const [title, main] of [['Waiting A', 600], ['Waiting B', 1200], ['Waiting C', 1800]]) meta(await add(title, 'backlog'), main);
+    // started on this date, played again nine days later, not since
     await log(anniversary, 90, yearsAgoToday);
+    await log(anniversary, 120, yearsAgoToday + 9 * 86_400_000);
     // two hours a week for four weeks: 8 of a typical 30 hours
     for (const n of [1, 8, 15, 22]) await log(rpg, 120, ago(n));
   });
@@ -68,7 +70,7 @@ describe('Vestigo web UI: facts, forecast and backlog', UI, () => {
         assert.equal((await card.locator('h2').innerText()).trim(), 'Did you know');
         const lines = await card.locator('.hl li').allInnerTexts();
         assert.deepEqual(lines.map((x) => x.trim()), want.facts.map((f) => f.text), 'the facts the API reports, in its order');
-        assert.equal(lines[0].trim(), `${YEARS} years ago today you started Anniversary <Edition>: 1h 30m tracked since.`);
+        assert.match(lines[0].trim(), new RegExp(`^${YEARS} years ago today you started Anniversary <Edition>: you played it for \\d+ (days?|weeks?), 3h 30m in all\\.$`));
         assert.equal(await card.locator('.hl li').first().locator('b').innerText(), `${YEARS} years ago today`);
         const link = card.locator('.hl li').first().locator('a');
         assert.equal(await link.innerText(), 'Anniversary <Edition>', 'the title is text, not markup');
@@ -144,7 +146,7 @@ describe('Vestigo web UI: facts, forecast and backlog', UI, () => {
       await line.waitFor();
       const want = await S.ok('/stats/backlog');
       assert.deepEqual([want.games, want.with_typical_time, want.remaining_minutes, want.weekly_minutes], [3, 3, 3600, 40]); // 8 hours in the last twelve weeks
-      assert.equal((await line.innerText()).trim(), 'About 60h of play: about 1.7 years at your 40m a week.');
+      assert.equal((await line.innerText()).trim(), 'About 60h of play: about 1.7 years if all your play went to it (40m a week).');
       const o = await overflow(page, PHONE_SMALL.width);
       assert.ok(o.doc <= o.client, `fits a 360px phone: ${JSON.stringify(o)}`);
       clean(h);

@@ -126,7 +126,8 @@ export function backlogReality(db, { now = Date.now() } = {}) {
       text: null,
     };
     if (rows.length && remaining && weeks != null) {
-      out.text = `${plural(rows.length, 'game')} in the backlog hold about ${fmtMinutes(remaining)} of play: ${spanText(weeks)} at your ${fmtMinutes(out.weekly_minutes)} a week.`
+      // all of it: in practice much of a week goes to games already being played, so this is the least it would take
+      out.text = `${plural(rows.length, 'game')} in the backlog hold about ${fmtMinutes(remaining)} of play: ${spanText(weeks)} if all your play went to it (${fmtMinutes(out.weekly_minutes)} a week).`
         + (out.added_per_month != null ? ` You add ${out.added_per_month} games a month and finish ${out.finished_per_month}.` : '');
     }
     return out;

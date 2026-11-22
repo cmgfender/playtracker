@@ -18,13 +18,21 @@ describe('facts for today', () => {
     clock.install(NOW);
     h = await startApp();
     g = {};
-    for (const t of ['Anniversary', 'Played', 'Century', 'Returner', 'Today']) g[t] = await addGame(h, t);
-    // started two years ago today; played again later
+    for (const t of ['Anniversary', 'Played', 'Peak', 'Century', 'Returner', 'Today', 'Daily']) g[t] = await addGame(h, t);
+    // started two years ago today, played for two weeks, not since
     await logSession(h, g.Anniversary, local(2024, 3, 18, 20), 90);
     await logSession(h, g.Anniversary, local(2024, 4, 2, 20), 60);
-    // played a year ago today, started earlier that year
-    await logSession(h, g.Played, local(2025, 1, 5, 19), 45);
+    // last played a year ago today
+    await logSession(h, g.Played, local(2025, 1, 5, 19), 240);
     await logSession(h, g.Played, local(2025, 3, 18, 19), 120);
+    // its biggest day was a year ago today (neither its first nor its last)
+    await logSession(h, g.Peak, local(2025, 3, 1, 19), 60);
+    await logSession(h, g.Peak, local(2025, 3, 18, 12), 300);
+    await logSession(h, g.Peak, local(2025, 4, 1, 19), 60);
+    // an ordinary day of a game still played: a year ago today, and last week
+    await logSession(h, g.Daily, local(2025, 3, 10, 19), 60);
+    await logSession(h, g.Daily, local(2025, 3, 18, 8), 90);
+    await logSession(h, g.Daily, local(2026, 3, 9, 19), 60);
     // 99 hours in January, 2 more this week: past 100
     for (let d = 20; d <= 28; d++) await logSession(h, g.Century, local(2026, 1, d, 9), 660);
     await logSession(h, g.Century, local(2026, 3, 16, 19), 120);
@@ -35,32 +43,44 @@ describe('facts for today', () => {
   });
   after(async () => { await h?.close(); clock.uninstall(); restoreNetwork(); });
 
-  test('the most notable first: on this day, a round number passed, a return, a streak', async () => {
+  test('the most notable first: a game\'s first, last and biggest day on this date, a round number passed, a return; then one standing fact', async () => {
     const r = await h.get('/stats/facts');
     assert.equal(r.day, '2026-03-18');
-    assert.deepEqual(r.facts.map((f) => [f.kind, f.text]), [
-      ['on_this_day', '2 years ago today you started Anniversary: 2h 30m tracked since.'],
-      ['on_this_day', 'A year ago today you played Played for 2h.'],
-      ['milestone', 'You passed 100 hours in Century this week.'],
+    assert.deepEqual(r.facts.slice(0, 5).map((f) => [f.kind, f.text]), [
+      ['on_this_day', '2 years ago today you started Anniversary: you played it for 2 weeks, 2h 30m in all.'],
+      ['on_this_day', 'A year ago today was the last time you played Played (6h in all).'],
+      ['on_this_day', 'A year ago today was your biggest day in Peak: 5h.'],
+      ['milestone', 'You passed 100 hours in Century this week: the first game you have taken that far.'],
       ['comeback', 'You came back to Returner after 6 months away.'],
-      ['streak', '3 days in a row, 6 days short of your record.'],
-    ]); // no trend: three days of play in the last 30 are too few to compare (see the patterns)
-    const [started, played, milestone] = r.facts;
+    ]);
+    const [started, last, peak, milestone, comeback, standing] = r.facts;
     assert.deepEqual([started.game_id, started.event, started.years_ago, started.day, started.minutes, started.bold], [g.Anniversary, 'started', 2, '2024-03-18', 150, '2 years ago today']);
-    assert.deepEqual([played.game_id, played.event, played.years_ago, played.day, played.minutes], [g.Played, 'played', 1, '2025-03-18', 120]);
-    assert.deepEqual([milestone.game_id, milestone.hours, milestone.minutes, milestone.bold], [g.Century, 100, 6060, '100 hours']);
+    assert.deepEqual([last.game_id, last.event, last.years_ago, last.day, last.minutes], [g.Played, 'last_played', 1, '2025-03-18', 360]);
+    assert.deepEqual([peak.game_id, peak.event, peak.day, peak.minutes], [g.Peak, 'biggest_day', '2025-03-18', 300]);
+    assert.deepEqual([milestone.game_id, milestone.hours, milestone.minutes, milestone.games_reached, milestone.day, milestone.bold], [g.Century, 100, 6060, 1, '2026-03-16', '100 hours']);
+    assert.deepEqual([comeback.game_id, comeback.gap_days, comeback.day], [g.Returner, 197, '2026-03-17']);
+    // one of the standing facts, picked by the day: it fills in, below everything that happened
+    assert.equal(standing.kind, 'standing');
+    assert.ok(standing.text.length > 20 && standing.score < comeback.score);
     for (const f of r.facts) assert.ok(f.text.includes(f.bold), `${f.kind}: the bold part is part of the text`);
-    assert.deepEqual(r.on_this_day.map((f) => f.game_id), [g.Anniversary, g.Played]);
+    assert.deepEqual(r.on_this_day.map((f) => f.game_id), [g.Anniversary, g.Played, g.Peak]);
     assert.ok(r.facts.every((f, i) => !i || r.facts[i - 1].score >= f.score), 'by score');
+  });
+
+  test('what is not news is not said: an ordinary day a year ago, a three-day streak, a week like any other', async () => {
+    const r = await h.get('/stats/facts?limit=20');
+    assert.ok(!r.facts.some((f) => f.game_id === g.Daily), 'Daily was played a year ago today, as on many days');
+    assert.deepEqual(r.facts.filter((f) => ['streak', 'big_week', 'rank', 'record_session', 'record_day'].includes(f.kind)), []);
+    assert.equal(r.facts.filter((f) => f.kind === 'standing').length, 1, 'one standing fact a day');
   });
 
   test('one fact per game; limit cuts the list but on_this_day keeps every anniversary', async () => {
     const r = await h.get('/stats/facts?limit=20');
     const ids = r.facts.map((f) => f.game_id).filter(Boolean);
-    assert.equal(new Set(ids).size, ids.length, 'Century passed 100 hours and climbed the ranks: one fact');
+    assert.equal(new Set(ids).size, ids.length);
     const one = await h.get('/stats/facts?limit=1');
     assert.equal(one.facts.length, 1);
-    assert.equal(one.on_this_day.length, 2);
+    assert.equal(one.on_this_day.length, 3);
     assert.equal((await h.call('GET', '/stats/facts?limit=0')).status, 200, 'a limit out of range is clamped');
   });
 
@@ -68,20 +88,55 @@ describe('facts for today', () => {
     const s = await h.get('/summary/week');
     assert.deepEqual(s.facts.map((f) => f.kind), ['on_this_day', 'milestone']);
     const lines = s.text.split('\n');
-    assert.deepEqual(lines.slice(-2), ['On this day: 2 years ago today you started Anniversary: 2h 30m tracked since.', 'Did you know: You passed 100 hours in Century this week.']);
+    assert.deepEqual(lines.slice(-2), ['On this day: 2 years ago today you started Anniversary: you played it for 2 weeks, 2h 30m in all.', 'Did you know: You passed 100 hours in Century this week: the first game you have taken that far.']);
     const thisWeek = await h.get('/summary/week?weeks_ago=0');
     assert.equal(thisWeek.facts, undefined, 'only last week\'s summary, the one that is sent');
     assert.doesNotMatch(thisWeek.text, /On this day/);
   });
 
-  test('the next day has other facts: nothing happened on March 19', async () => {
+  test('the next day: nothing happened on March 19, and what happened this week has faded a little', async () => {
+    const today = (await h.get('/stats/facts?limit=20')).facts.find((f) => f.kind === 'milestone').score;
     clock.install(local(2026, 3, 19, 9));
     try {
-      const r = await h.get('/stats/facts');
+      const r = await h.get('/stats/facts?limit=20');
       assert.equal(r.day, '2026-03-19');
       assert.deepEqual(r.on_this_day, []);
-      assert.ok(r.facts.some((f) => f.kind === 'milestone'), 'still this week');
+      const m = r.facts.find((f) => f.kind === 'milestone');
+      assert.ok(m, 'still this week');
+      assert.equal(Math.round((today - m.score) * 10) / 10, 3, 'three points a day');
     } finally { clock.install(NOW); }
+  });
+});
+
+describe('facts: a streak at a mark, the biggest week, a round number few games reached', () => {
+  let h; let z;
+  before(async () => {
+    guardNetwork();
+    clock.install(NOW);
+    h = await startApp();
+    z = await addGame(h, 'Zeal');
+    // half an hour a week for nine weeks, then two hours a day for the last seven days
+    for (let w = 10; w >= 2; w--) await logSession(h, z, NOW - w * 7 * 86_400_000, 30);
+    for (let d = 6; d >= 0; d--) await logSession(h, z, local(2026, 3, 18 - d, 9), 120);
+  });
+  after(async () => { await h?.close(); clock.uninstall(); restoreNetwork(); });
+
+  test('seven days in a row that beat every streak before; a week bigger than any before', async () => {
+    const r = await h.get('/stats/facts?limit=20');
+    const by = (k) => r.facts.find((f) => f.kind === k);
+    assert.equal(by('streak').text, '7 days in a row: your longest streak yet.');
+    assert.deepEqual([by('streak').days, by('streak').record], [7, true]);
+    assert.equal(by('big_week').text, '14h in the last seven days: your biggest week yet.');
+    assert.deepEqual([by('big_week').minutes, by('big_week').record], [840, true]);
+    assert.equal(by('milestone').text, 'You passed 10 hours in Zeal this week: the first game you have taken that far.');
+  });
+
+  test('with more than ten games already past ten hours, another one is not news', async () => {
+    for (let i = 0; i < 10; i++) { const id = await addGame(h, `Old ${i}`); await logSession(h, id, local(2025, 6, 1 + i, 9), 660); }
+    const r = await h.get('/stats/facts?limit=20');
+    assert.equal(r.facts.find((f) => f.kind === 'milestone'), undefined, 'the eleventh game past ten hours');
+    // (the days in June were bigger than any of this week: the week is no longer the biggest yet)
+    assert.match(r.facts.find((f) => f.kind === 'big_week').text, /your biggest week in 9 months\.$/);
   });
 });
 
@@ -102,7 +157,7 @@ describe('facts: a new or empty library says nothing rather than something trivi
     await logSession(h, a, local(2026, 3, 17, 19), 240);
     await logSession(h, a, local(2026, 3, 18, 10), 60);
     const r = await h.get('/stats/facts');
-    assert.deepEqual(r.facts.map((f) => f.kind), [], JSON.stringify(r.facts));
+    assert.deepEqual(r.facts.map((f) => f.kind), [], JSON.stringify(r.facts)); // no standing fact either, before a month of history
   });
 });
 
@@ -185,9 +240,9 @@ describe('finish forecast and backlog', () => {
     assert.equal(b.weeks, 117.9);
     assert.equal(b.years, 2.3);
     assert.deepEqual([b.added_per_month, b.finished_per_month], [null, null], 'a library younger than four months has no rates yet');
-    assert.equal(b.text, '5 games in the backlog hold about 160h 30m of play: about 2.3 years at your 1h 22m a week.');
+    assert.equal(b.text, '5 games in the backlog hold about 160h 30m of play: about 2.3 years if all your play went to it (1h 22m a week).');
     const fact = (await h.get('/stats/facts?limit=20')).facts.find((f) => f.kind === 'backlog');
-    assert.equal(fact.text, 'At your pace the backlog is about 2.3 years of play (5 games, 160h 30m).');
+    assert.equal(fact.text, 'The backlog is about 2.3 years of play at your pace (5 games, 160h 30m).');
   });
 });
 
