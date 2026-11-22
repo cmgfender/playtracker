@@ -188,12 +188,12 @@ export function inferHistory(e, { pacePerDay = 90, maxPerDay = 600, minDay = 15,
   // during the import) says the history ran up to tracking start
   const lastPlayed = e.lastPlayedAt ? Math.min(e.lastPlayedAt, T) : null;
   // the release and account dates bound the start, unless the game was last played before that
-  // day (early access, a re-release's store date): then they are wrong for this play and bound
-  // nothing, instead of leaving no window at all
+  // day (early access, a re-release's store date) or it is after tracking began: then they are
+  // wrong for this play and bound nothing, instead of leaving no window at all
   const earliest = Date.UTC(1995, 0, 1);
   const bound = Math.max(e.releaseAt || 0, e.accountCreatedAt || 0, earliest);
   const lastKnown = e.manual?.end ?? lastPlayed;
-  const lower = lastKnown != null && startOfDay(bound) > lastKnown ? earliest : bound;
+  const lower = startOfDay(bound) > (lastKnown ?? T) ? earliest : bound;
   // unlock times from before the hard start are no evidence of play after it (as the last
   // activity they would end the window before it began, leaving everything undated)
   const anchors = (e.anchors || []).filter((a) => a && a >= lower && a <= T && (hardStart == null || a >= hardStart)).sort((a, b) => a - b);
@@ -243,12 +243,16 @@ export function inferHistory(e, { pacePerDay = 90, maxPerDay = 600, minDay = 15,
     const knownStart = start != null;
     const knownEnd = end != null;
     const burstDays = Math.max(1, Math.ceil(remaining / pacePerDay), e.playCount ? Math.ceil(e.playCount * shape.countTau) : 0);
-    if (!knownEnd && knownStart) end = Math.min(upper, addDays(start, burstDays));
+    // only a start: the burst follows it - or the release, for a game bought before that
+    if (!knownEnd && knownStart) end = Math.min(upper, addDays(Math.max(start, lower), burstDays));
+    // the same for an end worked out here (the day before the recent-play counter's days, the
+    // last unlock): a release or account date on a later day bounds nothing
+    const floor = end != null && startOfDay(lower) > end ? earliest : lower;
 
     if (!knownEnd && !knownStart) {
       result.undated = Math.round(remaining);
       result.reasons.push('No dates available - kept as undated history (lifetime totals only)');
-    } else if (hardStart != null && Math.max(start, lower) > end) {
+    } else if (hardStart != null && Math.max(start, floor) > end) {
       // nothing is left between the hard start and the end (first played inside the recent-play
       // window, or after last played): the rest stays undated instead of being moved earlier
       result.undated += Math.round(remaining);
@@ -262,7 +266,7 @@ export function inferHistory(e, { pacePerDay = 90, maxPerDay = 600, minDay = 15,
       const defSpan = Math.ceil(remaining / shape.unknownStartPace);
       const span0 = back ? Math.round((1 - lambda) * defSpan + lambda * back.spans[back.spans.length >> 1]) : defSpan;
       if (!knownStart) start = addDays(end, -Math.max(burstDays, span0));
-      start = Math.max(start, lower);
+      start = Math.max(start, floor);
       if (start > end) start = startOfDay(end);
       const hardEnd = Math.min(T, end);
       // make room if even capped days cannot hold everything
@@ -270,7 +274,7 @@ export function inferHistory(e, { pacePerDay = 90, maxPerDay = 600, minDay = 15,
       let n = daysBetween(d0, end) + 1;
       const needed = Math.ceil(remaining / maxPerDay);
       if (n < needed && hardStart == null) {
-        d0 = startOfDay(Math.max(lower, addDays(end, -needed + 1)));
+        d0 = startOfDay(Math.max(floor, addDays(end, -needed + 1)));
         n = daysBetween(d0, end) + 1;
       }
       const origStart = d0;
@@ -315,7 +319,7 @@ export function inferHistory(e, { pacePerDay = 90, maxPerDay = 600, minDay = 15,
       // days already busy with other games: widen the window backwards (unless the start is known)
       for (let tries = 0; remaining - placed > 0.5 && hardStart == null && tries < 4; tries++) {
         const extra = Math.ceil((remaining - placed) / Math.max(60, maxPerDay / 2)) * (tries + 1) + 7;
-        const nd0 = startOfDay(Math.max(lower, addDays(d0, -extra)));
+        const nd0 = startOfDay(Math.max(floor, addDays(d0, -extra)));
         if (nd0 >= d0) break;
         const nn = daysBetween(nd0, end) + 1;
         caps = capsFor(nd0, nn, hardEnd);
@@ -333,7 +337,7 @@ export function inferHistory(e, { pacePerDay = 90, maxPerDay = 600, minDay = 15,
       else if (knownStart && knownEnd) { c = 'medium'; result.reasons.push('Bounded by date added/first activity and last played'); }
       else { c = 'low'; result.reasons.push(knownEnd ? 'Only the last played date is known' : 'Only a start date is known'); }
       if (e.playCount) result.reasons.push(`${e.playCount} launches reported`);
-      if (lower !== bound) result.reasons.push(`Last played before the ${bound === e.releaseAt ? 'release' : 'account creation'} date - not bounded by it`);
+      if (floor !== bound) result.reasons.push(`Played before the ${bound === e.releaseAt ? 'release' : 'account creation'} date - not bounded by it`);
       else if (e.releaseAt && start <= e.releaseAt + DAY) result.reasons.push('Clamped to release date');
       conf.push(c);
       for (const ch of result.chunks) if (ch.why === 'history') ch.confidence = c;

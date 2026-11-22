@@ -143,3 +143,25 @@ test('history games known by their unlock times are learned at their own size, n
   assert.deepEqual(style.samples.map((x) => x.m), [600, 6000, 12000]);
   for (const x of style.samples) assert.ok(Math.abs(x.rel.reduce((a, v) => a + v, 0) - 1) < 0.01);
 });
+
+test('a game added before its release date (a pre-order) is dated from the release, not left undated', () => {
+  const e = { minutes: 3000, trackingStart: T, dateAdded: T - 400 * DAY };
+  const plain = inferHistory(e);
+  assert.equal(dated(plain), 3000);
+  // bought 100 days before release, no last played date: the burst begins at the release
+  const res = inferHistory({ ...e, releaseAt: T - 300 * DAY });
+  assert.equal(res.undated, 0);
+  assert.ok(res.window[0] < res.window[1], 'the window runs forwards');
+  assert.ok(res.window[0] >= new Date(T - 300 * DAY).setHours(0, 0, 0, 0), 'not before the release');
+  assert.equal(res.window[1] - res.window[0], plain.window[1] - plain.window[0], 'the same burst, 100 days later');
+  assert.ok(res.reasons.includes('Clamped to release date'));
+  // a release date that leaves no day before tracking began bounds nothing
+  const late = inferHistory({ ...e, releaseAt: T + DAY });
+  assert.equal(late.undated, 0);
+  assert.deepEqual(late.window, plain.window);
+  assert.ok(!late.reasons.includes('Clamped to release date'));
+  // history from before the recent-play counter's days, with a release date inside them
+  const recent = inferHistory({ minutes: 3000, trackingStart: T, recent: { minutes: 100, days: 14 }, releaseAt: T - 5 * DAY });
+  assert.equal(recent.undated, 0);
+  assert.ok(recent.chunks.every((c) => c.start < c.end && c.end <= T));
+});
