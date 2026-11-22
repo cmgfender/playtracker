@@ -155,6 +155,9 @@ function splitTags(v) {
 
 // strict booleans (as in settings and imports): "false" or "0" must never read as true
 const flag = (v) => (v === true || v === 'true' || v === 1 || v === '1' ? 1 : 0);
+// A lifetime total above this is a mistake (seconds or a timestamp sent as minutes), and one past
+// 2^53 could not be read back at all: every page reading the entry would fail from then on.
+const MAX_PLAYTIME_MIN = 100 * 366 * 1440; // a hundred years
 // search text for `LIKE ? ESCAPE '\'`: % and _ are literal characters, not wildcards
 const likeText = (s) => `%${String(s).replace(/[\\%_]/g, '\\$&')}%`;
 /** toTime() of a body field; a value that is given but is not a time is a 400, never "no time". */
@@ -460,6 +463,7 @@ export function registerRoutes(r, app) {
     if (!e) throw new HttpError(404, 'Entry not found');
     const total = toInt(c.body.playtime_minutes);
     if (total == null || total < 0) throw new HttpError(400, 'playtime_minutes (lifetime total) is required');
+    if (total > MAX_PLAYTIME_MIN) throw new HttpError(400, `playtime_minutes cannot be more than ${MAX_PLAYTIME_MIN} (a hundred years)`);
     if (e.account_id) {
       const res = await sync.report(e.account_id, [{ extId: e.ext_id, title: e.title, playtimeMin: total, lastPlayedAt: toTime(c.body.last_played_at) }]);
       return res;
@@ -1048,6 +1052,8 @@ export function registerRoutes(r, app) {
       if (ext == null || ext === '') return;
       for (const k of ['playtime_minutes', 'playtime_hours']) {
         if (g[k] != null && !(Number.isFinite(Number(g[k])) && Number(g[k]) >= 0)) throw new HttpError(400, `games[${i}].${k} must be a non-negative number`);
+        const max = k === 'playtime_hours' ? MAX_PLAYTIME_MIN / 60 : MAX_PLAYTIME_MIN;
+        if (g[k] != null && Number(g[k]) > max) throw new HttpError(400, `games[${i}].${k} cannot be more than ${max} (a hundred years)`);
       }
       const playtimeMin = g.playtime_minutes != null ? Number(g.playtime_minutes) : g.playtime_hours != null ? Math.round(Number(g.playtime_hours) * 60) : 0;
       items.push({
