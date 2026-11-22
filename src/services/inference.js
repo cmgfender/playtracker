@@ -185,7 +185,9 @@ export function inferHistory(e, { pacePerDay = 90, maxPerDay = 600, minDay = 15,
   if (e.mode === 'undated') { result.undated = total; result.reasons.push('Charting disabled for this game'); return result; }
   const T = e.trackingStart || Date.now();
   const lower = Math.max(e.releaseAt || 0, e.accountCreatedAt || 0, Date.UTC(1995, 0, 1));
-  const anchors = (e.anchors || []).filter((a) => a && a >= lower && a <= T).sort((a, b) => a - b);
+  // unlock times from before the hard start are no evidence of play after it (as the last
+  // activity they would end the window before it began, leaving everything undated)
+  const anchors = (e.anchors || []).filter((a) => a && a >= lower && a <= T && (hardStart == null || a >= hardStart)).sort((a, b) => a - b);
   let remaining = total;
   const conf = [];
 

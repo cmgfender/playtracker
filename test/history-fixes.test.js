@@ -51,3 +51,19 @@ test('an excluded entry (a double count) takes no room in the shared day budget 
   assert.deepEqual(ex.game, alone);
   assert.deepEqual(ex.twin, { estimate: 3600 }, 'the excluded entry keeps its own dating');
 });
+
+test('unlock times from before the first played date do not end the history before it began', () => {
+  const e = { minutes: 600, trackingStart: T, firstPlayedAt: T - 100 * DAY };
+  const plain = inferHistory(e);
+  assert.equal(dated(plain), 600, 'a first played date alone dates the history after it');
+  // one stray unlock 100 days before first played: no evidence about the end, so nothing changes
+  const stray = inferHistory({ ...e, anchors: [T - 200 * DAY] });
+  assert.equal(stray.undated, 0);
+  assert.deepEqual(stray.chunks.map((c) => [c.start, c.end, c.minutes]), plain.chunks.map((c) => [c.start, c.end, c.minutes]));
+  // the same with a start you set
+  assert.equal(inferHistory({ minutes: 600, trackingStart: T, manual: { start: T - 100 * DAY }, anchors: [T - 200 * DAY] }).undated, 0);
+  // an unlock after first played still ends the window
+  const later = inferHistory({ ...e, anchors: [T - 200 * DAY, T - 50 * DAY] });
+  assert.equal(dated(later), 600);
+  assert.ok(later.window[0] >= T - 100 * DAY && later.window[1] <= T - 50 * DAY);
+});
