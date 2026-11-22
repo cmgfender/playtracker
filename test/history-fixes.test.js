@@ -179,3 +179,30 @@ test('minutes that make a session of their own go to a free day when the likelie
   assert.equal(res.undated, 0, 'the free day between holds what the two busy days cannot');
   assert.deepEqual(res.chunks.map((c) => [new Date(c.start).setHours(0, 0, 0, 0), c.minutes]), [[day(10), 20], [day(9), 20]]);
 });
+
+test('the end you set stands when the platform reports an earlier last played date', () => {
+  const window = { start: T - 200 * DAY, end: T - 100 * DAY };
+  const yours = inferHistory({ minutes: 3000, trackingStart: T, manual: window });
+  assert.equal(dated(yours), 3000);
+  // the platform says last played 300 days ago; you say it was played 200 to 100 days ago
+  const stale = inferHistory({ minutes: 3000, trackingStart: T, lastPlayedAt: T - 300 * DAY, manual: window });
+  assert.equal(stale.undated, 0, 'not "does not fit after the first played date"');
+  assert.deepEqual(stale.window, yours.window);
+  // last played inside your window does not cut it short either
+  assert.deepEqual(inferHistory({ minutes: 3000, trackingStart: T, lastPlayedAt: T - 150 * DAY, manual: window }).window, yours.window);
+  // only an end: history ends there, not at the platform's date
+  const end = inferHistory({ minutes: 3000, trackingStart: T, lastPlayedAt: T - 300 * DAY, manual: { end: T - 100 * DAY } });
+  assert.equal(dated(end), 3000);
+  assert.ok(end.window[1] <= T - 100 * DAY && end.window[1] > T - 101 * DAY);
+  // only a start, later than the platform's last played date: dated after your start
+  const start = inferHistory({ minutes: 3000, trackingStart: T, lastPlayedAt: T - 300 * DAY, manual: { start: T - 200 * DAY } });
+  assert.equal(dated(start), 3000);
+  assert.ok(start.window[0] >= T - 200 * DAY);
+  // still never past tracking start, nor into the days of the recent-play counter
+  const late = inferHistory({ minutes: 3000, trackingStart: T, lastPlayedAt: T - 300 * DAY, manual: { end: T + 30 * DAY } });
+  assert.ok(late.chunks.every((c) => c.end <= T) && late.window[1] > T - DAY);
+  const counter = inferHistory({ minutes: 3000, trackingStart: T, lastPlayedAt: T - DAY, recent: { minutes: 200, days: 14 }, manual: { end: T - 2 * DAY } });
+  assert.equal(dated(counter), 3000);
+  const recentStart = Math.min(...counter.chunks.filter((c) => c.why === 'recent').map((c) => c.start));
+  assert.ok(counter.chunks.filter((c) => c.why === 'history').every((c) => c.end < recentStart));
+});

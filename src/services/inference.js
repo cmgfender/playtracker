@@ -214,6 +214,7 @@ export function inferHistory(e, { pacePerDay = 90, maxPerDay = 600, minDay = 15,
   // 1) Minutes known to be recent (Steam's 2-week counter): place them inside that window,
   //    never before the first or after the last played time, with a bump on the last-played day.
   let upper = lastPlayed ?? T;
+  let latest = T; // where history can end at all: tracking start, or the day before the counter's days
   if (e.recent?.minutes > 0) {
     const r = Math.min(e.recent.minutes, remaining);
     const wStart = Math.max(lower, hardStart ?? -Infinity, T - (e.recent.days || 14) * DAY);
@@ -235,10 +236,15 @@ export function inferHistory(e, { pacePerDay = 90, maxPerDay = 600, minDay = 15,
     result.reasons.push(`${Math.round(placed)} min placed in the last ${e.recent.days || 14} days (platform's recent-play counter)`);
     // the rest happened before the recent window (whose days start at d0: never share a day with it)
     upper = Math.min(upper, d0 - 1);
+    latest = d0 - 1;
   }
 
   if (remaining > 0.5) {
-    let end = e.manual?.end ?? (lastPlayed != null && lastPlayed <= upper ? lastPlayed : null);
+    // dates you set replace the platform's last played date: it neither cuts your end short nor
+    // ends the history before your start (which left all of it undated)
+    const yours = e.manual?.end != null || (e.manual?.start != null && lastPlayed != null && lastPlayed < e.manual.start);
+    if (yours) upper = latest;
+    let end = e.manual?.end ?? (!yours && lastPlayed != null && lastPlayed <= upper ? lastPlayed : null);
     const anchorMax = anchors.filter((a) => a <= upper).at(-1);
     if (end == null && anchorMax) end = anchorMax;
     if (end == null && e.recent?.minutes > 0) end = upper; // known to be before the recent window
