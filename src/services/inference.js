@@ -391,7 +391,8 @@ export function learnStyle(samples, { minPoints = 4, minSpanDays = 7 } = {}) {
   const kept = [];
   for (let i = 0; i < out.length && kept.length < STYLE_MAX_SAMPLES; i += step) kept.push(out[Math.floor(i)]);
   // tracked: games with real session minutes (unlock-time samples only show when unlocks happened)
-  return { v: 2, games: out.length, tracked, samples: kept };
+  // (v 3: unlock-time samples carry the game's minutes; a style learned before is learned again)
+  return { v: 3, games: out.length, tracked, samples: kept };
 }
 
 /** Average signature of the k games most similar in size (and span, when known). */
@@ -426,9 +427,11 @@ export function learnStyleFromDb(db, { now = Date.now(), quietDays = 30, minAnch
     pts.push({ t: r.t, minutes: r.minutes });
   }
   if (pts.length) samples.push(pts);
-  // anchors carry no minutes: every unlock stands for an equal share of the game's time
-  for (const r of db.prepare("SELECT hist FROM entries WHERE baseline_min > 0 AND excluded = 0 AND json_array_length(json_extract(hist, '$.anchors')) >= ? LIMIT ?").all(minAnchors, maxGames)) {
-    const pts = JSON.parse(r.hist).anchors.map((t) => ({ t, minutes: 1 }));
+  // anchors carry no minutes: every unlock stands for an equal share of the game's time (of its
+  // history, so the game is learned at its own size - new games are dated like those of their size)
+  for (const r of db.prepare("SELECT hist, baseline_min FROM entries WHERE baseline_min > 0 AND excluded = 0 AND json_array_length(json_extract(hist, '$.anchors')) >= ? LIMIT ?").all(minAnchors, maxGames)) {
+    const anchors = JSON.parse(r.hist).anchors;
+    const pts = anchors.map((t) => ({ t, minutes: r.baseline_min / anchors.length }));
     pts.tracked = false;
     samples.push(pts);
   }

@@ -3,7 +3,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { openDb } from '../src/db.js';
-import { inferHistory, reinferMany } from '../src/services/inference.js';
+import { inferHistory, learnStyleFromDb, reinferMany } from '../src/services/inference.js';
 import { flushRollups } from '../src/services/rollup.js';
 
 const DAY = 86_400_000;
@@ -128,4 +128,18 @@ test('a date added (or first unlock) after the last played date is no start: no 
   const after = inferHistory({ minutes: 3000, trackingStart: T, dateAdded: T + 5 * DAY });
   assert.equal(after.undated, 3000);
   assert.deepEqual(after.reasons, ['No dates available - kept as undated history (lifetime totals only)']);
+});
+
+test('history games known by their unlock times are learned at their own size, not their unlock count', () => {
+  const { db, entry } = library();
+  // three history games of 10 h, 100 h and 200 h, each with ten unlocks over 90 days
+  const anchors = Array.from({ length: 10 }, (_, i) => T - (100 - i * 10) * DAY);
+  for (const minutes of [600, 6000, 12000]) entry(`Game ${minutes}`, minutes, { anchors });
+  const style = learnStyleFromDb(db, { now: T });
+  db.close();
+  assert.equal(style.games, 3);
+  assert.equal(style.tracked, 0, 'unlock times are not tracked sessions');
+  // a new game is dated like the learned games nearest in size: the size must be the game's
+  assert.deepEqual(style.samples.map((x) => x.m), [600, 6000, 12000]);
+  for (const x of style.samples) assert.ok(Math.abs(x.rel.reduce((a, v) => a + v, 0) - 1) < 0.01);
 });
