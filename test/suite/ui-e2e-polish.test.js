@@ -122,4 +122,39 @@ describe('Vestigo web UI, polish', UI, () => {
       clean(h);
     } finally { await h.close(); }
   });
+
+  test('Log session: pressing Save twice logs one session; after a failed save the dialog stays and Save works again', async () => {
+    const h = await visit(S, `/game/${D.ids.hollow}`);
+    const { page } = h;
+    try {
+      const count = async () => (await S.ok(`/sessions?game_id=${D.ids.hollow}&limit=1`)).total;
+      const n0 = await count();
+      await page.locator('#g-log').click();
+      await modalReady(page);
+      await page.locator('.modal [name=note]').fill('Twice');
+      // two clicks before the first answer is back (a double click, or Enter held on the button)
+      await page.evaluate(() => { const b = document.querySelector('#log-save'); b.click(); b.click(); });
+      await toast(page, 'Logged 1h of Hollow Knight');
+      await page.locator('.modal').waitFor({ state: 'detached' });
+      await h.settle();
+      assert.equal(await count(), n0 + 1, 'one session');
+      assert.equal(await page.locator('#toasts .toast', { hasText: 'Logged 1h' }).count(), 1, 'one toast');
+
+      // a save that fails: the dialog and its fields stay, and Save is not left switched off
+      await page.locator('#g-log').click();
+      await modalReady(page);
+      await page.locator('.modal [name=note]').fill('Second try');
+      await failOnce(page, '/sessions', 'POST');
+      await page.locator('#log-save').click();
+      await toast(page, 'The database is busy');
+      assert.equal(await page.locator('.modal').count(), 1, 'the dialog is still open');
+      assert.equal(await page.locator('.modal [name=note]').inputValue(), 'Second try');
+      assert.equal(await count(), n0 + 1, 'nothing logged by the failed save');
+      await page.locator('#log-save').click();
+      await toast(page, 'Logged 1h of Hollow Knight');
+      await h.settle();
+      assert.equal(await count(), n0 + 2);
+      clean(h, [500]);
+    } finally { await h.close(); }
+  });
 });
