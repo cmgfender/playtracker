@@ -485,13 +485,16 @@ export function reinferEntry(db, entryId, { account = null, load = null, setting
   const accountObj = acc ? { state: typeof acc.state === 'string' ? JSON.parse(acc.state || '{}') : acc.state } : null;
   const ev = evidenceFor(entry, accountObj, entry.first_seen_at);
   if (style === undefined) style = settings?.history_learn === false ? null : styleOf(db);
+  // an excluded entry (a double count) is in no chart and no total: the days' shared budget is
+  // neither its limit nor used up by it
+  const shared = entry.excluded ? null : load;
   let res;
   if (manual?.chunks?.length && ev.mode !== 'undated' && manual.chunks.reduce((a, c) => a + c[2], 0) + (manual.undated || 0) === entry.baseline_min) {
     const chunks = manual.chunks.map(([start, end, minutes, why]) => ({ start, end, minutes, confidence: 'high', why, basis: 'confirmed' }));
     const reasons = ['You confirmed this estimate', ...(h.inference?.reasons || []).filter((r) => r !== 'You confirmed this estimate')];
     res = { chunks, undated: manual.undated || 0, confidence: 'high', window: [chunks[0].start, chunks.at(-1).end], reasons };
-  } else res = inferHistory(ev, { dayRoom: load ? (t) => load.room(t) : null, maxPerDay: Number(settings?.history_max_game_day_minutes) || 600, style });
-  load?.add(res.chunks);
+  } else res = inferHistory(ev, { dayRoom: shared ? (t) => shared.room(t) : null, maxPerDay: Number(settings?.history_max_game_day_minutes) || 600, style });
+  shared?.add(res.chunks);
   const now = Date.now();
   const ins = db.prepare(`INSERT INTO sessions(entry_id, source, kind, minutes, window_start, window_end, confidence, note, basis, created_at)
     VALUES (?, 'inferred', ?, ?, ?, ?, ?, ?, ?, ?)`);
