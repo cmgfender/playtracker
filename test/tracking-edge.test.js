@@ -134,6 +134,37 @@ test('late minutes after an unchanged last-played time keep the times presence s
   assert.deepEqual(w.days(), { [dayOf(end)]: 60 });
 });
 
+// PlayStation: 200 minutes played 19:00-22:20; presence (down until 21:20) saw the last hour
+function joinedLate(launches) {
+  const w = world('psn');
+  const start = new Date(2026, 5, 2, 19, 0).getTime();
+  const end = start + 200 * MIN;
+  const item = (total, lastPlayedAt, playCount) => [{ extId: '7', title: 'Game', playtimeMin: total, lastPlayedAt, playCount, firstPlayedAt: start - 30 * DAY }];
+  w.sync(item(500, start - 30 * DAY, 5), start - DAY);
+  w.sync(item(500, start - 30 * DAY, 5), start - 5 * HOUR);
+  w.span(start + 140 * MIN, end);
+  w.sync(item(700, end, 5 + launches), end + 20 * MIN);
+  return { w, start, end };
+}
+
+test('a sitting presence joined late is one session from where it began, not two over the same hour', () => {
+  const { w, start, end } = joinedLate(1);
+  assert.deepEqual(w.rows('play').map((s) => [s.started_at, s.ended_at, s.minutes]), [[start, end, 200]]);
+  // no hour holds more than 60 minutes of one game
+  const busiest = w.db.prepare('SELECT MAX(m) m FROM (SELECT SUM(minutes) m FROM play_hours GROUP BY day, hour)').get().m;
+  assert.ok(busiest <= 60.5, `${busiest} minutes in one hour`);
+  assert.ok(adds(w.db));
+});
+
+test('with a second launch reported, what presence did not see stays a session of its own', () => {
+  const { w, start, end } = joinedLate(2);
+  const play = w.rows('play');
+  assert.ok(play.length >= 2);
+  assert.equal(sum(play), 200);
+  const seen = play.find((s) => s.confidence === 'exact');
+  assert.deepEqual([seen.started_at, seen.ended_at], [start + 140 * MIN, end], 'the session presence saw keeps its times');
+});
+
 test('a reporter that pushes totals without refreshing last played gets each delta in its own window', () => {
   const w = world('custom');
   const t = new Date(2026, 5, 2, 12, 0).getTime();

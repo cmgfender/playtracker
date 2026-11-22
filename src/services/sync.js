@@ -181,6 +181,7 @@ export function applyItems(db, account, items, { settings, now = Date.now(), syn
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
   const extendSession = db.prepare('UPDATE sessions SET minutes = minutes + ?, ended_at = MAX(COALESCE(ended_at, 0), ?), window_end = MAX(COALESCE(window_end, 0), ?) WHERE id = ?');
   const sessionMinutes = db.prepare('SELECT minutes FROM sessions WHERE id = ?');
+  const sessionRow = db.prepare("SELECT * FROM sessions WHERE id = ? AND kind = 'play'");
   const spansFor = db.prepare('SELECT * FROM presence WHERE account_id = ? AND ext_id = ? AND started_at < ? AND COALESCE(ended_at, last_seen_at) > ? ORDER BY started_at');
   const linkSpan = db.prepare('UPDATE presence SET session_id = ? WHERE id = ?');
   // finished presence spans of a title no session has used yet, since the account was linked
@@ -325,6 +326,21 @@ export function applyItems(db, account, items, { settings, now = Date.now(), syn
         // a few minutes beyond what presence saw: part of the last observed session, not a new one
         const last = lastPlay.get(entry.id);
         if (last) { extendSession.run(Math.round(remaining), last.ended_at ?? last.window_end ?? now, last.window_end ?? now, last.id); return; }
+      }
+      // Last played (an end) is where presence saw a sitting end, and no second launch is
+      // reported: presence joined that sitting late (a restart, polls paused). The rest is its
+      // earlier part - one session that began before presence looked, not a second one pinned
+      // over the same hours.
+      const launches = model.play_count && it.playCount != null && entry.play_count != null ? it.playCount - entry.play_count : 1;
+      const sat = model.lastPlayed === 'end' && it.lastPlayedAt && launches <= 1
+        ? spans.find((sp) => sp.id && sp.session_id && sp.ended_at != null && Math.abs(sp.ended_at - it.lastPlayedAt) <= 15 * MIN) : null;
+      const s = sat && sessionRow.get(sat.session_id);
+      if (s?.started_at && s.ended_at && s.minutes + remaining <= model.max_session_min) {
+        const minutes = s.minutes + Math.round(remaining);
+        const started = Math.min(s.started_at, s.ended_at - minutes * MIN);
+        continueSession.run(minutes, started, s.ended_at, started, s.ended_at, s.confidence, s.id);
+        stats.minutes_added += Math.round(remaining);
+        return;
       }
     }
 
