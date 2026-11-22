@@ -810,12 +810,14 @@ export function registerRoutes(r, app) {
     returns: '{ games, with_typical_time, assumed (games without a typical time, counted at the median of the others), remaining_minutes, pace_ratio, personal_pace, weekly_minutes, '
       + 'weeks, years (null without a pace or a typical time), added_per_month, finished_per_month (null until the library is four months old), text | null }',
   });
-  r.get('/api/v1/stats/milestones', (c) => milestones(db, { limit: clamp(c.query.limit, 60, 1, 500) }), {
-    summary: 'Milestones: the round numbers of your tracked history with the day each was reached (hours in all and in a game, games played, days with play, days in a row, sessions, achievements), and the ones coming up',
+  r.get('/api/v1/stats/milestones', (c) => milestones(db, { limit: clamp(c.query.limit, 60, 1, 500), all: c.query.all === 'true' }), {
+    summary: 'Milestones: the round numbers of your tracked history with the day each was reached, and the ones coming up. Play in all, in a game, in a series and in a genre; games, days, sessions and streaks; '
+      + 'achievements, completions, platinums, Gamerscore and rare unlocks',
     tag: 'stats',
-    query: { limit: 'milestones listed, newest first (default 60)' },
-    returns: '{ day, total, counts: { kind: n }, reached: [{ id, kind (hours|game_hours|games|days|sessions|streak|achievements), text, value, day, game_id?, title? }], '
-      + 'coming: [{ id, kind, text, target, current (in the unit of target), percent, game_id?, title? }] nearest first }',
+    query: { limit: 'milestones listed, newest first (default 60)', all: 'true = every milestone reached; otherwise the notable ones: of each kind, the three highest rungs you have reached' },
+    returns: '{ day, total, notable_total, counts: { kind: n }, reached: [{ id, kind (hours|game_hours|series_hours|genre_hours|games|series_games|genre_games|days|sessions|streak|achievements|completions|'
+      + 'platinums|gamerscore|rare), text, value, tier (the rung on its ladder), notable, day, subject? (a series or genre), game_id?, title? }], '
+      + 'coming: [{ id, kind, text, target, current (in the unit of target), percent, subject?, game_id?, title? }] nearest first }',
   });
   r.get('/api/v1/games/:id/forecast', (c) => {
     const f = finishForecast(db, toInt(c.params.id));

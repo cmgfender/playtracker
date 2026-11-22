@@ -18,7 +18,7 @@ const SECTIONS = [
   ['what', 'What you played', 'Games over time, eras and platforms', 1500],
   ['style', 'How you play', 'Focus, the games you start, comebacks · tracked play', 900],
   ['records', 'Records & highlights', '', 720],
-  ['milestones', 'Milestones', 'Round numbers and the day you reached them · tracked play, whatever the range', 620],
+  ['milestones', 'Milestones', 'Play, games, series, genres and achievements: the round numbers and the day you reached them · whatever the range', 620],
   ['ach', 'Achievements', 'Unlocks, rarities and completion', 900],
   ['yoy', 'Year over year', 'Month by month, and the year so far', 700],
   ['library', 'Your library', 'Everything you own, whatever the range', 1500],
@@ -244,22 +244,30 @@ export async function insights(view, stale) {
       </div>`;
   }
 
-  // Milestones: what is coming up with how far along it is, then every one reached, newest first
+  // Milestones: what is coming up with how far along it is, then the notable ones reached (of each
+  // kind, the highest rungs of this career), newest first; every one of them folded away below
   async function milestones() {
-    const m = await api('/stats/milestones?limit=40');
-    if (!m.total && !m.coming.some((x) => x.current > 0)) return none('No milestones yet: the first come with ten hours, ten days or ten games of tracked play.');
-    const KIND = { hours: 'Hours', game_hours: 'A game', games: 'Games', days: 'Days', sessions: 'Sessions', streak: 'Streak', achievements: 'Achievements' };
-    const unit = (x) => (x.kind === 'hours' || x.kind === 'game_hours' ? 'h' : '');
+    const m = await api('/stats/milestones?all=true&limit=300');
+    if (!m.total && !m.coming.some((x) => x.current > 0)) return none('No milestones yet: the first come with ten hours, ten days or five games of tracked play.');
+    const KIND = {
+      hours: 'Hours', game_hours: 'A game', series_hours: 'A series', genre_hours: 'A genre', games: 'Games', series_games: 'A series', genre_games: 'A genre', days: 'Days', sessions: 'Sessions',
+      streak: 'Streak', achievements: 'Achievements', completions: 'Completed', platinums: 'Platinum', gamerscore: 'Gamerscore', rare: 'Rare',
+    };
+    const unit = (x) => (/hours$/.test(x.kind) ? 'h' : '');
     // the game's name is a link; everything else is the text as it is
     const label = (x) => (x.game_id && x.title ? esc(x.text).replace(esc(x.title), () => `<a class="link" href="/game/${x.game_id}" data-link>${esc(x.title)}</a>`) : esc(x.text));
-    const coming = m.coming.filter((x) => x.current > 0).slice(0, 6);
+    const coming = m.coming.filter((x) => x.current > 0).slice(0, 8);
     const ahead = coming.length ? coming.map((x) => meterRow(label(x), x.current, x.target, `${Math.floor(x.current).toLocaleString()}${unit(x)} of ${x.target.toLocaleString()}${unit(x)}`)).join('')
       : none('Nothing under way yet.');
-    const reached = m.reached.length ? `<div class="list">${m.reached.map((x) => `<div class="item"><div class="grow"><div class="ttl">${label(x)}</div><div class="sub">${longDay(x.day)}</div></div><span class="badge">${KIND[x.kind] || esc(x.kind)}</span></div>`).join('')}</div>${m.total > m.reached.length ? note(`The latest ${m.reached.length} of ${m.total}.`) : ''}`
-      : none('None reached yet.');
+    const row = (x) => `<div class="item"><div class="grow"><div class="ttl">${label(x)}</div><div class="sub">${longDay(x.day)}</div></div><span class="badge">${KIND[x.kind] || esc(x.kind)}</span></div>`;
+    const notable = m.reached.filter((x) => x.notable);
+    const shown = notable.slice(0, 40);
+    const reached = shown.length ? `<div class="list" id="ms-notable">${shown.map(row).join('')}</div>` : none('None reached yet.');
+    // the rest: the lower rungs, and what the list above had no room for
+    const rest = m.total > shown.length ? `<details id="ms-all" style="margin-top:10px"><summary class="small muted" style="cursor:pointer">All ${m.total.toLocaleString()} milestones${m.total > m.reached.length ? ` (the latest ${m.reached.length})` : ''}</summary><div class="list" style="margin-top:6px">${m.reached.map(row).join('')}</div></details>` : '';
     return `<div class="grid grid-2 ins-grid">
         <div class="card" id="ms-coming"><div class="card-h"><h3>Coming up</h3><span class="tiny muted">nearest first</span></div>${ahead}</div>
-        <div class="card" id="ms-reached"><div class="card-h"><h3>Reached</h3><span class="tiny muted">${m.total.toLocaleString()} in all</span></div>${reached}</div>
+        <div class="card" id="ms-reached"><div class="card-h"><h3>Reached</h3><span class="tiny muted">${m.total.toLocaleString()} in all</span></div>${reached}${rest}</div>
       </div>`;
   }
 
