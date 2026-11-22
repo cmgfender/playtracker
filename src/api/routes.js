@@ -166,6 +166,14 @@ function timeField(b, k) {
   if (t == null && b[k] != null && b[k] !== '') throw new HttpError(400, `${k} is not a valid time`);
   return t;
 }
+/** A body field that is text, or null when empty; anything else is a 400 (an object or a number cannot be stored as text). */
+function textField(b, k) {
+  if (b[k] == null || b[k] === '') return null;
+  if (typeof b[k] !== 'string') throw new HttpError(400, `${k} must be text`);
+  return b[k];
+}
+/** A pushed value kept only when it is text (push clients send what they have). */
+const textOr = (v, def = null) => (typeof v === 'string' && v ? v : def);
 /** A from/to query bound: a date (YYYY-MM-DD) covers that whole local day. */
 function dayBound(v, end) {
   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(v);
@@ -290,11 +298,12 @@ export function registerRoutes(r, app) {
   r.post('/api/v1/games', (c) => {
     const title = typeof c.body.title === 'string' ? c.body.title.trim() : '';
     if (!title) throw new HttpError(400, 'title is required');
+    const coverUrl = textField(c.body, 'cover_url');
     const now = Date.now();
     const id = tx(db, () => {
       const gid = c.body.merge === false
-        ? Number(db.prepare('INSERT INTO games(title, norm_title, cover_url, created_at, updated_at) VALUES (?, ?, ?, ?, ?)').run(cleanTitle(title), normalizeTitle(title), c.body.cover_url || null, now, now).lastInsertRowid)
-        : findOrCreateGame(db, { title, coverUrl: c.body.cover_url }, { autoMerge: true, now });
+        ? Number(db.prepare('INSERT INTO games(title, norm_title, cover_url, created_at, updated_at) VALUES (?, ?, ?, ?, ?)').run(cleanTitle(title), normalizeTitle(title), coverUrl, now, now).lastInsertRowid)
+        : findOrCreateGame(db, { title, coverUrl }, { autoMerge: true, now });
       manualEntry(db, gid, now);
       if (c.body.status && STATUSES.includes(c.body.status)) db.prepare('UPDATE games SET status = ? WHERE id = ?').run(c.body.status, gid);
       return gid;
@@ -398,7 +407,7 @@ export function registerRoutes(r, app) {
       if (!t) throw new HttpError(400, 'title must be a non-empty string');
       sets.push('title = ?', 'norm_title = ?'); args.push(t, normalizeTitle(t));
     }
-    if ('cover_url' in b) { sets.push('cover_url = ?'); args.push(b.cover_url || null); }
+    if ('cover_url' in b) { sets.push('cover_url = ?'); args.push(textField(b, 'cover_url')); }
     if ('status' in b) { if (!STATUSES.includes(b.status)) throw new HttpError(400, `status must be one of ${STATUSES.join(', ')}`); sets.push('status = ?'); args.push(b.status); }
     if ('rating' in b) {
       const n = b.rating == null || b.rating === '' ? null : Number(b.rating);
@@ -463,6 +472,7 @@ export function registerRoutes(r, app) {
     if (!e) throw new HttpError(404, 'Entry not found');
     const total = toInt(c.body.playtime_minutes);
     if (total == null || total < 0) throw new HttpError(400, 'playtime_minutes (lifetime total) is required');
+    const note = textField(c.body, 'note');
     if (total > MAX_PLAYTIME_MIN) throw new HttpError(400, `playtime_minutes cannot be more than ${MAX_PLAYTIME_MIN} (a hundred years)`);
     if (e.account_id) {
       const res = await sync.report(e.account_id, [{ extId: e.ext_id, title: e.title, playtimeMin: total, lastPlayedAt: toTime(c.body.last_played_at) }]);
@@ -480,7 +490,7 @@ export function registerRoutes(r, app) {
     tx(db, () => {
       if (delta > 0) {
         db.prepare("INSERT INTO sessions(entry_id, source, kind, minutes, window_start, window_end, note, created_at) VALUES (?, 'api', 'play', ?, ?, ?, ?, ?)")
-          .run(id, delta, e.last_synced_at || e.first_seen_at, now, c.body.note || null, now);
+          .run(id, delta, e.last_synced_at || e.first_seen_at, now, note, now);
       }
       db.prepare('UPDATE entries SET playtime_min = ?, last_synced_at = ?, last_played_at = COALESCE(?, last_played_at) WHERE id = ?').run(total, now, toTime(c.body.last_played_at), id);
       db.prepare('INSERT INTO snapshots(entry_id, taken_at, playtime_min) VALUES (?, ?, ?)').run(id, now, total);
@@ -539,6 +549,7 @@ export function registerRoutes(r, app) {
     const minutes = toInt(b.minutes) ?? (b.hours ? Math.round(Number(b.hours) * 60) : null);
     if (!gameId || !db.prepare('SELECT id FROM games WHERE id = ?').get(gameId)) throw new HttpError(400, 'Valid game_id is required');
     if (!minutes || minutes <= 0 || minutes > 7 * 1440) throw new HttpError(400, 'minutes must be between 1 and 10080');
+    const note = textField(b, 'note');
     const now = Date.now();
     let started = timeField(b, 'started_at');
     let ended = timeField(b, 'ended_at');
@@ -561,7 +572,7 @@ export function registerRoutes(r, app) {
     const id = tx(db, () => {
       const e = manualEntry(db, gameId, now);
       const r2 = db.prepare("INSERT INTO sessions(entry_id, source, kind, minutes, window_start, window_end, started_at, ended_at, note, created_at, confidence) VALUES (?, 'manual', 'play', ?, ?, ?, ?, ?, ?, ?, 'exact')")
-        .run(e.id, minutes, started, ended, started, ended, b.note || null, now);
+        .run(e.id, minutes, started, ended, started, ended, note, now);
       db.prepare('UPDATE entries SET playtime_min = playtime_min + ?, last_played_at = MAX(COALESCE(last_played_at, 0), ?), last_synced_at = ? WHERE id = ?').run(minutes, ended, now, e.id);
       if (b.status && STATUSES.includes(b.status)) db.prepare('UPDATE games SET status = ?, updated_at = ? WHERE id = ?').run(b.status, now, gameId);
       return Number(r2.lastInsertRowid);
@@ -574,7 +585,7 @@ export function registerRoutes(r, app) {
     if (!s) throw new HttpError(404, 'Session not found');
     const local = s.source === 'manual' || s.source === 'import' || s.source === 'api';
     const sets = []; const args = [];
-    if ('note' in patch) { sets.push('note = ?'); args.push(patch.note || null); }
+    if ('note' in patch) { sets.push('note = ?'); args.push(textField(patch, 'note')); }
     if ('kind' in patch) {
       if (!['play', 'baseline'].includes(patch.kind)) throw new HttpError(400, 'kind must be play or baseline');
       // history is never recorded as play: it can only leave the stats
@@ -1058,7 +1069,7 @@ export function registerRoutes(r, app) {
       const playtimeMin = g.playtime_minutes != null ? Number(g.playtime_minutes) : g.playtime_hours != null ? Math.round(Number(g.playtime_hours) * 60) : 0;
       items.push({
         extId: String(ext),
-        title: g.title || g.name || String(ext),
+        title: textOr(g.title) || textOr(g.name) || String(ext),
         playtimeMin,
         lastPlayedAt: toTime(g.last_played_at),
         firstPlayedAt: toTime(g.first_played_at),
@@ -1067,8 +1078,8 @@ export function registerRoutes(r, app) {
         recentMin: g.recent_minutes != null ? toInt(g.recent_minutes) : null, // absent = unknown, not zero
         recentWindowDays: clamp(g.recent_days, 14, 1, 365),
         devices: g.device ? { [String(g.device)]: playtimeMin } : undefined,
-        coverUrl: g.cover_url || null,
-        iconUrl: g.icon_url || null,
+        coverUrl: textOr(g.cover_url),
+        iconUrl: textOr(g.icon_url),
         backfill: !!g.backfill,
       });
     });
@@ -1078,7 +1089,7 @@ export function registerRoutes(r, app) {
   r.post('/api/v1/accounts/:id/presence', (c) => {
     const a = sync.account(toInt(c.params.id));
     if (!a) throw new HttpError(404, 'Account not found');
-    const playing = arr(c.body.playing, 'playing').filter((p) => p && typeof p === 'object').map((p) => ({ extId: String(p.id ?? p.ext_id ?? p.title), title: p.title || null, device: p.device || null }));
+    const playing = arr(c.body.playing, 'playing').filter((p) => p && typeof p === 'object' && (p.id ?? p.ext_id ?? p.title) != null).map((p) => ({ extId: String(p.id ?? p.ext_id ?? p.title), title: textOr(p.title), device: textOr(p.device) }));
     return sync.applyPresence(a, playing, { intervalSec: toInt(c.body.interval_sec, 120) });
   }, { summary: 'Push "currently playing" for an account (e.g. from Home Assistant); used to pin sessions to exact times', body: '{ playing: [{ id, title? }], interval_sec? }' });
 
