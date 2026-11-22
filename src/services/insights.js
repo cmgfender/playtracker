@@ -730,6 +730,7 @@ export function records(db, { range = 'all', group, gameId = null, platform = nu
       hours: hours.map(r),
     };
     out.highlights = highlights(out, { weekday, hours, total: totals.m, firstEver });
+    out.patterns = patterns(all, p);
     return out;
   });
 }
@@ -761,6 +762,77 @@ function highlights(x, { weekday, hours, total, firstEver }) {
   }
   // first_ever: nothing was tracked before it; false when the range only cuts into older tracked play
   if (x.first_session) add('first_session', `First tracked session${firstEver ? '' : ' in this range'}: ${x.first_session.title} on ${x.first_session.day}.`, x.first_session.minutes, 'minutes', { game_id: x.first_session.game_id, day: x.first_session.day, session_id: x.first_session.session_id, first_ever: firstEver });
+  return out;
+}
+
+// Patterns: what the days of a range say together, where highlights name single records. Tracked
+// play only, like streaks: estimated history is spread by inference and has no days of its own.
+const PATTERN_MIN_DAYS = 14;  // a range shorter than two weeks has no rhythm to speak of
+const PATTERN_MIN_PLAYED = 5; // nor have fewer days with play
+const BREAK_MIN_DAYS = 3;
+const LEAN = 1.25;            // one kind of day gets this many times the play of the other before it is said to lead
+
+/**
+ * One-line patterns from fixed templates, each with the numbers behind it: the change from the
+ * period before, days with play, a typical day, weekend days against weekdays, the longest break.
+ * `all` is tracked minutes per local day (every day ever, for the period before).
+ */
+function patterns(all, p) {
+  const out = [];
+  const add = (id, text, value, unit, extra = {}) => out.push({ id, text, value, unit, ...extra });
+  let firstTracked = null;
+  for (const [d, m] of all) if (m >= 1 && (!firstTracked || d < firstTracked)) firstTracked = d;
+  if (!firstTracked) return out;
+  // days before tracking began are not days off
+  const from = p.fromDay > firstTracked ? p.fromDay : firstTracked;
+  const days = [];
+  for (let d = from; d <= p.toDay && days.length < 36600; d = addDays(d, 1)) days.push(d);
+  const mins = days.map((d) => all.get(d) || 0);
+  const on = mins.filter((m) => m >= 1).sort((a, b) => a - b);
+  if (days.length < PATTERN_MIN_DAYS || on.length < PATTERN_MIN_PLAYED) return out;
+  const sum = (list) => list.reduce((a, b) => a + b, 0);
+  const total = sum(mins);
+
+  // the same number of days just before, when all of them were tracked too
+  const prevFrom = addDays(from, -days.length);
+  if (from === p.fromDay && prevFrom >= firstTracked) {
+    let prev = 0;
+    for (let d = prevFrom; d < from; d = addDays(d, 1)) prev += all.get(d) || 0;
+    if (prev >= 1) {
+      const part = Math.round(((total - prev) / prev) * 100);
+      add('trend', `${fmtMinutes(total)}: ${part === 0 ? 'the same as' : `${Math.abs(part)}% ${part > 0 ? 'more' : 'less'} than`} the ${days.length} days before (${fmtMinutes(prev)}).`, part, 'percent', { minutes: r(total), previous_minutes: r(prev), days: days.length });
+    }
+  }
+
+  add('days_played', `You played on ${on.length} of ${days.length} days (${pct(on.length, days.length)}%).`, pct(on.length, days.length), 'percent', { days: on.length, of: days.length });
+
+  const mid = on.length >> 1;
+  const median = r(on.length % 2 ? on[mid] : (on[mid - 1] + on[mid]) / 2);
+  add('typical_day', `A day with play is typically ${fmtMinutes(median)}.`, median, 'minutes');
+
+  // a weekend day against a weekday: minutes per calendar day of each kind, days without play included
+  const kind = [[0, 0], [0, 0]]; // [minutes, days] of weekdays, of weekend days
+  days.forEach((d, i) => { const k = kind[[0, 6].includes(new Date(parseDay(d)).getDay()) ? 1 : 0]; k[0] += mins[i]; k[1]++; });
+  const [wd, we] = kind.map(([m, n]) => (n ? m / n : 0));
+  if (kind[0][1] && kind[1][1] && (wd >= 0.5 || we >= 0.5)) {
+    const lean = we >= wd * LEAN ? 'weekend' : wd >= we * LEAN ? 'weekday' : 'even';
+    const [hi, lo] = we >= wd ? [we, wd] : [wd, we];
+    const times = lo >= 0.5 ? Math.round((hi / lo) * 10) / 10 : null; // null: all of the play is on one kind of day
+    const text = lean === 'even' ? `Weekdays and weekend days get about the same play (${fmtMinutes(wd)} and ${fmtMinutes(we)} a day).`
+      : times == null ? `All of your play is on ${lean === 'weekend' ? 'weekends' : 'weekdays'}.`
+        : `A ${lean === 'weekend' ? 'weekend day' : 'weekday'} gets ${times} times the play of a ${lean === 'weekend' ? 'weekday' : 'weekend day'} (${fmtMinutes(hi)} against ${fmtMinutes(lo)}).`;
+    add('weekend', text, times, 'times', { lean, weekday_minutes: r(wd), weekend_minutes: r(we) });
+  }
+
+  // the longest run of days without play between two days with it (the earliest of equals)
+  let gap = null; let run = 0; let seen = false;
+  days.forEach((d, i) => {
+    if (mins[i] >= 1) {
+      if (seen && run >= BREAK_MIN_DAYS && (!gap || run > gap.days)) gap = { days: run, from: days[i - run], to: days[i - 1] };
+      seen = true; run = 0;
+    } else run++;
+  });
+  if (gap) add('longest_break', `Longest break: ${gap.days} days without play (${gap.from} to ${gap.to}).`, gap.days, 'days', { from: gap.from, to: gap.to, day: gap.to });
   return out;
 }
 

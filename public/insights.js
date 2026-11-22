@@ -233,10 +233,12 @@ export async function insights(view, stale) {
     ].filter(Boolean);
     if (!r.sessions && !r.most_played) return none('No records yet in this range: they start with the first tracked session.');
     const lines = (r.highlights || []).map((h) => highlight(h, r)).filter(Boolean);
+    const pats = (r.patterns || []).map(pattern).filter(Boolean);
     const by = r.most_played_by?.items || [];
     return `<div class="recs">${cards.map(([l, v, s, href]) => `<div class="rec"><div class="eyebrow">${l}</div>${href ? `<a class="rv" href="${href}" data-link title="See the sessions">${v}</a>` : `<div class="rv">${v}</div>`}<div class="small muted">${s}</div></div>`).join('')}</div>
       <div class="grid grid-2 ins-grid" style="margin-top:16px">
-        <div class="card"><div class="card-h"><h3>Highlights</h3><span class="tiny muted">${esc(r.range.label)}</span></div>${lines.length ? `<ul class="hl">${lines.map((x) => `<li>${x}</li>`).join('')}</ul>` : none('Nothing stands out yet.')}</div>
+        <div class="card"><div class="card-h"><h3>Highlights</h3><span class="tiny muted">${esc(r.range.label)}</span></div>${lines.length ? `<ul class="hl">${lines.map((x) => `<li>${x}</li>`).join('')}</ul>` : none('Nothing stands out yet.')}
+          ${pats.length ? `<div class="eyebrow" style="margin:16px 0 8px">Patterns</div><ul class="hl" data-patterns>${pats.map((x) => `<li>${x}</li>`).join('')}</ul>` : ''}</div>
         <div class="card"><div class="card-h"><h3>Most played by ${r.most_played_by?.group || 'year'}</h3></div>${by.length ? `<div class="list">${by.slice().reverse().slice(0, 6).map((x) => `<a class="item" href="/game/${x.game_id}" data-link>${cover(x)}<div class="grow"><div class="ttl ellipsis">${esc(x.title)}</div><div class="sub">${esc(r.most_played_by.group === 'month' ? monthName(x.key) : x.key)} · ${pct(x.share)} of play</div></div><div class="amt">${fmtMin(x.minutes, { short: x.minutes >= 600 })}${x.estimated_minutes ? `<div class="tiny muted">${fmtMin(x.estimated_minutes, { short: true })} est.</div>` : ''}</div></a>`).join('')}</div>` : none('No play in this range.')}</div>
       </div>`;
   }
@@ -552,6 +554,26 @@ export function eraStrip(tl, { through } = {}) {
     ${legend.length ? `<div class="legend era-legend">${legend.join('')}</div>` : ''}
     <div class="era-years">${[...years].map(([y, list]) => `<section class="era-year">${years.size > 1 ? `<h4 class="era-yh">${y}</h4>` : ''}<ol class="era-list">${list.map(eraRow).join('')}</ol></section>`).join('')}</div>
     ${note(`${plural(games.length, 'era')} of ${plural(new Set(games.map((e) => e.game_id)).size, 'game')}${returns ? `, ${plural(returns, 'return')}` : ''}. An era is a run of months one game led; a narrow one-month detour does not split it.`)}`;
+}
+
+/** A pattern of GET /stats/records as a line, the number first (its own text otherwise). */
+function pattern(h) {
+  const span = (a, b) => `${fmtDate(day(a))} – ${longDay(b)}`;
+  switch (h.id) {
+    case 'trend': return h.value === 0 ? `<b>${fmtMin(h.minutes, { short: h.minutes >= 600 })}</b>, the same as the ${h.days} days before.`
+      : `<b>${Math.abs(h.value)}% ${h.value > 0 ? 'more' : 'less'}</b> play than the ${h.days} days before: ${fmtMin(h.minutes, { short: h.minutes >= 600 })} against ${fmtMin(h.previous_minutes, { short: h.previous_minutes >= 600 })}.`;
+    case 'days_played': return `<b>${h.days} of ${plural(h.of, 'day')}</b> had play (${h.value}%).`;
+    case 'typical_day': return `<b>${fmtMin(h.value)}</b> on a typical day with play.`;
+    case 'weekend': {
+      const [top, other] = h.lean === 'weekend' ? ['weekend day', 'weekday'] : ['weekday', 'weekend day'];
+      const [hi, lo] = h.lean === 'weekend' ? [h.weekend_minutes, h.weekday_minutes] : [h.weekday_minutes, h.weekend_minutes];
+      if (h.lean === 'even') return `Weekdays and weekend days get <b>about the same</b> play (${fmtMin(h.weekday_minutes)} and ${fmtMin(h.weekend_minutes)} a day).`;
+      if (h.value == null) return `<b>All</b> of your play is on ${h.lean === 'weekend' ? 'weekends' : 'weekdays'}.`;
+      return `<b>${h.value}×</b> the play on a ${top} (${fmtMin(hi)}) as on a ${other} (${fmtMin(lo)}).`;
+    }
+    case 'longest_break': return `<b>${plural(h.value, 'day')}</b> without play, your longest break (${span(h.from, h.to)}).`;
+    default: return h.text ? esc(h.text) : '';
+  }
 }
 
 /** "Unlocks per month: 196 in all, most in August 2026 (30)" for count charts. */
