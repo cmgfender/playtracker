@@ -27,6 +27,7 @@ import { weeklySummary, summaryText } from '../services/digest.js';
 import { sendSummary } from '../services/webhook.js';
 import { facts, withFacts } from '../services/facts.js';
 import { finishForecast, backlogReality } from '../services/forecast.js';
+import { milestones } from '../services/milestones.js';
 import fsp from 'node:fs';
 import { httpJson, ProviderError } from '../providers/http.js';
 import { HttpError, toInt, toTime } from '../util.js';
@@ -808,6 +809,13 @@ export function registerRoutes(r, app) {
     tag: 'stats',
     returns: '{ games, with_typical_time, assumed (games without a typical time, counted at the median of the others), remaining_minutes, pace_ratio, personal_pace, weekly_minutes, '
       + 'weeks, years (null without a pace or a typical time), added_per_month, finished_per_month (null until the library is four months old), text | null }',
+  });
+  r.get('/api/v1/stats/milestones', (c) => milestones(db, { limit: clamp(c.query.limit, 60, 1, 500) }), {
+    summary: 'Milestones: the round numbers of your tracked history with the day each was reached (hours in all and in a game, games played, days with play, days in a row, sessions, achievements), and the ones coming up',
+    tag: 'stats',
+    query: { limit: 'milestones listed, newest first (default 60)' },
+    returns: '{ day, total, counts: { kind: n }, reached: [{ id, kind (hours|game_hours|games|days|sessions|streak|achievements), text, value, day, game_id?, title? }], '
+      + 'coming: [{ id, kind, text, target, current (in the unit of target), percent, game_id?, title? }] nearest first }',
   });
   r.get('/api/v1/games/:id/forecast', (c) => {
     const f = finishForecast(db, toInt(c.params.id));

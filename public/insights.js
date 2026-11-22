@@ -18,6 +18,7 @@ const SECTIONS = [
   ['what', 'What you played', 'Games over time, eras and platforms', 1500],
   ['style', 'How you play', 'Focus, the games you start, comebacks · tracked play', 900],
   ['records', 'Records & highlights', '', 720],
+  ['milestones', 'Milestones', 'Round numbers and the day you reached them · tracked play, whatever the range', 620],
   ['ach', 'Achievements', 'Unlocks, rarities and completion', 900],
   ['yoy', 'Year over year', 'Month by month, and the year so far', 700],
   ['library', 'Your library', 'Everything you own, whatever the range', 1500],
@@ -97,7 +98,7 @@ export async function insights(view, stale) {
       body.innerHTML = none(`Could not load this section: ${esc(e.message)}`);
     } finally { if (my === seq[id]) body.removeAttribute('aria-busy'); }
   }
-  const RENDER = { when, what, style, genres, records, ach, yoy, library };
+  const RENDER = { when, what, style, genres, records, milestones, ach, yoy, library };
 
   async function when() {
     const [pc, sl] = await Promise.all([api(`/stats/punchcard?${params()}`), api(`/stats/session-lengths?${params()}`)]);
@@ -240,6 +241,25 @@ export async function insights(view, stale) {
         <div class="card"><div class="card-h"><h3>Highlights</h3><span class="tiny muted">${esc(r.range.label)}</span></div>${lines.length ? `<ul class="hl">${lines.map((x) => `<li>${x}</li>`).join('')}</ul>` : none('Nothing stands out yet.')}
           ${pats.length ? `<div class="eyebrow" style="margin:16px 0 8px">Patterns</div><ul class="hl" data-patterns>${pats.map((x) => `<li>${x}</li>`).join('')}</ul>` : ''}</div>
         <div class="card"><div class="card-h"><h3>Most played by ${r.most_played_by?.group || 'year'}</h3></div>${by.length ? `<div class="list">${by.slice().reverse().slice(0, 6).map((x) => `<a class="item" href="/game/${x.game_id}" data-link>${cover(x)}<div class="grow"><div class="ttl ellipsis">${esc(x.title)}</div><div class="sub">${esc(r.most_played_by.group === 'month' ? monthName(x.key) : x.key)} · ${pct(x.share)} of play</div></div><div class="amt">${fmtMin(x.minutes, { short: x.minutes >= 600 })}${x.estimated_minutes ? `<div class="tiny muted">${fmtMin(x.estimated_minutes, { short: true })} est.</div>` : ''}</div></a>`).join('')}</div>` : none('No play in this range.')}</div>
+      </div>`;
+  }
+
+  // Milestones: what is coming up with how far along it is, then every one reached, newest first
+  async function milestones() {
+    const m = await api('/stats/milestones?limit=40');
+    if (!m.total && !m.coming.some((x) => x.current > 0)) return none('No milestones yet: the first come with ten hours, ten days or ten games of tracked play.');
+    const KIND = { hours: 'Hours', game_hours: 'A game', games: 'Games', days: 'Days', sessions: 'Sessions', streak: 'Streak', achievements: 'Achievements' };
+    const unit = (x) => (x.kind === 'hours' || x.kind === 'game_hours' ? 'h' : '');
+    // the game's name is a link; everything else is the text as it is
+    const label = (x) => (x.game_id && x.title ? esc(x.text).replace(esc(x.title), () => `<a class="link" href="/game/${x.game_id}" data-link>${esc(x.title)}</a>`) : esc(x.text));
+    const coming = m.coming.filter((x) => x.current > 0).slice(0, 6);
+    const ahead = coming.length ? coming.map((x) => meterRow(label(x), x.current, x.target, `${Math.floor(x.current).toLocaleString()}${unit(x)} of ${x.target.toLocaleString()}${unit(x)}`)).join('')
+      : none('Nothing under way yet.');
+    const reached = m.reached.length ? `<div class="list">${m.reached.map((x) => `<div class="item"><div class="grow"><div class="ttl">${label(x)}</div><div class="sub">${longDay(x.day)}</div></div><span class="badge">${KIND[x.kind] || esc(x.kind)}</span></div>`).join('')}</div>${m.total > m.reached.length ? note(`The latest ${m.reached.length} of ${m.total}.`) : ''}`
+      : none('None reached yet.');
+    return `<div class="grid grid-2 ins-grid">
+        <div class="card" id="ms-coming"><div class="card-h"><h3>Coming up</h3><span class="tiny muted">nearest first</span></div>${ahead}</div>
+        <div class="card" id="ms-reached"><div class="card-h"><h3>Reached</h3><span class="tiny muted">${m.total.toLocaleString()} in all</span></div>${reached}</div>
       </div>`;
   }
 
