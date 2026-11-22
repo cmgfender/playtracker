@@ -14,6 +14,9 @@ const RETRY_AFTER = 6 * HOUR; // a failed backup (disk full, folder not writable
 const KEEP_BEFORE_UPGRADE = 3;
 const SCHEDULED = /^vestigo-\d{4}-\d{2}-\d{2}-\d{6}\.db$/;
 const BEFORE_UPGRADE = /^vestigo-before-v\d+-\d{4}-\d{2}-\d{2}-\d{6}\.db$/;
+// the temporary name of a copy being written (see snapshot); one left behind was interrupted
+const PARTIAL = /^vestigo-(?:before-v\d+-)?\d{4}-\d{2}-\d{2}-\d{6}\.db\.partial$/;
+const STALE_PARTIAL = HOUR; // no copy is still being written this long after its file last grew
 
 const pad = (n) => String(n).padStart(2, '0');
 const stamp = (t) => { const d = new Date(t); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`; };
@@ -105,6 +108,28 @@ function prune(dir, kind, keep) {
 }
 
 /**
+ * Remove the temporary files of copies that never finished (the server was stopped or lost power
+ * mid-backup): each can be as large as the database, and nothing else ever removes it. Only files
+ * with this module's own temporary names, untouched for an hour. Returns the names removed.
+ */
+export function sweepPartials(dir, now = Date.now()) {
+  const removed = [];
+  if (!dir) return removed;
+  let names;
+  try { names = fs.readdirSync(dir); } catch { return removed; }
+  for (const name of names) {
+    if (!PARTIAL.test(name)) continue;
+    const file = path.join(dir, name);
+    try {
+      const st = fs.statSync(file);
+      if (!st.isFile() || now - st.mtimeMs < STALE_PARTIAL) continue;
+      fs.unlinkSync(file); removed.push(name);
+    } catch { /* already gone */ }
+  }
+  return removed;
+}
+
+/**
  * Before migrations run: copy a database whose schema is older than `version` (an update is about
  * to change it), so going back to the previous image stays possible. Never throws: a failed copy
  * is logged and the update goes ahead, as it did before backups existed.
@@ -124,6 +149,7 @@ export function backupBeforeUpgrade(dbFile, version, log) {
     const name = `vestigo-before-v${version}-${stamp(Date.now())}.db`;
     const bytes = snapshot({ dbFile, dest: path.join(dir, name) });
     prune(dir, 'before-upgrade', KEEP_BEFORE_UPGRADE);
+    sweepPartials(dir);
     log?.info(`Database schema ${current} → ${version}: saved a copy first (backups/${name}, ${(bytes / 1048576).toFixed(1)} MB)`);
     return name;
   } catch (err) {
@@ -192,6 +218,8 @@ export class Backups {
 
   saved({ t0, name }, bytes, reason) {
     const removed = prune(this.dir, 'scheduled', this.keep());
+    const unfinished = sweepPartials(this.dir);
+    if (unfinished.length) this.log?.info(`Removed ${unfinished.length} unfinished backup ${unfinished.length === 1 ? 'file' : 'files'} left by an interrupted backup`);
     this.lastError = null;
     this.log?.info(`Backup saved: ${name} (${(bytes / 1048576).toFixed(1)} MB, ${Date.now() - t0}ms)${removed.length ? `, removed ${removed.length} older` : ''}`, { reason });
     return { name, bytes, removed };
