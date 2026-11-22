@@ -3,7 +3,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { openDb } from '../src/db.js';
-import { inferHistory, learnStyleFromDb, reinferMany } from '../src/services/inference.js';
+import { allocate, inferHistory, learnStyleFromDb, reinferMany } from '../src/services/inference.js';
 import { flushRollups } from '../src/services/rollup.js';
 
 const DAY = 86_400_000;
@@ -164,4 +164,18 @@ test('a game added before its release date (a pre-order) is dated from the relea
   const recent = inferHistory({ minutes: 3000, trackingStart: T, recent: { minutes: 100, days: 14 }, releaseAt: T - 5 * DAY });
   assert.equal(recent.undated, 0);
   assert.ok(recent.chunks.every((c) => c.start < c.end && c.end <= T));
+});
+
+test('minutes that make a session of their own go to a free day when the likeliest days are full', () => {
+  // the likely first and last day have 20 and 14 min left, the day between is free
+  assert.deepEqual(allocate(40, [100, 1, 100], { cap: [20, 600, 14], minDay: 15 }), [20, 20, 0]);
+  // a remainder too small for a day of its own is still left out (it stays undated)
+  assert.deepEqual(allocate(30, [100, 1, 100], { cap: [20, 600, 14], minDay: 15 }), [20, 0, 0]);
+  // a game played over three days whose first and last day are nearly full with other games
+  const day = (n) => new Date(T - n * DAY).setHours(0, 0, 0, 0);
+  const room = new Map([[day(10), 20], [day(8), 14]]);
+  const res = inferHistory({ minutes: 40, trackingStart: T, firstPlayedAt: day(10) + 10 * 3_600_000, lastPlayedAt: day(8) + 20 * 3_600_000 },
+    { dayRoom: (t) => room.get(new Date(t).setHours(0, 0, 0, 0)) ?? 720 });
+  assert.equal(res.undated, 0, 'the free day between holds what the two busy days cannot');
+  assert.deepEqual(res.chunks.map((c) => [new Date(c.start).setHours(0, 0, 0, 0), c.minutes]), [[day(10), 20], [day(9), 20]]);
 });

@@ -88,6 +88,17 @@ export function allocate(minutes, weights, { cap = 600, minDay = 15 } = {}) {
       if (room <= 0) continue;
       const put = Math.min(room, carry); alloc[i] += put; carry -= put;
     }
+    // the kept days are full: what still makes a day of its own goes to the likeliest free days
+    // (a smaller remainder is left out, rather than become a day of a few minutes)
+    if (lastKept >= 0 && carry >= minDay) {
+      const free = [];
+      for (let i = 0; i < n; i++) if (alloc[i] <= 0 && capOf(i) >= minDay) free.push(i);
+      free.sort((a, b) => weights[b] - weights[a] || b - a);
+      for (const i of free) {
+        if (carry < minDay) break;
+        alloc[i] = Math.min(capOf(i), carry); carry -= alloc[i];
+      }
+    }
   }
   return alloc;
 }
