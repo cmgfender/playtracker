@@ -237,8 +237,9 @@ export function xLabels(a, items) {
   for (const { x, text } of items) {
     if (!text) continue;
     const half = textWidth(text) / 2;
-    // never left of the plot (the y axis labels end there) or past the right edge
-    const cx = Math.min(a.W - half, Math.max(a.x - 2 + half, x));
+    // never left of the plot (the y axis labels end there) or past the right edge (with a little
+    // room: the width is estimated, and some labels render a pixel or two wider)
+    const cx = Math.min(a.W - half - 2, Math.max(a.x - 2 + half, x));
     if (cx - half < lastRight + 6) continue;
     lastRight = cx + half;
     out += `<text x="${r1(cx)}" y="${a.H - 5}" text-anchor="middle">${esc(text)}</text>`;
