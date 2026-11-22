@@ -219,6 +219,8 @@ export async function insights(view, stale) {
     const r = await api(`/stats/records?${params()}`);
     const L = r.longest_session;
     const game = (x) => (x ? `<a class="link" href="/game/${x.game_id}" data-link>${esc(x.title)}</a>` : '');
+    // the first session of a range is where the trail starts only when nothing was tracked before it
+    const firstEver = r.highlights?.find((h) => h.id === 'first_session')?.first_ever !== false;
     const cards = [
       L && ['Longest session', fmtMin(L.minutes), `${game(L)} · ${longDay(L.day)}`],
       r.biggest_day && ['Biggest day', fmtMin(r.biggest_day.minutes), longDay(r.biggest_day.day), `/sessions?from=${r.biggest_day.day}&to=${r.biggest_day.day}`],
@@ -227,7 +229,7 @@ export async function insights(view, stale) {
       r.longest_streak && ['Longest streak', plural(r.longest_streak.days, 'day'), `${fmtDate(day(r.longest_streak.from))} – ${longDay(r.longest_streak.to)}`],
       ['Current streak', plural(r.current_streak || 0, 'day'), r.current_streak ? 'ending today or yesterday' : 'play today to start one'],
       r.most_played && ['Most played', fmtMin(r.most_played.minutes, { short: r.most_played.minutes >= 600 }), `${game(r.most_played)} · ${pct(r.most_played.share)} of play${r.most_played.estimated_minutes ? ` · ${fmtMin(r.most_played.estimated_minutes, { short: true })} est.` : ''}`],
-      r.first_session && ['First tracked session', longDay(r.first_session.day), `${game(r.first_session)} · ${fmtMin(r.first_session.minutes)}`],
+      r.first_session && [firstEver ? 'First tracked session' : 'First session in range', longDay(r.first_session.day), `${game(r.first_session)} · ${fmtMin(r.first_session.minutes)}`],
     ].filter(Boolean);
     if (!r.sessions && !r.most_played) return none('No records yet in this range: they start with the first tracked session.');
     const lines = (r.highlights || []).map((h) => highlight(h, r)).filter(Boolean);
@@ -565,7 +567,7 @@ function highlight(h, r) {
     case 'most_played': return `<b>${h.value}%</b> of your play went to ${g(h.game_id)}${esc(r.most_played?.title || '')}${h.game_id ? '</a>' : ''} (${fmtMin(h.minutes, { short: h.minutes >= 600 })}).`;
     case 'favorite_weekday': return `<b>${h.value}%</b> of tracked play falls on ${dayName(h.weekday, 'long')}s, your favourite day.`;
     case 'time_of_day': return `<b>${h.value}%</b> of timed play is in the ${esc(h.part)} (${hourLabel(h.from_hour)}–${hourLabel(h.to_hour % 24)}).`;
-    case 'first_session': return `Your trail starts on ${longDay(h.day)}: ${g(h.game_id)}${esc(r.first_session?.title || '')}${h.game_id ? '</a>' : ''}, ${fmtMin(h.value)}.`;
+    case 'first_session': return `${h.first_ever === false ? 'Your first session in this range was' : 'Your trail starts'} on ${longDay(h.day)}: ${g(h.game_id)}${esc(r.first_session?.title || '')}${h.game_id ? '</a>' : ''}, ${fmtMin(h.value)}.`;
     default: return h.text ? esc(h.text) : '';
   }
 }

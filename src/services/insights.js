@@ -688,6 +688,9 @@ export function records(db, { range = 'all', group, gameId = null, platform = nu
     const w = sessionWhere(p, { gameId, platform });
     const idx = gameId ? '' : 'INDEXED BY sessions_kind_time';
     const firstS = sessionRef(db.prepare(`${SESSION_REF.replace('FROM sessions s', `FROM sessions s ${idx}`)} WHERE ${w.where} ORDER BY s.sort_time, s.id LIMIT 1`).get(...w.args));
+    // is that where tracking starts, or only where the range does? (tracked play before the range, same filters)
+    const wb = sessionWhere({ from: 0, to: p.from - 1 }, { gameId, platform });
+    const firstEver = !db.prepare(`SELECT 1 FROM sessions s ${idx} JOIN entries e ON e.id = s.entry_id WHERE ${wb.where} LIMIT 1`).get(...wb.args);
     // sessions as /stats counts them: tracked sessions ending in the range
     const ft = filter('p', { fromDay: p.fromDay, toDay: p.toDay, gameId, platform, estimates: 'exclude' });
     const sessions = db.prepare(`SELECT COALESCE(SUM(p.ends), 0) n ${ft.sql}`).get(...ft.args).n;
@@ -726,13 +729,13 @@ export function records(db, { range = 'all', group, gameId = null, platform = nu
       weekday: weekday.map(r),
       hours: hours.map(r),
     };
-    out.highlights = highlights(out, { weekday, hours, total: totals.m });
+    out.highlights = highlights(out, { weekday, hours, total: totals.m, firstEver });
     return out;
   });
 }
 
 /** One-line highlights from fixed templates, each with the numbers behind it. */
-function highlights(x, { weekday, hours, total }) {
+function highlights(x, { weekday, hours, total, firstEver }) {
   const out = [];
   const add = (id, text, value, unit, extra = {}) => out.push({ id, text, value, unit, ...extra });
   if (x.longest_session) add('longest_session', `Longest session: ${fmtMinutes(x.longest_session.minutes)} of ${x.longest_session.title} on ${x.longest_session.day}.`, x.longest_session.minutes, 'minutes', { game_id: x.longest_session.game_id, day: x.longest_session.day, session_id: x.longest_session.session_id });
@@ -756,7 +759,8 @@ function highlights(x, { weekday, hours, total }) {
     const part = pct(top.m, hsum);
     add('time_of_day', `Most of your timed play is in the ${top.name} (${String(top.from).padStart(2, '0')}:00-${String(top.to).padStart(2, '0')}:00): ${part}%.`, part, 'percent', { part: top.name, from_hour: top.from, to_hour: top.to });
   }
-  if (x.first_session) add('first_session', `First tracked session: ${x.first_session.title} on ${x.first_session.day}.`, x.first_session.minutes, 'minutes', { game_id: x.first_session.game_id, day: x.first_session.day, session_id: x.first_session.session_id });
+  // first_ever: nothing was tracked before it; false when the range only cuts into older tracked play
+  if (x.first_session) add('first_session', `First tracked session${firstEver ? '' : ' in this range'}: ${x.first_session.title} on ${x.first_session.day}.`, x.first_session.minutes, 'minutes', { game_id: x.first_session.game_id, day: x.first_session.day, session_id: x.first_session.session_id, first_ever: firstEver });
   return out;
 }
 
