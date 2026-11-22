@@ -5,6 +5,7 @@ import { sessionItem, groupByDay, emptyState, logSessionModal, restoreSession, b
 // Sessions
 // =====================================================================
 const PERIODS_S = [['today', 'Today', 'Today'], ['week', 'This week', 'Week'], ['month', 'This month', 'Month'], ['custom', 'Custom', 'Custom'], ['all', 'All', 'All']];
+const SOURCES = [['manual', 'Logged by me'], ['sync', 'From platforms'], ['import', 'Imported']];
 const ymd = (t) => dayKey(t);
 /** A period's from / to days (YYYY-MM-DD, local), the week starting on the day set in Settings. */
 function periodRange(p, custom = {}) {
@@ -28,20 +29,22 @@ function weekOf(t) {
 export async function sessions(view, stale) {
   const q0 = new URLSearchParams(location.search);
   const f = {
-    platform: q0.get('platform') || '', source: '', q: '', kind: 'play', game_id: q0.get('game_id') || '',
+    platform: q0.get('platform') || '', game_id: q0.get('game_id') || '',
+    // the source chips, history and the search are in the URL like the rest: a reload or a link keeps them
+    source: SOURCES.some(([k]) => k === q0.get('source')) ? q0.get('source') : '', q: q0.get('q') || '', kind: q0.get('kind') === 'baseline' ? 'baseline' : 'play',
     period: PERIODS_S.some(([k]) => k === q0.get('period')) ? q0.get('period') : 'all', from: q0.get('from') || '', to: q0.get('to') || '',
   };
   if ((f.from || f.to) && !q0.get('period')) f.period = 'custom';
   let cursor = null; let all = []; let total = 0; let totalMin = 0; let selecting = false; let lastPick = null; const sel = new Set();
   const lt = await api('/stats/lifetime');
   if (stale()) return;
-  const chip = (attr, value, label, title = '') => `<button class="chip" ${attr}="${value}"${title ? ` title="${title}"` : ''}>${label}</button>`;
+  const chip = (attr, value, label, on, title = '') => `<button class="chip${on ? ' on' : ''}" ${attr}="${value}"${title ? ` title="${title}"` : ''}>${label}</button>`;
   view.innerHTML = `
     <div class="page-h"><div><h1>Sessions</h1><p id="s-count" aria-live="polite">&nbsp;</p></div>
       <div class="row"><button class="btn" id="s-select">${icon('check')}Select</button><button class="btn primary desk-only" id="s-log">${icon('plus')}Log session</button></div></div>
     <div class="toolbar">
       <div class="row wrap s-row1">
-        <div class="search grow">${icon('search')}<input class="input" id="s-q" type="search" placeholder="Filter by game" aria-label="Filter sessions by game"></div>
+        <div class="search grow">${icon('search')}<input class="input" id="s-q" type="search" placeholder="Filter by game" aria-label="Filter sessions by game" value="${esc(f.q)}"></div>
         <select class="input mob-only" id="s-period-sel" aria-label="Period" style="width:auto">${PERIODS_S.map(([k, l]) => `<option value="${k}" ${f.period === k ? 'selected' : ''}>${l}</option>`).join('')}</select><div class="seg desk-only" id="s-period" aria-label="Period">${PERIODS_S.map(([k, l, sh]) => `<button data-period="${k}" class="${f.period === k ? 'on' : ''}"><span class="lg">${l}</span><span class="sm">${sh}</span></button>`).join('')}</div>
       </div>
       <div class="row wrap s-custom ${f.period === 'custom' ? '' : 'hide'}" id="s-custom">
@@ -52,8 +55,8 @@ export async function sessions(view, stale) {
         <button class="chip${f.platform ? '' : ' on'}" data-p="">All platforms</button>
         ${lt.platforms.map((p) => `<button class="chip${f.platform === p.platform ? ' on' : ''}" data-p="${esc(p.platform)}">${platDot(p.platform)}${esc(plat(p.platform).label)}</button>`).join('')}
         <span class="chip-sep" aria-hidden="true"></span>
-        ${chip('data-src', 'manual', 'Logged by me')}${chip('data-src', 'sync', 'From platforms')}${chip('data-src', 'import', 'Imported')}
-        ${chip('data-kind', 'baseline', 'Pre-tracking history', 'Playtime filed as history: it counts toward lifetime, not in stats')}
+        ${SOURCES.map(([k, l]) => chip('data-src', k, l, f.source === k)).join('')}
+        ${chip('data-kind', 'baseline', 'Pre-tracking history', f.kind === 'baseline', 'Playtime filed as history: it counts toward lifetime, not in stats')}
       </div>
     </div>
     <div id="s-bulk" class="card bulk-bar hide"><div class="row wrap"><b id="s-bulk-n">0 selected</b><span class="tiny muted desk-only">Shift-click to select a range</span><span class="grow"></span>
@@ -146,10 +149,13 @@ export async function sessions(view, stale) {
     if (f.period !== 'all') p.set('period', f.period);
     if (f.period === 'custom') { if (f.from) p.set('from', f.from); if (f.to) p.set('to', f.to); }
     if (f.platform) p.set('platform', f.platform);
+    if (f.source) p.set('source', f.source);
+    if (f.kind !== 'play') p.set('kind', f.kind);
+    if (f.q) p.set('q', f.q);
     history.replaceState({}, '', `/sessions${p.toString() ? `?${p}` : ''}`);
   };
   let t;
-  $('#s-q').addEventListener('input', (e) => { clearTimeout(t); t = setTimeout(() => { f.q = e.target.value.trim(); load(); }, 200); });
+  $('#s-q').addEventListener('input', (e) => { clearTimeout(t); t = setTimeout(() => { f.q = e.target.value.trim(); syncUrl(); load(); }, 200); });
   // a segment on wide screens, a select on a phone; both stay in step
   const setPeriod = (k) => {
     f.period = k;
@@ -164,10 +170,10 @@ export async function sessions(view, stale) {
   for (const [id, k] of [['#s-from', 'from'], ['#s-to', 'to']]) $(id).addEventListener('change', (e) => { f[k] = e.target.value; syncUrl(); load(); });
   $('#s-chips').addEventListener('click', (e) => {
     const c = e.target.closest('.chip'); if (!c) return;
-    if ('p' in c.dataset) { f.platform = c.dataset.p; $$('[data-p]', view).forEach((x) => x.classList.toggle('on', x === c)); syncUrl(); }
+    if ('p' in c.dataset) { f.platform = c.dataset.p; $$('[data-p]', view).forEach((x) => x.classList.toggle('on', x === c)); }
     if (c.dataset.src) { f.source = f.source === c.dataset.src ? '' : c.dataset.src; $$('[data-src]', view).forEach((x) => x.classList.toggle('on', x.dataset.src === f.source)); }
     if (c.dataset.kind) { f.kind = f.kind === 'baseline' ? 'play' : 'baseline'; c.classList.toggle('on', f.kind === 'baseline'); }
-    load();
+    syncUrl(); load();
   });
   view.addEventListener('click', (e) => {
     if (e.target.closest('[data-s-log]')) logSessionModal(null, () => load());

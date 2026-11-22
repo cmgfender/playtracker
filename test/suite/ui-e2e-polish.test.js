@@ -191,4 +191,62 @@ describe('Vestigo web UI, polish', UI, () => {
       clean(h, [500]);
     } finally { await h.close(); }
   });
+
+  test('sessions: the source chips, Pre-tracking history and the game search are kept in the URL and restored by a reload', async () => {
+    const h = await visit(S, '/sessions');
+    const { page } = h;
+    try {
+      const search = () => new URL(page.url()).searchParams;
+      const total = async () => Number((await page.locator('#s-count').innerText()).match(/ · ([\d,]+) sessions? · /)[1].replace(/,/g, ''));
+      const pressed = (sel) => page.locator(`#s-chips ${sel}`).getAttribute('aria-pressed');
+      await page.locator('#s-chips [data-src="manual"]').click();
+      await page.locator('#s-q').fill('celeste');
+      await waitUntil(() => search().get('q') === 'celeste', { message: 'the search is in the URL' });
+      assert.equal(search().get('source'), 'manual');
+      assert.equal(search().get('kind'), null, 'the default kind is not spelled out');
+      await h.settle();
+      const want = (await S.ok('/sessions?source=manual&q=celeste&limit=1')).total;
+      assert.equal(want, 2);
+      assert.equal(await total(), want);
+
+      await page.reload();
+      await waitView(page);
+      await h.settle();
+      assert.equal(await pressed('[data-src="manual"]'), 'true', 'Logged by me is on again');
+      assert.equal(await pressed('[data-src="sync"]'), 'false');
+      assert.equal(await page.locator('#s-q').inputValue(), 'celeste');
+      assert.equal(await total(), want, 'the same sessions as before the reload');
+      assert.equal(await page.locator('#s-list .item.sess').count(), want);
+
+      // history and another source, then everything off again
+      await page.locator('#s-chips [data-kind="baseline"]').click();
+      await page.locator('#s-chips [data-src="sync"]').click();
+      await waitUntil(() => search().get('source') === 'sync' && search().get('kind') === 'baseline', { message: 'source and kind in the URL' });
+      await h.settle();
+      await page.reload();
+      await waitView(page);
+      await h.settle();
+      assert.equal(await pressed('[data-kind="baseline"]'), 'true');
+      assert.equal(await pressed('[data-src="sync"]'), 'true');
+      assert.equal(await pressed('[data-src="manual"]'), 'false');
+      await page.locator('#s-chips [data-kind="baseline"]').click();
+      await page.locator('#s-chips [data-src="sync"]').click();
+      await page.locator('#s-q').fill('');
+      await waitUntil(() => page.url() === `${S.origin}/sessions`, { message: 'no filter, no query string' });
+      await h.settle();
+
+      // a link with a source opens filtered; one the page does not know is ignored
+      await page.goto(`${S.origin}/sessions?source=sync&period=month`);
+      await waitView(page);
+      await h.settle();
+      assert.equal(await pressed('[data-src="sync"]'), 'true');
+      assert.ok((await page.locator('#s-count').innerText()).startsWith('This month'));
+      await page.goto(`${S.origin}/sessions?source=nope&kind=nope`);
+      await waitView(page);
+      await h.settle();
+      assert.equal(await page.locator('#s-chips [aria-pressed="true"]').count(), 1, 'only All platforms is on');
+      assert.equal(await total(), (await S.ok('/sessions?limit=1')).total);
+      clean(h);
+    } finally { await h.close(); }
+  });
 });
