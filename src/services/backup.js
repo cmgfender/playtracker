@@ -16,6 +16,7 @@ const SCHEDULED = /^vestigo-\d{4}-\d{2}-\d{2}-\d{6}\.db$/;
 const BEFORE_UPGRADE = /^vestigo-before-v\d+-\d{4}-\d{2}-\d{2}-\d{6}\.db$/;
 
 const pad = (n) => String(n).padStart(2, '0');
+const mb = (bytes) => `${(bytes / 1048576).toFixed(1)} MB`;
 const stamp = (t) => { const d = new Date(t); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`; };
 
 /** Where backups go: VESTIGO_BACKUP_DIR, else a backups folder beside the database. null for an in-memory database. */
@@ -140,6 +141,7 @@ export class Backups {
     this.log = log;
     this.dir = backupDir(dbFile);
     this.lastError = null; // { at, message }
+    this.full = null; // the last one failed for a full disk: { kept, bytes } of the backups then
     this.running = false;
   }
 
@@ -150,7 +152,7 @@ export class Backups {
     const last = listBackups(this.dir).find((b) => b.kind === 'scheduled');
     const sched = { schedule_mode: s.backup_mode === 'weekly' ? 'weekly' : 'daily', schedule_time: s.backup_time, schedule_weekday: s.week_starts_on ?? 1 };
     let next = nextRun(sched, last ? last.at : null, now);
-    if (this.lastError && next < this.lastError.at + RETRY_AFTER) next = this.lastError.at + RETRY_AFTER;
+    if (this.lastError && next < this.lastError.at + RETRY_AFTER && !this.roomMade()) next = this.lastError.at + RETRY_AFTER;
     return next;
   }
 
@@ -158,7 +160,7 @@ export class Backups {
   run({ reason = 'manual' } = {}) {
     const job = this.begin();
     try {
-      fs.mkdirSync(this.dir, { recursive: true });
+      this.prepare(job);
       return this.saved(job, snapshot({ db: this.db, dbFile: this.dbFile, dest: job.dest }), reason);
     } catch (err) {
       throw this.failed(err, reason);
@@ -171,7 +173,7 @@ export class Backups {
   async runAsync({ reason = 'manual' } = {}) {
     const job = this.begin();
     try {
-      fs.mkdirSync(this.dir, { recursive: true });
+      this.prepare(job);
       const track = (worker, part) => { this.worker = worker; this.partial = part; };
       return this.saved(job, await snapshotAsync({ db: this.db, dbFile: this.dbFile, dest: job.dest, track }), reason);
     } catch (err) {
@@ -190,17 +192,45 @@ export class Backups {
     return { t0, name, dest: path.join(this.dir, name) };
   }
 
-  saved({ t0, name }, bytes, reason) {
-    const removed = prune(this.dir, 'scheduled', this.keep());
+  /**
+   * The folder made, and the backups already beyond Keep removed before the copy: with Keep lowered
+   * on a full disk they are the room it needs (only these: the others are kept until a new one exists).
+   */
+  prepare(job) {
+    fs.mkdirSync(this.dir, { recursive: true });
+    job.removed = prune(this.dir, 'scheduled', this.keep());
+  }
+
+  saved({ t0, name, removed: before = [] }, bytes, reason) {
+    const removed = [...before, ...prune(this.dir, 'scheduled', this.keep())];
     this.lastError = null;
+    this.full = null;
     this.log?.info(`Backup saved: ${name} (${(bytes / 1048576).toFixed(1)} MB, ${Date.now() - t0}ms)${removed.length ? `, removed ${removed.length} older` : ''}`, { reason });
     return { name, bytes, removed };
   }
 
   failed(err, reason) {
+    this.full = null;
+    if (/disk is full|no space left|SQLITE_FULL|ENOSPC/i.test(`${err.code || ''} ${err.message}`)) {
+      // "database or disk is full" names neither the disk nor what to do about it
+      const files = listBackups(this.dir);
+      const kept = files.filter((b) => b.kind === 'scheduled');
+      const room = [];
+      try { const st = fs.statfsSync(this.dir); room.push(`${mb(st.bavail * st.bsize)} free`); } catch { /* not known here */ }
+      try { room.push(`a copy needs about ${mb(fs.statSync(this.dbFile).size)}`); } catch { /* in memory */ }
+      err = Object.assign(new Error(`the disk is full${room.length ? ` (${room.join(', ')})` : ''}: lower Keep (${kept.length} kept, ${mb(kept.reduce((a, b) => a + b.bytes, 0))}), delete older backups or free space on that disk`), { cause: err });
+      // tried again as soon as there is room to gain (see roomMade)
+      this.full = { kept: kept.length, bytes: files.reduce((a, b) => a + b.bytes, 0) };
+    }
     this.lastError = { at: Date.now(), message: err.message };
     this.log?.error(`Backup failed: ${err.message} (in ${this.dir}; tried again in ${RETRY_AFTER / HOUR} hours)`, { reason });
     return err;
+  }
+
+  /** After a full disk: Keep lowered below the backups kept then, or backups removed since. */
+  roomMade() {
+    if (!this.full) return false;
+    return this.keep() < this.full.kept || listBackups(this.dir).reduce((a, b) => a + b.bytes, 0) < this.full.bytes;
   }
 
   keep() { return Math.min(90, Math.max(1, Math.floor(Number(this.settings.get('backup_keep')) || 7))); }

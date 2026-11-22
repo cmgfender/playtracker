@@ -295,3 +295,32 @@ describe('readable platform errors', () => {
     assert.equal(readableBody('x'.repeat(500)).length, 200);
   });
 });
+
+test('a full disk says what to do; lowering Keep makes room before the next copy, which runs without waiting hours', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vg-full-'));
+  const { app: a, close } = createApp({ dbFile: path.join(dir, 'vestigo.db'), password: '', scheduler: false, log: quiet });
+  try {
+    const b = a.backups;
+    const first = b.run().name;
+    // three kept backups from the days before
+    ['2026-11-01', '2026-11-02', '2026-11-03'].forEach((d, i) => {
+      const f = path.join(b.dir, `vestigo-${d}-033000.db`);
+      fs.copyFileSync(path.join(b.dir, first), f);
+      const t = new Date(Date.now() - (5 - i) * 86_400_000);
+      fs.utimesSync(f, t, t);
+    });
+    fs.rmSync(path.join(b.dir, first));
+    const now = Date.now();
+    const err = b.failed(Object.assign(new Error('database or disk is full'), { code: 'ERR_SQLITE_ERROR' }), 'scheduled');
+    assert.match(err.message, /^the disk is full.*: lower Keep \(3 kept, [\d.]+ MB\), delete older backups or free space on that disk$/);
+    assert.ok(b.nextAt(now) - now > 5 * 3600e3, 'not retried every minute');
+    a.settings.set({ backup_keep: 2 });
+    assert.ok(b.nextAt(now) <= now, 'with Keep lowered there is room to gain: due again');
+    const job = {};
+    b.prepare(job);
+    assert.deepEqual(job.removed.length, 1, 'the oldest goes before the copy');
+    const r = b.run();
+    assert.deepEqual(listBackups(b.dir).filter((x) => x.kind === 'scheduled').map((x) => x.name), [r.name, 'vestigo-2026-11-03-033000.db']);
+    assert.equal(b.status().last_error, null);
+  } finally { close(); }
+});
