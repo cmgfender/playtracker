@@ -67,3 +67,34 @@ describe('facts: a game with hours from before tracking began', () => {
     for (const t of tried) assert.deepEqual(t, [3, 7, '3 of the 7 games you have played got less than an hour.']);
   });
 });
+
+describe('facts: the standing fact of a day', () => {
+  const zone = process.env.TZ;
+  after(() => { if (zone === undefined) delete process.env.TZ; else process.env.TZ = zone; clock.uninstall(); restoreNetwork(); });
+
+  test('is picked by the calendar date: the same fact in every timezone, another the next day', async () => {
+    guardNetwork();
+    const picked = {};
+    for (const tz of ['UTC', 'America/New_York', 'Europe/London', 'Pacific/Kiritimati']) {
+      process.env.TZ = tz;
+      clock.install(local(2026, 3, 18, 15));
+      const h = await startApp();
+      try {
+        // six games over a quiet year: nothing happened this week, so only standing facts are left
+        for (let i = 0; i < 6; i++) {
+          const id = await addGame(h, `Game ${i}`);
+          for (let d = 1; d <= 3; d++) await logSession(h, id, local(2025, 2 + i, 4 * d + i, 19), 60 + 30 * i);
+        }
+        picked[tz] = [];
+        for (const d of [18, 19, 28, 29, 30]) { // (clocks in London go forward on the 29th)
+          clock.install(local(2026, 3, d, 15));
+          const r = await h.get('/stats/facts?limit=20');
+          assert.equal(r.day, `2026-03-${d}`);
+          picked[tz].push(r.facts.find((f) => f.kind === 'standing')?.event ?? null);
+        }
+      } finally { await h.close(); }
+    }
+    for (const tz of Object.keys(picked)) assert.deepEqual(picked[tz], picked.UTC, `${tz} says what UTC says`);
+    assert.ok(picked.UTC.every((e, i) => e && (!i || e !== picked.UTC[i - 1])), `another fact each day: ${picked.UTC}`);
+  });
+});

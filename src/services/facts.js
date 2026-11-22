@@ -197,8 +197,10 @@ export function facts(db, { now = Date.now(), weekStartsOn = 1, limit = 6 } = {}
       if (r.longest_session) pool.push(['longest_session', `Your longest session: ${fmtMinutes(r.longest_session.minutes)} of ${r.longest_session.title} on ${nice(r.longest_session.day)}.`, fmtMinutes(r.longest_session.minutes), { game_id: r.longest_session.game_id, title: r.longest_session.title }]);
       if (r.best_week) pool.push(['best_week', `Your biggest week: ${fmtMinutes(r.best_week.minutes)}, the week of ${nice(r.best_week.from)}.`, fmtMinutes(r.best_week.minutes), {}]);
       if (pool.length) {
-        // the day picks it: the same all day, another tomorrow
-        const [event, text, bold, extra] = pool[Math.round(parseDay(today) / 86_400_000) % pool.length];
+        // the day picks it: the same all day, another tomorrow. Counted from the calendar date, not
+        // from local noon: that lands on another count far east of UTC, and twice on one where
+        // summer time moves noon across midday UTC
+        const [event, text, bold, extra] = pool[(Date.parse(`${today}T00:00:00Z`) / 86_400_000 + 1) % pool.length];
         add('standing', 20, text, bold, { event, ...extra });
       }
     }
