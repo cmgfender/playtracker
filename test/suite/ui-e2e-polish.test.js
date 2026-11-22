@@ -157,4 +157,38 @@ describe('Vestigo web UI, polish', UI, () => {
       clean(h, [500]);
     } finally { await h.close(); }
   });
+
+  test('Edit game: an empty title or a failed save keeps the dialog open with what was typed', async () => {
+    const h = await visit(S, `/game/${D.ids.ori}`);
+    const { page } = h;
+    try {
+      const open = async () => { await page.locator('#g-more').click(); await page.locator('#g-edit').click(); await modalReady(page); };
+      await open();
+      const m = page.locator('.modal');
+      await m.locator('[name=title]').fill('   ');
+      await m.locator('[name=cover_url]').fill('https://cdn.example.invalid/ori.jpg');
+      await page.locator('#ge-save').click();
+      await toast(page, 'Enter a title');
+      assert.equal(await m.count(), 1, 'the dialog is still open');
+      assert.equal(await m.locator('[name=cover_url]').inputValue(), 'https://cdn.example.invalid/ori.jpg', 'the cover URL typed is still there');
+      assert.equal((await S.ok(`/games/${D.ids.ori}`)).title, 'Ori and the Will of the Wisps', 'nothing was saved');
+      assert.equal((await S.ok(`/games/${D.ids.ori}`)).cover_url || '', '');
+
+      // the server refuses: same
+      await m.locator('[name=title]').fill('Ori 2');
+      await failOnce(page, `/games/${D.ids.ori}`, 'PATCH');
+      await page.locator('#ge-save').click();
+      await toast(page, 'The database is busy');
+      assert.equal(await m.count(), 1, 'the dialog is still open after a failed save');
+      assert.equal(await m.locator('[name=title]').inputValue(), 'Ori 2');
+      assert.equal(await page.locator('#toasts .toast', { hasText: /^Saved$/ }).count(), 0, 'no "Saved" for a save that failed');
+
+      await page.locator('#ge-save').click();
+      await toast(page, 'Saved');
+      await m.waitFor({ state: 'detached' });
+      await waitUntil(async () => (await page.locator('#view h1').innerText()).trim() === 'Ori 2', { message: 'the page shows the new title' });
+      assert.equal((await S.ok(`/games/${D.ids.ori}`)).cover_url, 'https://cdn.example.invalid/ori.jpg');
+      clean(h, [500]);
+    } finally { await h.close(); }
+  });
 });

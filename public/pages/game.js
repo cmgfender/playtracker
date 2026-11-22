@@ -318,7 +318,13 @@ export async function game(view, id, stale) {
     foot: '<button class="btn" data-close>Cancel</button><button class="btn primary" id="ge-save">Save</button>',
     onMount(el, close) {
       el.querySelectorAll('[data-cov]').forEach((b) => b.addEventListener('click', () => { el.querySelector('[name=cover_url]').value = b.dataset.cov; }));
-      el.querySelector('#ge-save').addEventListener('click', async () => { const f = el.querySelector('#ge'); await patch({ title: f.title.value, cover_url: f.cover_url.value }, 'Saved'); close(); rerender(); });
+      el.querySelector('#ge-save').addEventListener('click', async () => {
+        const f = el.querySelector('#ge');
+        if (!f.title.value.trim()) return toast('Enter a title', { bad: true });
+        // a save that fails leaves the dialog open, with what was typed
+        try { await api(`/games/${id}`, { method: 'PATCH', body: { title: f.title.value, cover_url: f.cover_url.value } }); } catch (e) { return fail(e); }
+        toast('Saved'); close(); rerender();
+      });
     },
   });
   const deleteGame = async () => {
