@@ -172,6 +172,16 @@ function textField(b, k) {
   if (typeof b[k] !== 'string') throw new HttpError(400, `${k} must be text`);
   return b[k];
 }
+/** An account's config or schedule in a body: an object when given (a string would be stored letter by letter). */
+function objectField(b, k) {
+  if (b[k] != null && (typeof b[k] !== 'object' || Array.isArray(b[k]))) throw new HttpError(400, `${k} must be an object`);
+  return b[k] || null;
+}
+/** A strict boolean in a body: "false" and "0" are false, anything that is neither true nor false is a 400. */
+function boolField(b, k) {
+  if (![true, false, 'true', 'false', 1, 0, '1', '0'].includes(b[k])) throw new HttpError(400, `${k} must be true or false`);
+  return flag(b[k]);
+}
 /** A pushed value kept only when it is text (push clients send what they have). */
 const textOr = (v, def = null) => (typeof v === 'string' && v ? v : def);
 /** A from/to query bound: a date (YYYY-MM-DD) covers that whole local day. */
@@ -951,7 +961,7 @@ export function registerRoutes(r, app) {
 
   r.post('/api/v1/accounts/test', async (c) => {
     const platform = String(c.body.platform || '');
-    const config = c.body.config || {};
+    const config = objectField(c.body, 'config') || {};
     requireFields(platform, config);
     const p = providers[platform];
     if (p.push) return { ok: true, games: 0 };
@@ -987,17 +997,18 @@ export function registerRoutes(r, app) {
 
   r.post('/api/v1/accounts', (c) => {
     const platform = String(c.body.platform || '');
-    const config = c.body.config || {};
+    const config = objectField(c.body, 'config') || {};
     requireFields(platform, config);
     const name = String(c.body.name || providers[platform].label).slice(0, 80);
+    const enabled = c.body.enabled == null ? 1 : boolField(c.body, 'enabled');
     let schedule = null;
-    if (c.body.schedule) {
+    if (objectField(c.body, 'schedule')) {
       const v = validateSettings(c.body.schedule);
       if (v.errors.length) throw new HttpError(400, v.errors.join('; '));
       schedule = JSON.stringify(v.values);
     }
     const id = Number(db.prepare('INSERT INTO accounts(platform, name, config, enabled, schedule, created_at) VALUES (?, ?, ?, ?, ?, ?)')
-      .run(platform, name, JSON.stringify(config), c.body.enabled === false ? 0 : 1, schedule, Date.now()).lastInsertRowid);
+      .run(platform, name, JSON.stringify(config), enabled, schedule, Date.now()).lastInsertRowid);
     if (!providers[platform].push && c.body.sync !== false) sync.sync(id, 'initial').catch(() => {});
     return publicAccount(sync.account(id), sync);
   }, { summary: 'Link an account (starts the initial import)', body: '{ platform, name?, config, enabled?, schedule?, sync? }' });
@@ -1007,7 +1018,9 @@ export function registerRoutes(r, app) {
     if (!a) throw new HttpError(404, 'Account not found');
     const b = c.body;
     const config = { ...a.config };
-    for (const [k, v] of Object.entries(b.config || {})) {
+    const enabled = 'enabled' in b ? boolField(b, 'enabled') : (a.enabled ? 1 : 0);
+    objectField(b, 'schedule');
+    for (const [k, v] of Object.entries(objectField(b, 'config') || {})) {
       if (typeof v === 'string' && v.startsWith('••••••')) continue; // masked, unchanged
       config[k] = v;
     }
@@ -1026,7 +1039,7 @@ export function registerRoutes(r, app) {
       } else schedule = null;
     }
     db.prepare('UPDATE accounts SET name = ?, config = ?, state = ?, enabled = ?, schedule = ? WHERE id = ?')
-      .run(String(b.name ?? a.name).slice(0, 80), JSON.stringify(config), JSON.stringify(state), 'enabled' in b ? (b.enabled ? 1 : 0) : (a.enabled ? 1 : 0), schedule ? JSON.stringify(schedule) : null, a.id);
+      .run(String(b.name ?? a.name).slice(0, 80), JSON.stringify(config), JSON.stringify(state), enabled, schedule ? JSON.stringify(schedule) : null, a.id);
     sync.refreshNext(a.id);
     return publicAccount(sync.account(a.id), sync);
   }, { summary: 'Update an account (name, credentials, enabled, schedule override)', body: '{ name?, config?, enabled?, schedule?: { schedule_mode, schedule_every, schedule_time, … } | null }' });

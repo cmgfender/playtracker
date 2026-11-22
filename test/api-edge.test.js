@@ -127,3 +127,45 @@ describe('API edges: session times', () => {
     assert.equal((await h.patch(`/sessions/${session.id}`, { started_at: s.started_at, ended_at: s.ended_at, note: 'x' })).note, 'x');
   });
 });
+
+describe('API edges: accounts', () => {
+  let h; let acc;
+  before(async () => {
+    guardNetwork();
+    h = await startApp();
+    acc = await h.post('/accounts', { platform: 'custom', name: 'push', config: { note: 'kept' } });
+  });
+  after(async () => { await h?.close(); restoreNetwork(); });
+
+  test('"false" and "0" turn an account off, as they turn every other flag off', async () => {
+    for (const off of ['false', '0', 0, false]) {
+      await h.patch(`/accounts/${acc.id}`, { enabled: true });
+      assert.equal((await h.patch(`/accounts/${acc.id}`, { enabled: off })).enabled, false, `enabled: ${JSON.stringify(off)}`);
+    }
+    for (const on of ['true', '1', 1, true]) assert.equal((await h.patch(`/accounts/${acc.id}`, { enabled: on })).enabled, true, `enabled: ${JSON.stringify(on)}`);
+    assert.equal((await h.post('/accounts', { platform: 'custom', name: 'off', config: {}, enabled: 'false' })).enabled, false);
+    assert.equal((await h.post('/accounts', { platform: 'custom', name: 'on', config: {} })).enabled, true, 'on unless said otherwise');
+    const r = await h.call('PATCH', `/accounts/${acc.id}`, { enabled: 'nope' });
+    assert.deepEqual([r.status, r.body.error], [400, 'enabled must be true or false']);
+    assert.equal((await h.get('/accounts')).find((a) => a.id === acc.id).enabled, true, 'unchanged by the refusal');
+  });
+
+  test('a config or schedule that is not an object is refused, not stored letter by letter', async () => {
+    for (const [method, path, body, field] of [
+      ['PATCH', `/accounts/${acc.id}`, { config: 'abc' }, 'config'],
+      ['PATCH', `/accounts/${acc.id}`, { config: [1, 2] }, 'config'],
+      ['PATCH', `/accounts/${acc.id}`, { schedule: 'daily' }, 'schedule'],
+      ['POST', '/accounts', { platform: 'custom', config: 'x' }, 'config'],
+      ['POST', '/accounts', { platform: 'custom', config: {}, schedule: 'daily' }, 'schedule'],
+      ['POST', '/accounts/test', { platform: 'custom', config: 5 }, 'config'],
+    ]) {
+      const r = await h.call(method, path, body);
+      assert.deepEqual([r.status, r.body.error], [400, `${field} must be an object`], `${method} ${path} ${JSON.stringify(body)}`);
+    }
+    const a = (await h.get('/accounts')).find((x) => x.id === acc.id);
+    assert.deepEqual([a.config, a.schedule], [{ note: 'kept' }, null]);
+    // an object still is taken, and null still clears a schedule override
+    assert.deepEqual((await h.patch(`/accounts/${acc.id}`, { config: { note: 'new' }, schedule: { schedule_mode: 'off' } })).schedule, { schedule_mode: 'off' });
+    assert.equal((await h.patch(`/accounts/${acc.id}`, { schedule: null })).schedule, null);
+  });
+});
