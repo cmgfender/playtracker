@@ -68,6 +68,30 @@ describe('facts: a game with hours from before tracking began', () => {
   });
 });
 
+describe('patterns of a game put down long ago', () => {
+  let h; let game;
+  before(async () => {
+    guardNetwork();
+    clock.install(NOW);
+    h = await startApp();
+    game = await addGame(h, 'Shelved');
+    // two years ago: Monday to Wednesday 80 minutes each, then a weekend of 90 a day
+    for (const d of [4, 5, 6]) await logSession(h, game, local(2024, 3, d, 19), 80);
+    for (const d of [9, 10]) await logSession(h, game, local(2024, 3, d, 14), 90);
+  });
+  after(async () => { await h?.close(); clock.uninstall(); restoreNetwork(); });
+
+  test('play on both kinds of day is never "all on weekends", however thin it is spread over the years since', async () => {
+    const r = await h.get(`/stats/records?range=all&game_id=${game}`);
+    const w = r.patterns.find((x) => x.id === 'weekend');
+    // 240 minutes on weekdays, 180 on weekend days: under a minute a day of either by now
+    assert.equal(w.lean, 'weekend');
+    assert.ok(w.value > 1.25 && w.value < 3, `a ratio, not null: ${w.value}`);
+    assert.equal(w.text, `A weekend day gets ${w.value} times the play of a weekday.`);
+    assert.deepEqual([w.weekday_minutes, w.weekend_minutes], [0, 1]);
+  });
+});
+
 describe('facts: the standing fact of a day', () => {
   const zone = process.env.TZ;
   after(() => { if (zone === undefined) delete process.env.TZ; else process.env.TZ = zone; clock.uninstall(); restoreNetwork(); });

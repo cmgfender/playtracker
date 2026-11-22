@@ -598,7 +598,8 @@ export function pattern(h) {
       const [hi, lo] = h.lean === 'weekend' ? [h.weekend_minutes, h.weekday_minutes] : [h.weekday_minutes, h.weekend_minutes];
       if (h.lean === 'even') return `Weekdays and weekend days get <b>about the same</b> play (${fmtMin(h.weekday_minutes)} and ${fmtMin(h.weekend_minutes)} a day).`;
       if (h.value == null) return `<b>All</b> of your play is on ${h.lean === 'weekend' ? 'weekends' : 'weekdays'}.`;
-      return `<b>${h.value}×</b> the play on a ${top} (${fmtMin(hi)}) as on a ${other} (${fmtMin(lo)}).`;
+      // (averages under a minute a day - a game put down long ago - say nothing next to the ratio)
+      return lo >= 1 ? `<b>${h.value}×</b> the play on a ${top} (${fmtMin(hi)}) as on a ${other} (${fmtMin(lo)}).` : `<b>${h.value}×</b> the play on a ${top} as on a ${other}.`;
     }
     case 'longest_break': return `<b>${plural(h.value, 'day')}</b> without play, your longest break (${span(h.from, h.to)}).`;
     default: return h.text ? esc(h.text) : '';

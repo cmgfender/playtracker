@@ -817,10 +817,12 @@ function patterns(all, p) {
   if (kind[0][1] && kind[1][1] && (wd >= 0.5 || we >= 0.5)) {
     const lean = we >= wd * LEAN ? 'weekend' : wd >= we * LEAN ? 'weekday' : 'even';
     const [hi, lo] = we >= wd ? [we, wd] : [wd, we];
-    const times = lo >= 0.5 ? Math.round((hi / lo) * 10) / 10 : null; // null: all of the play is on one kind of day
+    // null: all of the play is on one kind of day. Judged by the minutes the other kind got, not by
+    // its average: over the years since a game was put down that is under a minute a day on both
+    const times = kind[we >= wd ? 0 : 1][0] >= 1 ? Math.round((hi / lo) * 10) / 10 : null;
     const text = lean === 'even' ? `Weekdays and weekend days get about the same play (${fmtMinutes(wd)} and ${fmtMinutes(we)} a day).`
       : times == null ? `All of your play is on ${lean === 'weekend' ? 'weekends' : 'weekdays'}.`
-        : `A ${lean === 'weekend' ? 'weekend day' : 'weekday'} gets ${times} times the play of a ${lean === 'weekend' ? 'weekday' : 'weekend day'} (${fmtMinutes(hi)} against ${fmtMinutes(lo)}).`;
+        : `A ${lean === 'weekend' ? 'weekend day' : 'weekday'} gets ${times} times the play of a ${lean === 'weekend' ? 'weekday' : 'weekend day'}${lo >= 0.5 ? ` (${fmtMinutes(hi)} against ${fmtMinutes(lo)})` : ''}.`;
     add('weekend', text, times, 'times', { lean, weekday_minutes: r(wd), weekend_minutes: r(we) });
   }
 
