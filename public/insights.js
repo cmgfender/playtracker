@@ -324,9 +324,11 @@ export async function insights(view, stale) {
       : none('No dusty games: everything you played has been touched within a year, or is finished.');
     const b = l.backlog;
     const maxB = Math.max(1, ...b.buckets.map((x) => x.games));
-    const backlog = b.count ? `<p class="ins-lead"><b>${plural(b.count, 'game')}</b> in the backlog${b.median_days != null ? `, waiting ${plural(Math.round(b.median_days / 30.4), 'month')} at the median` : ''}.</p>
+    // a wait in months, in days while it is short (under two months "0 months" or "1 month" says little)
+    const waited = (days) => (days >= 61 ? plural(Math.round(days / 30.4), 'month') : plural(Math.round(days), 'day'));
+    const backlog = b.count ? `<p class="ins-lead"><b>${plural(b.count, 'game')}</b> in the backlog${b.median_days != null ? `, waiting ${waited(b.median_days)} at the median` : ''}.</p>
       ${b.buckets.map((x) => meterRow(esc(x.label), x.games, maxB, plural(x.games, 'game'), 'var(--accent2)')).join('')}
-      ${b.oldest.length ? `<div class="list" style="margin-top:8px">${b.oldest.slice(0, 5).map((x) => `<a class="item" href="/game/${x.game_id}" data-link>${cover(x)}<div class="grow"><div class="ttl ellipsis">${esc(x.title)}</div><div class="sub">since ${fmtDate(x.since, { year: 'numeric', month: 'short', day: 'numeric' })}</div></div><div class="amt">${plural(Math.round(x.days / 30.4), 'month')}</div></a>`).join('')}</div>` : ''}`
+      ${b.oldest.length ? `<div class="list" style="margin-top:8px">${b.oldest.slice(0, 5).map((x) => `<a class="item" href="/game/${x.game_id}" data-link>${cover(x)}<div class="grow"><div class="ttl ellipsis">${esc(x.title)}</div><div class="sub">since ${fmtDate(x.since, { year: 'numeric', month: 'short', day: 'numeric' })}</div></div><div class="amt">${waited(x.days)}</div></a>`).join('')}</div>` : ''}`
       : none('Nothing marked Backlog. Set a game’s status to Backlog and its wait is counted here.');
     const c = l.completion;
     const scatter = c.points.length ? `${scatterChart({ points: c.points.map((x) => ({ x: x.minutes, y: x.percent, color: x.percent >= 100 ? 'var(--good)' : undefined, tip: `${x.title}: ${fmtMin(x.minutes, { short: x.minutes >= 600 })}, ${Math.floor(x.percent)}% (${x.unlocked} of ${x.total})` })) }, { keys: 'Completion against hours played; arrow keys read each game, most played first' })}
@@ -337,7 +339,7 @@ export async function insights(view, stale) {
         ${kpi('Games', l.games.toLocaleString(), l.hidden_included ? 'hidden included' : 'hidden left out')}
         ${kpi('Played', `${playedPct}<small>%</small>`, `${l.played.toLocaleString()} played · ${l.never_played.toLocaleString()} never`, `<div class="split-bar" style="margin-top:8px"><i style="width:${playedPct}%;background:var(--accent-mark)"></i></div>`)}
         ${kpi('Lifetime', `${fmtHours(l.minutes)}<small>h</small>`, `${fmtHours(l.tracked_minutes)}h tracked · ${fmtHours(l.history_minutes)}h history`)}
-        ${kpi('Backlog', String(b.count), b.count ? `median ${plural(Math.round((b.median_days || 0) / 30.4), 'month')} waiting` : 'nothing waiting')}
+        ${kpi('Backlog', String(b.count), b.count ? `median ${waited(b.median_days || 0)} waiting` : 'nothing waiting')}
       </div>
       <div class="grid grid-2 ins-grid" style="margin-top:16px">
         <div class="card"><div class="card-h"><h3>By status</h3><span class="tiny muted">hours, history hatched</span></div>${status || none('No games.')}</div>

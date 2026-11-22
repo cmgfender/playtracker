@@ -121,4 +121,21 @@ describe('Vestigo web UI: Insights wording on a tiny library', UI, () => {
       clean(h);
     } finally { await h.close(); }
   });
+
+  test('Your library: a backlog ten days old waits 10 days, not 0 months', async () => {
+    const { h, sec } = await section('/insights', 'library', PHONE_SMALL);
+    try {
+      const l = await S.ok('/stats/library');
+      assert.deepEqual([l.backlog.count, l.backlog.median_days, l.backlog.oldest[0].days], [1, 10, 10], 'the fixture: Waiting, in the backlog for ten days');
+      const card = sec.locator('.card', { has: h.page.locator('h3', { hasText: 'Backlog age' }) });
+      assert.equal(await card.locator('.ins-lead').innerText(), '1 game in the backlog, waiting 10 days at the median.');
+      // textContent: list rows off screen are not rendered (content-visibility), so they have no innerText
+      assert.equal((await card.locator('.item .amt').textContent()).trim(), '10 days');
+      assert.match(await sec.locator('.kpi', { hasText: 'Backlog' }).first().innerText(), /median 10 days waiting/i);
+      assert.doesNotMatch(await sec.textContent(), /\b0 months/);
+      const o = await overflow(h.page, PHONE_SMALL.width);
+      assert.ok(o.doc <= o.client, `fits a 360px phone: ${JSON.stringify(o)}`);
+      clean(h);
+    } finally { await h.close(); }
+  });
 });
