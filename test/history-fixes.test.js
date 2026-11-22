@@ -67,3 +67,19 @@ test('unlock times from before the first played date do not end the history befo
   assert.equal(dated(later), 600);
   assert.ok(later.window[0] >= T - 100 * DAY && later.window[1] <= T - 50 * DAY);
 });
+
+test('a last played time just after tracking began (clock skew) dates history up to tracking start', () => {
+  const at = (lastPlayedAt, more = {}) => inferHistory({ minutes: 3000, trackingStart: T, lastPlayedAt, ...more });
+  const onTime = at(T);
+  assert.equal(dated(onTime), 3000);
+  // the platform's clock 30 s ahead of ours: the same history, not "no dates available"
+  const skewed = at(T + 30_000);
+  assert.equal(skewed.undated, 0);
+  assert.deepEqual(skewed.chunks.map((c) => [c.start, c.end, c.minutes]), onTime.chunks.map((c) => [c.start, c.end, c.minutes]));
+  assert.deepEqual(skewed.reasons, onTime.reasons);
+  assert.ok(skewed.chunks.every((c) => c.end <= T), 'never past tracking start');
+  // with a date added too it still bounds the end: the window reaches tracking start
+  const added = { dateAdded: T - 400 * DAY };
+  assert.deepEqual(at(T + 30_000, added).window, at(T, added).window);
+  assert.equal(at(T + 30_000, added).confidence, 'medium');
+});

@@ -193,7 +193,10 @@ export function inferHistory(e, { pacePerDay = 90, maxPerDay = 600, minDay = 15,
 
   // 1) Minutes known to be recent (Steam's 2-week counter): place them inside that window,
   //    never before the first or after the last played time, with a bump on the last-played day.
-  let upper = Math.min(T, e.lastPlayedAt && e.lastPlayedAt <= T ? e.lastPlayedAt : T);
+  // a last played time after tracking began (the platform's clock ahead of ours, a game running
+  // during the import) says the history ran up to tracking start
+  const lastPlayed = e.lastPlayedAt ? Math.min(e.lastPlayedAt, T) : null;
+  let upper = lastPlayed ?? T;
   if (e.recent?.minutes > 0) {
     const r = Math.min(e.recent.minutes, remaining);
     const wStart = Math.max(lower, hardStart ?? -Infinity, T - (e.recent.days || 14) * DAY);
@@ -218,7 +221,7 @@ export function inferHistory(e, { pacePerDay = 90, maxPerDay = 600, minDay = 15,
   }
 
   if (remaining > 0.5) {
-    let end = e.manual?.end ?? (e.lastPlayedAt && e.lastPlayedAt <= upper ? e.lastPlayedAt : null);
+    let end = e.manual?.end ?? (lastPlayed != null && lastPlayed <= upper ? lastPlayed : null);
     const anchorMax = anchors.filter((a) => a <= upper).at(-1);
     if (end == null && anchorMax) end = anchorMax;
     if (end == null && e.recent?.minutes > 0) end = upper; // known to be before the recent window
