@@ -210,6 +210,9 @@ export class Backups {
   begin() {
     if (!this.dir) throw new Error('Backups need a database file (this instance runs in memory)');
     if (this.running) throw new Error('A backup is already running');
+    // before the copy: what an interrupted backup left behind is room this one may need
+    const unfinished = sweepPartials(this.dir);
+    if (unfinished.length) this.log?.info(`Removed ${unfinished.length} unfinished backup ${unfinished.length === 1 ? 'file' : 'files'} left by an interrupted backup`);
     this.running = true;
     const t0 = Date.now();
     const name = `vestigo-${stamp(t0)}.db`;
@@ -218,8 +221,6 @@ export class Backups {
 
   saved({ t0, name }, bytes, reason) {
     const removed = prune(this.dir, 'scheduled', this.keep());
-    const unfinished = sweepPartials(this.dir);
-    if (unfinished.length) this.log?.info(`Removed ${unfinished.length} unfinished backup ${unfinished.length === 1 ? 'file' : 'files'} left by an interrupted backup`);
     this.lastError = null;
     this.log?.info(`Backup saved: ${name} (${(bytes / 1048576).toFixed(1)} MB, ${Date.now() - t0}ms)${removed.length ? `, removed ${removed.length} older` : ''}`, { reason });
     return { name, bytes, removed };

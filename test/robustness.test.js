@@ -91,7 +91,7 @@ describe('backups: files left by an interrupted backup', () => {
     } finally { db.close(); }
   });
 
-  test('a failed backup leaves them alone (nothing is removed on the way to an error)', () => {
+  test('they are cleared before the copy is made (room a backup on a nearly full disk needs), so even when it then fails', () => {
     const dir = tmpDir('backup-fail');
     const file = path.join(dir, 'vestigo.db');
     const db = new DatabaseSync(file);
@@ -100,11 +100,22 @@ describe('backups: files left by an interrupted backup', () => {
     try {
       fs.mkdirSync(b.dir, { recursive: true });
       aged(b.dir, STALE[0], 2 * HOUR);
+      aged(b.dir, 'vestigo-2026-01-01-033000.db', 2 * HOUR); // a finished backup
       b.dbFile = path.join(dir, 'missing', 'vestigo.db'); // the copy cannot be made
       assert.throws(() => b.run());
-      assert.ok(fs.existsSync(path.join(b.dir, STALE[0])));
       assert.ok(b.lastError);
+      assert.deepEqual(fs.readdirSync(b.dir), ['vestigo-2026-01-01-033000.db'], 'the unfinished file is gone, the finished backup stays');
     } finally { db.close(); }
+  });
+
+  test('a backup refused because one is already running removes nothing', () => {
+    const dir = tmpDir('backup-busy');
+    const b = new Backups({ db: null, dbFile: path.join(dir, 'vestigo.db'), settings: { all: () => ({}), get: () => 7 }, log: quiet });
+    fs.mkdirSync(b.dir, { recursive: true });
+    aged(b.dir, STALE[0], 2 * HOUR);
+    b.running = true;
+    assert.throws(() => b.run(), /already running/);
+    assert.ok(fs.existsSync(path.join(b.dir, STALE[0])));
   });
 
   test('the copy before a schema upgrade clears them as well', () => {
