@@ -110,4 +110,15 @@ describe('Vestigo web UI: Insights wording on a tiny library', UI, () => {
       clean(h);
     } finally { await h.close(); }
   });
+
+  test('How you play: one game a week is "1 game a week"', async () => {
+    const { h, sec } = await section('/insights?range=30d', 'style');
+    try {
+      const s = await S.ok('/stats/style?range=30d');
+      assert.equal(s.focus.games_per_week, 1, 'the fixture: Solo alone, every week');
+      const lead = await sec.locator('.ins-lead').first().innerText();
+      assert.match(lead, /^Focused: one game takes 100% of a typical week, with 1 game a week on average\.$/, lead);
+      clean(h);
+    } finally { await h.close(); }
+  });
 });
