@@ -234,7 +234,12 @@ export function inferHistory(e, { pacePerDay = 90, maxPerDay = 600, minDay = 15,
     if (end != null) end = Math.min(end, upper);
     // an end at exactly midnight (tracking began at 00:00) leaves no time on that day
     if (end != null && end === startOfDay(end)) end -= 1;
-    let start = e.manual?.start ?? e.firstPlayedAt ?? (anchors.length ? anchors[0] : null) ?? e.dateAdded ?? null;
+    // without a hard start the first unlock or the date added hints at it - unless that day is
+    // after the end (bought after playing a shared copy, unlocks later than a stale last played
+    // date): such a hint says nothing about the start, and as one it packed everything into the
+    // last days before the end
+    const limit = end ?? upper;
+    let start = hardStart ?? [anchors[0], e.dateAdded].find((t) => t != null && startOfDay(t) <= limit) ?? null;
     const knownStart = start != null;
     const knownEnd = end != null;
     const burstDays = Math.max(1, Math.ceil(remaining / pacePerDay), e.playCount ? Math.ceil(e.playCount * shape.countTau) : 0);
@@ -321,9 +326,10 @@ export function inferHistory(e, { pacePerDay = 90, maxPerDay = 600, minDay = 15,
       result.chunks.push(...chunkDays(d0, alloc, { hardStart: startIn(hardEnd), hardEnd, caps }).map((c) => ({ ...c, why: 'history' })));
       if (remaining - placed > 0.5) result.undated += Math.round(remaining - placed);
       let c;
+      const inWindow = anchors.filter((a) => a <= end).length; // unlocks after the end date nothing here
       if (e.manual?.start || e.manual?.end) { c = 'high'; result.reasons.push(e.manual.confirmed ? 'You confirmed this estimate' : 'Window set manually'); }
       else if (e.firstPlayedAt && knownEnd) { c = 'high'; result.reasons.push('Platform reports first and last played dates'); }
-      else if (anchors.length >= 3) { c = 'medium'; result.reasons.push(`${anchors.length} achievement/trophy unlock times`); }
+      else if (inWindow >= 3) { c = 'medium'; result.reasons.push(`${inWindow} achievement/trophy unlock times`); }
       else if (knownStart && knownEnd) { c = 'medium'; result.reasons.push('Bounded by date added/first activity and last played'); }
       else { c = 'low'; result.reasons.push(knownEnd ? 'Only the last played date is known' : 'Only a start date is known'); }
       if (e.playCount) result.reasons.push(`${e.playCount} launches reported`);

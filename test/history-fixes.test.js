@@ -103,3 +103,29 @@ test('a game last played before its release date (early access, a re-release) is
   assert.ok(bounded.window[0] >= new Date(T - 110 * DAY).setHours(0, 0, 0, 0));
   assert.ok(bounded.reasons.includes('Clamped to release date'));
 });
+
+test('a date added (or first unlock) after the last played date is no start: no binge before last played', () => {
+  const e = { minutes: 3000, trackingStart: T, lastPlayedAt: T - 100 * DAY };
+  const plain = inferHistory(e);
+  const span = (res) => Math.round((res.window[1] - res.window[0]) / DAY);
+  assert.ok(span(plain) > 60, 'last played alone: spread over months');
+  // bought 90 days after the last session (played on a shared copy before): not five 10 h days
+  for (const late of [{ dateAdded: T - 10 * DAY }, { anchors: [T - 50 * DAY, T - 40 * DAY, T - 30 * DAY] }]) {
+    const res = inferHistory({ ...e, ...late });
+    assert.equal(dated(res), 3000);
+    assert.deepEqual(res.window, plain.window, JSON.stringify(late));
+    assert.equal(res.confidence, 'low');
+    assert.deepEqual(res.reasons, ['Only the last played date is known']);
+  }
+  // the earlier of the two hints still counts when the other is too late
+  const mixed = inferHistory({ ...e, anchors: [T - 50 * DAY], dateAdded: T - 150 * DAY });
+  assert.ok(mixed.window[0] >= new Date(T - 150 * DAY).setHours(0, 0, 0, 0) && mixed.window[1] <= T - 100 * DAY);
+  // added later on the last played day itself: that day is the start
+  const sameDay = inferHistory({ minutes: 300, trackingStart: T, lastPlayedAt: T - 100 * DAY, dateAdded: T - 100 * DAY + 3_600_000 });
+  assert.equal(dated(sameDay), 300);
+  assert.equal(sameDay.window[0], new Date(T - 100 * DAY).setHours(0, 0, 0, 0));
+  // a date added after tracking began and nothing else: no date at all
+  const after = inferHistory({ minutes: 3000, trackingStart: T, dateAdded: T + 5 * DAY });
+  assert.equal(after.undated, 3000);
+  assert.deepEqual(after.reasons, ['No dates available - kept as undated history (lifetime totals only)']);
+});
