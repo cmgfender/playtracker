@@ -87,4 +87,27 @@ describe('Vestigo web UI: Insights wording on a tiny library', UI, () => {
       clean(h);
     } finally { await h.close(); }
   });
+
+  test('Year over year: two finished years are compared whole, not "so far" to today\'s date', async () => {
+    const { h, sec } = await section(`/insights?years=${YEAR - 2},${YEAR - 1}`, 'yoy');
+    try {
+      const y = await S.ok(`/stats/year-over-year?years=${YEAR - 2},${YEAR - 1}`);
+      const [a, b] = [y.years[1].total_minutes, y.years[0].total_minutes];
+      assert.ok(b >= 200 && a > b, `the fixture: ${a} against ${b}`);
+      const lead = await sec.locator('.ins-lead').innerText();
+      assert.doesNotMatch(lead, /so far/, lead);
+      assert.match(lead, new RegExp(`^${Math.floor(a / 60)}h.* in ${YEAR - 1} — ${Math.round(((a - b) / b) * 100)}% more than ${YEAR - 2} \\(${Math.floor(b / 60)}h`), lead);
+      // the column of every year's total to today's date names the day, not one year's
+      assert.match(await sec.locator('th', { hasText: 'So far' }).innerText(), /^so far \(to [^\d]*\d{1,2}[^\d]*\)$/i);
+      clean(h);
+    } finally { await h.close(); }
+  });
+
+  test('Year over year: the year under way is still compared so far, to the same date', async () => {
+    const { h, sec } = await section(`/insights?years=${YEAR - 1},${YEAR}`, 'yoy');
+    try {
+      assert.match(await sec.locator('.ins-lead').innerText(), new RegExp(`in ${YEAR} so far — .*${YEAR - 1}`));
+      clean(h);
+    } finally { await h.close(); }
+  });
 });

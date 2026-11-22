@@ -287,12 +287,16 @@ export async function insights(view, stale) {
     const any = list.some((yr) => yr.total_minutes);
     const cur = list.find((yr) => yr.partial) || list[list.length - 1];
     const prev = list.filter((yr) => yr.year < cur.year).pop();
-    const through = cur?.to_date?.through ? fmtDate(new Date(`${cur.year}-${cur.to_date.through}T12:00`).getTime(), { month: 'long', day: 'numeric' }) : '';
+    // a day of every year compared, so without a year of its own
+    const through = cur?.to_date?.through ? new Date(`${cur.year}-${cur.to_date.through}T12:00`).toLocaleDateString(undefined, { month: 'long', day: 'numeric' }) : '';
     let lead = '';
     if (cur && prev && through) {
-      const a = cur.to_date.minutes; const b = prev.to_date.minutes;
+      // the year under way against the same date of the earlier one; years that are over, whole
+      const sofar = !!cur.partial;
+      const a = sofar ? cur.to_date.minutes : cur.total_minutes; const b = sofar ? prev.to_date.minutes : prev.total_minutes;
       const d = b ? Math.round(((a - b) / b) * 100) : null;
-      lead = `<p class="ins-lead"><b>${fmtMin(a, { short: a >= 600 })}</b> in ${cur.year} so far — ${d == null ? `nothing by ${through} ${prev.year}` : d === 0 ? `the same as ${prev.year} by ${through}` : `${Math.abs(d)}% ${d > 0 ? 'more' : 'less'} than ${prev.year} by ${through} (${fmtMin(b, { short: b >= 600 })})`}.</p>`;
+      const by = sofar ? ` by ${through}` : '';
+      lead = `<p class="ins-lead"><b>${fmtMin(a, { short: a >= 600 })}</b> in ${cur.year}${sofar ? ' so far' : ''} — ${d == null ? (sofar ? `nothing by ${through} ${prev.year}` : `nothing in ${prev.year}`) : d === 0 ? `the same as ${prev.year}${by}` : `${Math.abs(d)}% ${d > 0 ? 'more' : 'less'} than ${prev.year}${by} (${fmtMin(b, { short: b >= 600 })})`}.</p>`;
     }
     const chart = any ? `${lineChart({ labels, series }, { mode: f.yoy === 'total' ? 'lines' : 'bars', size: 'page', title: f.yoy === 'total' ? 'Running total by month' : 'Playtime per month', keys: 'Years side by side; arrow keys read each month', summary: () => `${f.yoy === 'total' ? 'Running total by month' : 'Playtime per month'}: ${list.map((yr) => `${yr.year} ${fmtMin(yr.total_minutes)}`).join(', ')}` })}
       <div class="legend">${list.map((yr, i) => `<span><i class="dot" style="background:${color(i)}"></i>${yr.year} · ${fmtMin(yr.total_minutes, { short: true })}${yr.estimated_minutes ? ` (${fmtMin(yr.estimated_minutes, { short: true })} est.)` : ''}</span>`).join('')}${f.yoy === 'month' && list.some((yr) => yr.estimated_minutes) ? '<span><i class="dot hatch-dot"></i>Estimated history, hatched</span>' : ''}</div>` : none('No play recorded in these years.');
