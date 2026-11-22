@@ -105,7 +105,7 @@ export async function stats(view, stale) {
         ${kpi('Sessions', s.sessions, `${delta(s.sessions, pv?.sessions, range)} avg ${fmtMin(s.avg_session_minutes)}`)}
         ${kpi('Games', s.games_played, `${delta(s.games_played, pv?.games_played, range)} ${plural(s.days_played, 'day')} played`)}
         ${kpi('Daily avg', fmtMin(s.avg_per_day_minutes), `${delta(s.avg_per_day_minutes, pv?.avg_per_day_minutes, range, fmtMin)} ${s.busiest_day ? `best ${fmtDate(new Date(`${s.busiest_day.day}T12:00`).getTime())} · ${fmtMin(s.busiest_day.minutes)}` : ''}`)}
-        ${kpi('Streak', `${s.streaks.current}<small>d</small>`, `longest ${s.streaks.longest} days`)}
+        ${kpi('Streak', `${s.streaks.current}<small>d</small>`, `longest ${plural(s.streaks.longest, 'day')}`)}
       </div>
       <div class="card" style="margin-top:16px"><div class="card-h"><h2>Playtime per ${s.range.group}</h2></div>${barChart(stackedSeries(s).map((x, i) => { const [a, b] = bucketDays(s.series[i].key, s.range.group); return { ...x, href: `/sessions?from=${a}&to=${b}${platform ? `&platform=${encodeURIComponent(platform)}` : ''}` }; }), { size: 'page', title: `Playtime per ${s.range.group}, ${s.range.label.toLowerCase()}`, hrefHint: 'see sessions', keys: `Playtime per ${s.range.group}; arrow keys read each bar, Enter opens its sessions` })}${platformLegend(s.platforms, estimatedLegend(s))}</div>
       ${highlightsCard(s)}

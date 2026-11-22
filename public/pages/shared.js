@@ -299,15 +299,20 @@ export function logSessionModal(game = null, onDone = rerender, { minutes = 60 }
         el.querySelector('[name=h]').value = Math.floor(m / 60);
         el.querySelector('[name=m]').value = m % 60;
       }));
-      el.querySelector('#log-save').addEventListener('click', async () => {
+      let saving = false; // a second click or Enter while the first save is out must not log it twice
+      el.querySelector('#log-save').addEventListener('click', async (ev) => {
         const f = el.querySelector('#log-form');
         const minutes = Number(f.h.value || 0) * 60 + Number(f.m.value || 0);
+        if (saving) return;
         if (!picked) return toast('Pick a game first', { bad: true });
         if (!minutes) return toast('Enter a duration', { bad: true });
+        const b = ev.currentTarget;
+        saving = true;
+        b.setAttribute('aria-busy', 'true');
         try {
           await api('/sessions', { method: 'POST', body: { game_id: picked.id, minutes, ended_at: new Date(f.ended.value).getTime(), note: f.note.value } });
           close(); toast(`Logged ${fmtMin(minutes)} of ${picked.title}`); onDone();
-        } catch (e) { fail(e); }
+        } catch (e) { fail(e); } finally { saving = false; b.removeAttribute('aria-busy'); }
       });
     },
   });

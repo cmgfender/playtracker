@@ -13,14 +13,29 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      # test/*.test.js and test/suite/*.test.js; the browser UI tests skip (no Playwright here)
+      # The browser UI tests (test/suite/ui-e2e*.test.js) skip without Playwright, so it is installed
+      # for the run only: the app itself has no dependencies, and nothing is added to package.json.
+      - name: Install Playwright and Chromium (for the browser UI tests)
+        run: |
+          npm install --no-save --no-package-lock playwright@1.63.0
+          npx playwright install --with-deps chromium
+      # test/*.test.js and test/suite/*.test.js
       - run: npm test
+      # a browser that failed to install would skip every UI test and still pass: make that a failure
+      - name: The browser UI tests ran
+        run: |
+          node --input-type=module -e "
+            const h = await import('./test/suite/helpers/ui-e2e-harness.js');
+            if (h.skipReason) { console.error(h.skipReason); process.exit(1); }
+            console.log('Chromium found, the browser UI tests ran');
+            process.exit(0);
+          "
 
   docker:
     needs: test

@@ -62,9 +62,9 @@ export function describeSchedule(s) {
   switch (s.schedule_mode) {
     case 'off': return 'Manual only';
     case 'hourly': return 'Every hour';
-    case 'hours': return `Every ${s.schedule_every} hours`;
+    case 'hours': return Number(s.schedule_every) === 1 ? 'Every hour' : `Every ${s.schedule_every} hours`;
     case 'daily': return `Daily at ${s.schedule_time}`;
-    case 'days': return `Every ${s.schedule_every} days at ${s.schedule_time}`;
+    case 'days': return Number(s.schedule_every) === 1 ? `Daily at ${s.schedule_time}` : `Every ${s.schedule_every} days at ${s.schedule_time}`;
     case 'weekly': return `Weekly on ${days[s.schedule_weekday]} at ${s.schedule_time}`;
     case 'monthly': return `Monthly on day ${s.schedule_monthday} at ${s.schedule_time}`;
     default: return s.schedule_mode;

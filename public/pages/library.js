@@ -1,4 +1,4 @@
-import { $, $$, esc, fmtMin, fmtHours, ago, plat, platDot, STATUSES, cover, icon, api, fail, modal, navigate, state, tagItem, splitTags } from '../app.js';
+import { $, $$, esc, fmtMin, fmtHours, ago, plat, platDot, STATUSES, cover, icon, api, fail, toast, modal, navigate, state, tagItem, splitTags } from '../app.js';
 import { emptyState, saveSettings } from './shared.js';
 
 // =====================================================================
@@ -295,10 +295,13 @@ export async function library(view, stale) {
       <p class="small muted" style="margin:0">Manual games are perfect for Switch, retro or anything without an API. Log sessions on the game page.</p></form>`,
     foot: '<button class="btn" data-close>Cancel</button><button class="btn primary" id="ag-save">Add game</button>',
     onMount(el, close) {
+      let saving = false; // a second click while the first save is out must not add the game twice
       el.querySelector('#ag-save').addEventListener('click', async () => {
         const f = el.querySelector('#ag');
-        if (!f.title.value.trim()) return;
-        try { const g = await api('/games', { method: 'POST', body: { title: f.title.value, cover_url: f.cover_url.value, status: f.status.value } }); close(); navigate(`/game/${g.id}`); } catch (e) { fail(e); }
+        if (saving) return;
+        if (!f.title.value.trim()) { toast('Enter a title', { bad: true }); f.title.focus(); return; }
+        saving = true;
+        try { const g = await api('/games', { method: 'POST', body: { title: f.title.value, cover_url: f.cover_url.value, status: f.status.value } }); close(); navigate(`/game/${g.id}`); } catch (e) { fail(e); } finally { saving = false; }
       });
     },
   });
