@@ -312,7 +312,7 @@ export async function insights(view, stale) {
   }
 
   async function library() {
-    const l = await api('/stats/library');
+    const [l, reality] = await Promise.all([api('/stats/library'), api('/stats/backlog').catch(() => null)]);
     const st = l.by_status.filter((s) => s.games);
     const maxSt = Math.max(1, ...st.map((s) => s.minutes));
     const pl = l.by_platform;
@@ -329,6 +329,7 @@ export async function insights(view, stale) {
     // a wait in months, in days while it is short (under two months "0 months" or "1 month" says little)
     const waited = (days) => (days >= 61 ? plural(Math.round(days / 30.4), 'month') : plural(Math.round(days), 'day'));
     const backlog = b.count ? `<p class="ins-lead"><b>${plural(b.count, 'game')}</b> in the backlog${b.median_days != null ? `, waiting ${waited(b.median_days)} at the median` : ''}.</p>
+      ${reality?.text ? `<p class="small muted" id="lib-reality" style="margin:0 0 10px">${esc(reality.text.replace(/^.*? hold /, 'About ').replace(/^About about /, 'About '))}</p>` : ''}
       ${b.buckets.map((x) => meterRow(esc(x.label), x.games, maxB, plural(x.games, 'game'), 'var(--accent2)')).join('')}
       ${b.oldest.length ? `<div class="list" style="margin-top:8px">${b.oldest.slice(0, 5).map((x) => `<a class="item" href="/game/${x.game_id}" data-link>${cover(x)}<div class="grow"><div class="ttl ellipsis">${esc(x.title)}</div><div class="sub">since ${fmtDate(x.since, { year: 'numeric', month: 'short', day: 'numeric' })}</div></div><div class="amt">${waited(x.days)}</div></a>`).join('')}</div>` : ''}`
       : none('Nothing marked Backlog. Set a game’s status to Backlog and its wait is counted here.');

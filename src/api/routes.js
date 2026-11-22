@@ -25,6 +25,8 @@ import { suggest, feedbackList, setFeedback, MODES } from '../services/suggest.j
 import { snapshotAsync, isBackupName } from '../services/backup.js';
 import { weeklySummary, summaryText } from '../services/digest.js';
 import { sendSummary } from '../services/webhook.js';
+import { facts, withFacts } from '../services/facts.js';
+import { finishForecast, backlogReality } from '../services/forecast.js';
 import fsp from 'node:fs';
 import { httpJson, ProviderError } from '../providers/http.js';
 import { HttpError, toInt, toTime } from '../util.js';
@@ -794,6 +796,29 @@ export function registerRoutes(r, app) {
     query: { limit: 'games listed (default 10)' },
     returns: '{ games, median_ratio (your time / typical; null without data), items: [{ game_id, title, minutes, typical_minutes, basis: main|extra, complete_minutes, ratio }] }',
   });
+  r.get('/api/v1/stats/facts', (c) => facts(db, { weekStartsOn: settings.get('week_starts_on'), limit: clamp(c.query.limit, 6, 1, 20) }), {
+    summary: 'Facts for today, most notable first: what happened on this day in earlier years, round numbers passed, records set and games come back to this week, a streak under way',
+    tag: 'stats',
+    query: { limit: 'facts returned (default 6)' },
+    returns: '{ day, facts: [{ id, kind (on_this_day|milestone|lifetime_milestone|rank|comeback|record_session|record_day|streak|trend|backlog), text (an English one-liner from a fixed template), '
+      + 'bold (the part of the text that is its number), score, game_id?, title?, ...the numbers it refers to }], on_this_day: every fact of kind on_this_day (also those beyond limit) }',
+  });
+  r.get('/api/v1/stats/backlog', () => backlogReality(db), {
+    summary: 'How long the backlog would take: what is left of the expected length of the games marked Backlog, against your tracked hours a week',
+    tag: 'stats',
+    returns: '{ games, with_typical_time, assumed (games without a typical time, counted at the median of the others), remaining_minutes, pace_ratio, personal_pace, weekly_minutes, '
+      + 'weeks, years (null without a pace or a typical time), added_per_month, finished_per_month (null until the library is four months old), text | null }',
+  });
+  r.get('/api/v1/games/:id/forecast', (c) => {
+    const f = finishForecast(db, toInt(c.params.id));
+    if (!f) throw new HttpError(404, 'Game not found');
+    return f;
+  }, {
+    summary: 'When a game will be finished at the pace it is played: IGDB\'s typical time, scaled by how your finished games compared with it, less what is played',
+    tag: 'stats',
+    returns: '{ available: false, reason: finished|dropped|no_typical_time } | { available: true, typical_minutes, basis: main|extra, pace_ratio, personal_pace, expected_minutes, played_minutes, '
+      + 'remaining_minutes, percent, weekly_minutes (tracked, last four weeks), weeks, finish_day (null unless state is playing), state: playing|idle|past, text }',
+  });
 
   // ---------- IGDB (optional game metadata) ----------
   const igdb = () => { if (!app.igdb) throw new HttpError(404, 'IGDB is not available'); return app.igdb; };
@@ -1205,7 +1230,10 @@ export function registerRoutes(r, app) {
     const weeksAgo = c.query.weeks_ago == null || c.query.weeks_ago === '' ? 1 : toInt(c.query.weeks_ago);
     if (!Number.isInteger(weeksAgo) || weeksAgo < 0 || weeksAgo > 520) throw new HttpError(400, 'weeks_ago must be 0..520');
     const s = weeklySummary(db, { weeksAgo, weekStartsOn: settings.get('week_starts_on') });
-    return { ...s, text: summaryText(s) };
+    // last week's summary carries today's facts, as the one sent does
+    if (weeksAgo !== 1) return { ...s, text: summaryText(s) };
+    const f = withFacts(db, s, summaryText(s), { weekStartsOn: settings.get('week_starts_on') });
+    return { ...f.summary, text: f.text };
   }, {
     summary: 'A week in numbers: what the weekly webhook summary sends (tracked play only)',
     query: { weeks_ago: '0 = this week so far, 1 = last week (default), …' },
@@ -1216,7 +1244,8 @@ export function registerRoutes(r, app) {
     const url = settings.get('webhook_url');
     if (!url) throw new HttpError(400, 'Set a webhook URL first');
     const s = weeklySummary(db, { weeksAgo: 1, weekStartsOn: settings.get('week_starts_on') });
-    try { await sendSummary(url, s, summaryText(s)); } catch (err) { throw new HttpError(502, err.message); }
+    const f = withFacts(db, s, summaryText(s), { weekStartsOn: settings.get('week_starts_on') });
+    try { await sendSummary(url, f.summary, f.text); } catch (err) { throw new HttpError(502, err.message); }
     return { ok: true };
   }, { summary: "Send last week's summary to the webhook now (a test; the scheduled one still goes out)" });
 
