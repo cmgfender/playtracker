@@ -360,6 +360,24 @@ export function applyItems(db, account, items, { settings, now = Date.now(), syn
       }
     }
 
+    // 3b) platforms that credit minutes late: last played (an end) has not moved since the last
+    //     report and lies before this window, so nothing was played in it - a total read while it
+    //     still lagged has caught up. The minutes join the session that ended then, or become one
+    //     ending then; never a session of their own somewhere between two syncs.
+    if (model.lag_min > 0 && model.lastPlayed === 'end' && !spans.length && remaining <= PIN_MAX && it.lastPlayedAt
+      && it.lastPlayedAt === entry.last_played_at && it.lastPlayedAt < ws && !model.pin(remaining, ws, we, it.lastPlayedAt)) {
+      const lp = it.lastPlayedAt;
+      const m = Math.round(remaining);
+      const prev = lastPlay.get(entry.id);
+      if (prev?.source === source && prev.started_at && prev.ended_at && Math.abs(prev.ended_at - lp) <= 15 * MIN) {
+        // (times presence saw stand; a pinned session began that much earlier)
+        if (prev.confidence === 'exact') extendSession.run(m, prev.ended_at, prev.window_end, prev.id);
+        else continueSession.run(prev.minutes + m, Math.min(prev.started_at, prev.ended_at - (prev.minutes + m) * MIN), prev.ended_at, prev.ended_at - (prev.minutes + m) * MIN, prev.ended_at, prev.confidence, prev.id);
+        stats.minutes_added += m;
+      } else play(entry, title, { minutes: m, windowStart: lp - m * MIN, windowEnd: lp, started: lp - m * MIN, ended: lp, confidence: 'pinned', device, note: baseNote ?? 'Credited late by the platform' });
+      return;
+    }
+
     // 3-) self-repair for 'start' platforms: if this launch time was already used to pin an
     //     earlier delta, that earlier delta could not have started there (the launch was a
     //     session still running at the last report) - move it to before the launch.

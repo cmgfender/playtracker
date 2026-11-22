@@ -93,3 +93,55 @@ test('a delta beyond the window that presence did not watch is still an undated 
   assert.ok(sum(w.rows('play')) <= 100);
   assert.ok(adds(w.db));
 });
+
+test('minutes credited after an unchanged last-played time join the session that ended then', () => {
+  // Xbox, presence off: played 22:10-23:10; the sync at 23:45 reads a stat still 10 minutes
+  // short, the morning sync reads the rest - with the same last-played time
+  const w = world('xbox');
+  const end = new Date(2026, 5, 2, 23, 10).getTime();
+  const item = (total, lastPlayedAt) => [{ extId: '7', title: 'Game', playtimeMin: total, lastPlayedAt }];
+  w.sync(item(500, end - 3 * DAY), end - DAY);
+  w.sync(item(550, end), end + 35 * MIN);
+  w.sync(item(560, end), end + 10 * HOUR);
+  const play = w.rows('play');
+  assert.deepEqual(play.map((s) => [s.started_at, s.ended_at, s.minutes, s.confidence]), [[end - HOUR, end, 60, 'pinned']]);
+  assert.deepEqual(w.days(), { [dayOf(end)]: 60 }, 'nothing on the morning after: the game was not played then');
+  assert.ok(adds(w.db));
+});
+
+test('a total that lands after its last-played time was already reported is a session ending then', () => {
+  // PlayStation: the sync at 23:45 sees the new last-played time and launch, not yet the hour
+  const w = world('psn');
+  const end = new Date(2026, 5, 2, 23, 10).getTime();
+  const item = (total, lastPlayedAt, playCount) => [{ extId: '7', title: 'Game', playtimeMin: total, lastPlayedAt, playCount, firstPlayedAt: end - 30 * DAY }];
+  w.sync(item(500, end - 3 * DAY, 5), end - DAY);
+  w.sync(item(500, end, 6), end + 35 * MIN);
+  w.sync(item(560, end, 6), end + 10 * HOUR);
+  assert.deepEqual(w.rows('play').map((s) => [s.started_at, s.ended_at, s.minutes, s.confidence]), [[end - HOUR, end, 60, 'pinned']]);
+  assert.deepEqual(w.days(), { [dayOf(end)]: 60 });
+  assert.ok(adds(w.db));
+});
+
+test('late minutes after an unchanged last-played time keep the times presence saw', () => {
+  const w = world('xbox');
+  const end = new Date(2026, 5, 2, 23, 10).getTime();
+  const item = (total, lastPlayedAt) => [{ extId: '7', title: 'Game', playtimeMin: total, lastPlayedAt }];
+  w.sync(item(500, end - 3 * DAY), end - DAY);
+  w.span(end - 50 * MIN, end); // presence joined ten minutes in
+  w.sync(item(550, end), end + 35 * MIN);
+  w.sync(item(560, end), end + 10 * HOUR);
+  assert.deepEqual(w.rows('play').map((s) => [s.started_at, s.ended_at, s.minutes, s.confidence]), [[end - 50 * MIN, end, 60, 'exact']]);
+  assert.deepEqual(w.days(), { [dayOf(end)]: 60 });
+});
+
+test('a reporter that pushes totals without refreshing last played gets each delta in its own window', () => {
+  const w = world('custom');
+  const t = new Date(2026, 5, 2, 12, 0).getTime();
+  const item = (total) => [{ extId: '7', title: 'Game', playtimeMin: total, lastPlayedAt: t - HOUR }];
+  w.sync(item(500), t - DAY);
+  w.sync(item(530), t);
+  w.sync(item(560), t + 5 * HOUR);
+  const play = w.rows('play');
+  assert.equal(play.length, 2);
+  assert.ok((play[1].started_at ?? play[1].window_start) >= t - 5 * MIN, 'the second delta is not put on the first session');
+});
