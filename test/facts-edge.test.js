@@ -68,6 +68,42 @@ describe('facts: a game with hours from before tracking began', () => {
   });
 });
 
+describe('facts: where the title is in the sentence', () => {
+  let h; let g;
+  before(async () => {
+    guardNetwork();
+    clock.install(NOW);
+    h = await startApp();
+    g = {};
+    // titles that are words of the sentences around them, or markup, or a replacement pattern
+    for (const t of ['You', 'A', 'Your', '$& <b>$1</b>']) g[t] = await addGame(h, t);
+    await logSession(h, g.You, local(2025, 6, 1, 19), 60); // back after nine months
+    await logSession(h, g.You, local(2026, 3, 17, 19), 60);
+    await logSession(h, g.A, local(2025, 3, 18, 19), 200); // started a year ago today
+    await logSession(h, g.A, local(2025, 5, 1, 19), 200);
+    for (let d = 10; d <= 27; d++) await logSession(h, g['$& <b>$1</b>'], local(2026, 1, d, 9), 330); // 99 hours, then past 100
+    await logSession(h, g['$& <b>$1</b>'], local(2026, 3, 16, 19), 120);
+    await logSession(h, g.Your, local(2026, 3, 15, 8), 540); // the longest session yet
+  });
+  after(async () => { await h?.close(); clock.uninstall(); restoreNetwork(); });
+
+  test('title_at says where the game\'s title starts, also when the same words come earlier', async () => {
+    const r = await h.get('/stats/facts?limit=20');
+    const by = (id) => r.facts.find((f) => f.game_id === id);
+    assert.deepEqual([by(g.You).text, by(g.You).title_at], ['You came back to You after 10 months away.', 17]);
+    assert.deepEqual([by(g.A).text, by(g.A).title_at], ['A year ago today you started A: you played it for 6 weeks, 6h 40m in all.', 29]);
+    assert.deepEqual([by(g.Your).text, by(g.Your).title_at], ['Your longest session yet: 9h of Your on March 15, 2026.', 32]);
+    assert.equal(by(g['$& <b>$1</b>']).text, 'You passed 100 hours in $& <b>$1</b> this week: the first game you have taken that far.');
+    for (const f of r.facts) {
+      assert.ok(!f.text.includes('\u0001'), 'no marker is left in the text');
+      if (f.title) assert.equal(f.text.slice(f.title_at, f.title_at + f.title.length), f.title, `${f.kind}: the title is at title_at`);
+      else assert.equal(f.title_at, undefined);
+    }
+    // the summary's lines carry the same text
+    assert.ok(!(await h.get('/summary/week')).text.includes('\u0001'));
+  });
+});
+
 describe('patterns of a game put down long ago', () => {
   let h; let game;
   before(async () => {

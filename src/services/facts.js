@@ -33,6 +33,7 @@ const STREAK_MARKS = [7, 14, 30, 50, 100, 200, 365, 500, 730, 1000];
 const GAME_HOURS = [10, 25, 50, 100, 250, 500, 1000, 2500, 5000];
 const LIFE_HOURS = [100, 250, 500, 1000, 2500, 5000, 10000, 25000];
 
+const AT = '\u0001';             // put before a fact's title in its template: says where the title starts (title_at)
 const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
 const addDays = (day, n) => { const d = new Date(parseDay(day)); d.setDate(d.getDate() + n); return dayKey(d.getTime()); };
 const daysBetween = (a, b) => Math.round((parseDay(b) - parseDay(a)) / 86_400_000);
@@ -53,7 +54,12 @@ export function facts(db, { now = Date.now(), weekStartsOn = 1, limit = 6 } = {}
   const today = dayKey(now);
   return memo(db, `facts:${today}:${weekStartsOn}:${limit}`, () => {
     const out = [];
-    const add = (kind, score, text, bold, extra = {}) => out.push({ id: `${kind}${extra.event ? `:${extra.event}` : ''}${extra.game_id ? `:${extra.game_id}` : ''}${extra.year ? `:${extra.year}` : ''}`, kind, text, bold, score, ...extra });
+    // title_at: where the title starts in the text. A client linking the title cannot search for it:
+    // a game called "You" or "A" occurs in the sentence before its title does.
+    const add = (kind, score, marked, bold, extra = {}) => {
+      const at = marked.indexOf(AT);
+      out.push({ id: `${kind}${extra.event ? `:${extra.event}` : ''}${extra.game_id ? `:${extra.game_id}` : ''}${extra.year ? `:${extra.year}` : ''}`, kind, text: marked.replace(AT, ''), bold, score, ...extra, ...(at < 0 ? {} : { title_at: at }) });
+    };
     const titles = new Map(db.prepare('SELECT id, title FROM games').all().map((g) => [g.id, g.title]));
     const md = today.slice(5);
     const thisYear = Number(today.slice(0, 4));
@@ -82,11 +88,11 @@ export function facts(db, { now = Date.now(), weekStartsOn = 1, limit = 6 } = {}
       const t = titles.get(x.game_id);
       if (x.first.slice(5) === md && x.first < `${thisYear}-01-01` && x.m >= STARTED_MIN && !lifetime.get(x.game_id)?.history) {
         const n = thisYear - Number(x.first.slice(0, 4));
-        add('on_this_day', 100 + Math.min(n, 20) + Math.min(9, x.m / 600), `${years(n)} ago today you started ${t}: ${became(x)}.`, `${years(n)} ago today`, { game_id: x.game_id, title: t, day: x.first, year: Number(x.first.slice(0, 4)), years_ago: n, minutes: Math.round(x.m), event: 'started' });
+        add('on_this_day', 100 + Math.min(n, 20) + Math.min(9, x.m / 600), `${years(n)} ago today you started ${AT}${t}: ${became(x)}.`, `${years(n)} ago today`, { game_id: x.game_id, title: t, day: x.first, year: Number(x.first.slice(0, 4)), years_ago: n, minutes: Math.round(x.m), event: 'started' });
       }
       if (x.last.slice(5) === md && x.last < `${thisYear}-01-01` && x.m >= ENDED_MIN && x.last !== x.first) {
         const n = thisYear - Number(x.last.slice(0, 4));
-        add('on_this_day', 96 + Math.min(n, 20) + Math.min(9, x.m / 600), `${years(n)} ago today was the last time you played ${t} (${fmtMinutes(inAll(x))} in all).`, `${years(n)} ago today`, { game_id: x.game_id, title: t, day: x.last, year: Number(x.last.slice(0, 4)), years_ago: n, minutes: Math.round(inAll(x)), event: 'last_played' });
+        add('on_this_day', 96 + Math.min(n, 20) + Math.min(9, x.m / 600), `${years(n)} ago today was the last time you played ${AT}${t} (${fmtMinutes(inAll(x))} in all).`, `${years(n)} ago today`, { game_id: x.game_id, title: t, day: x.last, year: Number(x.last.slice(0, 4)), years_ago: n, minutes: Math.round(inAll(x)), event: 'last_played' });
       }
     }
     // the biggest day of a game: looked up for the few games with a long day on this date
@@ -96,7 +102,7 @@ export function facts(db, { now = Date.now(), weekStartsOn = 1, limit = 6 } = {}
       const life = lives.get(x.game_id);
       if (!life || x.day === life.first || x.day === life.last || x.m < peakOf.get(...tracked.args, x.game_id).m) continue;
       const n = thisYear - Number(x.day.slice(0, 4));
-      add('on_this_day', 92 + Math.min(n, 20) + Math.min(9, x.m / 120), `${years(n)} ago today was your biggest day in ${titles.get(x.game_id)}: ${fmtMinutes(x.m)}.`, `${years(n)} ago today`, { game_id: x.game_id, title: titles.get(x.game_id), day: x.day, year: Number(x.day.slice(0, 4)), years_ago: n, minutes: Math.round(x.m), event: 'biggest_day' });
+      add('on_this_day', 92 + Math.min(n, 20) + Math.min(9, x.m / 120), `${years(n)} ago today was your biggest day in ${AT}${titles.get(x.game_id)}: ${fmtMinutes(x.m)}.`, `${years(n)} ago today`, { game_id: x.game_id, title: titles.get(x.game_id), day: x.day, year: Number(x.day.slice(0, 4)), years_ago: n, minutes: Math.round(x.m), event: 'biggest_day' });
     }
 
     // ---- this week: round numbers passed, ranks gained, games come back to
@@ -115,7 +121,7 @@ export function facts(db, { now = Date.now(), weekStartsOn = 1, limit = 6 } = {}
       let sum = before(x); let on = r.last;
       for (const d of r.days) { sum += d.m; if (sum >= step * 60) { on = d.day; break; } }
       const nth = reached === 1 ? 'the first game you have taken that far' : `the ${ordinal(reached)} game you have taken that far`;
-      add('milestone', 80 + Math.log10(step) * 4 + (RARE_GAMES - reached) / 2 - fade(on), `You passed ${step.toLocaleString('en-US')} hours in ${titles.get(x.game_id)} this week: ${nth}.`, `${step.toLocaleString('en-US')} hours`, { game_id: x.game_id, title: titles.get(x.game_id), hours: step, minutes: Math.round(x.m), games_reached: reached, day: on });
+      add('milestone', 80 + Math.log10(step) * 4 + (RARE_GAMES - reached) / 2 - fade(on), `You passed ${step.toLocaleString('en-US')} hours in ${AT}${titles.get(x.game_id)} this week: ${nth}.`, `${step.toLocaleString('en-US')} hours`, { game_id: x.game_id, title: titles.get(x.game_id), hours: step, minutes: Math.round(x.m), games_reached: reached, day: on });
     }
     const life = totals.reduce((a, x) => a + x.m, 0);
     const lifeBefore = totals.reduce((a, x) => a + before(x), 0);
@@ -131,7 +137,7 @@ export function facts(db, { now = Date.now(), weekStartsOn = 1, limit = 6 } = {}
     if (climbers.length) {
       const x = climbers[0]; const r = nowRank.get(x.game_id);
       const below = totals.find((y) => nowRank.get(y.game_id) === r + 1 && thenRank.get(y.game_id) < thenRank.get(x.game_id));
-      add('rank', 70 + (TOP_RANKS - r) - fade(recent.get(x.game_id).last), `${titles.get(x.game_id)} is now your ${r === 1 ? '' : `${ordinal(r)} `}most played game${below ? `, passing ${titles.get(below.game_id)}` : ''}.`, r === 1 ? 'most played game' : `${ordinal(r)} most played`, { game_id: x.game_id, title: titles.get(x.game_id), rank: r, minutes: Math.round(x.m), passed_game_id: below?.game_id ?? null });
+      add('rank', 70 + (TOP_RANKS - r) - fade(recent.get(x.game_id).last), `${AT}${titles.get(x.game_id)} is now your ${r === 1 ? '' : `${ordinal(r)} `}most played game${below ? `, passing ${titles.get(below.game_id)}` : ''}.`, r === 1 ? 'most played game' : `${ordinal(r)} most played`, { game_id: x.game_id, title: titles.get(x.game_id), rank: r, minutes: Math.round(x.m), passed_game_id: below?.game_id ?? null });
     }
 
     if (recent.size) {
@@ -142,7 +148,7 @@ export function facts(db, { now = Date.now(), weekStartsOn = 1, limit = 6 } = {}
         const gap = daysBetween(x.d, back);
         if (gap < COMEBACK_DAYS) continue;
         const away = stretch(gap);
-        add('comeback', 68 + Math.min(12, gap / 60) - fade(back), `You came back to ${titles.get(x.game_id)} after ${away} away.`, `${away} away`, { game_id: x.game_id, title: titles.get(x.game_id), gap_days: gap, last_day: x.d, day: back });
+        add('comeback', 68 + Math.min(12, gap / 60) - fade(back), `You came back to ${AT}${titles.get(x.game_id)} after ${away} away.`, `${away} away`, { game_id: x.game_id, title: titles.get(x.game_id), gap_days: gap, last_day: x.d, day: back });
       }
     }
 
@@ -153,7 +159,7 @@ export function facts(db, { now = Date.now(), weekStartsOn = 1, limit = 6 } = {}
     if (firstDay && daysBetween(firstDay, today) >= RECORD_MIN_DAYS) {
       const r = records(db, { range: 'all', weekStartsOn, now });
       const L = r.longest_session;
-      if (L && L.day >= from) add('record_session', 78 - fade(L.day), `Your longest session yet: ${fmtMinutes(L.minutes)} of ${L.title} on ${nice(L.day)}.`, fmtMinutes(L.minutes), { game_id: L.game_id, title: L.title, day: L.day, minutes: L.minutes });
+      if (L && L.day >= from) add('record_session', 78 - fade(L.day), `Your longest session yet: ${fmtMinutes(L.minutes)} of ${AT}${L.title} on ${nice(L.day)}.`, fmtMinutes(L.minutes), { game_id: L.game_id, title: L.title, day: L.day, minutes: L.minutes });
       if (r.biggest_day && r.biggest_day.day >= from) add('record_day', 77 - fade(r.biggest_day.day), `Your biggest day yet: ${fmtMinutes(r.biggest_day.minutes)} on ${nice(r.biggest_day.day)}.`, fmtMinutes(r.biggest_day.minutes), { day: r.biggest_day.day, minutes: r.biggest_day.minutes });
 
       // the last seven days against any seven days in a row before them: how long since a bigger week
@@ -188,13 +194,13 @@ export function facts(db, { now = Date.now(), weekStartsOn = 1, limit = 6 } = {}
       const pool = [];
       const top = byMinutes[0];
       const sumTracked = byMinutes.reduce((a, x) => a + x.m, 0);
-      if (top && byMinutes.length >= 3) pool.push(['most_played', `${titles.get(top.game_id)} is ${Math.round((top.m / sumTracked) * 100)}% of all your tracked play (${fmtMinutes(top.m)}).`, `${Math.round((top.m / sumTracked) * 100)}%`, { game_id: top.game_id, title: titles.get(top.game_id) }]);
+      if (top && byMinutes.length >= 3) pool.push(['most_played', `${AT}${titles.get(top.game_id)} is ${Math.round((top.m / sumTracked) * 100)}% of all your tracked play (${fmtMinutes(top.m)}).`, `${Math.round((top.m / sumTracked) * 100)}%`, { game_id: top.game_id, title: titles.get(top.game_id) }]);
       if (byMinutes.length >= 6) { const three = byMinutes.slice(0, 3).reduce((a, x) => a + x.m, 0); pool.push(['top_three', `Your three most played games hold ${Math.round((three / sumTracked) * 100)}% of your tracked play.`, `${Math.round((three / sumTracked) * 100)}%`, {}]); }
       // games given under an hour: tried and put down
       const tried = byMinutes.filter((x) => inAll(x) < 60 && daysBetween(x.last, today) >= DORMANT_DAYS).length;
       if (tried >= 3) pool.push(['tried', `${tried} of the ${byMinutes.length} games you have played got less than an hour.`, `${tried} of the ${byMinutes.length} games`, { games: tried, of: byMinutes.length }]);
       for (const id of ['favorite_weekday', 'time_of_day']) { const hl = r.highlights.find((x) => x.id === id); if (hl) pool.push([id, hl.text, `${hl.value}%`, {}]); }
-      if (r.longest_session) pool.push(['longest_session', `Your longest session: ${fmtMinutes(r.longest_session.minutes)} of ${r.longest_session.title} on ${nice(r.longest_session.day)}.`, fmtMinutes(r.longest_session.minutes), { game_id: r.longest_session.game_id, title: r.longest_session.title }]);
+      if (r.longest_session) pool.push(['longest_session', `Your longest session: ${fmtMinutes(r.longest_session.minutes)} of ${AT}${r.longest_session.title} on ${nice(r.longest_session.day)}.`, fmtMinutes(r.longest_session.minutes), { game_id: r.longest_session.game_id, title: r.longest_session.title }]);
       if (r.best_week) pool.push(['best_week', `Your biggest week: ${fmtMinutes(r.best_week.minutes)}, the week of ${nice(r.best_week.from)}.`, fmtMinutes(r.best_week.minutes), {}]);
       if (pool.length) {
         // the day picks it: the same all day, another tomorrow. Counted from the calendar date, not

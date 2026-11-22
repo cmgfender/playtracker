@@ -819,7 +819,7 @@ export function registerRoutes(r, app) {
     tag: 'stats',
     query: { limit: 'facts returned (default 6)' },
     returns: '{ day, facts: [{ id, kind (on_this_day|milestone|lifetime_milestone|rank|comeback|record_session|record_day|streak|trend|backlog), text (an English one-liner from a fixed template), '
-      + 'bold (the part of the text that is its number), score, game_id?, title?, ...the numbers it refers to }], on_this_day: every fact of kind on_this_day (also those beyond limit) }',
+      + 'bold (the part of the text that is its number), score, game_id?, title?, title_at? (where the title starts in text), ...the numbers it refers to }], on_this_day: every fact of kind on_this_day (also those beyond limit) }',
   });
   r.get('/api/v1/stats/backlog', () => backlogReality(db), {
     summary: 'How long the backlog would take: what is left of the expected length of the games marked Backlog, against your tracked hours a week',

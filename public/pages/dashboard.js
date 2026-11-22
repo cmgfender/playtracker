@@ -251,10 +251,20 @@ export async function dashboard(view, stale) {
 
 /** A fact of GET /stats/facts as a line: its number in bold, its game a link. */
 export function factLine(f) {
-  let t = esc(f.text);
-  if (f.game_id && f.title) t = t.replace(esc(f.title), () => `<a class="link" href="/game/${f.game_id}" data-link>${esc(f.title)}</a>`);
-  if (f.bold) t = t.replace(esc(f.bold), () => `<b>${esc(f.bold)}</b>`);
-  return t;
+  // the title is linked where the fact says it starts: searching for it finds the "You" of "You
+  // came back to You", and the number is looked for around the link, never in its markup
+  const at = !f.game_id || !f.title ? -1 : Number.isInteger(f.title_at) && f.text.startsWith(f.title, f.title_at) ? f.title_at : f.text.indexOf(f.title);
+  let bolded = false;
+  const part = (s) => {
+    const t = esc(s); const b = esc(f.bold || '');
+    const i = bolded || !b ? -1 : t.indexOf(b);
+    if (i < 0) return t;
+    bolded = true;
+    return `${t.slice(0, i)}<b>${b}</b>${t.slice(i + b.length)}`;
+  };
+  if (at < 0) return part(f.text);
+  const before = part(f.text.slice(0, at));
+  return `${before}<a class="link" href="/game/${f.game_id}" data-link>${esc(f.title)}</a>${part(f.text.slice(at + f.title.length))}`;
 }
 
 // ---------- home layout ----------
