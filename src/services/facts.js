@@ -65,23 +65,28 @@ export function facts(db, { now = Date.now(), weekStartsOn = 1, limit = 6 } = {}
     const lives = new Map(db.prepare(`SELECT p.game_id, MIN(p.day) first, MAX(p.day) last, SUM(p.minutes) m ${tracked.sql} GROUP BY p.game_id`).all(...tracked.args)
       .filter((x) => titles.has(x.game_id)).map((x) => [x.game_id, x]));
     const byMinutes = [...lives.values()].sort((a, b) => b.m - a.m || a.game_id - b.game_id);
-    const trackedRank = new Map(byMinutes.map((x, i) => [x.game_id, i + 1]));
+    // A game's hours "in all", and its rank, are its lifetime: tracked play alone leaves out what was
+    // played before tracking began. Such a game was not "started" on its first tracked day either.
+    const totals = db.prepare('SELECT e.game_id, SUM(e.playtime_min) m, MAX(e.baseline_min) history FROM entries e WHERE e.excluded = 0 GROUP BY e.game_id').all().filter((x) => titles.has(x.game_id));
+    const lifetime = new Map(totals.map((x) => [x.game_id, x]));
+    const inAll = (x) => Math.max(x.m, lifetime.get(x.game_id)?.m || 0);
+    const lifeRank = new Map([...totals].sort((a, b) => b.m - a.m || a.game_id - b.game_id).map((x, i) => [x.game_id, i + 1]));
 
     // ---- on this day: the first, the last or the biggest day of a game, in an earlier year
     const became = (x) => {
-      const r = trackedRank.get(x.game_id);
-      if (daysBetween(x.last, today) < DORMANT_DAYS) return `${fmtMinutes(x.m)} so far${r <= TOP_RANKS && lives.size > TOP_RANKS ? `, your ${r === 1 ? '' : `${ordinal(r)} `}most played` : ''}`;
-      return `you played it for ${stretch(daysBetween(x.first, x.last) + 1)}, ${fmtMinutes(x.m)} in all`;
+      const r = lifeRank.get(x.game_id);
+      if (daysBetween(x.last, today) < DORMANT_DAYS) return `${fmtMinutes(inAll(x))} so far${r <= TOP_RANKS && totals.length > TOP_RANKS ? `, your ${r === 1 ? '' : `${ordinal(r)} `}most played` : ''}`;
+      return `you played it for ${stretch(daysBetween(x.first, x.last) + 1)}, ${fmtMinutes(inAll(x))} in all`;
     };
     for (const x of lives.values()) {
       const t = titles.get(x.game_id);
-      if (x.first.slice(5) === md && x.first < `${thisYear}-01-01` && x.m >= STARTED_MIN) {
+      if (x.first.slice(5) === md && x.first < `${thisYear}-01-01` && x.m >= STARTED_MIN && !lifetime.get(x.game_id)?.history) {
         const n = thisYear - Number(x.first.slice(0, 4));
         add('on_this_day', 100 + Math.min(n, 20) + Math.min(9, x.m / 600), `${years(n)} ago today you started ${t}: ${became(x)}.`, `${years(n)} ago today`, { game_id: x.game_id, title: t, day: x.first, year: Number(x.first.slice(0, 4)), years_ago: n, minutes: Math.round(x.m), event: 'started' });
       }
       if (x.last.slice(5) === md && x.last < `${thisYear}-01-01` && x.m >= ENDED_MIN && x.last !== x.first) {
         const n = thisYear - Number(x.last.slice(0, 4));
-        add('on_this_day', 96 + Math.min(n, 20) + Math.min(9, x.m / 600), `${years(n)} ago today was the last time you played ${t} (${fmtMinutes(x.m)} in all).`, `${years(n)} ago today`, { game_id: x.game_id, title: t, day: x.last, year: Number(x.last.slice(0, 4)), years_ago: n, minutes: Math.round(x.m), event: 'last_played' });
+        add('on_this_day', 96 + Math.min(n, 20) + Math.min(9, x.m / 600), `${years(n)} ago today was the last time you played ${t} (${fmtMinutes(inAll(x))} in all).`, `${years(n)} ago today`, { game_id: x.game_id, title: t, day: x.last, year: Number(x.last.slice(0, 4)), years_ago: n, minutes: Math.round(inAll(x)), event: 'last_played' });
       }
     }
     // the biggest day of a game: looked up for the few games with a long day on this date
@@ -98,7 +103,6 @@ export function facts(db, { now = Date.now(), weekStartsOn = 1, limit = 6 } = {}
     const week = db.prepare(`SELECT p.game_id, p.day, SUM(p.minutes) m ${tracked.sql} AND p.day >= ? AND p.day <= ? GROUP BY p.game_id, p.day ORDER BY p.day`).all(...tracked.args, from, today);
     const recent = new Map();
     for (const x of week) { const r = recent.get(x.game_id) || { m: 0, first: x.day, last: x.day, days: [] }; r.m += x.m; r.last = x.day; r.days.push(x); recent.set(x.game_id, r); }
-    const totals = db.prepare('SELECT e.game_id, SUM(e.playtime_min) m FROM entries e WHERE e.excluded = 0 GROUP BY e.game_id').all().filter((x) => titles.has(x.game_id));
     const before = (x) => x.m - (recent.get(x.game_id)?.m || 0);
     for (const x of totals) {
       const r = recent.get(x.game_id);
@@ -187,7 +191,7 @@ export function facts(db, { now = Date.now(), weekStartsOn = 1, limit = 6 } = {}
       if (top && byMinutes.length >= 3) pool.push(['most_played', `${titles.get(top.game_id)} is ${Math.round((top.m / sumTracked) * 100)}% of all your tracked play (${fmtMinutes(top.m)}).`, `${Math.round((top.m / sumTracked) * 100)}%`, { game_id: top.game_id, title: titles.get(top.game_id) }]);
       if (byMinutes.length >= 6) { const three = byMinutes.slice(0, 3).reduce((a, x) => a + x.m, 0); pool.push(['top_three', `Your three most played games hold ${Math.round((three / sumTracked) * 100)}% of your tracked play.`, `${Math.round((three / sumTracked) * 100)}%`, {}]); }
       // games given under an hour: tried and put down
-      const tried = byMinutes.filter((x) => x.m < 60 && daysBetween(x.last, today) >= DORMANT_DAYS).length;
+      const tried = byMinutes.filter((x) => inAll(x) < 60 && daysBetween(x.last, today) >= DORMANT_DAYS).length;
       if (tried >= 3) pool.push(['tried', `${tried} of the ${byMinutes.length} games you have played got less than an hour.`, `${tried} of the ${byMinutes.length} games`, { games: tried, of: byMinutes.length }]);
       for (const id of ['favorite_weekday', 'time_of_day']) { const hl = r.highlights.find((x) => x.id === id); if (hl) pool.push([id, hl.text, `${hl.value}%`, {}]); }
       if (r.longest_session) pool.push(['longest_session', `Your longest session: ${fmtMinutes(r.longest_session.minutes)} of ${r.longest_session.title} on ${nice(r.longest_session.day)}.`, fmtMinutes(r.longest_session.minutes), { game_id: r.longest_session.game_id, title: r.longest_session.title }]);

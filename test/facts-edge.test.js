@@ -1,0 +1,69 @@
+// Facts and forecasts at their edges: a game that was played before tracking began, a title that
+// also occurs in the sentence around it, a span under a week, a backlog of one game.
+//
+// Sessions are logged at local wall-clock times, so the file passes in any timezone.
+import { test, describe, before, after } from 'node:test';
+import assert from 'node:assert/strict';
+import { clock, local, startApp, guardNetwork, restoreNetwork, addGame, logSession, report } from './suite/helpers/sessions-stats-harness.js';
+
+// Wednesday 2026-03-18 15:00 local
+const NOW = local(2026, 3, 18, 15);
+
+describe('facts: a game with hours from before tracking began', () => {
+  let h; let g;
+  before(async () => {
+    guardNetwork();
+    // a push account linked on January 2, 2025 with two games already played for a long time
+    clock.install(local(2025, 1, 2, 12));
+    h = await startApp();
+    const acc = await h.post('/accounts', { platform: 'custom', name: 'push', config: {} });
+    const push = async (when, id, total, played) => { clock.set(when); await report(h, acc.id, [{ id, title: id, playtime_minutes: total, last_played_at: played }]); };
+    await push(local(2025, 1, 2, 12), 'Old Favourite', 30000);
+    await push(local(2025, 1, 2, 12), 'Veteran', 6000);
+    await push(local(2025, 1, 2, 12), 'Barely Tracked', 5000);
+    // Old Favourite: its first tracked day is a year before today
+    await push(local(2025, 3, 18, 22), 'Old Favourite', 30150, local(2025, 3, 18, 21));
+    await push(local(2025, 4, 18, 22), 'Old Favourite', 30500, local(2025, 4, 18, 21));
+    // Veteran: its last tracked day is
+    await push(local(2025, 2, 1, 22), 'Veteran', 6200, local(2025, 2, 1, 21));
+    await push(local(2025, 3, 18, 23), 'Veteran', 6400, local(2025, 3, 18, 22));
+    await push(local(2025, 5, 1, 22), 'Barely Tracked', 5030, local(2025, 5, 1, 21));
+    clock.set(NOW);
+    g = Object.fromEntries(h.db.prepare('SELECT id, title FROM games').all().map((x) => [x.title, x.id]));
+    // a game with no earlier history, started the same day, and three that were only tried
+    g.Fresh = await addGame(h, 'Fresh');
+    await logSession(h, g.Fresh, local(2025, 3, 18, 10), 200);
+    await logSession(h, g.Fresh, local(2025, 6, 18, 10), 200);
+    for (const t of ['Tried A', 'Tried B', 'Tried C']) await logSession(h, await addGame(h, t), local(2025, 7, 1, 10), 20);
+  });
+  after(async () => { await h?.close(); clock.uninstall(); restoreNetwork(); });
+
+  test('its first tracked day is not the day it was started; a game without earlier hours still has its anniversary', async () => {
+    const r = await h.get('/stats/facts?limit=20');
+    assert.equal(r.day, '2026-03-18');
+    const started = r.on_this_day.filter((f) => f.event === 'started');
+    assert.deepEqual(started.map((f) => [f.game_id, f.text]), [[g.Fresh, 'A year ago today you started Fresh: you played it for 3 months, 6h 40m in all.']]);
+    assert.ok(!r.facts.some((f) => f.game_id === g['Old Favourite'] && /started/.test(f.text)), '500 hours came before the first tracked day');
+  });
+
+  test('"in all" is the lifetime total, not only what was tracked', async () => {
+    const r = await h.get('/stats/facts?limit=20');
+    const last = r.on_this_day.find((f) => f.game_id === g.Veteran);
+    // 6000 minutes before tracking and 400 tracked
+    assert.deepEqual([last.event, last.text, last.minutes], ['last_played', 'A year ago today was the last time you played Veteran (106h 40m in all).', 6400]);
+  });
+
+  test('a game with 83 hours and half an hour of them tracked is not one that "got less than an hour"', async () => {
+    // one standing fact a day, taken in turn: within as many days as there are standing facts, each is said once
+    const tried = [];
+    try {
+      for (let d = 18; d < 30; d++) {
+        clock.install(local(2026, 3, d, 15));
+        const s = (await h.get('/stats/facts?limit=20')).facts.find((f) => f.kind === 'standing' && f.event === 'tried');
+        if (s) tried.push([s.games, s.of, s.text]);
+      }
+    } finally { clock.install(NOW); }
+    assert.ok(tried.length >= 1, 'the fact came up');
+    for (const t of tried) assert.deepEqual(t, [3, 7, '3 of the 7 games you have played got less than an hour.']);
+  });
+});
