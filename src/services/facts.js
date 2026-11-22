@@ -53,6 +53,17 @@ const stretch = (days) => (days < 14 ? plural(Math.max(1, days), 'day') : days <
 export function facts(db, { now = Date.now(), weekStartsOn = 1, limit = 6 } = {}) {
   const today = dayKey(now);
   return memo(db, `facts:${today}:${weekStartsOn}:${limit}`, () => {
+    const ranked = ranking(db, { now, today, weekStartsOn });
+    return { day: today, facts: ranked.slice(0, limit), on_this_day: ranked.filter((f) => f.kind === 'on_this_day') };
+  });
+}
+
+/**
+ * Every fact of the day, most notable first. Worked out once however many are asked for: Home
+ * shows four and the weekly summary reads six, one after the other on the same page.
+ */
+function ranking(db, { now, today, weekStartsOn }) {
+  return memo(db, `facts-ranked:${today}:${weekStartsOn}`, () => {
     const out = [];
     // title_at: where the title starts in the text. A client linking the title cannot search for it:
     // a game called "You" or "A" occurs in the sentence before its title does.
@@ -222,13 +233,12 @@ export function facts(db, { now = Date.now(), weekStartsOn = 1, limit = 6 } = {}
     const hidden = new Set(db.prepare('SELECT id FROM games WHERE hidden = 1').all().map((g) => g.id));
     const games = new Set();
     let standing = false;
-    const ranked = out.filter((f) => {
+    return out.filter((f) => {
       if (f.game_id && (hidden.has(f.game_id) || games.has(f.game_id))) return false;
       if (f.kind === 'standing') { if (standing) return false; standing = true; }
       if (f.game_id) games.add(f.game_id);
       return true;
     }).map((f) => ({ ...f, score: Math.round(f.score * 10) / 10 }));
-    return { day: today, facts: ranked.slice(0, limit), on_this_day: ranked.filter((f) => f.kind === 'on_this_day') };
   });
 }
 
