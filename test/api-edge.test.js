@@ -95,3 +95,35 @@ describe('API edges: text fields', () => {
     assert.equal(pres.body.open, 1, 'the entry naming no game is skipped');
   });
 });
+
+describe('API edges: session times', () => {
+  let h; let game; let session;
+  before(async () => {
+    guardNetwork();
+    h = await startApp();
+    game = await addGame(h, 'Manual');
+    session = await logSession(h, game, Date.now() - 3 * DAY, 60);
+  });
+  after(async () => { await h?.close(); restoreNetwork(); });
+
+  test('an edit cannot move a session into the future, as logging one cannot', async () => {
+    const future = Date.now() + 30 * DAY;
+    assert.equal((await h.call('POST', '/sessions', { game_id: game, minutes: 30, ended_at: future })).status, 400);
+    for (const body of [{ ended_at: future }, { started_at: future - HOUR, ended_at: future }, { started_at: future, ended_at: null }, { ended_at: '2999-01-01' }]) {
+      const r = await h.call('PATCH', `/sessions/${session.id}`, body);
+      assert.equal(r.status, 400, `${JSON.stringify(body)} -> ${r.status}`);
+      assert.equal(r.body.error, 'A session cannot end in the future');
+    }
+    const s = await h.get(`/sessions/${session.id}`);
+    assert.deepEqual([s.started_at, s.ended_at], [session.started_at, session.ended_at], 'unchanged');
+    assert.equal((await h.get('/stats?range=7d')).total_minutes, 60, 'still counted on its own day');
+  });
+
+  test('moving it within the past, or to a moment ago, is still fine', async () => {
+    const end = Date.now() - HOUR;
+    const s = await h.patch(`/sessions/${session.id}`, { started_at: end - HOUR, ended_at: end });
+    assert.deepEqual([s.started_at, s.ended_at], [end - HOUR, end]);
+    // a client echoing the session back with a new note changes no times and is not checked against the clock
+    assert.equal((await h.patch(`/sessions/${session.id}`, { started_at: s.started_at, ended_at: s.ended_at, note: 'x' })).note, 'x');
+  });
+});

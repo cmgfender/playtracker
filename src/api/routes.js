@@ -597,6 +597,8 @@ export function registerRoutes(r, app) {
     // times sent back as they are (a client echoing the session) are no change
     let times = st !== s.started_at || en !== s.ended_at;
     if (times && st && en && en <= st) throw new HttpError(400, 'ended_at must be after started_at');
+    // as when it is logged: an edit must not move a session into days that have not happened
+    if (times && Math.max(st || 0, en || 0) > Date.now() + 5 * MIN) throw new HttpError(400, 'A session cannot end in the future');
     if ('minutes' in patch) {
       const m = toInt(patch.minutes);
       if (!m || m <= 0 || m > 7 * 1440) throw new HttpError(400, 'minutes must be between 1 and 10080');
