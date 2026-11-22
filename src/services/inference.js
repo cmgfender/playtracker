@@ -184,7 +184,16 @@ export function inferHistory(e, { pacePerDay = 90, maxPerDay = 600, minDay = 15,
   if (!total) return result;
   if (e.mode === 'undated') { result.undated = total; result.reasons.push('Charting disabled for this game'); return result; }
   const T = e.trackingStart || Date.now();
-  const lower = Math.max(e.releaseAt || 0, e.accountCreatedAt || 0, Date.UTC(1995, 0, 1));
+  // a last played time after tracking began (the platform's clock ahead of ours, a game running
+  // during the import) says the history ran up to tracking start
+  const lastPlayed = e.lastPlayedAt ? Math.min(e.lastPlayedAt, T) : null;
+  // the release and account dates bound the start, unless the game was last played before that
+  // day (early access, a re-release's store date): then they are wrong for this play and bound
+  // nothing, instead of leaving no window at all
+  const earliest = Date.UTC(1995, 0, 1);
+  const bound = Math.max(e.releaseAt || 0, e.accountCreatedAt || 0, earliest);
+  const lastKnown = e.manual?.end ?? lastPlayed;
+  const lower = lastKnown != null && startOfDay(bound) > lastKnown ? earliest : bound;
   // unlock times from before the hard start are no evidence of play after it (as the last
   // activity they would end the window before it began, leaving everything undated)
   const anchors = (e.anchors || []).filter((a) => a && a >= lower && a <= T && (hardStart == null || a >= hardStart)).sort((a, b) => a - b);
@@ -193,9 +202,6 @@ export function inferHistory(e, { pacePerDay = 90, maxPerDay = 600, minDay = 15,
 
   // 1) Minutes known to be recent (Steam's 2-week counter): place them inside that window,
   //    never before the first or after the last played time, with a bump on the last-played day.
-  // a last played time after tracking began (the platform's clock ahead of ours, a game running
-  // during the import) says the history ran up to tracking start
-  const lastPlayed = e.lastPlayedAt ? Math.min(e.lastPlayedAt, T) : null;
   let upper = lastPlayed ?? T;
   if (e.recent?.minutes > 0) {
     const r = Math.min(e.recent.minutes, remaining);
@@ -321,7 +327,8 @@ export function inferHistory(e, { pacePerDay = 90, maxPerDay = 600, minDay = 15,
       else if (knownStart && knownEnd) { c = 'medium'; result.reasons.push('Bounded by date added/first activity and last played'); }
       else { c = 'low'; result.reasons.push(knownEnd ? 'Only the last played date is known' : 'Only a start date is known'); }
       if (e.playCount) result.reasons.push(`${e.playCount} launches reported`);
-      if (e.releaseAt && start <= e.releaseAt + DAY) result.reasons.push('Clamped to release date');
+      if (lower !== bound) result.reasons.push(`Last played before the ${bound === e.releaseAt ? 'release' : 'account creation'} date - not bounded by it`);
+      else if (e.releaseAt && start <= e.releaseAt + DAY) result.reasons.push('Clamped to release date');
       conf.push(c);
       for (const ch of result.chunks) if (ch.why === 'history') ch.confidence = c;
       result.window = [d0, end];

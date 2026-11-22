@@ -83,3 +83,23 @@ test('a last played time just after tracking began (clock skew) dates history up
   assert.deepEqual(at(T + 30_000, added).window, at(T, added).window);
   assert.equal(at(T + 30_000, added).confidence, 'medium');
 });
+
+test('a game last played before its release date (early access, a re-release) is still dated', () => {
+  const e = { minutes: 3000, trackingStart: T, lastPlayedAt: T - 100 * DAY };
+  const plain = inferHistory(e);
+  // the store's release date is 50 days after the last session: it cannot bound that play
+  for (const wrong of [{ releaseAt: T - 50 * DAY }, { accountCreatedAt: T - 50 * DAY }]) {
+    const res = inferHistory({ ...e, ...wrong });
+    assert.equal(res.undated, 0, JSON.stringify(wrong));
+    assert.deepEqual(res.chunks.map((c) => [c.start, c.end, c.minutes]), plain.chunks.map((c) => [c.start, c.end, c.minutes]));
+    assert.ok(res.window[0] < res.window[1], 'the window runs forwards');
+    assert.ok(!res.reasons.includes('Clamped to release date'));
+  }
+  // the same when the end is one you set
+  assert.equal(inferHistory({ minutes: 3000, trackingStart: T, manual: { end: T - 100 * DAY }, releaseAt: T - 50 * DAY }).undated, 0);
+  // a release date before last played still bounds the start
+  const bounded = inferHistory({ ...e, releaseAt: T - 110 * DAY });
+  assert.equal(dated(bounded) + bounded.undated, 3000);
+  assert.ok(bounded.window[0] >= new Date(T - 110 * DAY).setHours(0, 0, 0, 0));
+  assert.ok(bounded.reasons.includes('Clamped to release date'));
+});
