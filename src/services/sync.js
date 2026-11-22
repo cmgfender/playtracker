@@ -245,6 +245,27 @@ export function applyItems(db, account, items, { settings, now = Date.now(), syn
     return id;
   };
 
+  // What live presence saw of a title that a delta over [ws, we] can pay for: `spans` in the window
+  // (see model.spanReported), and `pending` - sessions presence saw before this window that the
+  // platform had not credited yet when its total last moved: a total that catches up late (an
+  // Xbox PC game uploads its minutes on its next launch) is theirs first - never stuffed into
+  // today's session beyond what it can hold.
+  const spanLen = (sp) => Math.max(1, ((sp.ended_at ?? sp.last_seen_at) - sp.started_at) / MIN);
+  const spanUsed = (sp) => (sp.session_id ? (sessionMinutes.get(sp.session_id)?.minutes || 0) : 0);
+  const watched = (entry, extId, ws, we) => {
+    const spans = spansFor.all(account.id, extId, we + 15 * MIN, ws - model.max_session_min * MIN)
+      .map((sp) => (sp.session_id === 0 ? steamPart(entry, sp) : sp)).filter(Boolean)
+      .filter((sp) => model.spanReported(sp, ws, we) && (!sp.session_id || model.countsInProgress())
+        // a finished span its session already fully credited is used up
+        && !(sp.session_id && sp.ended_at != null && spanLen(sp) - spanUsed(sp) <= 0));
+    const reached = entry.playtime_min > 0 ? reachedAt.get(entry.id, entry.playtime_min)?.t : null;
+    const pending = reached && reached < ws
+      ? endedSpans.all(account.id, extId, Math.max(reached, now - 7 * DAY), we)
+        .filter((sp) => sp.session_id !== 0 && !spans.some((x) => x.id === sp.id) && spanLen(sp) - spanUsed(sp) >= 1)
+      : [];
+    return { spans, pending };
+  };
+
   let curExt = null;
   const recordDelta = (entry, it, delta, ws, we, prevMeta) => {
     curExt = String(it.extId);
@@ -254,21 +275,7 @@ export function applyItems(db, account, items, { settings, now = Date.now(), syn
     let remaining = delta;
 
     // 1) live presence spans -> exact sessions (a session reported over several syncs stays one session)
-    const spanLen = (sp) => Math.max(1, ((sp.ended_at ?? sp.last_seen_at) - sp.started_at) / MIN);
-    const spanUsed = (sp) => (sp.session_id ? (sessionMinutes.get(sp.session_id)?.minutes || 0) : 0);
-    const spans = spansFor.all(account.id, String(it.extId), we + 15 * MIN, ws - model.max_session_min * MIN)
-      .map((sp) => (sp.session_id === 0 ? steamPart(entry, sp) : sp)).filter(Boolean)
-      .filter((sp) => model.spanReported(sp, ws, we) && (!sp.session_id || model.countsInProgress())
-        // a finished span its session already fully credited is used up
-        && !(sp.session_id && sp.ended_at != null && spanLen(sp) - spanUsed(sp) <= 0));
-    // Sessions presence saw before this window that the platform had not credited yet when its
-    // total last moved: a total that catches up late (an Xbox PC game uploads its minutes on its
-    // next launch) is theirs first - never stuffed into today's session beyond what it can hold.
-    const reached = entry.playtime_min > 0 ? reachedAt.get(entry.id, entry.playtime_min)?.t : null;
-    const pending = reached && reached < ws
-      ? endedSpans.all(account.id, String(it.extId), Math.max(reached, now - 7 * DAY), we)
-        .filter((sp) => sp.session_id !== 0 && !spans.some((x) => x.id === sp.id) && spanLen(sp) - spanUsed(sp) >= 1)
-      : [];
+    const { spans, pending } = watched(entry, String(it.extId), ws, we);
     if (spans.length || pending.length) {
       const credit = (sp, m, wsFor, weFor) => {
         if (m <= 0) return;
@@ -570,7 +577,11 @@ export function applyItems(db, account, items, { settings, now = Date.now(), syn
       ? recentCounted.get(entry.id, now - recentDays * DAY + 2 * HOUR, ws + 2 * MIN).m
       : 0;
     const { inWindow, late } = model.recentBound(delta, ws, now, recent, counted);
-    const capacity = model.capacityMin(ws, we);
+    // ... but never less than what presence watched and the platform had not credited: a game
+    // left running longer than any believable session, a sitting whose minutes arrive a day late
+    const seenBy = watched(entry, extId, ws, we);
+    const unpaid = [...seenBy.spans, ...seenBy.pending].reduce((a, sp) => a + Math.max(0, Math.floor(spanLen(sp) - spanUsed(sp))), 0);
+    const capacity = Math.max(model.capacityMin(ws, we), unpaid);
     // within tolerance -> all of it; beyond -> only what fits in the window
     const p = inWindow <= capacity + overage ? inWindow : Math.max(0, Math.floor(capacity));
     const excess = late + (inWindow - p);
