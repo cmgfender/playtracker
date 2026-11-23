@@ -46,6 +46,47 @@ function gameInfo(db, ids) {
 // per-game aggregates over long ranges: walking the game index saves sorting every row
 const perGameSql = (f, p) => (p.span > 365 ? f.sql.replace('FROM play_days p ', 'FROM play_days p INDEXED BY play_days_game ') : f.sql);
 
+/**
+ * Every game with a row in play_days, ascending, as the JSON list that `p.game_id IN (SELECT value
+ * FROM json_each(?))` takes: one hop along the game index per game. A query given the list reads
+ * that index a game at a time, in order, so grouping by game sorts nothing. (The planner reads an
+ * index that way by itself only with statistics, and the database has none.)
+ */
+function playedGames(db) {
+  return memo(db, 'played-games', () => JSON.stringify(db.prepare(`WITH RECURSIVE g(id) AS (
+      SELECT MIN(game_id) FROM play_days INDEXED BY play_days_game
+      UNION ALL SELECT (SELECT MIN(game_id) FROM play_days INDEXED BY play_days_game WHERE game_id > g.id) FROM g WHERE g.id IS NOT NULL)
+    SELECT id FROM g WHERE id IS NOT NULL`).all().map((x) => x.id)));
+}
+
+const MAX_YEAR_PASSES = 12;
+/**
+ * Per (game, year) over a long range: the rows of `GROUP BY p.game_id, substr(p.day, 1, 4)`, in
+ * the same order (game, then year), from one pass over the games per year. Grouping by the year
+ * as well sorts every row of the range first, which is most of the time that query takes. null
+ * when the range holds too many years for a pass each to pay.
+ */
+function gameYears(db, p, { platform, estimates }) {
+  // the first year with play of any kind (a range can start long before it)
+  const first = [0, 1].map((e) => db.prepare('SELECT MIN(day) d FROM play_days WHERE excluded = 0 AND estimated = ?').get(e).d).filter(Boolean).sort()[0];
+  if (!first) return [];
+  const from = Number((first > p.fromDay ? first : p.fromDay).slice(0, 4));
+  const to = Number(p.toDay.slice(0, 4));
+  if (to - from >= MAX_YEAR_PASSES) return null;
+  const games = playedGames(db);
+  const rows = [];
+  let st;
+  for (let year = from; year <= to; year++) {
+    const lo = `${year}-01-01` > p.fromDay ? `${year}-01-01` : p.fromDay;
+    const hi = `${year}-12-31` < p.toDay ? `${year}-12-31` : p.toDay;
+    const f = filter('p', { fromDay: lo, toDay: hi, platform, estimates });
+    st ||= db.prepare(`SELECT p.game_id, ? k, SUM(p.minutes) m, SUM(p.minutes * p.estimated) e, MIN(p.day) first, MAX(p.day) last
+      ${f.sql.replace('FROM play_days p ', 'FROM play_days p INDEXED BY play_days_game ')} AND p.game_id IN (SELECT value FROM json_each(?)) GROUP BY p.game_id`);
+    rows.push(...st.all(String(year), ...f.args, games));
+  }
+  return rows.sort((x, z) => x.game_id - z.game_id || (x.k < z.k ? -1 : 1));
+}
+
 /** Per period: the most played game (ties: lower id) and the period's total, from (k, game_id, m, e) rows. */
 function leaders(rows) {
   const by = new Map();
@@ -748,8 +789,9 @@ export function records(db, { range = 'all', group, gameId = null, platform = nu
     // most played (estimates as asked): overall and per month / year, from one (game, period) pass
     const f = filter('p', { fromDay: p.fromDay, toDay: p.toDay, gameId, platform, estimates });
     const g = group === 'month' || group === 'year' ? group : (p.span > 400 ? 'year' : 'month');
-    const rows = db.prepare(`SELECT p.game_id, substr(p.day, 1, ${g === 'year' ? 4 : 7}) k, SUM(p.minutes) m, SUM(p.minutes * p.estimated) e, MIN(p.day) first, MAX(p.day) last
-      ${perGameSql(f, p)} GROUP BY p.game_id, k`).all(...f.args);
+    const rows = (g === 'year' && !gameId && p.span > 365 && gameYears(db, p, { platform, estimates }))
+      || db.prepare(`SELECT p.game_id, substr(p.day, 1, ${g === 'year' ? 4 : 7}) k, SUM(p.minutes) m, SUM(p.minutes * p.estimated) e, MIN(p.day) first, MAX(p.day) last
+        ${perGameSql(f, p)} GROUP BY p.game_id, k`).all(...f.args);
     const games = perGame(rows);
     const topRow = games[0];
     const totals = { m: games.reduce((a, x) => a + x.m, 0), e: games.reduce((a, x) => a + x.e, 0), games: games.length };
