@@ -14,7 +14,7 @@
 // notable come first. Tracked play only: estimated history has no days of its own.
 
 import { memo, filter, dayKey, parseDay, dailyTotals, computeStreaks } from './stats.js';
-import { records } from './insights.js';
+import { recordBasics } from './insights.js';
 import { backlogReality, spanText } from './forecast.js';
 import { fmtMinutes } from '../util.js';
 
@@ -168,7 +168,7 @@ function ranking(db, { now, today, weekStartsOn }) {
     let firstDay = null;
     for (const [d, m] of all) if (m >= 1 && (!firstDay || d < firstDay)) firstDay = d;
     if (firstDay && daysBetween(firstDay, today) >= RECORD_MIN_DAYS) {
-      const r = records(db, { range: 'all', weekStartsOn, now });
+      const r = recordBasics(db, { range: 'all', weekStartsOn, now });
       const L = r.longest_session;
       if (L && L.day >= from) add('record_session', 78 - fade(L.day), `Your longest session yet: ${fmtMinutes(L.minutes)} of ${AT}${L.title} on ${nice(L.day)}.`, fmtMinutes(L.minutes), { game_id: L.game_id, title: L.title, day: L.day, minutes: L.minutes });
       if (r.biggest_day && r.biggest_day.day >= from) add('record_day', 77 - fade(r.biggest_day.day), `Your biggest day yet: ${fmtMinutes(r.biggest_day.minutes)} on ${nice(r.biggest_day.day)}.`, fmtMinutes(r.biggest_day.minutes), { day: r.biggest_day.day, minutes: r.biggest_day.minutes });
@@ -201,7 +201,7 @@ function ranking(db, { now, today, weekStartsOn }) {
 
     // ---- one standing fact a day, for the days nothing happened: true every day, so it only fills in
     if (firstDay && daysBetween(firstDay, today) >= RECORD_MIN_DAYS) {
-      const r = records(db, { range: 'all', weekStartsOn, now });
+      const r = recordBasics(db, { range: 'all', weekStartsOn, now });
       const pool = [];
       const top = byMinutes[0];
       const sumTracked = byMinutes.reduce((a, x) => a + x.m, 0);

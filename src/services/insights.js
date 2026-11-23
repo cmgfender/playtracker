@@ -686,8 +686,13 @@ const WEEKDAYS = ['Sundays', 'Mondays', 'Tuesdays', 'Wednesdays', 'Thursdays', '
 const addDays = (day, n) => { const d = new Date(parseDay(day)); d.setDate(d.getDate() + n); return dayKey(d.getTime()); };
 const pct = (a, b) => (b ? Math.round((a / b) * 100) : 0);
 
-export function records(db, { range = 'all', group, gameId = null, platform = null, estimates = 'include', weekStartsOn = 1, now = Date.now() } = {}) {
-  return memo(db, `records:${range}:${group}:${gameId}:${platform}:${estimates}:${weekStartsOn}`, () => {
+/**
+ * The part of the records that needs no pass over every game: the days, weeks and months of the
+ * range, its longest session and the hours of the day. Cached apart from the rest, so the facts
+ * on Home, which read only these, do not pay for the most played game of every year.
+ */
+function recordDays(db, { range, gameId, platform, estimates, weekStartsOn, now }) {
+  return memo(db, `record-days:${range}:${gameId}:${platform}:${estimates}:${weekStartsOn}`, () => {
     const p = period(db, { range, now, weekStartsOn, gameId, platform, estimates });
     // tracked minutes per local day (all history, memoized for streaks), cut to the range
     // (no filter is asked as stats.js asks it, so the pages share one cached answer)
@@ -698,13 +703,38 @@ export function records(db, { range = 'all', group, gameId = null, platform = nu
     const day = best(inRange);
     const week = best(by('week'));
     const month = best(by('month'));
-    const streak = computeStreaks(inRange, now);
-    const current = computeStreaks(all, now).current;
     const weekday = zeros(7);
     for (const [d, m] of inRange) weekday[new Date(parseDay(d)).getDay()] += m;
-    const tracked = [...inRange.values()].reduce((a, b) => a + b, 0);
+    const fh = filter('h', { fromDay: p.fromDay, toDay: p.toDay, gameId, platform, estimates: 'exclude' });
+    const hours = zeros(24);
+    for (const row of db.prepare(`SELECT h.hour, SUM(h.minutes) m ${fh.sql} GROUP BY h.hour`).all(...fh.args)) hours[row.hour] = row.m;
+    return {
+      p, all, inRange, weekday, hours,
+      streak: computeStreaks(inRange, now),
+      current: computeStreaks(all, now).current,
+      tracked: [...inRange.values()].reduce((a, b) => a + b, 0),
+      longest_session: longestSession(db, p, { gameId, platform }),
+      biggest_day: day && { day: day[0], minutes: r(day[1]) },
+      best_week: week && { key: week[0], from: week[0], to: addDays(week[0], 6), minutes: r(week[1]) },
+      best_month: month && { key: month[0], minutes: r(month[1]) },
+    };
+  });
+}
 
-    const longest = longestSession(db, p, { gameId, platform });
+/**
+ * The records the facts of the day read, as records() gives them: the longest session, the
+ * biggest day, the best week, and the favourite weekday and time of day among `highlights`.
+ */
+export function recordBasics(db, { range = 'all', gameId = null, platform = null, estimates = 'include', weekStartsOn = 1, now = Date.now() } = {}) {
+  const d = recordDays(db, { range, gameId, platform, estimates, weekStartsOn, now });
+  return { longest_session: d.longest_session, biggest_day: d.biggest_day, best_week: d.best_week, highlights: [favoriteWeekday(d.weekday), timeOfDay(d.hours)].filter(Boolean) };
+}
+
+export function records(db, { range = 'all', group, gameId = null, platform = null, estimates = 'include', weekStartsOn = 1, now = Date.now() } = {}) {
+  return memo(db, `records:${range}:${group}:${gameId}:${platform}:${estimates}:${weekStartsOn}`, () => {
+    const days = recordDays(db, { range, gameId, platform, estimates, weekStartsOn, now });
+    const { p, all, inRange, weekday, hours, streak } = days;
+
     const w = sessionWhere(p, { gameId, platform });
     const idx = sessionIndex(gameId);
     const firstS = sessionRef(db.prepare(`${SESSION_REF.replace('FROM sessions s', `FROM sessions s ${idx}`)} WHERE ${w.where} ORDER BY s.sort_time, s.id LIMIT 1`).get(...w.args));
@@ -725,25 +755,22 @@ export function records(db, { range = 'all', group, gameId = null, platform = nu
     const totals = { m: games.reduce((a, x) => a + x.m, 0), e: games.reduce((a, x) => a + x.e, 0), games: games.length };
     const per = leaders(rows);
     const info = gameInfo(db, [...new Set([topRow?.game_id, ...per.map((x) => x.game_id)].filter(Boolean))]);
-    const fh = filter('h', { fromDay: p.fromDay, toDay: p.toDay, gameId, platform, estimates: 'exclude' });
-    const hours = zeros(24);
-    for (const row of db.prepare(`SELECT h.hour, SUM(h.minutes) m ${fh.sql} GROUP BY h.hour`).all(...fh.args)) hours[row.hour] = row.m;
 
     const out = {
       range: { from: p.from, to: p.to, label: p.label },
       estimates,
-      tracked_minutes: r(tracked),
+      tracked_minutes: r(days.tracked),
       estimated_minutes: r(totals.e),
       sessions,
       days_played: [...inRange.values()].filter((m) => m >= 1).length,
       games_played: totals.games,
-      longest_session: longest,
+      longest_session: days.longest_session,
       first_session: firstS,
-      biggest_day: day && { day: day[0], minutes: r(day[1]) },
-      best_week: week && { key: week[0], from: week[0], to: addDays(week[0], 6), minutes: r(week[1]) },
-      best_month: month && { key: month[0], minutes: r(month[1]) },
+      biggest_day: days.biggest_day,
+      best_week: days.best_week,
+      best_month: days.best_month,
       longest_streak: streak.longest ? { days: streak.longest, from: addDays(streak.longest_end, -(streak.longest - 1)), to: streak.longest_end } : null,
-      current_streak: current,
+      current_streak: days.current,
       most_played: topRow ? { game_id: topRow.game_id, ...info.get(topRow.game_id), minutes: r(topRow.m), estimated_minutes: r(topRow.e), share: share(topRow.m, totals.m) } : null,
       most_played_by: { group: g, items: per.map((x) => ({ key: x.k, game_id: x.game_id, ...info.get(x.game_id), minutes: r(x.m), estimated_minutes: r(x.e), share: share(x.m, x.total) })) },
       weekday: weekday.map(r),
@@ -753,6 +780,25 @@ export function records(db, { range = 'all', group, gameId = null, platform = nu
     out.patterns = patterns(all, p);
     return out;
   });
+}
+
+/** The highlight naming the weekday with the most tracked play (unrounded minutes per weekday), or null. */
+function favoriteWeekday(weekday) {
+  const wsum = weekday.reduce((a, b) => a + b, 0);
+  if (wsum < 1) return null;
+  const i = weekday.indexOf(Math.max(...weekday));
+  const part = pct(weekday[i], wsum);
+  return { id: 'favorite_weekday', text: `You play most on ${WEEKDAYS[i]} (${part}% of tracked play).`, value: part, unit: 'percent', weekday: i };
+}
+
+/** The highlight naming the part of the day with the most timed play (unrounded minutes per hour), or null. */
+function timeOfDay(hours) {
+  const hsum = hours.reduce((a, b) => a + b, 0);
+  if (hsum < 1) return null;
+  const parts = PARTS.map(([a, b, name]) => ({ name, from: a, to: b, m: hours.slice(a, b).reduce((s, v) => s + v, 0) }));
+  const top = parts.reduce((a, b) => (b.m > a.m ? b : a));
+  const part = pct(top.m, hsum);
+  return { id: 'time_of_day', text: `Most of your timed play is in the ${top.name} (${String(top.from).padStart(2, '0')}:00-${String(top.to).padStart(2, '0')}:00): ${part}%.`, value: part, unit: 'percent', part: top.name, from_hour: top.from, to_hour: top.to };
 }
 
 /** One-line highlights from fixed templates, each with the numbers behind it. */
@@ -767,19 +813,7 @@ function highlights(x, { weekday, hours, total, firstEver }) {
     const part = pct(x.most_played.minutes, total);
     add('most_played', `${x.most_played.title} was ${part}% of your play time (${fmtMinutes(x.most_played.minutes)}).`, part, 'percent', { game_id: x.most_played.game_id, minutes: x.most_played.minutes });
   }
-  const wsum = weekday.reduce((a, b) => a + b, 0);
-  if (wsum >= 1) {
-    const i = weekday.indexOf(Math.max(...weekday));
-    const part = pct(weekday[i], wsum);
-    add('favorite_weekday', `You play most on ${WEEKDAYS[i]} (${part}% of tracked play).`, part, 'percent', { weekday: i });
-  }
-  const hsum = hours.reduce((a, b) => a + b, 0);
-  if (hsum >= 1) {
-    const parts = PARTS.map(([a, b, name]) => ({ name, from: a, to: b, m: hours.slice(a, b).reduce((s, v) => s + v, 0) }));
-    const top = parts.reduce((a, b) => (b.m > a.m ? b : a));
-    const part = pct(top.m, hsum);
-    add('time_of_day', `Most of your timed play is in the ${top.name} (${String(top.from).padStart(2, '0')}:00-${String(top.to).padStart(2, '0')}:00): ${part}%.`, part, 'percent', { part: top.name, from_hour: top.from, to_hour: top.to });
-  }
+  for (const line of [favoriteWeekday(weekday), timeOfDay(hours)]) if (line) out.push(line);
   // first_ever: nothing was tracked before it; false when the range only cuts into older tracked play
   if (x.first_session) add('first_session', `First tracked session${firstEver ? '' : ' in this range'}: ${x.first_session.title} on ${x.first_session.day}.`, x.first_session.minutes, 'minutes', { game_id: x.first_session.game_id, day: x.first_session.day, session_id: x.first_session.session_id, first_ever: firstEver });
   return out;
