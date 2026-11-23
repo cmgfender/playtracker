@@ -136,6 +136,21 @@ function weekLine(d) {
   return `${delta} · ${plural(wk.games_played, 'game')} · ${plural(wk.sessions, 'session')}`;
 }
 export async function dashboard(view, stale) {
+  const layout = parseLayout(state.settings?.dashboard_layout);
+  const on = new Set(layout.filter((x) => x.on).map((x) => x.key));
+  const year = new Date().getFullYear();
+  // What the sections need is asked for with the summary, not after it has answered. A device
+  // still showing the first-run checklist may have an empty library, which draws none of it:
+  // there it waits for the summary to say so.
+  const sections = () => Promise.all([
+    on.has('heatmap') ? api(`/stats/heatmap?year=${year}`).catch(() => null) : null,
+    on.has('backlog') ? api('/games?status=playing,backlog&sort=recent&limit=16').catch(() => null) : null,
+    api('/duplicates?summary=true').catch(() => null),
+    api('/history/summary').catch(() => null),
+    on.has('recap') ? api('/summary/week?weeks_ago=1').catch(() => null) : null,
+    on.has('facts') ? api('/stats/facts?limit=4').catch(() => null) : null,
+  ]);
+  const early = lsGet(FIRSTRUN) === '1' ? null : sections();
   const d = await api('/summary');
   if (stale()) return;
   const hasData = d.lifetime.games > 0;
@@ -163,17 +178,7 @@ export async function dashboard(view, stale) {
 
   const wk = d.week; const mo = d.month;
   const streak = mo.streaks.current;
-  const layout = parseLayout(state.settings?.dashboard_layout);
-  const on = new Set(layout.filter((x) => x.on).map((x) => x.key));
-  const year = new Date().getFullYear();
-  const [heat, upNext, dupes, hist, recap, facts] = await Promise.all([
-    on.has('heatmap') ? api(`/stats/heatmap?year=${year}`).catch(() => null) : null,
-    on.has('backlog') ? api('/games?status=playing,backlog&sort=recent&limit=16').catch(() => null) : null,
-    api('/duplicates?summary=true').catch(() => null),
-    api('/history/summary').catch(() => null),
-    on.has('recap') ? api('/summary/week?weeks_ago=1').catch(() => null) : null,
-    on.has('facts') ? api('/stats/facts?limit=4').catch(() => null) : null,
-  ]);
+  const [heat, upNext, dupes, hist, recap, facts] = await (early || sections());
   // the first-run checklist stays on Home (on the device that saw it) until it is dismissed
   const ck = lsGet(FIRSTRUN) === '1' ? await checklistData(d.accounts, true, { dupes, hist }) : null;
   if (stale()) return;
