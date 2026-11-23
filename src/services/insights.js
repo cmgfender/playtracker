@@ -94,6 +94,12 @@ function sessionWhere(p, { gameId, platform, exact }) {
   return { where: where.join(' AND '), args };
 }
 
+// The index a pass over the sessions of a range reads: the game's entries, each in order of time,
+// or every session in order of time. Named, because left to itself the planner (the database has
+// no statistics) reads all sessions of all time: by length for a histogram of a year, or by time
+// until it meets one of the game.
+const sessionIndex = (gameId) => `INDEXED BY ${gameId ? 'sessions_entry_kind_time' : 'sessions_kind_time'}`;
+
 function sessionRef(s) {
   if (!s) return null;
   const precise = !!(s.started_at && s.ended_at && s.ended_at > s.started_at);
@@ -103,14 +109,27 @@ function sessionRef(s) {
     started_at: precise ? s.started_at : null, ended_at: s.sort_time, day: dayKey(s.sort_time - 1), precise,
   };
 }
+const LONGEST_FIRST = 500; // sessions looked at, longest first, before a range is scanned for its longest
 const SESSION_REF = 'SELECT s.id, s.minutes, s.started_at, s.ended_at, s.sort_time, e.game_id, e.platform, g.title, g.cover_url FROM sessions s JOIN entries e ON e.id = s.entry_id JOIN games g ON g.id = e.game_id';
 
 /** The longest tracked session (the first to reach that length on a tie). */
 function longestSession(db, p, opts) {
   const w = sessionWhere(p, opts);
-  const max = db.prepare(`SELECT MAX(s.minutes) m FROM sessions s JOIN entries e ON e.id = s.entry_id WHERE ${w.where}`).get(...w.args).m;
+  // Over a long range the longest session of all is nearly always inside it: the longest few
+  // hundred are read first, by the minutes index. The range is only scanned (every session of
+  // it, a row at a time) when none of them is in it, or it is short, or for one game.
+  const far = !opts.gameId && p.span > 120;
+  const among = far && db.prepare(`SELECT s.minutes m FROM (SELECT * FROM sessions INDEXED BY sessions_kind_minutes WHERE kind = 'play' AND minutes > 0 ORDER BY minutes DESC LIMIT ${LONGEST_FIRST}) s
+    JOIN entries e ON e.id = s.entry_id WHERE ${w.where} ORDER BY s.minutes DESC LIMIT 1`).get(...w.args);
+  const max = among ? among.m : db.prepare(`SELECT MAX(s.minutes) m FROM sessions s ${sessionIndex(opts.gameId)} JOIN entries e ON e.id = s.entry_id WHERE ${w.where}`).get(...w.args).m;
   if (!max) return null;
-  return sessionRef(db.prepare(`${SESSION_REF} WHERE ${w.where} AND s.minutes = ? ORDER BY s.sort_time, s.id LIMIT 1`).get(...w.args, max));
+  return firstOfLength(db, w, max, { gameId: opts.gameId, far });
+}
+
+/** The first session of a length among those `w` selects. `far`: over a long range, where few sessions have the length and many are in the range. */
+function firstOfLength(db, w, minutes, { gameId, far }) {
+  const ref = SESSION_REF.replace('FROM sessions s', `FROM sessions s ${far ? 'INDEXED BY sessions_kind_minutes' : sessionIndex(gameId)}`);
+  return sessionRef(db.prepare(`${ref} WHERE ${w.where} AND s.minutes = ? ORDER BY s.sort_time, s.id LIMIT 1`).get(...w.args, minutes));
 }
 
 // =====================================================================================
@@ -171,7 +190,7 @@ export function sessionLengths(db, { range = '30d', gameId = null, platform = nu
     const w = sessionWhere(p, { gameId, platform, exact });
     // one row per distinct length: exact percentiles without fetching every session
     const freq = db.prepare(`SELECT s.minutes m, COUNT(*) n, SUM(CASE WHEN ${EXACT} THEN 1 ELSE 0 END) x
-      FROM sessions s ${!gameId && p.span <= 120 ? 'INDEXED BY sessions_kind_time' : ''} JOIN entries e ON e.id = s.entry_id WHERE ${w.where} GROUP BY s.minutes ORDER BY s.minutes`).all(...w.args);
+      FROM sessions s ${sessionIndex(gameId)} JOIN entries e ON e.id = s.entry_id WHERE ${w.where} GROUP BY s.minutes ORDER BY s.minutes`).all(...w.args);
     const buckets = LENGTH_BUCKETS.map(([min, max, label]) => ({ label, min, max, count: 0, minutes: 0 }));
     let n = 0; let total = 0; let exactN = 0;
     for (const f of freq) {
@@ -191,7 +210,7 @@ export function sessionLengths(db, { range = '30d', gameId = null, platform = nu
       median_minutes: n ? (n % 2 ? at((n + 1) / 2) : (at(n / 2) + at(n / 2 + 1)) / 2) : null,
       p90_minutes: n ? at(Math.ceil(0.9 * n)) : null,
       buckets,
-      longest: n ? sessionRef(db.prepare(`${SESSION_REF} WHERE ${w.where} AND s.minutes = ? ORDER BY s.sort_time, s.id LIMIT 1`).get(...w.args, freq.at(-1).m)) : null,
+      longest: n ? firstOfLength(db, w, freq.at(-1).m, { gameId, far: !gameId && p.span > 120 }) : null,
     };
   });
 }
@@ -671,7 +690,8 @@ export function records(db, { range = 'all', group, gameId = null, platform = nu
   return memo(db, `records:${range}:${group}:${gameId}:${platform}:${estimates}:${weekStartsOn}`, () => {
     const p = period(db, { range, now, weekStartsOn, gameId, platform, estimates });
     // tracked minutes per local day (all history, memoized for streaks), cut to the range
-    const all = dailyTotals(db, { gameId, platform });
+    // (no filter is asked as stats.js asks it, so the pages share one cached answer)
+    const all = dailyTotals(db, { gameId: gameId || undefined, platform: platform || undefined });
     const inRange = new Map([...all].filter(([d, m]) => d >= p.fromDay && d <= p.toDay && m > 0));
     const best = (map) => { let b = null; for (const [k, m] of map) if (m >= 0.5 && (!b || m > b[1] || (m === b[1] && k < b[0]))) b = [k, m]; return b; };
     const by = (g) => { const m = new Map(); for (const [d, x] of inRange) { const k = groupKey(parseDay(d), g, weekStartsOn); m.set(k, (m.get(k) || 0) + x); } return m; };
@@ -686,7 +706,7 @@ export function records(db, { range = 'all', group, gameId = null, platform = nu
 
     const longest = longestSession(db, p, { gameId, platform });
     const w = sessionWhere(p, { gameId, platform });
-    const idx = gameId ? '' : 'INDEXED BY sessions_kind_time';
+    const idx = sessionIndex(gameId);
     const firstS = sessionRef(db.prepare(`${SESSION_REF.replace('FROM sessions s', `FROM sessions s ${idx}`)} WHERE ${w.where} ORDER BY s.sort_time, s.id LIMIT 1`).get(...w.args));
     // is that where tracking starts, or only where the range does? (tracked play before the range, same filters)
     const wb = sessionWhere({ from: 0, to: p.from - 1 }, { gameId, platform });
