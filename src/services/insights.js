@@ -46,6 +46,29 @@ function gameInfo(db, ids) {
 // per-game aggregates over long ranges: walking the game index saves sorting every row
 const perGameSql = (f, p) => (p.span > 365 ? f.sql.replace('FROM play_days p ', 'FROM play_days p INDEXED BY play_days_game ') : f.sql);
 
+// Sections drawn side by side ask the same question of the same range (the timeline and the
+// records; genres, franchises and developers): the rows are read once and kept until the next write.
+const cachedRows = (db, sql, args) => memo(db, `rows:${sql}:${JSON.stringify(args)}`, () => db.prepare(sql).all(...args));
+/** Play per (game, month) of a filter - or per (game, year) with chars = 4. Read only: the rows are shared. */
+const gamePeriods = (db, f, p, chars = 7) => cachedRows(db, `SELECT p.game_id, substr(p.day, 1, ${chars}) k, SUM(p.minutes) m, SUM(p.minutes * p.estimated) e, MIN(p.day) first, MAX(p.day) last
+  ${perGameSql(f, p)} GROUP BY p.game_id, k`, f.args);
+/**
+ * Minutes per (day, game) of a filter, in the order the query gives them (day, then game), as
+ * columns: { days, day (index into days), game, minutes }. Over all time that is one row per day
+ * a game was played, so they are kept as numbers side by side rather than an object each.
+ */
+function dayGameMinutes(db, f) {
+  return memo(db, `day-game:${f.sql}:${JSON.stringify(f.args)}`, () => {
+    const days = []; const at = new Map(); const day = []; const game = []; const minutes = [];
+    for (const row of db.prepare(`SELECT p.day, p.game_id, SUM(p.minutes) m ${f.sql} GROUP BY p.day, p.game_id`).iterate(...f.args)) {
+      let i = at.get(row.day);
+      if (i === undefined) { at.set(row.day, i = days.length); days.push(row.day); }
+      day.push(i); game.push(row.game_id); minutes.push(row.m);
+    }
+    return { days, day: Uint32Array.from(day), game: Float64Array.from(game), minutes: Float64Array.from(minutes) };
+  });
+}
+
 /**
  * Every game with a row in play_days, ascending, as the JSON list that `p.game_id IN (SELECT value
  * FROM json_each(?))` takes: one hop along the game index per game. A query given the list reads
@@ -309,8 +332,7 @@ export function timeline(db, { range = '365d', group, limit = 10, platform = nul
     const key = keyer(g, weekStartsOn);
     const f = filter('p', { fromDay: p.fromDay, toDay: p.toDay, platform, estimates });
     // one pass per (game, calendar month): the top games, how many were played, and each month's leader
-    const gm = db.prepare(`SELECT p.game_id, substr(p.day, 1, 7) k, SUM(p.minutes) m, SUM(p.minutes * p.estimated) e, MIN(p.day) first, MAX(p.day) last
-      ${perGameSql(f, p)} GROUP BY p.game_id, k`).all(...f.args);
+    const gm = gamePeriods(db, f, p);
     const games = perGame(gm);
     const top = games.slice(0, limit);
     const ids = top.map((t) => t.game_id);
@@ -790,8 +812,7 @@ export function records(db, { range = 'all', group, gameId = null, platform = nu
     const f = filter('p', { fromDay: p.fromDay, toDay: p.toDay, gameId, platform, estimates });
     const g = group === 'month' || group === 'year' ? group : (p.span > 400 ? 'year' : 'month');
     const rows = (g === 'year' && !gameId && p.span > 365 && gameYears(db, p, { platform, estimates }))
-      || db.prepare(`SELECT p.game_id, substr(p.day, 1, ${g === 'year' ? 4 : 7}) k, SUM(p.minutes) m, SUM(p.minutes * p.estimated) e, MIN(p.day) first, MAX(p.day) last
-        ${perGameSql(f, p)} GROUP BY p.game_id, k`).all(...f.args);
+      || gamePeriods(db, f, p, g === 'year' ? 4 : 7);
     const games = perGame(rows);
     const topRow = games[0];
     const totals = { m: games.reduce((a, x) => a + x.m, 0), e: games.reduce((a, x) => a + x.e, 0), games: games.length };
@@ -1081,7 +1102,7 @@ export function tagStats(db, { kind = 'genre', range = '365d', group, platform =
     const idx = keyIndex(keys);
     const key = keyer(g, weekStartsOn);
     const f = filter('p', { fromDay: p.fromDay, toDay: p.toDay, platform, estimates });
-    const perG = db.prepare(`SELECT p.game_id, SUM(p.minutes) m, SUM(p.minutes * p.estimated) e, SUM(p.ends) n ${perGameSql(f, p)} GROUP BY p.game_id`).all(...f.args);
+    const perG = cachedRows(db, `SELECT p.game_id, SUM(p.minutes) m, SUM(p.minutes * p.estimated) e, SUM(p.ends) n ${perGameSql(f, p)} GROUP BY p.game_id`, f.args);
     const tagsOf = new Map();
     for (const t of db.prepare('SELECT game_id, name FROM game_tags WHERE kind = ?').iterate(kind)) {
       let l = tagsOf.get(t.game_id);
@@ -1108,10 +1129,12 @@ export function tagStats(db, { kind = 'genre', range = '365d', group, platform =
     const topSet = new Set(top.map((t) => t.name));
     const series = new Map(top.map((t) => [t.name, zeros(keys.length)]));
     if (top.length) {
-      for (const row of db.prepare(`SELECT p.day, p.game_id, SUM(p.minutes) m ${f.sql} GROUP BY p.day, p.game_id`).iterate(...f.args)) {
-        const i = idx.get(key(row.day));
+      const rows = dayGameMinutes(db, f);
+      const bucket = rows.days.map((d) => idx.get(key(d)));
+      for (let j = 0; j < rows.game.length; j++) {
+        const i = bucket[rows.day[j]];
         if (i === undefined) continue;
-        for (const n of tagsOf.get(row.game_id) || []) if (topSet.has(n)) series.get(n)[i] += row.m;
+        for (const n of tagsOf.get(rows.game[j]) || []) if (topSet.has(n)) series.get(n)[i] += rows.minutes[j];
       }
     }
     return {
