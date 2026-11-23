@@ -25,6 +25,9 @@ import { suggest, feedbackList, setFeedback, MODES } from '../services/suggest.j
 import { snapshotAsync, isBackupName } from '../services/backup.js';
 import { weeklySummary, summaryText } from '../services/digest.js';
 import { sendSummary } from '../services/webhook.js';
+import { facts, withFacts } from '../services/facts.js';
+import { finishForecast, backlogReality } from '../services/forecast.js';
+import { milestones } from '../services/milestones.js';
 import fsp from 'node:fs';
 import { httpJson, ProviderError } from '../providers/http.js';
 import { HttpError, toInt, toTime } from '../util.js';
@@ -152,6 +155,9 @@ function splitTags(v) {
 
 // strict booleans (as in settings and imports): "false" or "0" must never read as true
 const flag = (v) => (v === true || v === 'true' || v === 1 || v === '1' ? 1 : 0);
+// A lifetime total above this is a mistake (seconds or a timestamp sent as minutes), and one past
+// 2^53 could not be read back at all: every page reading the entry would fail from then on.
+const MAX_PLAYTIME_MIN = 100 * 366 * 1440; // a hundred years
 // search text for `LIKE ? ESCAPE '\'`: % and _ are literal characters, not wildcards
 const likeText = (s) => `%${String(s).replace(/[\\%_]/g, '\\$&')}%`;
 /** toTime() of a body field; a value that is given but is not a time is a 400, never "no time". */
@@ -160,6 +166,24 @@ function timeField(b, k) {
   if (t == null && b[k] != null && b[k] !== '') throw new HttpError(400, `${k} is not a valid time`);
   return t;
 }
+/** A body field that is text, or null when empty; anything else is a 400 (an object or a number cannot be stored as text). */
+function textField(b, k) {
+  if (b[k] == null || b[k] === '') return null;
+  if (typeof b[k] !== 'string') throw new HttpError(400, `${k} must be text`);
+  return b[k];
+}
+/** An account's config or schedule in a body: an object when given (a string would be stored letter by letter). */
+function objectField(b, k) {
+  if (b[k] != null && (typeof b[k] !== 'object' || Array.isArray(b[k]))) throw new HttpError(400, `${k} must be an object`);
+  return b[k] || null;
+}
+/** A strict boolean in a body: "false" and "0" are false, anything that is neither true nor false is a 400. */
+function boolField(b, k) {
+  if (![true, false, 'true', 'false', 1, 0, '1', '0'].includes(b[k])) throw new HttpError(400, `${k} must be true or false`);
+  return flag(b[k]);
+}
+/** A pushed value kept only when it is text (push clients send what they have). */
+const textOr = (v, def = null) => (typeof v === 'string' && v ? v : def);
 /** A from/to query bound: a date (YYYY-MM-DD) covers that whole local day. */
 function dayBound(v, end) {
   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(v);
@@ -284,11 +308,12 @@ export function registerRoutes(r, app) {
   r.post('/api/v1/games', (c) => {
     const title = typeof c.body.title === 'string' ? c.body.title.trim() : '';
     if (!title) throw new HttpError(400, 'title is required');
+    const coverUrl = textField(c.body, 'cover_url');
     const now = Date.now();
     const id = tx(db, () => {
       const gid = c.body.merge === false
-        ? Number(db.prepare('INSERT INTO games(title, norm_title, cover_url, created_at, updated_at) VALUES (?, ?, ?, ?, ?)').run(cleanTitle(title), normalizeTitle(title), c.body.cover_url || null, now, now).lastInsertRowid)
-        : findOrCreateGame(db, { title, coverUrl: c.body.cover_url }, { autoMerge: true, now });
+        ? Number(db.prepare('INSERT INTO games(title, norm_title, cover_url, created_at, updated_at) VALUES (?, ?, ?, ?, ?)').run(cleanTitle(title), normalizeTitle(title), coverUrl, now, now).lastInsertRowid)
+        : findOrCreateGame(db, { title, coverUrl }, { autoMerge: true, now });
       manualEntry(db, gid, now);
       if (c.body.status && STATUSES.includes(c.body.status)) db.prepare('UPDATE games SET status = ? WHERE id = ?').run(c.body.status, gid);
       return gid;
@@ -392,7 +417,7 @@ export function registerRoutes(r, app) {
       if (!t) throw new HttpError(400, 'title must be a non-empty string');
       sets.push('title = ?', 'norm_title = ?'); args.push(t, normalizeTitle(t));
     }
-    if ('cover_url' in b) { sets.push('cover_url = ?'); args.push(b.cover_url || null); }
+    if ('cover_url' in b) { sets.push('cover_url = ?'); args.push(textField(b, 'cover_url')); }
     if ('status' in b) { if (!STATUSES.includes(b.status)) throw new HttpError(400, `status must be one of ${STATUSES.join(', ')}`); sets.push('status = ?'); args.push(b.status); }
     if ('rating' in b) {
       const n = b.rating == null || b.rating === '' ? null : Number(b.rating);
@@ -457,6 +482,8 @@ export function registerRoutes(r, app) {
     if (!e) throw new HttpError(404, 'Entry not found');
     const total = toInt(c.body.playtime_minutes);
     if (total == null || total < 0) throw new HttpError(400, 'playtime_minutes (lifetime total) is required');
+    const note = textField(c.body, 'note');
+    if (total > MAX_PLAYTIME_MIN) throw new HttpError(400, `playtime_minutes cannot be more than ${MAX_PLAYTIME_MIN} (a hundred years)`);
     if (e.account_id) {
       const res = await sync.report(e.account_id, [{ extId: e.ext_id, title: e.title, playtimeMin: total, lastPlayedAt: toTime(c.body.last_played_at) }]);
       return res;
@@ -473,7 +500,7 @@ export function registerRoutes(r, app) {
     tx(db, () => {
       if (delta > 0) {
         db.prepare("INSERT INTO sessions(entry_id, source, kind, minutes, window_start, window_end, note, created_at) VALUES (?, 'api', 'play', ?, ?, ?, ?, ?)")
-          .run(id, delta, e.last_synced_at || e.first_seen_at, now, c.body.note || null, now);
+          .run(id, delta, e.last_synced_at || e.first_seen_at, now, note, now);
       }
       db.prepare('UPDATE entries SET playtime_min = ?, last_synced_at = ?, last_played_at = COALESCE(?, last_played_at) WHERE id = ?').run(total, now, toTime(c.body.last_played_at), id);
       db.prepare('INSERT INTO snapshots(entry_id, taken_at, playtime_min) VALUES (?, ?, ?)').run(id, now, total);
@@ -532,6 +559,7 @@ export function registerRoutes(r, app) {
     const minutes = toInt(b.minutes) ?? (b.hours ? Math.round(Number(b.hours) * 60) : null);
     if (!gameId || !db.prepare('SELECT id FROM games WHERE id = ?').get(gameId)) throw new HttpError(400, 'Valid game_id is required');
     if (!minutes || minutes <= 0 || minutes > 7 * 1440) throw new HttpError(400, 'minutes must be between 1 and 10080');
+    const note = textField(b, 'note');
     const now = Date.now();
     let started = timeField(b, 'started_at');
     let ended = timeField(b, 'ended_at');
@@ -554,7 +582,7 @@ export function registerRoutes(r, app) {
     const id = tx(db, () => {
       const e = manualEntry(db, gameId, now);
       const r2 = db.prepare("INSERT INTO sessions(entry_id, source, kind, minutes, window_start, window_end, started_at, ended_at, note, created_at, confidence) VALUES (?, 'manual', 'play', ?, ?, ?, ?, ?, ?, ?, 'exact')")
-        .run(e.id, minutes, started, ended, started, ended, b.note || null, now);
+        .run(e.id, minutes, started, ended, started, ended, note, now);
       db.prepare('UPDATE entries SET playtime_min = playtime_min + ?, last_played_at = MAX(COALESCE(last_played_at, 0), ?), last_synced_at = ? WHERE id = ?').run(minutes, ended, now, e.id);
       if (b.status && STATUSES.includes(b.status)) db.prepare('UPDATE games SET status = ?, updated_at = ? WHERE id = ?').run(b.status, now, gameId);
       return Number(r2.lastInsertRowid);
@@ -567,7 +595,7 @@ export function registerRoutes(r, app) {
     if (!s) throw new HttpError(404, 'Session not found');
     const local = s.source === 'manual' || s.source === 'import' || s.source === 'api';
     const sets = []; const args = [];
-    if ('note' in patch) { sets.push('note = ?'); args.push(patch.note || null); }
+    if ('note' in patch) { sets.push('note = ?'); args.push(textField(patch, 'note')); }
     if ('kind' in patch) {
       if (!['play', 'baseline'].includes(patch.kind)) throw new HttpError(400, 'kind must be play or baseline');
       // history is never recorded as play: it can only leave the stats
@@ -579,6 +607,8 @@ export function registerRoutes(r, app) {
     // times sent back as they are (a client echoing the session) are no change
     let times = st !== s.started_at || en !== s.ended_at;
     if (times && st && en && en <= st) throw new HttpError(400, 'ended_at must be after started_at');
+    // as when it is logged: an edit must not move a session into days that have not happened
+    if (times && Math.max(st || 0, en || 0) > Date.now() + 5 * MIN) throw new HttpError(400, 'A session cannot end in the future');
     if ('minutes' in patch) {
       const m = toInt(patch.minutes);
       if (!m || m <= 0 || m > 7 * 1440) throw new HttpError(400, 'minutes must be between 1 and 10080');
@@ -794,6 +824,38 @@ export function registerRoutes(r, app) {
     query: { limit: 'games listed (default 10)' },
     returns: '{ games, median_ratio (your time / typical; null without data), items: [{ game_id, title, minutes, typical_minutes, basis: main|extra, complete_minutes, ratio }] }',
   });
+  r.get('/api/v1/stats/facts', (c) => facts(db, { weekStartsOn: settings.get('week_starts_on'), limit: clamp(c.query.limit, 6, 1, 20) }), {
+    summary: 'Facts for today, most notable first: what happened on this day in earlier years, round numbers passed, records set and games come back to this week, a streak under way',
+    tag: 'stats',
+    query: { limit: 'facts returned (default 6)' },
+    returns: '{ day, facts: [{ id, kind (on_this_day|milestone|lifetime_milestone|rank|comeback|record_session|record_day|streak|trend|backlog), text (an English one-liner from a fixed template), '
+      + 'bold (the part of the text that is its number), score, game_id?, title?, title_at? (where the title starts in text), ...the numbers it refers to }], on_this_day: every fact of kind on_this_day (also those beyond limit) }',
+  });
+  r.get('/api/v1/stats/backlog', () => backlogReality(db), {
+    summary: 'How long the backlog would take: what is left of the expected length of the games marked Backlog, against your tracked hours a week',
+    tag: 'stats',
+    returns: '{ games, with_typical_time, assumed (games without a typical time, counted at the median of the others), remaining_minutes, pace_ratio, personal_pace, weekly_minutes, '
+      + 'weeks, years (null without a pace or a typical time), added_per_month, finished_per_month (null until the library is four months old), text | null }',
+  });
+  r.get('/api/v1/stats/milestones', (c) => milestones(db, { limit: clamp(c.query.limit, 60, 1, 500), all: c.query.all === 'true' }), {
+    summary: 'Milestones: the round numbers of your tracked history with the day each was reached, and the ones coming up. Play in all, in a game, in a series and in a genre; games, days, sessions and streaks; '
+      + 'achievements, completions, platinums, Gamerscore and rare unlocks',
+    tag: 'stats',
+    query: { limit: 'milestones listed, newest first (default 60)', all: 'true = every milestone reached; otherwise the notable ones: of each kind, the three highest rungs you have reached' },
+    returns: '{ day, total, notable_total, counts: { kind: n }, reached: [{ id, kind (hours|game_hours|series_hours|genre_hours|games|series_games|genre_games|days|sessions|streak|achievements|completions|'
+      + 'platinums|gamerscore|rare), text, value, tier (the rung on its ladder), notable, day, subject? (a series or genre), game_id?, title? }], '
+      + 'coming: [{ id, kind, text, target, current (in the unit of target), percent, subject?, game_id?, title? }] nearest first }',
+  });
+  r.get('/api/v1/games/:id/forecast', (c) => {
+    const f = finishForecast(db, toInt(c.params.id));
+    if (!f) throw new HttpError(404, 'Game not found');
+    return f;
+  }, {
+    summary: 'When a game will be finished at the pace it is played: IGDB\'s typical time, scaled by how your finished games compared with it, less what is played',
+    tag: 'stats',
+    returns: '{ available: false, reason: finished|dropped|no_typical_time } | { available: true, typical_minutes, basis: main|extra, pace_ratio, personal_pace, expected_minutes, played_minutes, '
+      + 'remaining_minutes, percent, weekly_minutes (tracked, last four weeks), weeks, finish_day (null unless state is playing), state: playing|idle|past, text }',
+  });
 
   // ---------- IGDB (optional game metadata) ----------
   const igdb = () => { if (!app.igdb) throw new HttpError(404, 'IGDB is not available'); return app.igdb; };
@@ -899,7 +961,7 @@ export function registerRoutes(r, app) {
 
   r.post('/api/v1/accounts/test', async (c) => {
     const platform = String(c.body.platform || '');
-    const config = c.body.config || {};
+    const config = objectField(c.body, 'config') || {};
     requireFields(platform, config);
     const p = providers[platform];
     if (p.push) return { ok: true, games: 0 };
@@ -935,17 +997,18 @@ export function registerRoutes(r, app) {
 
   r.post('/api/v1/accounts', (c) => {
     const platform = String(c.body.platform || '');
-    const config = c.body.config || {};
+    const config = objectField(c.body, 'config') || {};
     requireFields(platform, config);
     const name = String(c.body.name || providers[platform].label).slice(0, 80);
+    const enabled = c.body.enabled == null ? 1 : boolField(c.body, 'enabled');
     let schedule = null;
-    if (c.body.schedule) {
+    if (objectField(c.body, 'schedule')) {
       const v = validateSettings(c.body.schedule);
       if (v.errors.length) throw new HttpError(400, v.errors.join('; '));
       schedule = JSON.stringify(v.values);
     }
     const id = Number(db.prepare('INSERT INTO accounts(platform, name, config, enabled, schedule, created_at) VALUES (?, ?, ?, ?, ?, ?)')
-      .run(platform, name, JSON.stringify(config), c.body.enabled === false ? 0 : 1, schedule, Date.now()).lastInsertRowid);
+      .run(platform, name, JSON.stringify(config), enabled, schedule, Date.now()).lastInsertRowid);
     if (!providers[platform].push && c.body.sync !== false) sync.sync(id, 'initial').catch(() => {});
     return publicAccount(sync.account(id), sync);
   }, { summary: 'Link an account (starts the initial import)', body: '{ platform, name?, config, enabled?, schedule?, sync? }' });
@@ -955,7 +1018,9 @@ export function registerRoutes(r, app) {
     if (!a) throw new HttpError(404, 'Account not found');
     const b = c.body;
     const config = { ...a.config };
-    for (const [k, v] of Object.entries(b.config || {})) {
+    const enabled = 'enabled' in b ? boolField(b, 'enabled') : (a.enabled ? 1 : 0);
+    objectField(b, 'schedule');
+    for (const [k, v] of Object.entries(objectField(b, 'config') || {})) {
       if (typeof v === 'string' && v.startsWith('••••••')) continue; // masked, unchanged
       config[k] = v;
     }
@@ -974,7 +1039,7 @@ export function registerRoutes(r, app) {
       } else schedule = null;
     }
     db.prepare('UPDATE accounts SET name = ?, config = ?, state = ?, enabled = ?, schedule = ? WHERE id = ?')
-      .run(String(b.name ?? a.name).slice(0, 80), JSON.stringify(config), JSON.stringify(state), 'enabled' in b ? (b.enabled ? 1 : 0) : (a.enabled ? 1 : 0), schedule ? JSON.stringify(schedule) : null, a.id);
+      .run(String(b.name ?? a.name).slice(0, 80), JSON.stringify(config), JSON.stringify(state), enabled, schedule ? JSON.stringify(schedule) : null, a.id);
     sync.refreshNext(a.id);
     return publicAccount(sync.account(a.id), sync);
   }, { summary: 'Update an account (name, credentials, enabled, schedule override)', body: '{ name?, config?, enabled?, schedule?: { schedule_mode, schedule_every, schedule_time, … } | null }' });
@@ -1013,11 +1078,13 @@ export function registerRoutes(r, app) {
       if (ext == null || ext === '') return;
       for (const k of ['playtime_minutes', 'playtime_hours']) {
         if (g[k] != null && !(Number.isFinite(Number(g[k])) && Number(g[k]) >= 0)) throw new HttpError(400, `games[${i}].${k} must be a non-negative number`);
+        const max = k === 'playtime_hours' ? MAX_PLAYTIME_MIN / 60 : MAX_PLAYTIME_MIN;
+        if (g[k] != null && Number(g[k]) > max) throw new HttpError(400, `games[${i}].${k} cannot be more than ${max} (a hundred years)`);
       }
       const playtimeMin = g.playtime_minutes != null ? Number(g.playtime_minutes) : g.playtime_hours != null ? Math.round(Number(g.playtime_hours) * 60) : 0;
       items.push({
         extId: String(ext),
-        title: g.title || g.name || String(ext),
+        title: textOr(g.title) || textOr(g.name) || String(ext),
         playtimeMin,
         lastPlayedAt: toTime(g.last_played_at),
         firstPlayedAt: toTime(g.first_played_at),
@@ -1026,8 +1093,8 @@ export function registerRoutes(r, app) {
         recentMin: g.recent_minutes != null ? toInt(g.recent_minutes) : null, // absent = unknown, not zero
         recentWindowDays: clamp(g.recent_days, 14, 1, 365),
         devices: g.device ? { [String(g.device)]: playtimeMin } : undefined,
-        coverUrl: g.cover_url || null,
-        iconUrl: g.icon_url || null,
+        coverUrl: textOr(g.cover_url),
+        iconUrl: textOr(g.icon_url),
         backfill: !!g.backfill,
       });
     });
@@ -1037,7 +1104,7 @@ export function registerRoutes(r, app) {
   r.post('/api/v1/accounts/:id/presence', (c) => {
     const a = sync.account(toInt(c.params.id));
     if (!a) throw new HttpError(404, 'Account not found');
-    const playing = arr(c.body.playing, 'playing').filter((p) => p && typeof p === 'object').map((p) => ({ extId: String(p.id ?? p.ext_id ?? p.title), title: p.title || null, device: p.device || null }));
+    const playing = arr(c.body.playing, 'playing').filter((p) => p && typeof p === 'object' && (p.id ?? p.ext_id ?? p.title) != null).map((p) => ({ extId: String(p.id ?? p.ext_id ?? p.title), title: textOr(p.title), device: textOr(p.device) }));
     return sync.applyPresence(a, playing, { intervalSec: toInt(c.body.interval_sec, 120) });
   }, { summary: 'Push "currently playing" for an account (e.g. from Home Assistant); used to pin sessions to exact times', body: '{ playing: [{ id, title? }], interval_sec? }' });
 
@@ -1205,7 +1272,10 @@ export function registerRoutes(r, app) {
     const weeksAgo = c.query.weeks_ago == null || c.query.weeks_ago === '' ? 1 : toInt(c.query.weeks_ago);
     if (!Number.isInteger(weeksAgo) || weeksAgo < 0 || weeksAgo > 520) throw new HttpError(400, 'weeks_ago must be 0..520');
     const s = weeklySummary(db, { weeksAgo, weekStartsOn: settings.get('week_starts_on') });
-    return { ...s, text: summaryText(s) };
+    // last week's summary carries today's facts, as the one sent does
+    if (weeksAgo !== 1) return { ...s, text: summaryText(s) };
+    const f = withFacts(db, s, summaryText(s), { weekStartsOn: settings.get('week_starts_on') });
+    return { ...f.summary, text: f.text };
   }, {
     summary: 'A week in numbers: what the weekly webhook summary sends (tracked play only)',
     query: { weeks_ago: '0 = this week so far, 1 = last week (default), …' },
@@ -1216,7 +1286,8 @@ export function registerRoutes(r, app) {
     const url = settings.get('webhook_url');
     if (!url) throw new HttpError(400, 'Set a webhook URL first');
     const s = weeklySummary(db, { weeksAgo: 1, weekStartsOn: settings.get('week_starts_on') });
-    try { await sendSummary(url, s, summaryText(s)); } catch (err) { throw new HttpError(502, err.message); }
+    const f = withFacts(db, s, summaryText(s), { weekStartsOn: settings.get('week_starts_on') });
+    try { await sendSummary(url, f.summary, f.text); } catch (err) { throw new HttpError(502, err.message); }
     return { ok: true };
   }, { summary: "Send last week's summary to the webhook now (a test; the scheduled one still goes out)" });
 

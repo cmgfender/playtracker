@@ -15,6 +15,7 @@ import { SCHEMA_VERSION } from '../src/db.js';
 import { createLogger, toJson } from '../src/logger.js';
 import { readZip } from '../src/services/zip.js';
 import { describeSchedule } from '../src/services/schedule.js';
+import { clip, sendSummary } from '../src/services/webhook.js';
 
 const HOUR = 3600_000;
 const quiet = { info() {}, warn() {}, error() {}, debug() {} };
@@ -294,5 +295,37 @@ describe('schedule label', () => {
     assert.equal(s({ schedule_mode: 'weekly', schedule_weekday: 3 }), 'Weekly on Wednesday at 04:00');
     assert.equal(s({ schedule_mode: 'monthly', schedule_monthday: 15 }), 'Monthly on day 15 at 04:00');
     assert.equal(s({ schedule_mode: 'off' }), 'Manual only');
+  });
+});
+
+describe('webhook: a message too long for Discord', () => {
+  test('clip: a short text is untouched; a long one is cut at a line end and marked as cut', () => {
+    assert.equal(clip('short', 1900), 'short');
+    assert.equal(clip('x'.repeat(1900), 1900), 'x'.repeat(1900), 'exactly the limit fits');
+    const lines = Array.from({ length: 200 }, (_, i) => `• Game number ${i} — 1h 30m`).join('\n');
+    const out = clip(lines, 1900);
+    assert.ok(out.length <= 1900, String(out.length));
+    assert.ok(out.endsWith('\n…'), 'ends after a whole line, with the mark');
+    assert.ok(lines.startsWith(out.slice(0, -1)), 'nothing but the end is changed');
+    // one long line: cut where the limit is
+    const one = clip('y'.repeat(5000), 1900);
+    assert.equal(one.length, 1900);
+    assert.ok(one.endsWith('y…'));
+  });
+
+  test('Discord gets the clipped text; Slack and a plain webhook get all of it', async () => {
+    const long = Array.from({ length: 300 }, (_, i) => `line ${i}`).join('\n');
+    const sent = [];
+    const real = globalThis.fetch;
+    globalThis.fetch = async (url, opts) => { sent.push([url, JSON.parse(opts.body)]); return { ok: true, status: 204 }; };
+    try {
+      await sendSummary('https://discord.com/api/webhooks/1/abc', { minutes: 1 }, long);
+      await sendSummary('https://hooks.slack.com/services/T/B/x', { minutes: 1 }, long);
+      await sendSummary('https://example.invalid/hook', { minutes: 1 }, long);
+    } finally { globalThis.fetch = real; }
+    const [discord, slack, plain] = sent.map(([, body]) => body);
+    assert.ok(discord.content.length <= 1900 && discord.content.endsWith('…'), 'cut and marked');
+    assert.equal(slack.text, long);
+    assert.equal(plain.text, long);
   });
 });

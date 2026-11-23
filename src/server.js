@@ -9,6 +9,7 @@ import { Backups, backupBeforeUpgrade } from './services/backup.js';
 import { WeeklySummary } from './services/digest.js';
 import { Igdb } from './services/igdb.js';
 import { sendSummary } from './services/webhook.js';
+import { withFacts } from './services/facts.js';
 import { Settings } from './services/settings.js';
 import { SyncService } from './services/sync.js';
 import { lifetime } from './services/stats.js';
@@ -138,7 +139,7 @@ export function createApp({ dbFile, password, passwordEnv, log: rawLog, schedule
   const settings = new Settings(db);
   const sync = new SyncService({ db, settings, log });
   const backups = new Backups({ db, dbFile, settings, log: log.scoped('backup') });
-  const weekly = new WeeklySummary({ db, settings, log: log.scoped('webhook'), send: sendSummary });
+  const weekly = new WeeklySummary({ db, settings, log: log.scoped('webhook'), send: (url, summary, text) => { const f = withFacts(db, summary, text, { weekStartsOn: settings.get('week_starts_on') }); return sendSummary(url, f.summary, f.text); } });
   const igdb = new Igdb({ db, settings, log: log.scoped('igdb') });
   const auth = new Auth({ db, settings, envPassword: password, envName: passwordEnv });
   const router = new Router();

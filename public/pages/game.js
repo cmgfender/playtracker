@@ -151,6 +151,9 @@ function bindAch(root, ach) {
 }
 
 export async function game(view, id, stale) {
+  // what is drawn below Notes is asked for with the page's own data, not after it is up
+  const below = Promise.all([api(`/stats/records?range=all&game_id=${id}`).catch(() => null), import('../insights.js'), api(`/games/${id}/forecast`).catch(() => null)]);
+  below.catch(() => {});
   const [g, ach, curve] = await Promise.all([
     api(`/games/${id}`),
     api(`/games/${id}/achievements`).catch(() => null),
@@ -288,6 +291,18 @@ export async function game(view, id, stale) {
   const fav = $('#g-fav'); // swapped in place: no re-render, keyboard focus stays on the button
   const showFav = (v) => { fav.innerHTML = icon(v ? 'heartFill' : 'heart'); fav.classList.toggle('fav-on', !!v); fav.setAttribute('aria-pressed', String(!!v)); };
   fav.addEventListener('click', () => undoable('favorite', !g.favorite, showFav, !g.favorite ? 'Added to favorites' : 'Removed from favorites'));
+  // Below Notes, drawn once the page is up so nothing above them moves: when the game will be finished
+  // at the pace it is played, and "How you play it" - the patterns of its tracked days (what
+  // Insights shows for a range; days with play out of all days since says little for one game).
+  below.then(([r, ins, fc]) => {
+    const lines = (r?.patterns || []).filter((h) => h.id !== 'days_played' && h.id !== 'trend').map(ins.pattern).filter(Boolean);
+    const notes = $('#g-notes')?.closest('.card');
+    if (stale() || !notes || $('#g-patterns') || $('#g-forecast')) return;
+    const cards = [];
+    if (fc?.available) cards.push(forecastCard(fc));
+    if (lines.length) cards.push(`<div class="card" id="g-patterns"><div class="card-h"><h2>How you play it</h2><span class="tiny muted">tracked play</span></div><ul class="hl">${lines.map((x) => `<li>${x}</li>`).join('')}</ul></div>`);
+    if (cards.length) notes.insertAdjacentHTML('afterend', cards.join(''));
+  }).catch(() => { /* the page stands without them */ });
   let nt;
   $('#g-notes').addEventListener('input', (e) => { $('#g-notes-st').textContent = 'Saving…'; clearTimeout(nt); nt = setTimeout(async () => {
     // "Saved" only when it was: a failed save says so, and the next keystroke tries again
@@ -408,6 +423,19 @@ export async function game(view, id, stale) {
       },
     });
   });
+}
+
+/** GET /games/:id/forecast as a card: how long until the game is finished, and what that rests on. */
+function forecastCard(f) {
+  const span = f.text.match(/^(.*?) to finish/)?.[1];
+  const lead = f.state === 'playing' ? `<b>${esc(span)}</b> to finish at this pace, around ${fmtDate(new Date(`${f.finish_day}T12:00`).getTime(), { month: 'short', day: 'numeric' })}.`
+    : f.state === 'idle' ? `<b>${fmtMin(f.remaining_minutes)}</b> left. Not played in the last four weeks.`
+      : `<b>Past</b> the ${f.personal_pace ? 'length expected at your pace' : 'typical length'}.`;
+  const length = f.personal_pace ? `${fmtMin(f.expected_minutes)} at your pace (${f.pace_ratio}× the typical ${fmtMin(f.typical_minutes)})` : `the typical ${fmtMin(f.typical_minutes)}`;
+  return `<div class="card" id="g-forecast"><div class="card-h"><h2>Finish forecast</h2><span class="tiny muted">${f.basis === 'main' ? 'main story' : 'main + extras'}</span></div>
+    <p class="ins-lead">${lead}</p>
+    <div class="split-bar" role="img" aria-label="${f.percent}% of the expected length played"><i style="width:${f.percent}%;background:var(--accent-mark)"></i></div>
+    <p class="small muted" style="margin:8px 0 0">${fmtMin(f.played_minutes)} of ${length}${f.state === 'playing' ? ` · ${fmtMin(f.weekly_minutes)} a week lately` : ''}</p></div>`;
 }
 
 function historyBlock(e) {

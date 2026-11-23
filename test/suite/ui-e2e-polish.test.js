@@ -258,7 +258,9 @@ describe('Vestigo web UI, polish on a one-game library', UI, () => {
   before(async () => {
     T = await startApp();
     solo = (await T.ok('/games', { method: 'POST', body: { title: 'Solo', status: 'playing' } })).id;
-    await T.ok('/sessions', { method: 'POST', body: { game_id: solo, minutes: 45, ended_at: NOW - 60_000 } });
+    // at noon yesterday: one day of play whatever the time now (a session ending a minute ago spans two days just after midnight)
+    const noon = new Date(NOW); noon.setHours(12, 0, 0, 0); noon.setDate(noon.getDate() - 1);
+    await T.ok('/sessions', { method: 'POST', body: { game_id: solo, minutes: 45, ended_at: noon.getTime() } });
   });
   after(() => { T?.close(); });
 
