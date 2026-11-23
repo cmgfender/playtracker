@@ -78,8 +78,9 @@ function ranking(db, { now, today, weekStartsOn }) {
     const from = addDays(today, -(WEEK_DAYS - 1));
     const fade = (day) => FADE * Math.max(0, daysBetween(day, today));
 
-    // every game's tracked life: first and last day, minutes
-    const lives = new Map(db.prepare(`SELECT p.game_id, MIN(p.day) first, MAX(p.day) last, SUM(p.minutes) m ${tracked.sql} GROUP BY p.game_id`).all(...tracked.args)
+    // every game's tracked life: first and last day, minutes (read along the game index, which
+    // meets the games in order: grouping the rows of the day index sorts all of them first)
+    const lives = new Map(db.prepare(`SELECT p.game_id, MIN(p.day) first, MAX(p.day) last, SUM(p.minutes) m ${tracked.sql.replace('FROM play_days p ', 'FROM play_days p INDEXED BY play_days_game ')} GROUP BY p.game_id`).all(...tracked.args)
       .filter((x) => titles.has(x.game_id)).map((x) => [x.game_id, x]));
     const byMinutes = [...lives.values()].sort((a, b) => b.m - a.m || a.game_id - b.game_id);
     // A game's hours "in all", and its rank, are its lifetime: tracked play alone leaves out what was
