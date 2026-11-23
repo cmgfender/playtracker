@@ -182,13 +182,54 @@ describe('forecast and backlog in words', () => {
 
   test('a game days from its end: the sentence starts with a capital', async () => {
     const f = await h.get(`/games/${nearly}/forecast`);
-    assert.deepEqual([f.state, f.weeks, f.remaining_minutes], ['playing', 0.3, 40]);
-    assert.equal(f.text, 'Under a week to finish: 40m left of 10h typical, at 2h 20m a week.');
+    // started on March 2: 560 minutes in the 17 days since
+    assert.deepEqual([f.state, f.weeks, f.remaining_minutes, f.weekly_minutes], ['playing', 0.2, 40, 231]);
+    assert.equal(f.text, 'Under a week to finish: 40m left of 10h typical, at 3h 51m a week.');
   });
 
   test('a backlog of one game "holds", and one game a month is not "1 games"', async () => {
     const b = await h.get('/stats/backlog');
     assert.deepEqual([b.games, b.remaining_minutes, b.added_per_month, b.finished_per_month], [1, 600, 1, 0]);
     assert.equal(b.text, '1 game in the backlog holds about 10h of play: about 3 months if all your play went to it (47m a week). You add 1 game a month and finish 0.');
+  });
+});
+
+describe('facts: hidden games, and the standing fact beside a fact about its game', () => {
+  let h; let shame; let top;
+  before(async () => {
+    guardNetwork();
+    clock.install(NOW);
+    h = await startApp();
+    shame = await addGame(h, 'Hidden Shame');
+    top = await addGame(h, 'Top Game');
+    const other = await addGame(h, 'Other');
+    // both came back this week after seven months; Top Game is also the most played by far
+    await logSession(h, shame, local(2025, 8, 1, 19), 60);
+    await logSession(h, shame, local(2026, 3, 17, 19), 60);
+    await logSession(h, top, local(2025, 8, 2, 19), 600);
+    await logSession(h, top, local(2026, 3, 17, 12), 60);
+    await logSession(h, other, local(2025, 8, 3, 19), 30);
+    await h.patch(`/games/${shame}`, { hidden: true });
+  });
+  after(async () => { await h?.close(); clock.uninstall(); restoreNetwork(); });
+
+  test('a hidden game is not named in a fact', async () => {
+    const r = await h.get('/stats/facts?limit=20');
+    assert.equal(r.facts.find((f) => f.game_id === shame), undefined);
+    assert.ok(!r.facts.some((f) => f.text.includes('Hidden Shame')), JSON.stringify(r.facts.map((f) => f.text)));
+    assert.equal(r.facts.find((f) => f.kind === 'comeback').game_id, top, 'the game that is not hidden still is');
+  });
+
+  test('there is a standing fact every day, also when the day\'s is about a game already spoken of', async () => {
+    // Top Game has its comeback: the standing fact about it ("... is N% of all your tracked play") gives way to the next
+    for (let d = 0; d < 8; d++) {
+      clock.install(local(2026, 3, 18 + d, 15));
+      const r = await h.get('/stats/facts?limit=20');
+      const standing = r.facts.filter((f) => f.kind === 'standing');
+      assert.equal(standing.length, 1, `March ${18 + d}: ${JSON.stringify(r.facts.map((f) => f.kind))}`);
+      const games = r.facts.map((f) => f.game_id).filter(Boolean);
+      assert.equal(new Set(games).size, games.length, 'still one fact per game');
+    }
+    clock.install(NOW);
   });
 });

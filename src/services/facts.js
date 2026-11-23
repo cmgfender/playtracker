@@ -206,8 +206,9 @@ export function facts(db, { now = Date.now(), weekStartsOn = 1, limit = 6 } = {}
         // the day picks it: the same all day, another tomorrow. Counted from the calendar date, not
         // from local noon: that lands on another count far east of UTC, and twice on one where
         // summer time moves noon across midday UTC
-        const [event, text, bold, extra] = pool[(Date.parse(`${today}T00:00:00Z`) / 86_400_000 + 1) % pool.length];
-        add('standing', 20, text, bold, { event, ...extra });
+        const start = (Date.parse(`${today}T00:00:00Z`) / 86_400_000 + 1) % pool.length;
+        // all of them from the day's on: the first that is not about a game already spoken of is said (see below)
+        pool.forEach((_, i) => { const [event, text, bold, extra] = pool[(start + i) % pool.length]; add('standing', 20 - i / 100, text, bold, { event, ...extra }); });
       }
     }
 
@@ -215,11 +216,18 @@ export function facts(db, { now = Date.now(), weekStartsOn = 1, limit = 6 } = {}
     const b = backlogReality(db, { now });
     if (b.weeks != null && b.weeks >= 52) add('backlog', 30, `The backlog is ${spanText(b.weeks)} of play at your pace (${plural(b.games, 'game')}, ${fmtMinutes(b.remaining_minutes)}).`, spanText(b.weeks).replace(/^about /, ''), { games: b.games, minutes: b.remaining_minutes, weeks: b.weeks });
 
-    // most notable first; one fact per game (its most notable)
+    // most notable first; one fact per game (its most notable), and one standing fact. A hidden
+    // game is not named: it counts in every total, like everywhere else, but Home does not bring it up.
     out.sort((a, b2) => b2.score - a.score || a.id.localeCompare(b2.id));
+    const hidden = new Set(db.prepare('SELECT id FROM games WHERE hidden = 1').all().map((g) => g.id));
     const games = new Set();
-    const ranked = out.filter((f) => { if (!f.game_id) return true; if (games.has(f.game_id)) return false; games.add(f.game_id); return true; })
-      .map((f) => ({ ...f, score: Math.round(f.score * 10) / 10 }));
+    let standing = false;
+    const ranked = out.filter((f) => {
+      if (f.game_id && (hidden.has(f.game_id) || games.has(f.game_id))) return false;
+      if (f.kind === 'standing') { if (standing) return false; standing = true; }
+      if (f.game_id) games.add(f.game_id);
+      return true;
+    }).map((f) => ({ ...f, score: Math.round(f.score * 10) / 10 }));
     return { day: today, facts: ranked.slice(0, limit), on_this_day: ranked.filter((f) => f.kind === 'on_this_day') };
   });
 }

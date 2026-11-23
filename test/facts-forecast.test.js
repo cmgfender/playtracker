@@ -172,7 +172,7 @@ describe('finish forecast and backlog', () => {
     over = await addGame(h, 'Overrun'); meta(h, over, 120);
     bare = await addGame(h, 'No Data');
     done = await addGame(h, 'Finished'); meta(h, done, 600);
-    // Long RPG: 2 hours a week over the last four weeks
+    // Long RPG: started on February 25, two hours on four days since (22 days)
     for (const d of [18, 11, 4]) await logSession(h, rpg, local(2026, 3, d, 9), 120);
     await logSession(h, rpg, local(2026, 2, 25, 9), 120);
     await logSession(h, idle, local(2025, 11, 2, 19), 90);
@@ -187,9 +187,9 @@ describe('finish forecast and backlog', () => {
     assert.deepEqual({ ...f, text: null }, {
       available: true, game_id: rpg, typical_minutes: 1800, basis: 'main', pace_ratio: 1, personal_pace: false,
       expected_minutes: 1800, played_minutes: 480, remaining_minutes: 1320, percent: 27,
-      weekly_minutes: 120, weeks: 11, finish_day: '2026-06-03', state: 'playing', text: null,
-    });
-    assert.equal(f.text, 'About 3 months to finish: 22h left of 30h typical, at 2h a week.');
+      weekly_minutes: 153, weeks: 8.6, finish_day: '2026-05-17', state: 'playing', text: null,
+    }); // 480 minutes in 22 days are 153 a week; 1320 left are 8.6 weeks
+    assert.equal(f.text, 'About 9 weeks to finish: 22h left of 30h typical, at 2h 33m a week.');
   });
 
   test('not played lately: what is left, without a date; past the typical length: said so', async () => {
@@ -219,8 +219,8 @@ describe('finish forecast and backlog', () => {
     }
     // Finished: 300 of 600 is a ratio of 0.5; the median of 0.5, 1.5, 1.5 is 1.5
     const f = await h.get(`/games/${rpg}/forecast`);
-    assert.deepEqual([f.pace_ratio, f.personal_pace, f.expected_minutes, f.remaining_minutes, f.weeks], [1.5, true, 2700, 2220, 18.5]);
-    assert.equal(f.text, 'About 4 months to finish: 37h left of 45h at your pace, at 2h a week.');
+    assert.deepEqual([f.pace_ratio, f.personal_pace, f.expected_minutes, f.remaining_minutes, f.weeks], [1.5, true, 2700, 2220, 14.5]);
+    assert.equal(f.text, 'About 3 months to finish: 37h left of 45h at your pace, at 2h 33m a week.');
   });
 
   test('the backlog: what is left of every game marked Backlog, against tracked hours a week', async () => {
@@ -243,6 +243,17 @@ describe('finish forecast and backlog', () => {
     assert.equal(b.text, '5 games in the backlog hold about 160h 30m of play: about 2.3 years if all your play went to it (1h 22m a week).');
     const fact = (await h.get('/stats/facts?limit=20')).facts.find((f) => f.kind === 'backlog');
     assert.equal(fact.text, 'The backlog is about 2.3 years of play at your pace (5 games, 160h 30m).');
+  });
+
+  test('a game started this week is paced over a week, not over four: three days of play are not a quarter of the pace', async () => {
+    const fresh = await addGame(h, 'Fresh'); meta(h, fresh, 1200);
+    await logSession(h, fresh, local(2026, 3, 16, 19), 180);
+    await logSession(h, fresh, local(2026, 3, 17, 19), 180);
+    const f = await h.get(`/games/${fresh}/forecast`);
+    // six hours in its first three days: six hours a week (over 28 days it would read as an hour and a half)
+    // (the length by now at this player's one and a half times the typical 20 hours)
+    assert.deepEqual([f.weekly_minutes, f.remaining_minutes, f.weeks], [360, 1440, 4]);
+    assert.equal(f.text, 'About 4 weeks to finish: 24h left of 30h at your pace, at 6h a week.');
   });
 });
 

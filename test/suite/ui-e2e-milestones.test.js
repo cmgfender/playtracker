@@ -6,8 +6,9 @@ import assert from 'node:assert/strict';
 import { chromium, installFetchGuard, startApp, openPage, waitView, overflow, PHONE_SMALL, DESKTOP, skipReason } from './helpers/ui-e2e-harness.js';
 
 const UI = { skip: skipReason || false };
-// local noon `n` days ago, so the day is the same in any timezone
-const ago = (n) => { const d = new Date(); d.setHours(12, 0, 0, 0); d.setDate(d.getDate() - n); return d.getTime(); };
+// local noon `n` days before yesterday: the same day in any timezone, and never in the future
+// (noon today has not come yet for half of every day)
+const ago = (n) => { const d = new Date(); d.setHours(12, 0, 0, 0); d.setDate(d.getDate() - n - 1); return d.getTime(); };
 
 let browser;
 let guard;

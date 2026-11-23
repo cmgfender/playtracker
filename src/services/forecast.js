@@ -8,7 +8,7 @@ import { fmtMinutes } from '../util.js';
 
 const DAY = 86_400_000;
 const WEEK = 7 * DAY;
-const PACE_DAYS = 28;       // a game's pace: its tracked play of the last four weeks
+const PACE_DAYS = 28;       // a game's pace: its tracked play of the last four weeks (fewer for a game started since)
 const LIBRARY_DAYS = 84;    // the player's pace: all tracked play of the last twelve weeks
 const MIN_WEEKLY = 15;      // minutes a week below which a game is not being played
 const MIN_PACE_GAMES = 3;   // finished games needed before the player's own ratio is trusted
@@ -60,7 +60,13 @@ export function finishForecast(db, gameId, { now = Date.now() } = {}) {
     const expected = Math.round(typical * pace.ratio);
     const played = Math.round(g.minutes);
     const remaining = Math.max(0, expected - played);
-    const weekly = trackedSince(db, dayKey(now - (PACE_DAYS - 1) * DAY), g.id) / (PACE_DAYS / 7);
+    // its pace: the last four weeks, or since its first day when it was started within them (a game
+    // begun on Friday has had three days to be played in, not twenty-eight); a week at the least
+    const f0 = filter('p', { gameId: g.id, estimates: 'exclude' });
+    const first = db.prepare(`SELECT MIN(p.day) d ${f0.sql}`).get(...f0.args).d;
+    const since = first ? Math.round((Date.parse(`${dayKey(now)}T12:00:00`) - Date.parse(`${first}T12:00:00`)) / DAY) + 1 : PACE_DAYS;
+    const span = Math.min(PACE_DAYS, Math.max(7, since));
+    const weekly = trackedSince(db, dayKey(now - (span - 1) * DAY), g.id) / (span / 7);
     const out = {
       available: true, game_id: g.id,
       typical_minutes: typical, basis: g.ttb_main ? 'main' : 'extra',

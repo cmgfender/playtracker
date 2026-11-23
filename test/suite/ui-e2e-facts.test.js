@@ -112,11 +112,12 @@ describe('Vestigo web UI: facts, forecast and backlog', UI, () => {
         const card = page.locator('#g-forecast');
         await card.waitFor();
         const want = await S.ok(`/games/${rpg}/forecast`);
-        assert.deepEqual([want.state, want.remaining_minutes, want.weekly_minutes, want.weeks, want.percent], ['playing', 1320, 120, 11, 27]);
+        // started 22 days ago: 480 minutes in 23 days are 146 a week
+        assert.deepEqual([want.state, want.remaining_minutes, want.weekly_minutes, want.weeks, want.percent], ['playing', 1320, 146, 9, 27]);
         assert.equal((await card.locator('h2').innerText()).trim(), 'Finish forecast');
-        assert.match((await card.locator('.ins-lead').innerText()).trim(), /^About 3 months to finish at this pace, around \S.*\.$/);
-        assert.equal(await card.locator('.ins-lead b').innerText(), 'About 3 months');
-        assert.match(await card.innerText(), /8h of the typical 30h · 2h a week lately/);
+        assert.match((await card.locator('.ins-lead').innerText()).trim(), /^About 2 months to finish at this pace, around \S.*\.$/);
+        assert.equal(await card.locator('.ins-lead b').innerText(), 'About 2 months');
+        assert.match(await card.innerText(), /8h of the typical 30h · 2h 26m a week lately/);
         assert.equal(await card.locator('.split-bar').getAttribute('aria-label'), '27% of the expected length played');
         // below Notes, above the patterns
         assert.equal(await page.evaluate(() => document.querySelector('#g-notes').closest('.card').nextElementSibling?.id), 'g-forecast');
