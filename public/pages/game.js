@@ -151,6 +151,9 @@ function bindAch(root, ach) {
 }
 
 export async function game(view, id, stale) {
+  // what is drawn below Notes is asked for with the page's own data, not after it is up
+  const below = Promise.all([api(`/stats/records?range=all&game_id=${id}`).catch(() => null), import('../insights.js'), api(`/games/${id}/forecast`).catch(() => null)]);
+  below.catch(() => {});
   const [g, ach, curve] = await Promise.all([
     api(`/games/${id}`),
     api(`/games/${id}/achievements`).catch(() => null),
@@ -288,10 +291,10 @@ export async function game(view, id, stale) {
   const fav = $('#g-fav'); // swapped in place: no re-render, keyboard focus stays on the button
   const showFav = (v) => { fav.innerHTML = icon(v ? 'heartFill' : 'heart'); fav.classList.toggle('fav-on', !!v); fav.setAttribute('aria-pressed', String(!!v)); };
   fav.addEventListener('click', () => undoable('favorite', !g.favorite, showFav, !g.favorite ? 'Added to favorites' : 'Removed from favorites'));
-  // Below Notes, loaded after the page so nothing above them moves: when the game will be finished
+  // Below Notes, drawn once the page is up so nothing above them moves: when the game will be finished
   // at the pace it is played, and "How you play it" - the patterns of its tracked days (what
   // Insights shows for a range; days with play out of all days since says little for one game).
-  Promise.all([api(`/stats/records?range=all&game_id=${id}`).catch(() => null), import('../insights.js'), api(`/games/${id}/forecast`).catch(() => null)]).then(([r, ins, fc]) => {
+  below.then(([r, ins, fc]) => {
     const lines = (r?.patterns || []).filter((h) => h.id !== 'days_played' && h.id !== 'trend').map(ins.pattern).filter(Boolean);
     const notes = $('#g-notes')?.closest('.card');
     if (stale() || !notes || $('#g-patterns') || $('#g-forecast')) return;
