@@ -965,15 +965,17 @@ export function playStyle(db, { range = '365d', platform = null, weekStartsOn = 
     const pa = platform ? [platform] : [];
     const today = dayKey(now);
     // tracked minutes per game and day, all time: starts, staying power and comebacks look past the range
+    // (a game at a time along the game index, see playedGames: its days come in order, nothing is sorted)
     const byGame = new Map();
     for (const x of db.prepare(`SELECT game_id, day, SUM(minutes) m FROM play_days INDEXED BY play_days_game
-        WHERE excluded = 0 AND estimated = 0 ${pf} GROUP BY game_id, day ORDER BY game_id, day`).all(...pa)) {
+        WHERE game_id IN (SELECT value FROM json_each(?)) AND excluded = 0 AND estimated = 0 ${pf} GROUP BY game_id, day ORDER BY game_id, day`).all(playedGames(db), ...pa)) {
       if (x.m < 0.5) continue;
       let g = byGame.get(x.game_id);
       if (!g) byGame.set(x.game_id, g = []);
       g.push([x.day, x.m]);
     }
-    const firstAny = new Map(db.prepare(`SELECT game_id, MIN(day) d FROM play_days WHERE excluded = 0 ${pf} GROUP BY game_id`).all(...pa).map((x) => [x.game_id, x.d]));
+    // (along the game index too: by the day index every row is sorted by game first)
+    const firstAny = new Map(db.prepare(`SELECT game_id, MIN(day) d FROM play_days INDEXED BY play_days_game WHERE excluded = 0 ${pf} GROUP BY game_id`).all(...pa).map((x) => [x.game_id, x.d]));
     const inRange = (d) => d >= p.fromDay && d <= p.toDay;
 
     // focus: per week, how many games and the top one's share
