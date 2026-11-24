@@ -116,3 +116,98 @@ test('Steam: leaving and coming back are two plays (its total is written when th
   assert.equal(w.spans().length, 2);
   assert.ok(!w.lines.some((l) => /is back in/.test(l)));
 });
+
+// ---- the one-time repair of sittings recorded as several sessions before this
+import { joinSittings } from '../src/services/sync.js';
+import { flushRollups } from '../src/services/rollup.js';
+
+/** A library with sessions as the old version recorded them: [entry ext id, start minute, end minute, minutes, source?, confidence?]. */
+function recorded(platform, sessions) {
+  const w = world(platform);
+  w.sync([item(1000, T0 - 5 * DAY), item(500, T0 - 5 * DAY, 8)], T0 - DAY);
+  const entry = (id) => w.db.prepare('SELECT id FROM entries WHERE ext_id = ?').get(String(id)).id;
+  const ins = w.db.prepare("INSERT INTO sessions(entry_id, source, kind, minutes, window_start, window_end, started_at, ended_at, confidence, created_at) VALUES (?, ?, 'play', ?, ?, ?, ?, ?, ?, ?)");
+  for (const [id, a, b, m, source = 'sync', confidence = 'exact'] of sessions) {
+    ins.run(entry(id), source, m, T0 + a * MIN, T0 + b * MIN, T0 + a * MIN, T0 + b * MIN, confidence, T0);
+    w.db.prepare('UPDATE entries SET playtime_min = playtime_min + ? WHERE id = ?').run(m, entry(id));
+  }
+  const account = () => parseAccount(w.db.prepare('SELECT * FROM accounts').get());
+  const totals = () => Object.fromEntries(w.db.prepare("SELECT e.ext_id, e.playtime_min p, (SELECT SUM(minutes) FROM sessions s WHERE s.entry_id = e.id AND s.kind = 'play') m FROM entries e").all().map((r) => [r.ext_id, [r.p, r.m]]));
+  flushRollups(w.db);
+  const dayMinutes = () => Math.round(w.db.prepare('SELECT COALESCE(SUM(minutes), 0) m FROM play_days WHERE estimated = 0').get().m);
+  return { ...w, account, totals, dayMinutes };
+}
+
+test('repair: the evening recorded as two sessions with a hole of five minutes becomes one; totals and days stay what they were', () => {
+  // 12:44-14:24 and 14:29-16:09, 108 minutes each
+  const w = recorded('xbox', [[7, 0, 100, 108], [7, 105, 205, 108]]);
+  const before = { totals: w.totals(), days: w.dayMinutes() };
+  assert.equal(joinSittings(w.db, w.account()), 1);
+  const plays = w.plays();
+  assert.equal(plays.length, 1);
+  assert.deepEqual([plays[0].minutes, plays[0].started_at, plays[0].ended_at], [216, T0, T0 + 205 * MIN]);
+  assert.deepEqual(w.totals(), before.totals, 'every total is what it was');
+  assert.equal(w.dayMinutes(), before.days, 'the days hold the same minutes');
+  assert.equal(joinSittings(w.db, w.account()), 0, 'nothing left to join');
+});
+
+test('repair: three in a row become one; a break of twenty minutes, another game between, and sessions that are not exact stay apart', () => {
+  const w = recorded('xbox', [
+    [7, 0, 5, 5], [7, 15, 55, 40], [7, 60, 115, 55], // 5 + 40 + 55, ten and five minutes apart: one sitting
+    [7, 135, 160, 25],                                // twenty minutes later: another
+    [7, 300, 330, 30], [8, 332, 340, 8], [7, 342, 370, 28], // another game between
+    [7, 500, 530, 30, 'sync', 'pinned'], [7, 535, 560, 25], // an estimated one is not folded
+    [7, 700, 730, 30, 'manual'], [7, 733, 760, 27],          // nor one logged by hand
+  ]);
+  const before = w.totals();
+  assert.equal(joinSittings(w.db, w.account()), 2);
+  const of7 = w.plays().filter((s) => s.minutes !== 8).map((s) => [(s.started_at - T0) / MIN, (s.ended_at - T0) / MIN, s.minutes]);
+  assert.deepEqual(of7, [[0, 115, 100], [135, 160, 25], [300, 330, 30], [342, 370, 28], [500, 530, 30], [535, 560, 25], [700, 730, 30], [733, 760, 27]]);
+  assert.deepEqual(w.totals(), before);
+});
+
+test('repair: presence spans of a folded session point at the one it joined', () => {
+  const w = recorded('xbox', [[7, 0, 100, 108], [7, 105, 205, 108]]);
+  const [a, b] = w.plays();
+  const span = w.db.prepare('INSERT INTO presence(account_id, ext_id, title, started_at, last_seen_at, ended_at, session_id) VALUES (1, ?, ?, ?, ?, ?, ?)');
+  span.run('7', 'Game 7', a.started_at, a.ended_at, a.ended_at, a.id);
+  span.run('7', 'Game 7', b.started_at, b.ended_at, b.ended_at, b.id);
+  joinSittings(w.db, w.account());
+  assert.deepEqual(w.spans().map((s) => s.session_id), [a.id, a.id]);
+});
+
+test('repair: Steam is left alone (leaving and coming back are two plays there)', () => {
+  const w = recorded('steam', [[7, 0, 100, 108], [7, 105, 205, 108]]);
+  assert.equal(joinSittings(w.db, w.account()), 0);
+  assert.equal(w.plays().length, 2);
+});
+
+test('repair: runs once, with the next sync of the account, and says what it joined', async () => {
+  const { createApp } = await import('../src/server.js');
+  const lines = [];
+  const log = { info: (m) => lines.push(String(m)), warn() {}, error() {}, debug() {} };
+  const { app, close } = createApp({ dbFile: ':memory:', password: '', scheduler: false, log });
+  try {
+    const { db, sync } = app;
+    const acc = Number(db.prepare("INSERT INTO accounts(platform, name, config, created_at) VALUES ('custom', 'Deck', '{}', 0)").run().lastInsertRowid);
+    await sync.report(acc, [{ extId: '7', title: 'Game 7', playtimeMin: 1000 }]);
+    // (that first report already marked the account: mark it as an account of an earlier version)
+    db.prepare("UPDATE accounts SET state = json_remove(state, '$.sittings_joined') WHERE id = ?").run(acc);
+    const entry = db.prepare('SELECT id FROM entries WHERE account_id = ?').get(acc).id;
+    const ins = db.prepare("INSERT INTO sessions(entry_id, source, kind, minutes, window_start, window_end, started_at, ended_at, confidence, created_at) VALUES (?, 'sync', 'play', 60, ?, ?, ?, ?, 'exact', 0)");
+    ins.run(entry, T0, T0 + 60 * MIN, T0, T0 + 60 * MIN);
+    ins.run(entry, T0 + 65 * MIN, T0 + 125 * MIN, T0 + 65 * MIN, T0 + 125 * MIN);
+    db.prepare('UPDATE entries SET playtime_min = playtime_min + 120 WHERE id = ?').run(entry);
+    const plays = () => db.prepare("SELECT minutes FROM sessions WHERE entry_id = ? AND kind = 'play'").all(entry).map((r) => r.minutes);
+    await sync.report(acc, [{ extId: '7', title: 'Game 7', playtimeMin: 1120 }]);
+    assert.deepEqual(plays(), [120]);
+    assert.ok(lines.some((l) => /1 session joined to the sitting/.test(l)), lines.join('\n'));
+    assert.equal(JSON.parse(db.prepare('SELECT state FROM accounts WHERE id = ?').get(acc).state).sittings_joined, 1);
+    // done: sessions that close together later are not touched again
+    ins.run(entry, T0 + DAY, T0 + DAY + 30 * MIN, T0 + DAY, T0 + DAY + 30 * MIN);
+    ins.run(entry, T0 + DAY + 33 * MIN, T0 + DAY + 60 * MIN, T0 + DAY + 33 * MIN, T0 + DAY + 60 * MIN);
+    db.prepare('UPDATE entries SET playtime_min = playtime_min + 120 WHERE id = ?').run(entry);
+    await sync.report(acc, [{ extId: '7', title: 'Game 7', playtimeMin: 1240 }]);
+    assert.equal(plays().length, 3);
+  } finally { close(); }
+});

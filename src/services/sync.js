@@ -876,6 +876,12 @@ export class SyncService {
       });
       this.refreshNext(account.id);
       this.presenceSessions(account.id, { fallbacks: items.filter((i) => i.unmeteredPlayAt).map((i) => ({ extId: String(i.extId), at: i.unmeteredPlayAt, prev: i.prevPlayedAt })) });
+      // once per account: sittings an earlier version recorded as two or three sessions (see joinSittings)
+      if (!this.account(account.id)?.state?.sittings_joined) {
+        const joined = joinSittings(db, account);
+        db.prepare("UPDATE accounts SET state = json_set(COALESCE(NULLIF(state, ''), '{}'), '$.sittings_joined', 1) WHERE id = ?").run(account.id);
+        if (joined) this.log.info(`${label}: ${joined} session${joined > 1 ? 's' : ''} joined to the sitting they were part of (a game out of sight for a moment used to end its session)`);
+      }
       // a session this sync recorded may be the same play another account's presence already counted
       const doubled = dropDoubledPresence(db);
       if (doubled) this.log.info(`Removed ${doubled} presence session${doubled > 1 ? 's' : ''} another account already counts`);
@@ -1468,6 +1474,38 @@ function playedElsewhere(db, entry, from, to) {
       WHERE e.game_id = ? AND e.id != ? AND e.excluded = 0 AND e.account_id != ?
         AND p.started_at < ? AND COALESCE(p.ended_at, p.last_seen_at) > ?
     LIMIT 1`).get(entry.game_id, entry.id, to, from, entry.game_id, entry.id, entry.account_id ?? -1, to, from);
+}
+
+/**
+ * A one-time repair of sessions recorded before a game back within a few polls went on as the
+ * same session (see applyPresence): on a platform whose counter runs while the game does, exact
+ * sessions of one title that follow each other within the rejoin gap, with no other play of the
+ * account between them, were one sitting. The later one is folded into the earlier (its minutes
+ * added, its end taken), so nothing is lost and every total stays what it was. Returns how many
+ * sessions were folded away.
+ */
+export function joinSittings(db, account) {
+  const provider = providers[account.platform];
+  if (!modelFor(provider, account).countsInProgress()) return 0;
+  const gap = Math.max(REJOIN_MIN, 3 * (provider?.profile?.presence?.interval_sec || 120) * 1000);
+  const rows = db.prepare(`SELECT s.id, s.entry_id, s.minutes, s.started_at, s.ended_at, s.window_end, s.source, s.confidence FROM sessions s JOIN entries e ON e.id = s.entry_id
+    WHERE e.account_id = ? AND s.kind = 'play' AND s.started_at IS NOT NULL AND s.ended_at IS NOT NULL ORDER BY s.started_at, s.id`).all(account.id);
+  let n = 0;
+  tx(db, () => {
+    let prev = null;
+    for (const r of rows) {
+      const whole = (x) => x.source === 'sync' && x.confidence === 'exact';
+      if (prev && whole(prev) && whole(r) && r.entry_id === prev.entry_id && r.started_at >= prev.ended_at && r.started_at - prev.ended_at <= gap) {
+        prev.minutes += r.minutes; prev.ended_at = r.ended_at; prev.window_end = Math.max(prev.window_end || 0, r.window_end || 0, r.ended_at);
+        db.prepare('UPDATE sessions SET minutes = ?, ended_at = ?, window_end = ? WHERE id = ?').run(prev.minutes, prev.ended_at, prev.window_end, prev.id);
+        db.prepare('UPDATE presence SET session_id = ? WHERE session_id = ?').run(prev.id, r.id);
+        db.prepare('DELETE FROM sessions WHERE id = ?').run(r.id);
+        n++;
+      } else prev = r;
+    }
+    if (n) flushRollups(db);
+  });
+  return n;
 }
 
 /**
