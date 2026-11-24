@@ -8,6 +8,8 @@ const DAYF = { year: 'numeric', month: 'short', day: 'numeric' };
 const MONF = { year: 'numeric', month: 'short' };
 const day = (t) => fmtDate(t, DAYF);
 const DAY = 864e5;
+/** An IGDB release (a calendar day at midnight UTC) as noon of that day here. */
+const igdbDay = (t) => { if (!t) return null; const d = new Date(t); return new Date(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), 12).getTime(); };
 
 /** A time as the value of an <input type=date> (its local day). */
 export const dateValue = (t) => (t ? new Date(t - new Date(t).getTimezoneOffset() * 60000).toISOString().slice(0, 10) : '');
@@ -140,7 +142,7 @@ export async function whenDialog(entryId, { entry = null, game = null, onDone = 
   } catch (e) {
     if (!byHand) return fail(e);
     // no hours before it yet: only the release IGDB has
-    const rel = game?.meta?.release_date;
+    const rel = igdbDay(game?.meta?.release_date);
     ctx = { entry_id: entryId, platform: 'manual', minutes: 0, tracking_start: entry.first_seen_at, mode: 'auto', window: null, manual: null, marks: [...(rel ? [{ key: 'release_igdb', label: 'Released', at: rel, source: 'IGDB', use: 'start' }] : []), { key: 'tracking', label: 'Added to Vestigo', at: entry.first_seen_at }], unlocks: { times: [], by_month: [], before_tracking: 0 }, others: [], conflicts: [] };
   }
   const manual = ctx.manual;
@@ -284,6 +286,7 @@ export async function addGameModal() {
         const mine = lib.items.map((g) => `<a class="item" href="/game/${g.id}" data-mine="${g.id}">${cover(g, 'sm')}<div class="grow"><div class="ttl ellipsis">${esc(g.title)}</div><div class="sub">Already in your library · ${g.platforms.map(platDot).join('')} ${fmtMin(g.minutes)}</div></div>${icon('arrowR', 'ic-inline')}</a>`);
         const theirs = found.slice(0, 6).map((x, i) => `<button type="button" class="item" data-ig="${i}">${x.thumb_url ? `<img src="${esc(x.thumb_url)}" width="34" height="45" alt="" loading="lazy" style="border-radius:6px">` : '<span style="width:34px"></span>'}
             <div class="grow" style="text-align:left"><div class="ttl ellipsis">${esc(x.name)}</div><div class="sub">${x.year || 'year unknown'}${x.platforms.length ? ` · ${esc(x.platforms.slice(0, 5).join(', '))}${x.platforms.length > 5 ? '…' : ''}` : ''}${x.main ? '' : ' · DLC, bundle or edition'}</div></div></button>`);
+        for (const x of found) x.release_date = igdbDay(x.release_date);
         sugg._found = found;
         sugg.innerHTML = (mine.length ? `<div class="tiny muted ag-h">In your library</div>${mine.join('')}` : '') + (theirs.length ? `<div class="tiny muted ag-h">On IGDB</div>${theirs.join('')}` : '');
         sugg.hidden = !mine.length && !theirs.length;
@@ -313,7 +316,7 @@ export async function addGameModal() {
         if (hours > 0) {
           let [s, e] = readPeriod(when);
           // not before it came out: "1996" for a game released in June 1996 starts in June
-          if (picked?.release_date && s < picked.release_date && e > picked.release_date) s = new Date(picked.release_date).setHours(12, 0, 0, 0);
+          if (picked?.release_date && s < picked.release_date && e > picked.release_date) s = picked.release_date;
           body.history = { minutes: Math.round(hours * 60), first_played_at: new Date(s).toISOString(), last_played_at: new Date(e).toISOString(), coarse: true };
         }
         saving = true;

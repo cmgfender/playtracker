@@ -6,6 +6,32 @@
 import { realTime, looksCoarse } from './inference.js';
 
 const DAY = 86_400_000;
+/**
+ * IGDB gives a release as a calendar day at midnight UTC: read as a local time it is the day
+ * before in the Americas. The day itself, at noon local time.
+ */
+export const igdbDay = (t) => { if (realTime(t) == null) return null; const d = new Date(t); return new Date(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), 12).getTime(); };
+
+/** When the game came out: the store's date (Steam), else IGDB's. { at, source: 'store' | 'igdb' } or null. */
+export function releaseOf(db, entry, h = JSON.parse(entry.hist || '{}')) {
+  const store = realTime(h.release_at);
+  if (store) return { at: store, source: 'store' };
+  const igdb = igdbDay(db.prepare('SELECT release_date FROM game_meta WHERE game_id = ? AND igdb_id IS NOT NULL').get(entry.game_id)?.release_date);
+  return igdb ? { at: igdb, source: 'igdb' } : null;
+}
+
+/**
+ * A period answered by year or quarter ("2026, Jan - Mar") starts no earlier than the game came
+ * out: Jan - Mar for a game released on Feb 10 is Feb 10 - Mar 31. Unless something says it was
+ * played before that (an unlock, a first or last played date: early access), or the whole period
+ * is before it (then it stays, and is pointed out).
+ */
+export function periodStart(db, entry, h, start, end) {
+  const rel = releaseOf(db, entry, h)?.at;
+  if (!rel || !start || start >= rel || (end && end <= rel)) return start;
+  const before = [...(h.anchors || []), h.first_played_at, h.last_played_at].some((t) => realTime(t) != null && t < rel - DAY);
+  return before ? start : rel;
+}
 const PLATFORM = { steam: 'Steam', xbox: 'Xbox', psn: 'PlayStation' };
 const monthKey = (t) => { const d = new Date(t); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`; };
 const fmt = (t) => new Date(t).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
@@ -39,7 +65,7 @@ export function historyContext(db, entryId, { window = null } = {}) {
     });
 
   const release = realTime(h.release_at);
-  const igdbRelease = realTime(meta?.release_date);
+  const igdbRelease = igdbDay(meta?.release_date);
   const marks = [
     release && { key: 'release', label: 'Released', at: release, source: e.platform === 'steam' ? 'Steam store' : 'store', use: 'start' },
     // IGDB's date is the first release of what it matched: an early-access game's 1.0, another edition's date
@@ -93,15 +119,12 @@ export function conflicts(ctx, h, w) {
     if (before.length) out.push({ kind: 'unlocks_before', at: before[0], n: before.length, text: `${plural(before.length, 'achievement')} unlocked before this start, the first on ${fmt(before[0])}` });
     const fp = realTime(h.first_played_at);
     if (fp && fp < s - 7 * DAY) out.push({ kind: 'first_played_before', at: fp, text: `${where} says it was first played on ${fmt(fp)}, before this start` });
-    // a start before the game existed (unless unlocks say the release date is wrong for this copy)
-    const rel = realTime(h.release_at) ?? null;
-    const igdb = ctx.marks.find((m) => m.key === 'release_igdb')?.at ?? null;
-    const firstUnlock = times[0] ?? Infinity;
-    for (const [r, src] of [[rel, 'the store'], [igdb, 'IGDB']]) {
-      if (r && s < r - 30 * DAY && firstUnlock > r - DAY) {
-        out.push({ kind: 'before_release', at: r, text: `This start is before ${src === 'IGDB' ? 'the release date IGDB has' : 'the release date'} (${fmt(r)})${src === 'IGDB' ? ' - an early-access game\'s or another edition\'s date may be later than yours' : ''}` });
-        break;
-      }
+    // a start before the game existed (unless unlocks say the release date is wrong for this copy).
+    // The store's date (Steam) needs no warning: no hours are dated before it whatever the start.
+    // IGDB's bounds nothing, so hours would be charted before the game came out.
+    const igdb = realTime(h.release_at) ? null : ctx.marks.find((m) => m.key === 'release_igdb')?.at ?? null;
+    if (igdb && s < igdb - 30 * DAY && (times[0] ?? Infinity) > igdb - DAY) {
+      out.push({ kind: 'before_release', at: igdb, text: `This start is before the release date IGDB has (${fmt(igdb)}): hours are charted before the game came out. An early-access game's or another edition's date can be later than yours` });
     }
   }
   if (en != null) {

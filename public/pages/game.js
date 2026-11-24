@@ -519,7 +519,8 @@ function aboutCard(g) {
     m.developers.length && ['Developer', m.developers.slice(0, 2).map((n) => `<a class="link" href="${tagHref('developer', n)}" data-link>${esc(n)}</a>`).join(', ')],
     m.publishers.length && m.publishers.join() !== m.developers.join() && ['Publisher', m.publishers.slice(0, 2).map(esc).join(', ')],
     m.franchises.length && ['Series', m.franchises.slice(0, 2).map((n) => `<a class="link" href="${tagHref('franchise', n)}" data-link>${esc(n)}</a>`).join(', ')],
-    m.release_date && ['Released', fmtDate(m.release_date, { year: 'numeric', month: 'short', day: 'numeric' })],
+    // (IGDB's date is a calendar day at midnight UTC: shown as that day wherever you are)
+    m.release_date && ['Released', fmtDate(m.release_date, { year: 'numeric', month: 'short', day: 'numeric', timeZone: 'UTC' })],
     m.rating != null && ['IGDB rating', `${Math.round(m.rating)}<span class="tiny muted"> / 100${m.rating_count ? ` · ${m.rating_count.toLocaleString()} ratings` : ''}</span>`],
   ].filter(Boolean);
   const t = m.time_to_beat;

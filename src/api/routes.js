@@ -13,7 +13,7 @@ import { importRows, exportChunks, parseCsv } from '../services/importer.js';
 import { manualEntry, mergeGames, pruneEmptyGames, splitEntry, findOrCreateGame, cleanTitle } from '../services/library.js';
 import { normalizeTitle } from '../services/titles.js';
 import { reinferMany, reinferPending, relearnStyle, styleOf, INFER_VERSION } from '../services/inference.js';
-import { historyContext } from '../services/histcontext.js';
+import { historyContext, periodStart } from '../services/histcontext.js';
 import { flushRollups } from '../services/rollup.js';
 import { applyLicenses } from '../services/licenses.js';
 import { readZip, isZip } from '../services/zip.js';
@@ -1347,8 +1347,10 @@ export function registerRoutes(r, app) {
       const start = timeField(b, 'first_played_at');
       const end = timeField(b, 'last_played_at');
       if (start && end && end < start) throw new HttpError(400, 'last_played_at must be after first_played_at');
-      // coarse: answered as a period ("mostly 2018"), spread evenly over it
-      h.manual = start || end ? { start: start || undefined, end: end || undefined, ...(b.coarse === true ? { coarse: true } : {}) } : null;
+      // coarse: answered as a period ("mostly 2018"), spread evenly over it - from the release
+      // on, when the period began before the game came out
+      const from = b.coarse === true ? periodStart(db, e, h, start, end) : start;
+      h.manual = from || end ? { start: from || undefined, end: end || undefined, ...(b.coarse === true ? { coarse: true } : {}) } : null;
     }
     if (b.reset) { delete h.manual; h.mode = 'auto'; }
     if (b.acknowledge) {

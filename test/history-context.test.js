@@ -36,7 +36,8 @@ function fortnite() {
   unlocks.forEach((t, i) => ins.run(entry, `a${i}`, ['Gunsmith', 'Take Out Those Husks', 'Builder', 'Survivor'][i], t, now, now));
   db.prepare("INSERT INTO achievements(entry_id, ach_id, name, unlocked, first_seen_at, updated_at) VALUES (?, 'locked', 'Locked one', 0, ?, ?)").run(entry, now, now);
   // IGDB's date is the 1.0 release, three years after early access
-  db.prepare("INSERT INTO game_meta(game_id, igdb_id, matched_by, name, release_date, fetched_at) VALUES (?, 1905, 'title', 'Fortnite', ?, ?)").run(game, at(2020, 6, 29), now);
+  // (as IGDB gives it: the calendar day at midnight UTC)
+  db.prepare("INSERT INTO game_meta(game_id, igdb_id, matched_by, name, release_date, fetched_at) VALUES (?, 1905, 'title', 'Fortnite', ?, ?)").run(game, Date.UTC(2020, 5, 29), now);
   return { game, entry };
 }
 
@@ -50,6 +51,7 @@ test('the context lists every date known, oldest first, with the unlocks by mont
   assert.equal(c.marks[0].detail, 'Gunsmith');
   assert.equal(c.marks[0].at, at(2017, 7, 22, 17));
   assert.equal(c.marks.find((m) => m.key === 'release_igdb').source, 'IGDB: Fortnite');
+  assert.equal(c.marks.find((m) => m.key === 'release_igdb').at, at(2020, 6, 29), 'IGDB\'s day is that day here, not the evening before');
   assert.deepEqual(c.unlocks.by_month, [{ key: '2017-07', n: 2 }, { key: '2017-08', n: 1 }, { key: '2017-09', n: 1 }]);
   assert.equal(c.unlocks.before_tracking, 4);
   assert.equal(c.unlocks.total, 5);
@@ -152,4 +154,49 @@ test('a game added by hand takes the hours played before, dated over the years y
   assert.equal((await call(`/entries/${bare.entries[0].id}/history`, { method: 'PATCH', body: { minutes: -5 } })).status, 400);
   assert.equal((await call('/games', { method: 'POST', body: { title: 'Bad', history: { minutes: 'lots' } } })).status, 400);
   assert.equal((await call('/games', { method: 'POST', body: { title: 'Bad', history: { minutes: 60, first_played_at: '2000-01-01', last_played_at: '1999-01-01' } } })).status, 400);
+});
+
+test('a period answered before the game came out starts at the release (Mewgenics: "2026, Jan - Mar", out Feb 10)', async () => {
+  const now = Date.now();
+  const game = Number(db.prepare("INSERT INTO games(title, norm_title, created_at, updated_at) VALUES ('Mewgenics', 'mewgenics', ?, ?)").run(now, now).lastInsertRowid);
+  const hist = (more = {}) => JSON.stringify({ tracking_start: at(2026, 10, 22), release_at: at(2026, 2, 10, 0), last_played_at: at(2026, 7, 24), ...more });
+  const entry = (h) => Number(db.prepare(`INSERT INTO entries(account_id, game_id, platform, ext_id, title, playtime_min, baseline_min, first_seen_at, hist)
+    VALUES (NULL, ?, 'steam', ?, 'Mewgenics', 8100, 8100, ?, ?)`).run(game, `m${Math.random()}`, at(2026, 10, 22), h).lastInsertRowid);
+  const quarter = { first_played_at: '2026-01-01T12:00:00', last_played_at: '2026-03-31T20:00:00', coarse: true };
+  const e1 = entry(hist());
+  const r = await call(`/entries/${e1}/history`, { method: 'PATCH', body: quarter });
+  const h = r.data.entries.find((x) => x.id === e1).history;
+  assert.equal(h.manual.start, at(2026, 2, 10, 0), 'starts when it came out');
+  assert.equal(h.manual.end, at(2026, 3, 31, 20));
+  assert.ok(!h.conflicts.some((c) => c.kind === 'before_release'));
+  // played before the store date (an unlock in early access): the answer stands as given
+  const e2 = entry(hist({ anchors: [at(2026, 1, 20)] }));
+  const r2 = await call(`/entries/${e2}/history`, { method: 'PATCH', body: quarter });
+  assert.equal(r2.data.entries.find((x) => x.id === e2).history.manual.start, at(2026, 1, 1));
+  // dates typed as days stand as typed
+  const e3 = entry(hist());
+  const r3 = await call(`/entries/${e3}/history`, { method: 'PATCH', body: { ...quarter, coarse: false } });
+  const h3 = r3.data.entries.find((x) => x.id === e3).history;
+  assert.equal(h3.manual.start, at(2026, 1, 1));
+  // and need no warning about the release: no hours are dated before the store's date anyway
+  assert.ok(!h3.conflicts.some((c) => c.kind === 'before_release'));
+  assert.ok(h3.window[0] >= new Date(2026, 1, 10).getTime(), 'the estimate starts at the release');
+});
+
+test('a start before the release date only IGDB has is pointed out: nothing else keeps hours from being charted before it', async () => {
+  const now = Date.now();
+  const game = Number(db.prepare("INSERT INTO games(title, norm_title, created_at, updated_at) VALUES ('Halo 5', 'halo 5', ?, ?)").run(now, now).lastInsertRowid);
+  db.prepare("INSERT INTO game_meta(game_id, igdb_id, matched_by, name, release_date, fetched_at) VALUES (?, 7, 'title', 'Halo 5: Guardians', ?, ?)").run(game, Date.UTC(2015, 9, 27), now);
+  const entry = Number(db.prepare(`INSERT INTO entries(account_id, game_id, platform, ext_id, title, playtime_min, baseline_min, first_seen_at, hist)
+    VALUES (NULL, ?, 'xbox', 'h5', 'Halo 5', 17065, 17065, ?, ?)`).run(game, at(2026, 10, 22), JSON.stringify({ tracking_start: at(2026, 10, 22), last_played_at: at(2021, 7, 17) })).lastInsertRowid);
+  const r = await call(`/entries/${entry}/history`, { method: 'PATCH', body: { first_played_at: '2015-01-01T12:00:00', last_played_at: '2015-12-31T20:00:00' } });
+  const c = r.data.entries.find((x) => x.id === entry).history.conflicts;
+  const rel = c.find((x) => x.kind === 'before_release');
+  assert.ok(rel, JSON.stringify(c));
+  assert.match(rel.text, /Oct 27, 2015/);
+  // a period answer starts at IGDB's date instead
+  const p = await call(`/entries/${entry}/history`, { method: 'PATCH', body: { first_played_at: '2015-01-01T12:00:00', last_played_at: '2015-12-31T20:00:00', coarse: true } });
+  const h = p.data.entries.find((x) => x.id === entry).history;
+  assert.equal(h.manual.start, at(2015, 10, 27));
+  assert.ok(!h.conflicts.some((x) => x.kind === 'before_release'));
 });
