@@ -61,7 +61,7 @@ describe('IGDB metadata in the UI', UI, () => {
       await page.locator('[data-jump=genres]').click();
       const sec = page.locator('#ins-genres');
       await sec.locator('.card h3').first().waitFor();
-      assert.deepEqual(await sec.locator('.card h3').allInnerTexts(), ['Genres', 'Genres over time', 'Series', 'Developers', 'Your pace']);
+      assert.deepEqual(await sec.locator('.card h3').allInnerTexts(), ['Genres', 'Your pace', 'Genres over time', 'Series', 'Developers']);
       const t = await S.ok('/stats/tags?kind=genre&range=all');
       assert.equal(await sec.locator('a.mrow.mlink .ml').first().innerText(), t.items[0].name);
       assert.equal(await sec.locator('a.mrow.mlink').first().getAttribute('href'), `/library?tag=${encodeURIComponent(`genre:${t.items[0].name}`)}`);
