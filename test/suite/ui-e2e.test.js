@@ -106,7 +106,7 @@ describe('Vestigo web UI (no password)', UI, () => {
     ['/', 'Home', 'Vestigo'], ['/library', 'Library', 'Library · Vestigo'], [`/game/${D.ids.celeste}`, 'Library', 'Celeste · Vestigo'],
     [`/game/${D.ids.zelda}`, 'Library', 'Zelda: TotK · Vestigo'], ['/sessions', 'Sessions', 'Sessions · Vestigo'], ['/stats', 'Stats', 'Stats · Vestigo'], ['/insights', 'Insights', 'Insights · Vestigo'],
     [`/wrapped/${YEAR}`, null, `${YEAR} in review · Vestigo`], [`/wrapped/${YEAR - 1}`, null, `${YEAR - 1} in review · Vestigo`],
-    ['/milestones', 'Milestones', 'Milestones · Vestigo'], ['/duplicates', 'Duplicates', 'Duplicates · Vestigo'], ['/history', 'Improve history', 'Improve history · Vestigo'], ['/accounts', 'Accounts', 'Accounts · Vestigo'],
+    ['/milestones', 'Milestones', 'Milestones · Vestigo'], ['/franchises', 'Franchises', 'Franchises · Vestigo'], ['/duplicates', 'Duplicates', 'Duplicates · Vestigo'], ['/history', 'Improve history', 'Improve history · Vestigo'], ['/accounts', 'Accounts', 'Accounts · Vestigo'],
     ['/system', 'System', 'System · Vestigo'], ['/settings', 'Settings', 'Settings · Vestigo'], ['/api', 'API', 'API · Vestigo'], ['/more', null, 'More · Vestigo'],
     ['/this-route-does-not-exist', null, 'Not found · Vestigo'],
   ];
@@ -216,7 +216,7 @@ describe('Vestigo web UI (no password)', UI, () => {
       assert.equal(new URL(p.page.url()).pathname, '/library');
       await spa(p, p.page.locator('.tabbar a', { hasText: 'More' }), 'More');
       const links = (await p.page.locator('#view .more-feature .ttl, #view .more-row .ttl').allInnerTexts()).map((x) => x.trim());
-      assert.deepEqual(links, ['Year in review', 'Insights', 'Milestones', 'Duplicates', 'Improve history', 'Accounts', 'Settings', 'System', 'API']);
+      assert.deepEqual(links, ['Year in review', 'Insights', 'Milestones', 'Franchises', 'Duplicates', 'Improve history', 'Accounts', 'Settings', 'System', 'API']);
       assert.deepEqual((await p.page.locator('#view .more-sec h2').allInnerTexts()).map((x) => x.trim().toLowerCase()), ['track', 'tidy up', 'setup', 'advanced'], 'the sidebar\'s groups, minus the tabs');
       await spa(p, p.page.locator('#view .item', { hasText: 'Accounts' }), 'Accounts');
       assert.equal(await p.page.title(), 'Accounts · Vestigo');
@@ -2336,7 +2336,7 @@ describe('Vestigo web UI: navigation, status and feedback', UI, () => {
           return [g.getAttribute('role'), label?.textContent.trim(), [...g.querySelectorAll('a.nav-link')].map((a) => [...a.childNodes].filter((n) => n.nodeType === 3).map((n) => n.textContent).join('').trim())];
         }));
         assert.deepEqual(groups, [
-          ['group', 'Track', ['Home', 'Library', 'Sessions', 'Stats', 'Insights', 'Year in review', 'Milestones']],
+          ['group', 'Track', ['Home', 'Library', 'Sessions', 'Stats', 'Insights', 'Year in review', 'Milestones', 'Franchises']],
           ['group', 'Tidy up', ['Duplicates', 'Improve history']],
           ['group', 'Setup', ['Accounts', 'Settings']],
           ['group', 'Advanced', ['System', 'API']],

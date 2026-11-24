@@ -28,6 +28,7 @@ import { sendSummary } from '../services/webhook.js';
 import { facts, withFacts } from '../services/facts.js';
 import { finishForecast, backlogReality } from '../services/forecast.js';
 import { milestones, MARKS, CATEGORIES } from '../services/milestones.js';
+import { franchiseList, franchiseDetail, gameFranchise } from '../services/franchises.js';
 import fsp from 'node:fs';
 import { httpJson, ProviderError } from '../providers/http.js';
 import { HttpError, toInt, toTime } from '../util.js';
@@ -360,6 +361,8 @@ export function registerRoutes(r, app) {
       ...gameRow(g),
       entries,
       meta: gameMeta(db, id),
+      // its franchise, its place in it (release order) and the entries either side
+      franchise: gameFranchise(db, id),
       // the game's achievements: its counted entries together (completed when any of them is)
       achievements: combineSummaries(entries.filter((e) => !e.excluded).map((e) => e.achievements)),
       summary: {
@@ -853,6 +856,24 @@ export function registerRoutes(r, app) {
       + `reached: [{ id, kind (${Object.keys(MARKS).join('|')}), category, text, value, tier (the rung on its ladder), notable, day | null (date unknown: only undated history reaches it), `
       + 'precision: day|month|year|null (estimated history: "around March 2015" or "in 2015"), basis: tracked|estimated|unlock|platform|undated, subject?, game_id?, title?, detail? }] newest first, undated last, '
       + 'coming: [{ id, kind, category, text, target, current (in the unit of target), percent, subject?, game_id?, title? }] nearest first }',
+  });
+  r.get('/api/v1/franchises', (c) => franchiseList(db, { q: String(c.query.q || ''), limit: clamp(c.query.limit, 500, 1, 2000) }), {
+    summary: 'Franchises with games of yours, most played first: the big ones curated (every main entry in release order, the ones you do not own too), the rest from IGDB and the titles',
+    tag: 'stats',
+    query: { q: 'name contains', limit: 'max 2000 (default 500)' },
+    returns: '{ total, curated, items: [{ id, name, curated, games, played, finished, minutes (history included), first_day, last_day, released: { from, to } (years), '
+      + 'mainline: { total, owned, played, finished } | null (curated only), next: { title, year, kind, game_id, owned, via (the collection it is in), earlier (none after your latest: the closest before it) } | null, covers: [url] }] }',
+  });
+  r.get('/api/v1/franchises/:key', (c) => {
+    const f = franchiseDetail(db, decodeURIComponent(c.params.key));
+    if (!f) throw new HttpError(404, 'No such franchise');
+    return f;
+  }, {
+    summary: 'A franchise by id or name: its games in release order (curated: every entry, with yours matched), totals, what to play next, the order you played it in and, for some, the story order',
+    tag: 'stats',
+    returns: '(as in GET /franchises) plus items: [{ key, year, title, kind: main|spinoff|remake|remaster|collection|other, curated, game: { id, title, cover_url, minutes, status, state, platforms, first_day, last_day, complete } | null, '
+      + 'others (more copies), via: { game_id, title } | null (in a collection you own), state: finished|playing|played|dropped|owned|missing }] (release order), '
+      + 'your_order: { games: [{ id, title, first_day, year }], in_release_order, pairs }, story: [item keys] | null (the order of the story, where it differs)',
   });
   r.get('/api/v1/games/:id/forecast', (c) => {
     const f = finishForecast(db, toInt(c.params.id));

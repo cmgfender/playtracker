@@ -417,6 +417,7 @@ const NAV = [
   { path: '/insights', label: 'Insights', icon: 'insights', group: 'Track' },
   { path: '/wrapped', href: () => `/wrapped/${state.latestYear}`, label: 'Year in review', icon: 'trail', group: 'Track' },
   { path: '/milestones', label: 'Milestones', icon: 'trophy', group: 'Track' },
+  { path: '/franchises', label: 'Franchises', icon: 'grid', group: 'Track' },
   { path: '/duplicates', label: 'Duplicates', icon: 'dupes', group: 'Tidy up', badge: 'dupes' },
   { path: '/history', label: 'Improve history', icon: 'history', group: 'Tidy up' },
   { path: '/accounts', label: 'Accounts', icon: 'accounts', group: 'Setup' },
@@ -501,7 +502,7 @@ function syncShell() {
 
 // tab titles; game and wrapped pages set their own once they know the title / year
 const PAGE_TITLES = {
-  dashboard: '', library: 'Library', game: '', sessions: 'Sessions', stats: 'Stats', insights: 'Insights', milestones: 'Milestones', duplicates: 'Duplicates', history: 'Improve history',
+  dashboard: '', library: 'Library', game: '', sessions: 'Sessions', stats: 'Stats', insights: 'Insights', milestones: 'Milestones', franchises: 'Franchises', franchise: '', duplicates: 'Duplicates', history: 'Improve history',
   accounts: 'Accounts', settings: 'Settings', apidocs: 'API', system: 'System', more: 'More',
 };
 
@@ -514,6 +515,8 @@ const ROUTES = [
   [/^\/insights$/, 'insights'],
   [/^\/wrapped\/(\d{4})$/, 'wrapped'],
   [/^\/milestones$/, 'milestones'],
+  [/^\/franchises$/, 'franchises'],
+  [/^\/franchise\/([^/]+)$/, 'franchise'],
   [/^\/duplicates$/, 'duplicates'],
   [/^\/accounts$/, 'accounts'],
   [/^\/settings$/, 'settings'],
