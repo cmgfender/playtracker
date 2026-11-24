@@ -1,5 +1,6 @@
 // Vestigo web UI, end to end: Franchises - the list, a franchise in release order (the games you
-// don't own too), story order, and the game page's card with the main games either side.
+// don't own too) in its eras, versions linked to their originals, story order, and the game page's
+// card with its era and the main games either side.
 // Run: node --disable-warning=ExperimentalWarning --test test/suite/ui-e2e-franchises.test.js
 import { describe, test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
@@ -49,6 +50,15 @@ describe('Vestigo web UI: franchises', UI, () => {
         assert.match(await rows.filter({ hasText: 'Halo 3:' }).first().innerText(), /Not in your library/, 'ODST: not owned');
         assert.equal(await rows.filter({ hasText: 'Halo 5: Guardians' }).locator('a').getAttribute('href'), `/game/${id.h5}`);
         assert.match(await page.locator('.fr-next').innerText(), /Halo Infinite/, 'after Halo 5: Infinite');
+        // eras: a card of them, and each one heading its games in release order
+        assert.deepEqual(await page.locator('.fr-era .nm').allInnerTexts(), ['Bungie', '343 Industries', 'Halo Studios']);
+        assert.deepEqual(await page.locator('#fr-items .fr-era-h b').allInnerTexts(), ['Bungie', '343 Industries', 'Halo Studios']);
+        await page.locator('.fr-era', { hasText: '343 Industries' }).click();
+        await page.locator('#fr-era-1').waitFor();
+        // a remaster says what it is a version of; the original lists its versions
+        const row = (t) => rows.filter({ has: page.locator('.ttl', { hasText: new RegExp(`^${t}$`) }) });
+        assert.match(await row('Halo: Combat Evolved Anniversary').innerText(), /Remaster of Halo: Combat Evolved \(2001\)/);
+        assert.match(await row('Halo 2').innerText(), /Also as Halo 2: Anniversary \(2014\)/);
         await page.locator('[data-order="story"]').click();
         assert.equal((await rows.first().locator('.ttl').innerText()).trim(), 'Halo Wars');
         const o = await overflow(page, viewport.width);
@@ -65,6 +75,7 @@ describe('Vestigo web UI: franchises', UI, () => {
       await waitView(h.page);
       const c = h.page.locator('#g-franchise');
       assert.match(await c.innerText(), /7th of 8 main games, released 2015/);
+      assert.match(await c.innerText(), /343 Industries era \(2011–2021\)/);
       assert.match(await c.innerText(), /Halo 4[\s\S]*Halo Infinite/);
       assert.equal(await c.locator('a[href="/franchise/halo"]').count(), 1);
       clean(h);

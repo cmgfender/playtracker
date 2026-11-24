@@ -858,21 +858,27 @@ export function registerRoutes(r, app) {
       + 'coming: [{ id, kind, category, text, target, current (in the unit of target), percent, subject?, game_id?, title? }] nearest first }',
   });
   r.get('/api/v1/franchises', (c) => franchiseList(db, { q: String(c.query.q || ''), limit: clamp(c.query.limit, 500, 1, 2000) }), {
-    summary: 'Franchises with games of yours, most played first: the big ones curated (every main entry in release order, the ones you do not own too), the rest from IGDB and the titles',
+    summary: 'Franchises with games of yours, most played first: the big ones curated (every main entry in release order, the ones you do not own too, in eras, with remakes, remasters and re-releases linked to the games they are versions of), the rest from IGDB and the titles',
     tag: 'stats',
     query: { q: 'name contains', limit: 'max 2000 (default 500)' },
     returns: '{ total, curated, items: [{ id, name, curated, games, played, finished, minutes (history included), first_day, last_day, released: { from, to } (years), '
-      + 'mainline: { total, owned, played, finished } | null (curated only), next: { title, year, kind, game_id, owned, via (the collection it is in), earlier (none after your latest: the closest before it) } | null, covers: [url] }] }',
+      + 'mainline: { total, owned, played, finished } | null (curated only; owned and played in any version: a remake, a remaster, a collection), '
+      + 'next: { title, year, kind, game_id, owned, via (the version or collection you have it in), play_as: { title, year, kind } | null (a version of it you could play, when you have none), earlier (none after your latest: the closest before it) } | null, '
+      + 'covers: [url], era_count, your_era: { index, name, from, to } | null (the era you played most) }] }',
   });
   r.get('/api/v1/franchises/:key', (c) => {
     const f = franchiseDetail(db, decodeURIComponent(c.params.key));
     if (!f) throw new HttpError(404, 'No such franchise');
     return f;
   }, {
-    summary: 'A franchise by id or name: its games in release order (curated: every entry, with yours matched), totals, what to play next, the order you played it in and, for some, the story order',
+    summary: 'A franchise by id or name: its games in release order (curated: every entry, with yours matched), its eras, the versions of each game, totals, what to play next, the order you played it in and, for some, the story order',
     tag: 'stats',
-    returns: '(as in GET /franchises) plus items: [{ key, year, title, kind: main|spinoff|remake|remaster|collection|other, curated, game: { id, title, cover_url, minutes, status, state, platforms, first_day, last_day, complete } | null, '
-      + 'others (more copies), via: { game_id, title } | null (in a collection you own), state: finished|playing|played|dropped|owned|missing }] (release order), '
+    returns: '(as in GET /franchises) plus eras: [{ index, name, note, from, to, main: { total, owned, played, finished }, games, minutes, first_day, last_day }], '
+      + 'items: [{ key, year, title, kind: main|spinoff|remake|remaster|rerelease|collection|hub (a launcher holding several games)|other, curated, era (index) | null, '
+      + 'game: { id, title, cover_url, minutes, status, state, platforms, first_day, last_day, complete } | null, others (more copies), '
+      + 'of: [{ key, title, year }] (what a version is a version of; what a collection holds), partial (a remake of part of it), versions: [{ key, title, year, kind, state, game_id }] (its remakes, remasters, re-releases and the collections holding it), '
+      + 'via: { game_id, title, kind, year, key } | null (the version it stands through), addons: [{ id, title, minutes, kind: test|bonus }] (betas and bonus content of it), note (of an app), '
+      + 'state: finished|playing|played|dropped|owned|missing }] (release order), '
       + 'your_order: { games: [{ id, title, first_day, year }], in_release_order, pairs }, story: [item keys] | null (the order of the story, where it differs)',
   });
   r.get('/api/v1/games/:id/forecast', (c) => {
