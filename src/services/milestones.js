@@ -143,7 +143,16 @@ const later = (a, b) => (a == null ? b : b == null ? a : a > b ? a : b);
  */
 export function milestones(db, { now = Date.now(), limit = 60, all = false, category = null } = {}) {
   const today = dayKey(now);
-  return memo(db, `milestones2:${today}:${limit}:${all}:${category}`, () => {
+  // worked out once (until the next write or day): the highlights, a category and a limit are views of it
+  const m = memo(db, `milestones2:${today}`, () => career(db, now, today));
+  const inCat = (x) => !category || x.category === category;
+  const shown = (all ? m.reached : m.reached.filter((r) => r.notable)).filter(inCat);
+  const { reached, coming, ...rest } = m;
+  return { ...rest, reached: shown.slice(0, limit), coming: coming.filter(inCat) };
+}
+
+function career(db, now, today) {
+  {
     const reached = [];
     const coming = [];
     const at = (day, precision, basis) => ({ day, precision, basis });
@@ -414,13 +423,11 @@ export function milestones(db, { now = Date.now(), limit = 60, all = false, cate
       const y = r.day ? r.day.slice(0, 4) : null;
       if (y) years.set(y, (years.get(y) || 0) + 1);
     }
-    const inCat = (x) => !category || x.category === category;
-    const shown = (all ? reached : reached.filter((r) => r.notable)).filter(inCat);
     return {
       day: today, first_day: start?.day || null, first_precision: start?.precision || null,
       total: reached.length, notable_total: reached.filter((r) => r.notable).length, counts, categories,
       years: [...years].sort((a, b) => (a[0] < b[0] ? 1 : -1)).map(([year, c]) => ({ year: Number(year), n: c })),
-      reached: shown.slice(0, limit), coming: coming.filter(inCat),
+      reached, coming,
     };
-  });
+  }
 }
