@@ -92,6 +92,9 @@ export async function stats(view, stale) {
     }
     if (my !== loadSeq || stale()) return;
     const pv = s.previous;
+    // the period before began before tracking: tracked-only numbers (sessions, the daily average; with
+    // estimated history off, all of them) have nothing to be compared with
+    const tracked = !!pv?.before_tracking;
     const hasHours = s.hours.some((h) => h > 0);
     if (!s.total_minutes) {
       body.innerHTML = `<div class="card">${emptyState('stats', 'Nothing played in this range', `${esc(s.range.label)}${platform ? ` on ${esc(plat(platform).label)}` : ''}${estimates === 'exclude' ? ', tracked play only' : ''}: no sessions and no dated history.`, `<button class="btn" data-r-all>Show all time</button><button class="btn" data-st-log>${icon('clock')}Log a session</button>`)}</div>`;
@@ -101,10 +104,10 @@ export async function stats(view, stale) {
     }
     body.innerHTML = `
       <div class="kpis fade-in">
-        ${kpi('Played', hoursVal(s.total_minutes), `${delta(s.total_minutes, pv?.total_minutes, range, fmtMin)} ${s.estimated_minutes ? `${fmtHours(s.tracked_minutes)}h tracked + ${fmtHours(s.estimated_minutes)}h estimated` : s.range.label}`, sparkline(s.series.map((x) => x.minutes)), 'feature')}
-        ${kpi('Sessions', s.sessions, `${delta(s.sessions, pv?.sessions, range)} avg ${fmtMin(s.avg_session_minutes)}`)}
-        ${kpi('Games', s.games_played, `${delta(s.games_played, pv?.games_played, range)} ${plural(s.days_played, 'day')} played`)}
-        ${kpi('Daily avg', fmtMin(s.avg_per_day_minutes), `${delta(s.avg_per_day_minutes, pv?.avg_per_day_minutes, range, fmtMin)} ${s.busiest_day ? `best ${fmtDate(new Date(`${s.busiest_day.day}T12:00`).getTime())} · ${fmtMin(s.busiest_day.minutes)}` : ''}`)}
+        ${kpi('Played', hoursVal(s.total_minutes), `${delta(s.total_minutes, tracked && estimates === 'exclude' ? null : pv?.total_minutes, range, fmtMin)} ${s.estimated_minutes ? `${fmtHours(s.tracked_minutes)}h tracked + ${fmtHours(s.estimated_minutes)}h estimated` : s.range.label}`, sparkline(s.series.map((x) => x.minutes)), 'feature')}
+        ${kpi('Sessions', s.sessions, `${delta(s.sessions, tracked ? null : pv?.sessions, range)} avg ${fmtMin(s.avg_session_minutes)}`)}
+        ${kpi('Games', s.games_played, `${delta(s.games_played, tracked && estimates === 'exclude' ? null : pv?.games_played, range)} ${plural(s.days_played, 'day')} played`)}
+        ${kpi('Daily avg', fmtMin(s.avg_per_day_minutes), `${delta(s.avg_per_day_minutes, tracked ? null : pv?.avg_per_day_minutes, range, fmtMin)} ${s.busiest_day ? `best ${fmtDate(new Date(`${s.busiest_day.day}T12:00`).getTime())} · ${fmtMin(s.busiest_day.minutes)}` : ''}`)}
         ${kpi('Streak', `${s.streaks.current}<small>d</small>`, `longest ${plural(s.streaks.longest, 'day')}`)}
       </div>
       <div class="card" style="margin-top:16px"><div class="card-h"><h2>Playtime per ${s.range.group}</h2></div>${barChart(stackedSeries(s).map((x, i) => { const [a, b] = bucketDays(s.series[i].key, s.range.group); return { ...x, href: `/sessions?from=${a}&to=${b}${platform ? `&platform=${encodeURIComponent(platform)}` : ''}` }; }), { size: 'page', title: `Playtime per ${s.range.group}, ${s.range.label.toLowerCase()}`, hrefHint: 'see sessions', keys: `Playtime per ${s.range.group}; arrow keys read each bar, Enter opens its sessions` })}${platformLegend(s.platforms, estimatedLegend(s))}</div>
