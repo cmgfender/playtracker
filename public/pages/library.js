@@ -1,5 +1,6 @@
-import { $, $$, esc, fmtMin, fmtHours, ago, plat, platDot, STATUSES, cover, icon, api, fail, toast, modal, navigate, state, tagItem, splitTags } from '../app.js';
+import { $, $$, esc, fmtMin, fmtHours, ago, plat, platDot, STATUSES, cover, icon, api, fail, modal, navigate, state, tagItem, splitTags } from '../app.js';
 import { emptyState, saveSettings } from './shared.js';
+import { addGameModal } from './when.js';
 
 // =====================================================================
 // Library
@@ -287,24 +288,8 @@ export async function library(view, stale) {
   };
   $$('[data-view]', view).forEach((b) => b.addEventListener('click', () => setView(b.dataset.view)));
   $('#lib-view-t').addEventListener('click', () => setView(st.view === 'grid' ? 'list' : 'grid'));
-  const addGame = () => modal({
-    title: 'Add a game',
-    body: `<form class="stack" id="ag"><div class="field"><label>Title</label><input class="input" name="title" required placeholder="The Legend of Zelda: Tears of the Kingdom"></div>
-      <div class="field"><label>Cover image URL <span class="dim">(optional)</span></label><input class="input" name="cover_url" placeholder="https://…"></div>
-      <div class="field"><label>Status</label><select class="input" name="status">${Object.entries(STATUSES).map(([k, v]) => `<option value="${k}">${v.label}</option>`).join('')}</select></div>
-      <p class="small muted" style="margin:0">Manual games are perfect for Switch, retro or anything without an API. Log sessions on the game page.</p></form>`,
-    foot: '<button class="btn" data-close>Cancel</button><button class="btn primary" id="ag-save">Add game</button>',
-    onMount(el, close) {
-      let saving = false; // a second click while the first save is out must not add the game twice
-      el.querySelector('#ag-save').addEventListener('click', async () => {
-        const f = el.querySelector('#ag');
-        if (saving) return;
-        if (!f.title.value.trim()) { toast('Enter a title', { bad: true }); f.title.focus(); return; }
-        saving = true;
-        try { const g = await api('/games', { method: 'POST', body: { title: f.title.value, cover_url: f.cover_url.value, status: f.status.value } }); close(); navigate(`/game/${g.id}`); } catch (e) { fail(e); } finally { saving = false; }
-      });
-    },
-  });
+  // your library and IGDB as you type, where it was played and the hours played before (when.js)
+  const addGame = () => addGameModal().catch(fail);
   $('#lib-add').addEventListener('click', addGame);
   $('#fab-add').addEventListener('click', addGame);
   const io = new IntersectionObserver((es) => { if (es[0].isIntersecting) more(); }, { rootMargin: '800px' });

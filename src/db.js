@@ -405,6 +405,14 @@ const MIGRATIONS = [
     if (!/platform, basis/.test(idx('play_days_range'))) db.exec('DROP INDEX IF EXISTS play_days_range; CREATE INDEX play_days_range ON play_days(excluded, estimated, day, platform, basis, game_id, minutes, ends);');
     if (!/basis/.test(idx('play_days_game'))) db.exec('DROP INDEX IF EXISTS play_days_game; CREATE INDEX play_days_game ON play_days(game_id, excluded, estimated, day, platform, minutes, ends, basis);');
   },
+  // 11: placeholder times are no dates: Steam reports 1 Jan 1970 + a day as the last played time of
+  //     games last played before it kept the date (shown as "played 56 years ago", history dated 1970)
+  `
+  UPDATE entries SET last_played_at = NULL WHERE last_played_at < 31536000000;
+  UPDATE entries SET first_played_at = NULL WHERE first_played_at < 31536000000;
+  UPDATE entries SET hist = json_remove(hist, '$.last_played_at') WHERE json_extract(hist, '$.last_played_at') < 31536000000;
+  UPDATE entries SET hist = json_remove(hist, '$.first_played_at') WHERE json_extract(hist, '$.first_played_at') < 31536000000;
+  `,
 ];
 
 /** The schema version this build migrates a database to. */

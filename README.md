@@ -6,7 +6,7 @@ A self-hosted game playtime and session tracker for Docker and Unraid. It's fast
 
 Steam, Xbox and PlayStation tell you **how long you've played in total**, but not **when**. Vestigo saves your lifetime playtime on a schedule (hourly, daily, weekly, monthly or every *X* days/hours). The difference between two snapshots becomes a **play session**.
 
-- **Platforms:** Steam (Web API), Xbox (OpenXBL), PlayStation (NPSSO), plus **custom accounts** you push totals to over the API (Switch, Epic, GOG, emulators, Playnite…). You can also add games by hand and log sessions manually.
+- **Platforms:** Steam (Web API), Xbox (OpenXBL), PlayStation (NPSSO), plus **custom accounts** you push totals to over the API (Switch, Epic, GOG, emulators, Playnite…). You can also add games by hand and log sessions manually: **Add a game** looks the title up in your library and on IGDB as you type (cover, release date, platforms), and takes where you played it and the hours you played before, dated over the years you give (an N64 game played 1997–1998).
 - **Live presence:** Vestigo watches what you're playing right now on Steam, PlayStation and Xbox.
   - Sessions get **exact start and end times**.
   - A sync runs right after you stop playing.
@@ -128,7 +128,9 @@ The result:
 - **Charts and year-in-review** show this **estimated history** hatched, with a confidence of high, medium or low per game. Toggle it on the Stats page.
 - **Today, this week, streaks, session counts and averages** only ever use **tracked** play.
 - **Time that can't be dated** stays as undated history (lifetime totals only).
-- **Corrections:** the **Improve history** page lists the least certain games first. Answer "mostly played in 2023, Apr–Jun" with two taps per game, or choose "Don't chart". It also shows how much of your history is solidly dated, and takes the Steam licenses paste. Exact dates can be set on a game's page.
+- **Corrections:** the **Improve history** page lists the least certain games first. Answer "mostly played in 2023, Apr–Jun" with two taps per game (spread evenly over that period), or choose "Don't chart". It also shows how much of your history is solidly dated, and takes the Steam licenses paste.
+- **Context for every answer:** each game shows what is known about it: the release date (store or IGDB), the day it was added to your library, first and last played, the first and last achievement before tracking (with their names), the unlocks by month, the first tracked session, and the other platforms' history of the same game. **When did you play this?** (a game's **Set dates**, or **Exact dates…** on Improve history) puts all of it beside the date fields, with "Start here" / "End here" on each date and **Use the evidence** for the whole span.
+- **Check your dates:** dates you set, or estimates you confirmed, that achievements or the platform's own dates disagree with ("21 achievements unlocked before this start", "Xbox says it was last played after this end") are listed on Improve history and on the game page, until you fix them, let Vestigo date them, or keep yours.
 
 Each platform also *reports* history differently:
 - Steam writes totals when a game closes and stamps last-played at **launch**.
