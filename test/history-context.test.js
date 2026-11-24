@@ -212,6 +212,7 @@ test('a game played on its New Zealand launch (GTA VI: out Nov 19, played Nov 18
   assert.equal(ctx.marks.find((m) => m.key === 'release_igdb').at, at(2026, 11, 19), 'released Nov 19, as IGDB lists it');
   const r = await call(`/entries/${entry}/history`, { method: 'PATCH', body: { first_played_at: '2026-11-01T12:00:00', last_played_at: '2026-11-30T20:00:00', coarse: true } });
   const start = r.data.entries.find((x) => x.id === entry).history.manual.start;
-  assert.ok(start <= at(2026, 11, 18, 7), `Nov 18, 7 am is inside the period (${new Date(start).toISOString()})`);
-  assert.ok(start >= at(2026, 11, 18, 0), 'not before the launch anywhere');
+  // (absolute times, so this holds in any timezone: midnight Nov 19 in UTC+14 is 10:00 UTC on Nov 18)
+  assert.equal(start, Date.UTC(2026, 10, 18, 10), 'from the launch in the earliest time zone');
+  assert.ok(start <= Date.UTC(2026, 10, 18, 12, 1), 'Nov 18, 7:01 am in New York (12:01 UTC), the first session, is inside the period');
 });
