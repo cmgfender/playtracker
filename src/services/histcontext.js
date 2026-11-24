@@ -12,12 +12,20 @@ const DAY = 86_400_000;
  */
 export const igdbDay = (t) => { if (realTime(t) == null) return null; const d = new Date(t); return new Date(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), 12).getTime(); };
 
-/** When the game came out: the store's date (Steam), else IGDB's. { at, source: 'store' | 'igdb' } or null. */
+/**
+ * When the game came out: the store's date (Steam), else IGDB's. { at, source: 'store' | 'igdb',
+ * from } or null. `from` is the first moment it could be played anywhere: IGDB's day begins at
+ * midnight in the earliest time zone (UTC+14), so a game out on Nov 19 can be played from
+ * Nov 18, 5 am in New York - on a console set to New Zealand, at its midnight launch.
+ */
 export function releaseOf(db, entry, h = JSON.parse(entry.hist || '{}')) {
   const store = realTime(h.release_at);
-  if (store) return { at: store, source: 'store' };
-  const igdb = igdbDay(db.prepare('SELECT release_date FROM game_meta WHERE game_id = ? AND igdb_id IS NOT NULL').get(entry.game_id)?.release_date);
-  return igdb ? { at: igdb, source: 'igdb' } : null;
+  if (store) return { at: store, source: 'store', from: store };
+  const raw = db.prepare('SELECT release_date FROM game_meta WHERE game_id = ? AND igdb_id IS NOT NULL').get(entry.game_id)?.release_date;
+  const igdb = igdbDay(raw);
+  if (!igdb) return null;
+  const d = new Date(raw);
+  return { at: igdb, source: 'igdb', from: Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()) - 14 * 3_600_000 };
 }
 
 /**
@@ -27,7 +35,7 @@ export function releaseOf(db, entry, h = JSON.parse(entry.hist || '{}')) {
  * is before it (then it stays, and is pointed out).
  */
 export function periodStart(db, entry, h, start, end) {
-  const rel = releaseOf(db, entry, h)?.at;
+  const rel = releaseOf(db, entry, h)?.from;
   if (!rel || !start || start >= rel || (end && end <= rel)) return start;
   const before = [...(h.anchors || []), h.first_played_at, h.last_played_at].some((t) => realTime(t) != null && t < rel - DAY);
   return before ? start : rel;

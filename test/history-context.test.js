@@ -197,6 +197,21 @@ test('a start before the release date only IGDB has is pointed out: nothing else
   // a period answer starts at IGDB's date instead
   const p = await call(`/entries/${entry}/history`, { method: 'PATCH', body: { first_played_at: '2015-01-01T12:00:00', last_played_at: '2015-12-31T20:00:00', coarse: true } });
   const h = p.data.entries.find((x) => x.id === entry).history;
-  assert.equal(h.manual.start, at(2015, 10, 27));
+  // from the first moment it was out anywhere: Oct 27 begins in UTC+14 the day before
+  assert.equal(h.manual.start, Date.UTC(2015, 9, 27) - 14 * 3_600_000);
   assert.ok(!h.conflicts.some((x) => x.kind === 'before_release'));
+});
+
+test('a game played on its New Zealand launch (GTA VI: out Nov 19, played Nov 18 at 7 am in New York) keeps that day in a period answer', async () => {
+  const now = Date.now();
+  const game = Number(db.prepare("INSERT INTO games(title, norm_title, created_at, updated_at) VALUES ('GTA VI', 'gta vi', ?, ?)").run(now, now).lastInsertRowid);
+  db.prepare("INSERT INTO game_meta(game_id, igdb_id, matched_by, name, release_date, fetched_at) VALUES (?, 9, 'title', 'Grand Theft Auto VI', ?, ?)").run(game, Date.UTC(2026, 10, 19), now);
+  const entry = Number(db.prepare(`INSERT INTO entries(account_id, game_id, platform, ext_id, title, playtime_min, baseline_min, first_seen_at, hist)
+    VALUES (NULL, ?, 'xbox', 'gta6', 'GTA VI', 600, 600, ?, ?)`).run(game, at(2026, 12, 1), JSON.stringify({ tracking_start: at(2026, 12, 1) })).lastInsertRowid);
+  const ctx = (await call(`/entries/${entry}/history/context`)).data;
+  assert.equal(ctx.marks.find((m) => m.key === 'release_igdb').at, at(2026, 11, 19), 'released Nov 19, as IGDB lists it');
+  const r = await call(`/entries/${entry}/history`, { method: 'PATCH', body: { first_played_at: '2026-11-01T12:00:00', last_played_at: '2026-11-30T20:00:00', coarse: true } });
+  const start = r.data.entries.find((x) => x.id === entry).history.manual.start;
+  assert.ok(start <= at(2026, 11, 18, 7), `Nov 18, 7 am is inside the period (${new Date(start).toISOString()})`);
+  assert.ok(start >= at(2026, 11, 18, 0), 'not before the launch anywhere');
 });
