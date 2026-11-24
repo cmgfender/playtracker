@@ -1500,16 +1500,16 @@ describe('Vestigo web UI (no password)', UI, () => {
       const [steam, psn] = await srgb(h.page, await h.page.evaluate(() => ['--steam', '--psn'].map((k) => getComputedStyle(document.documentElement).getPropertyValue(k).trim())));
       assert.ok(contrast(steam, psn) >= 2.7, `Steam and PlayStation are ${contrast(steam, psn).toFixed(2)}:1 apart in dark`);
       const side = await h.page.locator('.side-nav svg').evaluateAll((els) => els.map((e) => [e.innerHTML, e.getAttribute('stroke-width')]));
-      assert.equal(side.length, 12);
-      assert.equal(new Set(side.map((x) => x[0])).size, 12, 'twelve distinct sidebar icons');
+      assert.equal(side.length, 13);
+      assert.equal(new Set(side.map((x) => x[0])).size, 13, 'thirteen distinct sidebar icons');
       assert.ok(side.every((x) => x[1] === '2'), 'all drawn at stroke 2');
       clean(h);
     } finally { await h.close(); }
     const p = await visit('/more', { viewport: PHONE });
     try {
       const more = await p.page.locator('#view .mi svg').evaluateAll((els) => els.map((e) => [e.innerHTML, e.getAttribute('stroke-width'), e.getBoundingClientRect().width]));
-      assert.equal(more.length, 8);
-      assert.equal(new Set(more.map((x) => x[0])).size, 8, 'eight distinct icons');
+      assert.equal(more.length, 9);
+      assert.equal(new Set(more.map((x) => x[0])).size, 9, 'nine distinct icons');
       assert.ok(more.every((x) => x[1] === '2' && x[2] === 18), 'stroke 2 at 18px (.ic-18)');
       clean(p);
     } finally { await p.close(); }
