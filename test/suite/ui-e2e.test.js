@@ -2041,7 +2041,7 @@ describe('Vestigo web UI (no password)', UI, () => {
     // a spreadsheet that mirrors the custom account's Mario Kart hours = the same play counted twice
     await S.ok('/import', { method: 'POST', body: 'title,platform,playtime_hours,last_played\nMario Kart 8 Deluxe,switch,10,2026-08-01\n' });
     const extra = [];
-    for (const title of ['Hades II', 'Stardew Valley Expanded Edition', 'Celeste Farewell']) extra.push((await S.ok('/games', { method: 'POST', body: { title, merge: false } })).id);
+    for (const title of ['Hades II', 'Stardew Valley Expanded Edition', 'Celeste HD']) extra.push((await S.ok('/games', { method: 'POST', body: { title, merge: false } })).id);
     const lt0 = await S.ok('/stats/lifetime');
     const d0 = await S.ok('/duplicates');
     assert.equal(d0.counts.double_counted, 1, 'the mirrored import is detected');
@@ -2072,12 +2072,12 @@ describe('Vestigo web UI (no password)', UI, () => {
       assert.equal(sv.items[0].minutes, D.minutes.stardew, 'merging moves entries without changing playtime');
       assert.equal(sv.items[0].entry_count, 2);
 
-      const cel = section('Merge suggestions').locator('.item', { hasText: 'Celeste Farewell' });
+      const cel = section('Merge suggestions').locator('.item', { hasText: 'Celeste HD' });
       await cel.locator('[data-dismiss]').click();
-      await waitUntil(async () => (await section('Merge suggestions').locator('.item', { hasText: 'Celeste Farewell' }).count()) === 0, { message: 'dismissed pair gone' });
+      await waitUntil(async () => (await section('Merge suggestions').locator('.item', { hasText: 'Celeste HD' }).count()) === 0, { message: 'dismissed pair gone' });
       await page.reload();
       await waitView(page);
-      assert.equal(await section('Merge suggestions').locator('.item', { hasText: 'Celeste Farewell' }).count(), 0, 'a dismissed suggestion stays dismissed');
+      assert.equal(await section('Merge suggestions').locator('.item', { hasText: 'Celeste HD' }).count(), 0, 'a dismissed suggestion stays dismissed');
       assert.equal((await S.ok('/stats/lifetime')).total_minutes, lt0.total_minutes - 600, 'resolving suggestions never changes playtime');
       clean(h);
     } finally {
