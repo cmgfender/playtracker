@@ -179,7 +179,7 @@ export async function game(view, id, stale) {
   const recent = plays.slice(0, 10).map((x) => ({ ...x, achievements: bySession.get(x.id) || { count: 0, items: [] } }));
   const nSessions = Math.max(s.sessions, plays.length);
   const parts = [[s.tracked_minutes, 'tracked', 'background:var(--accent-mark)'], [s.estimated_minutes || 0, 'estimated history', null], [s.baseline_minutes, 'undated', 'background:var(--line-strong)']].filter(([m]) => m > 0);
-  const series = (curve?.series || []).map((x) => ({ ...x, label: x.key.endsWith('-01') && curve.series.length > 12 ? x.key.slice(0, 4) : seriesLabel(x.key, 'month'), name: seriesName(x.key, 'month') }));
+  const series = (curve?.series || []).map((x) => ({ ...x, label: x.key.endsWith('-01') && curve.series.length > 12 ? x.key.slice(0, 4) : seriesLabel(x.key, 'month'), major: x.key.endsWith('-01') && curve.series.length > 36, name: seriesName(x.key, 'month') }));
   const years = [...new Set(series.filter((x) => x.minutes > 0).map((x) => Number(x.key.slice(0, 4))))].sort((a, b) => b - a).slice(0, 6);
   const hasAch = !!(ach?.summary && ach.total);
   view.innerHTML = `

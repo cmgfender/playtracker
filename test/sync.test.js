@@ -136,6 +136,10 @@ test('auto-merge groups same game across platforms; duplicates flagged', () => {
   assert.equal(dup.suggestions.length, 1);
   assert.match(dup.suggestions[0].games[0].title, /Hollow Knight/);
   assert.equal(dup.cross_platform.length, 1);
+  // a game only wished for (never played) is not suggested as a copy of a different one you have
+  const wish = db.prepare("INSERT INTO games(title, norm_title, status, created_at, updated_at) VALUES ('Hollow Knight: Silksong', 'hollow knight silksong', 'wishlist', 0, 0)").run().lastInsertRowid;
+  db.prepare("INSERT INTO entries(account_id, game_id, platform, ext_id, title, playtime_min, first_seen_at, last_synced_at) VALUES (NULL, ?, 'pc', 'w', 'Hollow Knight: Silksong', 0, 0, 0)").run(wish);
+  assert.deepEqual(findDuplicates(db).suggestions.map((x) => x.games.map((g) => g.title).sort()), [['Hollow Knight', 'Hollow Knight: Voidheart Edition']]);
 
   // An import of a game a synced account already tracks joins it (assists, never adds hours)
   const before_ = lifetime(db).total_minutes;
