@@ -1,0 +1,33 @@
+// SaGa. The format is described in ../franchises.js.
+export default {
+  id: 'saga', name: 'SaGa', aliases: ['SaGa', 'Romancing SaGa', 'Final Fantasy Legend'],
+  prefix: ['romancing saga', 'saga frontier', 'unlimited saga', 'saga scarlet grace', 'saga emerald beyond', 'final fantasy legend', 'makai toushi saga', 'collection of saga'],
+  eras: [
+    ['The Final Fantasy Legend', 'Game Boy', 'The three Game Boy games, sold in the West as Final Fantasy Legend'],
+    ['Romancing SaGa', 'Super Famicom', 'Romancing SaGa 1 to 3 and their free scenario system'],
+    ['SaGa Frontier', 'PlayStation and PS2', 'SaGa Frontier 1 and 2, Unlimited SaGa and the Minstrel Song remake'],
+    ['SaGa: Scarlet Grace', 'Scarlet Grace and after', 'Scarlet Grace and Emerald Beyond, and the remasters and remakes'],
+  ],
+  entries: [
+    [1989, 'The Final Fantasy Legend', 'main', { aka: ['Makai Toushi SaGa'] }],
+    [1990, 'Final Fantasy Legend II', 'main', { aka: ['SaGa 2: Hihou Densetsu'] }],
+    [1991, 'Final Fantasy Legend III', 'main', { aka: ['SaGa 3: Jikuu no Hasha'] }],
+    [1992, 'Romancing SaGa'],
+    [1993, 'Romancing SaGa 2'],
+    [1995, 'Romancing SaGa 3'],
+    [1997, 'SaGa Frontier'],
+    [1999, 'SaGa Frontier 2'],
+    [2002, 'Unlimited SaGa'],
+    [2005, 'Romancing SaGa: Minstrel Song', 'remake', { of: 'Romancing SaGa' }],
+    [2009, 'SaGa 2: Hihou Densetsu - Goddess of Destiny', 'remake', { of: 'Final Fantasy Legend II', era: 'Game Boy' }],
+    [2011, 'SaGa 3: Jikuu no Hasha - Shadow or Light', 'remake', { of: 'Final Fantasy Legend III', era: 'Game Boy' }],
+    [2016, 'SaGa: Scarlet Grace'],
+    [2018, 'SaGa: Scarlet Grace - Ambitions', 'rerelease', { of: 'SaGa: Scarlet Grace' }],
+    [2020, 'Collection of SaGa: Final Fantasy Legend', 'collection', { includes: ['The Final Fantasy Legend', 'Final Fantasy Legend II', 'Final Fantasy Legend III'] }],
+    [2021, 'SaGa Frontier Remastered', 'remaster', { of: 'SaGa Frontier' }],
+    [2022, 'Romancing SaGa: Minstrel Song Remastered', 'remaster', { of: 'Romancing SaGa: Minstrel Song' }],
+    [2024, 'SaGa Emerald Beyond'],
+    [2024, 'Romancing SaGa 2: Revenge of the Seven', 'remake', { of: 'Romancing SaGa 2' }],
+    [2025, 'SaGa Frontier 2 Remastered', 'remaster', { of: 'SaGa Frontier 2' }],
+  ],
+};

@@ -1,0 +1,33 @@
+// NBA Live. The format is described in ../franchises.js.
+export default {
+  id: 'nba-live', name: 'NBA Live', aliases: ['NBA Live'], prefix: ['nba live'],
+  eras: [
+    ['NBA Live 95', 'The early years', 'From the 16-bit consoles and DOS to PlayStation and Windows'],
+    ['NBA Live 2001', 'PlayStation 2', 'PS2, then Xbox and GameCube'],
+    ['NBA Live 06', 'Xbox 360 and PS3', 'The HD games; NBA Elite 11 is cancelled after its demo'],
+    ['NBA Live 14', 'PS4 and Xbox One', 'The return on PS4 and Xbox One, ending with NBA Live 19'],
+  ],
+  entries: [
+    [1994, 'NBA Live 95'],
+    [1995, 'NBA Live 96'],
+    [1996, 'NBA Live 97'],
+    [1997, 'NBA Live 98'],
+    [1998, 'NBA Live 99'],
+    [1999, 'NBA Live 2000'],
+    [2000, 'NBA Live 2001'],
+    [2001, 'NBA Live 2002'],
+    [2002, 'NBA Live 2003'],
+    [2003, 'NBA Live 2004'],
+    [2004, 'NBA Live 2005'],
+    [2005, 'NBA Live 06'],
+    [2006, 'NBA Live 07'],
+    [2007, 'NBA Live 08'],
+    [2008, 'NBA Live 09'],
+    [2009, 'NBA Live 10'],
+    [2013, 'NBA Live 14'],
+    [2014, 'NBA Live 15'],
+    [2015, 'NBA Live 16'],
+    [2017, 'NBA Live 18'],
+    [2018, 'NBA Live 19'],
+  ],
+};

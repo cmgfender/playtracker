@@ -106,7 +106,7 @@ describe('Vestigo web UI (no password)', UI, () => {
     ['/', 'Home', 'Vestigo'], ['/library', 'Library', 'Library · Vestigo'], [`/game/${D.ids.celeste}`, 'Library', 'Celeste · Vestigo'],
     [`/game/${D.ids.zelda}`, 'Library', 'Zelda: TotK · Vestigo'], ['/sessions', 'Sessions', 'Sessions · Vestigo'], ['/stats', 'Stats', 'Stats · Vestigo'], ['/insights', 'Insights', 'Insights · Vestigo'],
     [`/wrapped/${YEAR}`, null, `${YEAR} in review · Vestigo`], [`/wrapped/${YEAR - 1}`, null, `${YEAR - 1} in review · Vestigo`],
-    ['/duplicates', 'Duplicates', 'Duplicates · Vestigo'], ['/history', 'Improve history', 'Improve history · Vestigo'], ['/accounts', 'Accounts', 'Accounts · Vestigo'],
+    ['/milestones', 'Milestones', 'Milestones · Vestigo'], ['/legends', 'Legends', 'Legends · Vestigo'], ['/duplicates', 'Duplicates', 'Duplicates · Vestigo'], ['/history', 'Improve history', 'Improve history · Vestigo'], ['/accounts', 'Accounts', 'Accounts · Vestigo'],
     ['/system', 'System', 'System · Vestigo'], ['/settings', 'Settings', 'Settings · Vestigo'], ['/api', 'API', 'API · Vestigo'], ['/more', null, 'More · Vestigo'],
     ['/this-route-does-not-exist', null, 'Not found · Vestigo'],
   ];
@@ -216,7 +216,7 @@ describe('Vestigo web UI (no password)', UI, () => {
       assert.equal(new URL(p.page.url()).pathname, '/library');
       await spa(p, p.page.locator('.tabbar a', { hasText: 'More' }), 'More');
       const links = (await p.page.locator('#view .more-feature .ttl, #view .more-row .ttl').allInnerTexts()).map((x) => x.trim());
-      assert.deepEqual(links, ['Year in review', 'Insights', 'Duplicates', 'Improve history', 'Accounts', 'Settings', 'System', 'API']);
+      assert.deepEqual(links, ['Year in review', 'Insights', 'Milestones', 'Legends', 'Duplicates', 'Improve history', 'Accounts', 'Settings', 'System', 'API']);
       assert.deepEqual((await p.page.locator('#view .more-sec h2').allInnerTexts()).map((x) => x.trim().toLowerCase()), ['track', 'tidy up', 'setup', 'advanced'], 'the sidebar\'s groups, minus the tabs');
       await spa(p, p.page.locator('#view .item', { hasText: 'Accounts' }), 'Accounts');
       assert.equal(await p.page.title(), 'Accounts · Vestigo');
@@ -1058,7 +1058,6 @@ describe('Vestigo web UI (no password)', UI, () => {
           ['KPI sub', '#view .kpis .kpi:nth-child(2) .sub', 4.5, false],
           ['feature KPI label', '#view .kpi.feature .label', 4.5, true],
           ['feature KPI value', '#view .kpi.feature .value', 4.5, true],
-          ['feature KPI unit', '#view .kpi.feature .value small', 4.5, true],
           ['feature KPI sub', '#view .kpi.feature .sub', 4.5, true],
           ['platform chip', '#view .plat-ic', 4.5, false],
           ['badge.accent', '#dash-recent .badge.accent', 4.5, true],
@@ -1500,16 +1499,16 @@ describe('Vestigo web UI (no password)', UI, () => {
       const [steam, psn] = await srgb(h.page, await h.page.evaluate(() => ['--steam', '--psn'].map((k) => getComputedStyle(document.documentElement).getPropertyValue(k).trim())));
       assert.ok(contrast(steam, psn) >= 2.7, `Steam and PlayStation are ${contrast(steam, psn).toFixed(2)}:1 apart in dark`);
       const side = await h.page.locator('.side-nav svg').evaluateAll((els) => els.map((e) => [e.innerHTML, e.getAttribute('stroke-width')]));
-      assert.equal(side.length, 12);
-      assert.equal(new Set(side.map((x) => x[0])).size, 12, 'twelve distinct sidebar icons');
+      assert.equal(side.length, 14);
+      assert.equal(new Set(side.map((x) => x[0])).size, 14, 'fourteen distinct sidebar icons');
       assert.ok(side.every((x) => x[1] === '2'), 'all drawn at stroke 2');
       clean(h);
     } finally { await h.close(); }
     const p = await visit('/more', { viewport: PHONE });
     try {
       const more = await p.page.locator('#view .mi svg').evaluateAll((els) => els.map((e) => [e.innerHTML, e.getAttribute('stroke-width'), e.getBoundingClientRect().width]));
-      assert.equal(more.length, 8);
-      assert.equal(new Set(more.map((x) => x[0])).size, 8, 'eight distinct icons');
+      assert.equal(more.length, 10);
+      assert.equal(new Set(more.map((x) => x[0])).size, 10, 'ten distinct icons');
       assert.ok(more.every((x) => x[1] === '2' && x[2] === 18), 'stroke 2 at 18px (.ic-18)');
       clean(p);
     } finally { await p.close(); }
@@ -2336,7 +2335,7 @@ describe('Vestigo web UI: navigation, status and feedback', UI, () => {
           return [g.getAttribute('role'), label?.textContent.trim(), [...g.querySelectorAll('a.nav-link')].map((a) => [...a.childNodes].filter((n) => n.nodeType === 3).map((n) => n.textContent).join('').trim())];
         }));
         assert.deepEqual(groups, [
-          ['group', 'Track', ['Home', 'Library', 'Sessions', 'Stats', 'Insights', 'Year in review']],
+          ['group', 'Track', ['Home', 'Library', 'Sessions', 'Stats', 'Insights', 'Year in review', 'Milestones', 'Legends']],
           ['group', 'Tidy up', ['Duplicates', 'Improve history']],
           ['group', 'Setup', ['Accounts', 'Settings']],
           ['group', 'Advanced', ['System', 'API']],
@@ -3018,7 +3017,10 @@ describe('Vestigo web UI with a long history (3,000 sessions)', UI, () => {
     } finally { await h.close(); }
   });
 
-  test('game page: the 10 most recent sessions and a link to all of them; under 3,000px tall on a 390px phone', async () => {
+  // The page's height on a phone is what the session list would run away with (150 rows are 9,600px).
+  // These 20 "Long Game N" are a series, so the page also carries its series card (about 180px with
+  // its gap): about 3,130px on the CI machine, 3,230px with a Mac's fonts.
+  test('game page: the 10 most recent sessions and a link to all of them; under 3,400px tall on a 390px phone', async () => {
     const h = await openPage(browser, S.origin, { viewport: PHONE });
     const { page } = h;
     try {
@@ -3029,7 +3031,8 @@ describe('Vestigo web UI with a long history (3,000 sessions)', UI, () => {
       const rows = await page.locator('#g-sessions .item').evaluateAll((els) => els.map((e) => e.getBoundingClientRect().height));
       assert.ok(Math.max(...rows) <= 64.5, `rows ${Math.max(...rows)}px`);
       const tall = await page.evaluate(() => document.documentElement.scrollHeight);
-      assert.ok(tall < 3000, `the game page is ${tall}px tall`);
+      assert.ok(tall < 3400, `the game page is ${tall}px tall`);
+      assert.equal(await page.locator('#g-franchise h2').innerText(), 'Long Game', 'with its series card');
       const all = page.locator('#view a', { hasText: 'All 150 sessions' });
       assert.equal(await all.getAttribute('href'), `/sessions?game_id=${first.id}`);
       await all.click();

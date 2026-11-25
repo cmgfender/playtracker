@@ -12,7 +12,9 @@
     "dev": "node --disable-warning=ExperimentalWarning --watch src/server.js",
     "test": "node --disable-warning=ExperimentalWarning --test test/*.test.js test/suite/*.test.js",
     "demo": "node --disable-warning=ExperimentalWarning src/demo.js",
-    "bench": "node --disable-warning=ExperimentalWarning scripts/bench.js"
+    "bench": "node --disable-warning=ExperimentalWarning scripts/bench.js",
+    "check:franchises": "node --disable-warning=ExperimentalWarning scripts/check-franchises.js",
+    "franchise": "node --disable-warning=ExperimentalWarning scripts/franchise.js"
   },
   "license": "MIT"
 }

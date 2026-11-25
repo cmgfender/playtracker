@@ -77,7 +77,7 @@ export function estimatedLegend(stats) {
 }
 
 const CONF = {
-  exact: ['live', 'good', 'Exact times from live presence or a manual log'],
+  exact: ['exact', 'good', 'Exact times from live presence or a manual log'],
   pinned: ['', '', 'End pinned to the platform\'s last-played time'],
   window: ['≈', '', 'Exact time unknown — spread across the sync window'],
   high: ['high', 'good', 'Dated from first and last played'],
@@ -116,6 +116,17 @@ function sessionWhenShort(s) {
   return fmtDate(s.window_end || s.created_at);
 }
 
+/**
+ * A device as people call it: Xbox reports its consoles by codename ("Scarlett" is a Series X|S),
+ * Steam by platform ("deck", "windows").
+ */
+const DEVICES = {
+  scarlett: 'Xbox Series X|S', anaconda: 'Xbox Series X', lockhart: 'Xbox Series S', xboxseries: 'Xbox Series X|S', xboxone: 'Xbox One', durango: 'Xbox One',
+  edmonton: 'Xbox One S', scorpio: 'Xbox One X', xbox360: 'Xbox 360', win32: 'PC', windowsonecore: 'PC', windows: 'PC', pc: 'PC', deck: 'Steam Deck', steamdeck: 'Steam Deck',
+  linux: 'Linux', mac: 'Mac', macos: 'Mac', ios: 'iPhone or iPad', android: 'Android', xcloud: 'Cloud gaming', web: 'Browser', ps5: 'PS5', ps4: 'PS4', ps3: 'PS3', psvita: 'PS Vita', offline: 'Offline',
+};
+export const deviceName = (d) => (d ? DEVICES[String(d).toLowerCase().replace(/[^a-z0-9]/g, '')] || d : d);
+
 function sourceBadge(s) {
   // the "≈" badges carry the session's note too: on a phone the note itself is not shown
   const approx = (t) => esc(s.note ? `${t} · ${s.note}` : t);
@@ -127,8 +138,9 @@ function sourceBadge(s) {
   }
   if (s.source === 'manual') return '<span class="badge accent">manual</span>';
   if (s.note?.startsWith('Length estimated')) return '<span class="badge" title="The platform reports no playtime for this game and live presence missed this session: it ends at the reported last-played time, with your typical session length. Edit it if you know better.">≈ length</span>';
-  if (s.confidence === 'exact') return `<span class="badge good" title="${CONF.exact[2]}">● live</span>${s.device ? `<span class="badge">${esc(s.device)}</span>` : ''}`;
-  if (s.device) return `<span class="badge">${esc(s.device)}</span>${s.precise ? '' : `<span class="badge" title="${approx('Exact time unknown — spread across the sync window')}">≈</span>`}`;
+  // (exact start and end times: "live" read as still being played)
+  if (s.confidence === 'exact') return `<span class="badge good" title="${CONF.exact[2]}">● exact</span>${s.device ? `<span class="badge">${esc(deviceName(s.device))}</span>` : ''}`;
+  if (s.device) return `<span class="badge">${esc(deviceName(s.device))}</span>${s.precise ? '' : `<span class="badge" title="${approx('Exact time unknown — spread across the sync window')}">≈</span>`}`;
   if (s.source === 'import') return `<span class="badge basis-b" title="${BASIS[0][2]}"><i class="dot basis-imported" aria-hidden="true"></i>imported</span>`;
   if (s.source === 'api') return '<span class="badge">api</span>';
   return s.precise ? '' : `<span class="badge" title="${approx('Exact time unknown — spread across the sync window')}">≈</span>`;
@@ -139,8 +151,11 @@ function sourceBadge(s) {
  * moves into the badge's title). platLabel: name the platform (a game page whose game has several entries);
  * dated: that line starts with the day (a list whose day headers a phone hides).
  */
+/** When a session began, for the day it belongs to: last night's session that ran past midnight is last night's. */
+export const sessionStart = (s) => s.started_at || s.window_start || s.ended_at || s.window_end || s.created_at;
+
 export function sessionItem(s, { showGame = true, selectable = false, selected = false, platLabel = true, dated = false } = {}) {
-  const t = s.ended_at || s.window_end || s.created_at;
+  const t = sessionStart(s);
   const day = dated ? `${['Today', 'Yesterday'].includes(dayLabel(t)) ? dayLabel(t) : fmtDate(t)} · ` : '';
   return `<div class="item sess ${selected ? 'sel' : ''}" data-sid="${s.id}">
     ${selectable ? `<input type="checkbox" class="check" data-sel="${s.id}" ${selected ? 'checked' : ''} aria-label="Select ${esc(s.title)}, ${esc(fmtMin(s.minutes))}">` : ''}
@@ -155,16 +170,20 @@ export function sessionItem(s, { showGame = true, selectable = false, selected =
   </div>`;
 }
 
+/**
+ * Sessions by the day they began (one that ran past midnight is under the evening it started), in the
+ * order the days first come up - one group a day, also when the list (newest end first) comes back to it.
+ */
 export function groupByDay(sessions) {
-  const groups = [];
-  let cur = null;
+  const groups = new Map();
   for (const s of sessions) {
-    const t = s.ended_at || s.window_end || s.created_at;
-    const d = new Date(t); d.setHours(0, 0, 0, 0);
-    if (!cur || cur.day !== d.getTime()) { cur = { day: d.getTime(), items: [], minutes: 0 }; groups.push(cur); }
-    cur.items.push(s); cur.minutes += s.minutes;
+    const d = new Date(sessionStart(s)); d.setHours(0, 0, 0, 0);
+    const day = d.getTime();
+    if (!groups.has(day)) groups.set(day, { day, items: [], minutes: 0 });
+    const g = groups.get(day);
+    g.items.push(s); g.minutes += s.minutes;
   }
-  return groups;
+  return [...groups.values()];
 }
 
 // a short faded trail above an empty state's icon: the mark's capsules, oldest faintest
@@ -400,4 +419,22 @@ export async function saveSettings(patch) {
   state.settings = { ...state.settings, ...r };
   applyTheme(state.settings);
   return r;
+}
+
+// ---------- told in parts ----------
+/**
+ * Text the server tells in parts (a legend's chapters, Insights' findings) as HTML: plain text,
+ * { g: game id, t: title } a game, { d: 'YYYY-MM-DD', p: day|month|year } a date as exact as it is
+ * known, { b: text } a figure, { l: href, t: text } a link.
+ */
+export function prose(parts) {
+  const at = (k) => new Date(`${k}T12:00`).getTime();
+  return parts.map((p) => {
+    if (typeof p === 'string') return esc(p);
+    if (p.g) return `<a class="link" href="/game/${p.g}" data-link>${esc(p.t)}</a>`;
+    if (p.l) return `<a class="link" href="${esc(p.l)}" data-link>${esc(p.t)}</a>`;
+    if (p.d) return esc(p.p === 'day' ? fmtDate(at(p.d), { year: 'numeric', month: 'long', day: 'numeric' }) : p.p === 'month' ? fmtDate(at(p.d), { month: 'long', year: 'numeric' }) : p.d.slice(0, 4));
+    if (p.b) return `<b>${esc(p.b)}</b>`;
+    return '';
+  }).join('');
 }

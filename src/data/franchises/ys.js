@@ -1,0 +1,30 @@
+// Ys. The format is described in ../franchises.js.
+export default {
+  id: 'ys', name: 'Ys', aliases: ['Ys'], prefix: ['ys'],
+  eras: [
+    ['Ys I: Ancient Ys Vanished', 'Classic Ys', "Adol's first adventures, I to V, on Japanese computers and 16-bit consoles"],
+    ['Ys VI: The Ark of Napishtim', 'Solo action', 'Fast 3D action with jumping: VI, The Oath in Felghana and Origin'],
+    ['Ys Seven', 'Party action', 'Parties of three from Seven on, through VIII, IX and X'],
+  ],
+  entries: [
+    [1987, 'Ys I: Ancient Ys Vanished', 'main', { aka: ['Ys: The Vanished Omens', 'Ancient Ys Vanished'] }],
+    [1988, 'Ys II: Ancient Ys Vanished – The Final Chapter', 'main', { aka: ['Ys II'] }],
+    [1989, 'Ys III: Wanderers from Ys', 'main', { aka: ['Ys III'] }],
+    [1989, 'Ys Book I & II', 'remake', { of: ['Ys I: Ancient Ys Vanished', 'Ys II: Ancient Ys Vanished – The Final Chapter'], aka: ['Ys I & II'] }],
+    [1993, 'Ys IV: Mask of the Sun'],
+    [1993, 'Ys IV: The Dawn of Ys'],
+    [1995, 'Ys V: Lost Kefin, Kingdom of Sand'],
+    [2003, 'Ys VI: The Ark of Napishtim'],
+    [2005, 'Ys: The Oath in Felghana', 'remake', { of: 'Ys III: Wanderers from Ys' }],
+    [2006, 'Ys Origin'],
+    [2009, 'Ys I & II Chronicles', 'remake', { of: ['Ys I: Ancient Ys Vanished', 'Ys II: Ancient Ys Vanished – The Final Chapter'], era: 'Classic Ys', aka: ['Ys I & II Chronicles+'] }],
+    [2009, 'Ys Seven'],
+    [2012, 'Ys: Memories of Celceta', 'remake', { of: ['Ys IV: Mask of the Sun', 'Ys IV: The Dawn of Ys'] }],
+    [2016, 'Ys VIII: Lacrimosa of Dana'],
+    [2019, 'Ys IX: Monstrum Nox'],
+    [2023, 'Ys Memoire: The Oath in Felghana', 'remaster', { of: 'Ys: The Oath in Felghana', era: 'Solo action' }],
+    [2023, 'Ys X: Nordics'],
+    [2025, 'Ys Memoire: Revelations in Celceta', 'remaster', { of: 'Ys: Memories of Celceta', aka: ['Ys Memoire: Memories of Celceta'] }],
+    [2025, 'Ys X: Proud Nordics', 'rerelease', { of: 'Ys X: Nordics' }],
+  ],
+};

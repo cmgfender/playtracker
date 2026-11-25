@@ -1,0 +1,31 @@
+// Tomb Raider. The format is described in ../franchises.js.
+export default {
+  id: 'tomb-raider', name: 'Tomb Raider', aliases: ['Tomb Raider'], prefix: ['tomb raider'],
+  eras: [
+    ['Tomb Raider (1996)', 'Core Design', 'The original Lara Croft, from 1996 to The Angel of Darkness'],
+    ['Tomb Raider: Legend', 'The Legend trilogy', "Crystal Dynamics' first Lara: Legend, Anniversary and Underworld"],
+    ['Tomb Raider (2013)', 'The Survivor trilogy', "Lara's origin story: Tomb Raider, Rise and Shadow"],
+    ['Tomb Raider I-III Remastered', 'The remasters', 'The Core Design games remastered'],
+  ],
+  entries: [
+    [1996, 'Tomb Raider (1996)', 'main', { aka: ['Tomb Raider'] }],
+    [1997, 'Tomb Raider II'],
+    [1998, 'Tomb Raider III'],
+    [1999, 'Tomb Raider: The Last Revelation'],
+    [2000, 'Tomb Raider Chronicles'],
+    [2003, 'Tomb Raider: The Angel of Darkness'],
+    [2006, 'Tomb Raider: Legend'],
+    [2007, 'Tomb Raider: Anniversary', 'remake', { of: 'Tomb Raider (1996)' }],
+    [2008, 'Tomb Raider: Underworld'],
+    [2010, 'Lara Croft and the Guardian of Light', 'spinoff'],
+    [2013, 'Tomb Raider (2013)', 'main', { aka: ['Tomb Raider'] }],
+    [2014, 'Tomb Raider: Definitive Edition', 'remaster', { of: 'Tomb Raider (2013)' }],
+    [2014, 'Lara Croft and the Temple of Osiris', 'spinoff'],
+    [2015, 'Lara Croft Go', 'spinoff'],
+    [2015, 'Rise of the Tomb Raider'],
+    [2018, 'Shadow of the Tomb Raider'],
+    [2021, 'Tomb Raider: Definitive Survivor Trilogy', 'collection', { includes: ['Tomb Raider (2013)', 'Rise of the Tomb Raider', 'Shadow of the Tomb Raider'] }],
+    [2024, 'Tomb Raider I-III Remastered', 'collection', { includes: ['Tomb Raider (1996)', 'Tomb Raider II', 'Tomb Raider III'], aka: ['Tomb Raider I-III Remastered Starring Lara Croft'] }],
+    [2025, 'Tomb Raider IV-VI Remastered', 'collection', { includes: ['Tomb Raider: The Last Revelation', 'Tomb Raider Chronicles', 'Tomb Raider: The Angel of Darkness'], aka: ['Tomb Raider IV-VI Remastered Starring Lara Croft'] }],
+  ],
+};
