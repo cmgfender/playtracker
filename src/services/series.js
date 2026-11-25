@@ -20,7 +20,6 @@ function unnumbered(tokens) {
   while (out.length > 1 && isNumber(out[out.length - 1])) out.pop();
   return { tokens: out, marked: out.length < tokens.length };
 }
-const startsWith = (tokens, key) => key.length <= tokens.length && key.every((k, i) => tokens[i] === k);
 
 /** The beginning of `title` as it is written that normalises to `key` ("The Legend of Zelda" for "legend of zelda"). */
 function written(title, key) {
@@ -57,7 +56,8 @@ export function inferSeries(games) {
     if (sub || marked) propose(tokens, g.title);
   }
   // two or more words in common, read off titles that sort next to each other
-  const sorted = [...list].sort((a, b) => (a.tokens.join(' ') < b.tokens.join(' ') ? -1 : 1));
+  for (const g of list) g.key = g.tokens.join(' ');
+  const sorted = [...list].sort((a, b) => (a.key < b.key ? -1 : 1));
   for (let i = 1; i < sorted.length; i++) {
     const a = sorted[i - 1].tokens; const b = sorted[i].tokens;
     let n = 0;
@@ -68,15 +68,24 @@ export function inferSeries(games) {
   // a series needs two games; of names that hold the very same games the shortest is the series
   // ("Batman", not "Batman: Arkham"). A game is in every series it begins with: a Star Wars Jedi
   // game is a Star Wars game too.
-  const split = new Map([...keys.keys()].map((k) => [k, k.split(' ')]));
-  const members = new Map();
-  for (const [k, t] of split) { const ids = list.filter((g) => startsWith(g.tokens, t)).map((g) => g.id); if (ids.length >= 2) members.set(k, ids.join(',')); }
+  // (a game's series are beginnings of its own title, so each title is read once, a word at a time:
+  // comparing every name with every title is the square of a big library)
+  const heads = (g, fn) => { let p = ''; for (let i = 0; i < g.tokens.length; i++) { p = i ? `${p} ${g.tokens[i]}` : g.tokens[0]; fn(p); } };
+  const holds = new Map(); // key -> the ids of the games that begin with it, in the library's order
+  for (const g of list) heads(g, (p) => { if (keys.has(p)) { if (!holds.has(p)) holds.set(p, []); holds.get(p).push(g.id); } });
+  const size = (k) => k.split(' ').length;
   const bySet = new Map();
-  for (const [k, ids] of members) if (!bySet.has(ids) || split.get(k).length < split.get(bySet.get(ids)).length) bySet.set(ids, k);
-  const valid = [...bySet.values()].map((k) => [k, split.get(k)]).sort((a, b) => b[1].length - a[1].length || (a[0] < b[0] ? -1 : 1));
+  for (const k of keys.keys()) {
+    const ids = holds.get(k);
+    if (!ids || ids.length < 2) continue;
+    const set = ids.join(',');
+    if (!bySet.has(set) || size(k) < size(bySet.get(set))) bySet.set(set, k);
+  }
+  const valid = new Map([...bySet.values()].map((k) => [k, written(keys.get(k), k) || k]));
   const out = new Map();
   for (const g of list) {
-    const hits = valid.filter(([, t]) => startsWith(g.tokens, t)).map(([k]) => written(keys.get(k), k) || k);
+    const hits = [];
+    heads(g, (p) => { if (valid.has(p)) hits.unshift(valid.get(p)); }); // the longest beginning first
     if (hits.length) out.set(g.id, hits);
   }
   return out;

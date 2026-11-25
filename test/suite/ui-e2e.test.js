@@ -3017,7 +3017,9 @@ describe('Vestigo web UI with a long history (3,000 sessions)', UI, () => {
     } finally { await h.close(); }
   });
 
-  test('game page: the 10 most recent sessions and a link to all of them; under 3,000px tall on a 390px phone', async () => {
+  // The page's height on a phone is what the session list would run away with (150 rows are 9,600px).
+  // These 20 "Long Game N" are a series, so the page also carries its series card (about 135px).
+  test('game page: the 10 most recent sessions and a link to all of them; under 3,200px tall on a 390px phone', async () => {
     const h = await openPage(browser, S.origin, { viewport: PHONE });
     const { page } = h;
     try {
@@ -3028,7 +3030,8 @@ describe('Vestigo web UI with a long history (3,000 sessions)', UI, () => {
       const rows = await page.locator('#g-sessions .item').evaluateAll((els) => els.map((e) => e.getBoundingClientRect().height));
       assert.ok(Math.max(...rows) <= 64.5, `rows ${Math.max(...rows)}px`);
       const tall = await page.evaluate(() => document.documentElement.scrollHeight);
-      assert.ok(tall < 3000, `the game page is ${tall}px tall`);
+      assert.ok(tall < 3200, `the game page is ${tall}px tall`);
+      assert.equal(await page.locator('#g-franchise h2').innerText(), 'Long Game', 'with its series card');
       const all = page.locator('#view a', { hasText: 'All 150 sessions' });
       assert.equal(await all.getAttribute('href'), `/sessions?game_id=${first.id}`);
       await all.click();
