@@ -269,3 +269,36 @@ describe('store titles', () => {
     assert.equal(matchTitle('A Game Of Its Own'), null);
   });
 });
+
+describe('a series counted the same on every page', () => {
+  let h; const id = {};
+  before(async () => {
+    guardNetwork();
+    clock.install(NOW);
+    h = await startApp();
+    // two editions of Halo 3 the library keeps apart, Halo: Reach, and a game of two series (Marvel and The Avengers, by IGDB)
+    id.h3 = await addGame(h, 'Halo 3');
+    id.h3b = await addGame(h, 'Halo 3');
+    id.reach = await addGame(h, 'Halo: Reach');
+    await logSession(h, id.h3, local(2026, 1, 5, 20), 600);
+    await logSession(h, id.h3b, local(2026, 1, 6, 20), 240);
+    await logSession(h, id.reach, local(2026, 1, 7, 20), 720);
+  });
+  after(async () => { await h?.close(); clock.uninstall(); restoreNetwork(); });
+
+  test('a second edition of an entry is no game more, and its hours are the series\': on the Series list, the series\' page, its legend and in Milestones', async () => {
+    const list = (await h.get('/franchises')).items.find((f) => f.id === 'halo');
+    const page = await h.get('/franchises/halo');
+    const legend = await h.get('/legends/series/halo');
+    assert.deepEqual([list.games, list.played, list.minutes], [2, 2, 1560], 'two games, the hours of all three copies');
+    assert.deepEqual([page.games, page.played, page.minutes, page.first_day], [2, 2, 1560, '2026-01-05']);
+    assert.deepEqual([legend.totals.games, legend.totals.played, legend.totals.minutes], [2, 2, 1560]);
+    assert.match(legend.chapters.find((c) => c.id === 'reach').parts.join(''), /^2 games, all of them played/);
+    const ms = await h.get('/stats/milestones?all=true&limit=5000');
+    const of = (kind) => ms.reached.filter((m) => m.kind === kind && m.subject === 'Halo').map((m) => m.value).sort((a, b) => a - b);
+    assert.deepEqual(of('series_hours'), [25], '26 hours: the 25 mark, with the second copy\'s four hours');
+    assert.deepEqual(of('series_games'), [], 'two games: the third copy is not a third game');
+    const next = ms.coming.find((m) => m.kind === 'series_hours' && m.subject === 'Halo');
+    assert.deepEqual([next.target, next.current], [50, 26]);
+  });
+});

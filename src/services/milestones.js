@@ -17,7 +17,7 @@
 // career: of each kind, the three highest rungs this player has reached (and every career first).
 
 import { memo, dayKey, parseDay } from './stats.js';
-import { seriesOf } from './series.js';
+import { franchiseIndex } from './franchises.js';
 
 // a time before 1971 is a placeholder (Steam reports 1 Jan 1970 + a day for games last played before it kept dates)
 const realTime = (t) => (Number.isFinite(t) && t >= Date.UTC(1971, 0, 1) ? t : null);
@@ -278,7 +278,23 @@ function career(db, now, today) {
     if (launch) ahead('day_one', launch);
 
     // ---- genres and series: games as they are first played, hours as they are played
-    const series = seriesOf(db);
+    // a game's series is the one Legends and the Series page place it in (the curated ones first: "Mario"
+    // is Super Mario, Mario Kart and Mario Party apart; a single game is no series), so that
+    // "250 hours in The Legend of Zelda series" counts the hours its legend shows
+    const series = new Map();
+    const notAGame = new Set(); // a second edition of an entry, an add-on: its hours are the series', it is no game more
+    for (const r of franchiseIndex(db, { now }).values()) {
+      for (const it of r.items) {
+        const extra = [...(it.others || []), ...(it.addons || [])].map((x) => x.id);
+        // (a game in two series - Marvel and The Avengers - counts in both, as on their pages)
+        for (const id of [it.game?.id, ...extra]) {
+          if (id == null) continue;
+          if (!series.has(id)) series.set(id, []);
+          if (!series.get(id).includes(r.name)) series.get(id).push(r.name);
+          if (id !== it.game?.id) notAGame.add(`${id}|${r.name}`);
+        }
+      }
+    }
     const genres = new Map();
     for (const t of db.prepare("SELECT game_id, name FROM game_tags WHERE kind = 'genre' ORDER BY game_id, name").all()) { if (!genres.has(t.game_id)) genres.set(t.game_id, []); genres.get(t.game_id).push(t.name); }
     const groups = { genre: new Map(), series: new Map() }; // name -> { games, minutes, last, first }
@@ -293,6 +309,7 @@ function career(db, now, today) {
             const kind = k === 'genre' ? 'genres' : 'series';
             if (MARKS[kind].includes(count)) hit(kind, count, f, name);
           }
+          if (k === 'series' && notAGame.has(`${id}|${name}`)) continue;
           s.games++;
           if (MARKS[`${k}_games`].includes(s.games)) hit(`${k}_games`, s.games, f, name);
         }

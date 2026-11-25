@@ -60,6 +60,23 @@ describe('manual games: create', () => {
     assert.equal((await t.list()).total, before_);
   });
 
+  test('free text has a length: a title of 301 characters, a 2,001-character cover address or session note are refused; the longest allowed are kept', async () => {
+    const before_ = (await t.list()).total;
+    const long = await t.post('/games', { title: 'x'.repeat(301) });
+    assert.deepEqual([long.status, long.data.error], [400, 'title is at most 300 characters']);
+    assert.equal((await t.post('/games', { title: 'Fits', cover_url: `https://x/${'y'.repeat(2000)}` })).status, 400);
+    assert.equal((await t.list()).total, before_, 'nothing was created');
+    const ok = await t.post('/games', { title: 'y'.repeat(300), cover_url: `https://x/${'y'.repeat(1990)}`, merge: false });
+    assert.ok(ok.status === 200 || ok.status === 201, `status ${ok.status}`);
+    const id = ok.data.id;
+    // changed afterwards: the same limits
+    assert.deepEqual([(await t.call(`/games/${id}`, { method: 'PATCH', body: { title: 'z'.repeat(301) } })).status, (await t.call(`/games/${id}`, { method: 'PATCH', body: { cover_url: 'c'.repeat(2001) } })).status], [400, 400]);
+    assert.equal((await t.get(`/games/${id}`)).data.title, 'y'.repeat(300));
+    const note = await t.post('/sessions', { game_id: id, minutes: 30, started_at: Date.now() - 3_600_000, note: 'n'.repeat(2001) });
+    assert.deepEqual([note.status, note.data.error], [400, 'note is at most 2,000 characters']);
+    await t.call(`/games/${id}`, { method: 'DELETE' });
+  });
+
   test('a malformed JSON body is rejected with 400 and nothing is created', async () => {
     const before_ = (await t.list()).total;
     const r = await t.call('/games', { method: 'POST', body: '{"title": "Broken', raw: true });

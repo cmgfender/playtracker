@@ -148,10 +148,11 @@ export function tell(L) {
   const platMap = new Map();
   for (const p of plays) for (const [k, m] of p.plat || []) { const x = platMap.get(k) || { platform: k, minutes: 0, games: 0 }; x.minutes += m; x.games++; platMap.set(k, x); }
   const platforms = [...platMap.values()].filter((x) => x.minutes > 0 || !L.window).sort((a, b) => b.minutes - a.minutes).map((x) => ({ ...x, minutes: Math.round(x.minutes) }));
-  const finished = L.window ? null : plays.filter((p) => p.game.state === 'finished').length;
-  const nPlayed = plays.filter(wasPlayed).length;
+  const finished = L.window ? null : L.count?.finished ?? plays.filter((p) => p.game.state === 'finished').length;
+  const nPlayed = L.count?.played ?? plays.filter(wasPlayed).length;
+  const nGames = L.count?.games ?? plays.length;
   const totals = {
-    games: plays.length, played: nPlayed, finished, minutes: Math.round(total), dated: Math.round(dated), undated: Math.max(0, Math.round(total - dated)),
+    games: nGames, played: nPlayed, finished, minutes: Math.round(total), dated: Math.round(dated), undated: Math.max(0, Math.round(total - dated)),
     first_day: firstPlay?.first || null, last_day: lastPlay?.last || null, active_years: active.filter((y) => y.minutes > 0).length, series: series.length,
   };
 
@@ -218,7 +219,7 @@ export function tell(L) {
 
   // how far it went
   if (plays.length) {
-    const n = plays.length;
+    const n = nGames;
     const reach = L.window ? [`${count(n, 'game')} played in it.`]
       : n === 1 ? [nPlayed ? (finished ? 'One game, and you finished it.' : 'One game so far.') : 'One game, not played yet.']
         : [n === nPlayed ? `${count(n, 'game')}, all of them played` : `${count(n, 'game')} in all, ${nPlayed} played`, finished ? `, ${finished} finished.` : '.'];
