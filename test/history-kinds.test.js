@@ -61,6 +61,14 @@ describe('through the API', () => {
     // per bucket, the parts add up to the bucket
     after.series.forEach((s, i) => assert.equal(Object.values(after.series_by_basis).reduce((a, v) => a + v[i], 0), s.minutes, s.key));
     assert.deepEqual(Object.keys(after.series_imported_by_platform), ['switch']);
+    // every kind of history by the platform it was played on (a chart draws it in that platform's colour):
+    // per kind and bucket, the platforms add up to the kind
+    const hp = after.series_history_by_platform;
+    assert.ok(Object.keys(hp).length >= 1 && Object.keys(hp).includes('switch'), JSON.stringify(Object.keys(hp)));
+    for (const kind of ['imported', 'anchored', 'confirmed', 'estimated', 'assumed']) {
+      after.series.forEach((s, i) => assert.equal(Object.values(hp).reduce((a, bases) => a + (bases[kind]?.[i] || 0), 0), after.series_by_basis[kind][i], `${kind} ${s.key}`));
+    }
+    assert.ok(!Object.values(hp).some((bases) => 'tracked' in bases), 'tracked play is in series_by_platform');
     // sessions say what they rest on
     const ses = await get(`/sessions?game_id=${hades.game_id}&kind=estimate&limit=5`);
     assert.ok((ses.items || ses).every((x) => x.basis === 'confirmed'));
