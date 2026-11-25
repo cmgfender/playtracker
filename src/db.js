@@ -413,6 +413,11 @@ const MIGRATIONS = [
   UPDATE entries SET hist = json_remove(hist, '$.last_played_at') WHERE json_extract(hist, '$.last_played_at') < 31536000000;
   UPDATE entries SET hist = json_remove(hist, '$.first_played_at') WHERE json_extract(hist, '$.first_played_at') < 31536000000;
   `,
+  // 12: a rarity of 0 is "not known" (a GameTrack import wrote it for thousands of Xbox 360
+  //     achievements): stored as 0% they made every unlock of theirs the rarest
+  `
+  UPDATE achievements SET rarity = NULL WHERE rarity = 0;
+  `,
 ];
 
 /** The schema version this build migrates a database to. */

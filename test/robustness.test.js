@@ -329,3 +329,20 @@ describe('webhook: a message too long for Discord', () => {
     assert.equal(plain.text, long);
   });
 });
+
+test('migration 12: a stored rarity of 0 becomes unknown; real rarities stay', async () => {
+  const { openDb, SCHEMA_VERSION } = await import('../src/db.js');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vg-mig12-'));
+  const file = path.join(dir, 'vestigo.db');
+  const db = openDb(file);
+  db.prepare("INSERT INTO games(title, norm_title, created_at, updated_at) VALUES ('X', 'x', 0, 0)").run();
+  db.prepare("INSERT INTO entries(account_id, game_id, platform, ext_id, title, playtime_min, first_seen_at, last_synced_at) VALUES (NULL, 1, 'xbox', '1', 'X', 0, 0, 0)").run();
+  const ins = db.prepare('INSERT INTO achievements(entry_id, ach_id, name, unlocked, rarity, first_seen_at, updated_at) VALUES (1, ?, ?, 1, ?, 0, 0)');
+  ins.run('a', 'Zero', 0); ins.run('b', 'Real', 0.4); ins.run('c', 'None', null);
+  db.exec('PRAGMA user_version = 11'); db.close();
+  const again = openDb(file);
+  try {
+    assert.equal(again.prepare('PRAGMA user_version').get().user_version, SCHEMA_VERSION);
+    assert.deepEqual(again.prepare('SELECT name, rarity FROM achievements ORDER BY ach_id').all().map((r) => [r.name, r.rarity]), [['Zero', null], ['Real', 0.4], ['None', null]]);
+  } finally { again.close(); fs.rmSync(dir, { recursive: true, force: true }); }
+});
