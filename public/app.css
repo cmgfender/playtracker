@@ -234,6 +234,7 @@ label.btn:has(input:focus-visible) { outline: 2px solid var(--accent-ink); outli
 .btn:hover { border-color: color-mix(in srgb, var(--text) 25%, var(--line)); }
 .btn:active { transform: scale(.97); }
 .btn svg { width: 17px; height: 17px; }
+#import > label.btn { white-space: normal; text-align: center; padding-block: 8px; } /* a long label wraps on a narrow phone */
 .btn.primary { background: var(--accent); border-color: transparent; color: var(--on-accent); box-shadow: 0 8px 20px -10px var(--accent); }
 /* hover moves the fill away from its ink, so the contrast only grows */
 .btn.primary:hover { filter: brightness(.92); }
@@ -374,6 +375,8 @@ a > svg.ic-inline:last-child { margin-left: .25em; }
   .sess .sub > * { flex: none; }
   .sess .sub .when, .sess .sub .note { display: none; }
   .sess .sub .when-c { display: inline; min-width: 0; overflow: hidden; text-overflow: ellipsis; flex: 0 1 auto; }
+  /* the "~" in front of the time already says it is spread over a sync window: the time keeps the room */
+  .sess .sub .badge[title^="Exact time unknown"] { display: none; }
 }
 .item .amt { font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; text-align: right; }
 .item.sel { background: color-mix(in srgb, var(--accent) 10%, transparent); }

@@ -39,7 +39,7 @@ export async function library(view, stale) {
       <div class="row"><button class="btn desk-only" id="lib-add">${icon('plus')}Add game</button></div></div>
     <div class="toolbar lib-tb">
       <div class="row lib-row1">
-        <div class="search grow">${icon('search')}<input class="input" id="lib-q" type="search" placeholder="Search ${platforms.games.toLocaleString()} games…" value="${esc(st.q)}" aria-label="Search library"></div>
+        <div class="search grow">${icon('search')}<input class="input" id="lib-q" type="search" placeholder="${matchMedia('(max-width: 600px)').matches ? 'Search…' : `Search ${platforms.games.toLocaleString()} games…`}" value="${esc(st.q)}" aria-label="Search library"></div>
         <select class="input" id="lib-sort" style="width:auto" aria-label="Sort by">${sortOpts.map(([v, l]) => `<option value="${v}" ${st.sort === v ? 'selected' : ''}>${l}</option>`).join('')}</select>
         <div class="seg desk-only" aria-label="View"><button data-view="grid" class="${st.view === 'grid' ? 'on' : ''}" aria-label="Covers">${icon('grid', 'ic-16')}</button><button data-view="list" class="${st.view === 'list' ? 'on' : ''}" aria-label="List">${icon('list', 'ic-16')}</button></div>
         <button class="btn icon mob-only" id="lib-view-t" aria-label="${st.view === 'grid' ? 'Show as a list' : 'Show as covers'}">${icon(st.view === 'grid' ? 'list' : 'grid')}</button>

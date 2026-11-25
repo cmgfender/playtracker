@@ -151,8 +151,11 @@ function sourceBadge(s) {
  * moves into the badge's title). platLabel: name the platform (a game page whose game has several entries);
  * dated: that line starts with the day (a list whose day headers a phone hides).
  */
+/** When a session began, for the day it belongs to: last night's session that ran past midnight is last night's. */
+export const sessionStart = (s) => s.started_at || s.window_start || s.ended_at || s.window_end || s.created_at;
+
 export function sessionItem(s, { showGame = true, selectable = false, selected = false, platLabel = true, dated = false } = {}) {
-  const t = s.ended_at || s.window_end || s.created_at;
+  const t = sessionStart(s);
   const day = dated ? `${['Today', 'Yesterday'].includes(dayLabel(t)) ? dayLabel(t) : fmtDate(t)} · ` : '';
   return `<div class="item sess ${selected ? 'sel' : ''}" data-sid="${s.id}">
     ${selectable ? `<input type="checkbox" class="check" data-sel="${s.id}" ${selected ? 'checked' : ''} aria-label="Select ${esc(s.title)}, ${esc(fmtMin(s.minutes))}">` : ''}
@@ -167,16 +170,20 @@ export function sessionItem(s, { showGame = true, selectable = false, selected =
   </div>`;
 }
 
+/**
+ * Sessions by the day they began (one that ran past midnight is under the evening it started), in the
+ * order the days first come up - one group a day, also when the list (newest end first) comes back to it.
+ */
 export function groupByDay(sessions) {
-  const groups = [];
-  let cur = null;
+  const groups = new Map();
   for (const s of sessions) {
-    const t = s.ended_at || s.window_end || s.created_at;
-    const d = new Date(t); d.setHours(0, 0, 0, 0);
-    if (!cur || cur.day !== d.getTime()) { cur = { day: d.getTime(), items: [], minutes: 0 }; groups.push(cur); }
-    cur.items.push(s); cur.minutes += s.minutes;
+    const d = new Date(sessionStart(s)); d.setHours(0, 0, 0, 0);
+    const day = d.getTime();
+    if (!groups.has(day)) groups.set(day, { day, items: [], minutes: 0 });
+    const g = groups.get(day);
+    g.items.push(s); g.minutes += s.minutes;
   }
-  return groups;
+  return [...groups.values()];
 }
 
 // a short faded trail above an empty state's icon: the mark's capsules, oldest faintest
