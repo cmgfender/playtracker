@@ -123,7 +123,8 @@ export function importRows(db, rows, { settings, now = Date.now() } = {}) {
   const indexed = () => { if (!index) build(); return index; };
   const syncedFor = (platform, acc, norm, minutes) => {
     if (!synced) build();
-    const same = synced.get(`${platform}|${norm}`) || [];
+    // (a file's Switch games are the Nintendo account's)
+    const same = synced.get(`${platform === 'switch' ? 'nintendo' : platform}|${norm}`) || [];
     if (same.length) return same.find((e) => acc && e.acc === acc) || same[0];
     // no platform in the file: the one synced copy of this title, when the file's hours fit it
     // (more hours than the platform reports means a different copy, e.g. another console)

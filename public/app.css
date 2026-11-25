@@ -33,6 +33,7 @@
   --steam: #66c0f4;
   --xbox: #3fbf3f;
   --psn: #2f5bea;
+  --nintendo: #ff4d5e;
   --custom: #f59e0b;
   --manual: #c084fc;
   --import: #94a3b8;
@@ -65,7 +66,7 @@
   --good: #047857; --warn: #b45309; --bad: #b91c1c;
   --good-ink: #065f46; --warn-ink: #92400e; --bad-ink: #991b1b; --accent2-ink: #155e75;
   --star: #b45309; --fav: #db2777;
-  --steam: #1d9bd6; --xbox: #2e9a2e; --custom: #d97706; --manual: #a855f7; --import: #64748b;
+  --steam: #1d9bd6; --xbox: #2e9a2e; --nintendo: #d6001c; --custom: #d97706; --manual: #a855f7; --import: #64748b;
   --shadow: 0 10px 30px -14px rgba(20, 24, 36, .25);
   --shadow-card: 0 1px 2px rgba(20, 24, 36, .06), 0 2px 8px -4px rgba(20, 24, 36, .08);
   color-scheme: light;

@@ -1,6 +1,7 @@
 import { steam } from './steam.js';
 import { xbox } from './xbox.js';
 import { psn } from './psn.js';
+import { nintendo } from './nintendo.js';
 import { modelFor } from '../services/model.js';
 
 // 'custom' accounts have no remote API: playtime is pushed to
@@ -42,7 +43,7 @@ const custom = {
   },
 };
 
-export const providers = { steam, xbox, psn, custom };
+export const providers = { steam, xbox, psn, nintendo, custom };
 
 export function providerInfo() {
   return Object.values(providers).map((p) => ({
@@ -50,6 +51,7 @@ export function providerInfo() {
     history_model: modelFor(p).describe(), history: p.profile?.history || null,
     presence_interval_sec: p.profile?.presence?.interval_sec || null, sync_after_session_sec: p.profile?.presence?.sync_after_sec || null,
     can_enrich: !!p.enrich,
+    sign_in: !!p.signInUrl, // GET /api/v1/platforms/{id}/sign-in gives a sign-in link for its account form
     achievements: !!p.achievements, // achievements / trophies are read and kept for its titles
   }));
 }

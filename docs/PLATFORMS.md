@@ -2,20 +2,20 @@
 
 None of the platforms expose a play-session history. They only report **lifetime totals** plus a few timestamps. Vestigo gets as much out of each API as it can. The table below shows which signals each platform provides and what Vestigo does with them.
 
-| Signal | Steam | PlayStation | Xbox (OpenXBL) | Custom / API push | Used for |
-|---|---|---|---|---|---|
-| Lifetime minutes per game | ✅ `playtime_forever` | ✅ `playDuration` | ✅ `MinutesPlayed` stat (1 request per title) | ✅ | Deltas between syncs → sessions |
-| Last played time | ✅ `rtime_last_played` | ✅ `lastPlayedDateTime` | ✅ `titleHistory.lastTimePlayed` | optional | Pins the end of a session; upper bound for history |
-| First played time | ❌ | ✅ `firstPlayedDateTime` | ❌ | optional | Lower bound for history (high confidence) |
-| Launch count | ❌ | ✅ `playCount` | ❌ | optional | Splits one sync's delta into *n* sessions; shapes history |
-| Recent minutes | ✅ `playtime_2weeks` | ❌ | ❌ | optional (`recent_minutes`) | Exact minutes in the last 14 days on import; narrows weekly/monthly windows |
-| Per-device minutes | ✅ Windows / Mac / Linux / **Steam Deck** / offline | category (PS4 / PS5 / PC) | device list only | optional | Tags each session with the device it was played on; flags offline play |
-| Live "currently playing" | ✅ `GetPlayerSummaries.gameid` | ✅ `basicPresences` | ✅ `/presence` | ✅ `POST /accounts/:id/presence` | Exact session start/end; triggers a sync when you stop playing |
-| Activity timestamps | ✅ achievement unlock times; purchase dates via the pasted licenses page | ✅ trophy earned times (plus first/last played) | ✅ achievement unlock times; screenshot / clip dates | — | Dates pre-tracking history |
-| Achievements / trophies | ✅ names, icons, hidden flag, rarity | ✅ names, icons, grade, rarity, DLC groups | ✅ names, icons, gamerscore, rarity (modern + Xbox 360) | — | Kept per game, attached to sessions by time, achievement stats |
-| Release date | ✅ store `appdetails` | — | — | — | History can't start before release |
-| Account creation date | ✅ `timecreated` | — | — | — | History can't start before the account existed |
-| Date added / purchased | ❌ | ❌ | ❌ | ✅ `date_added` (CSV/JSON) | Lower bound for history |
+| Signal | Steam | PlayStation | Xbox (OpenXBL) | Nintendo | Custom / API push | Used for |
+|---|---|---|---|---|---|---|
+| Lifetime minutes per game | ✅ `playtime_forever` | ✅ `playDuration` | ✅ `MinutesPlayed` stat (1 request per title) | ✅ `totalPlayedMinutes` | ✅ | Deltas between syncs → sessions |
+| Last played time | ✅ `rtime_last_played` | ✅ `lastPlayedDateTime` | ✅ `titleHistory.lastTimePlayed` | ✅ `lastPlayedAt` | optional | Pins the end of a session; upper bound for history |
+| First played time | ❌ | ✅ `firstPlayedDateTime` | ❌ | ✅ `firstPlayedAt` | optional | Lower bound for history (high confidence) |
+| Launch count | ❌ | ✅ `playCount` | ❌ | days played only | optional | Splits one sync's delta into *n* sessions; shapes history |
+| Recent minutes | ✅ `playtime_2weeks` | ❌ | ❌ | ✅ minutes per day, last 7 days | optional (`recent_minutes`) | Exact minutes in the last 14 days on import; narrows weekly/monthly windows |
+| Per-device minutes | ✅ Windows / Mac / Linux / **Steam Deck** / offline | category (PS4 / PS5 / PC) | device list only | ❌ | optional | Tags each session with the device it was played on; flags offline play |
+| Live "currently playing" | ✅ `GetPlayerSummaries.gameid` | ✅ `basicPresences` | ✅ `/presence` | ❌ | ✅ `POST /accounts/:id/presence` | Exact session start/end; triggers a sync when you stop playing |
+| Activity timestamps | ✅ achievement unlock times; purchase dates via the pasted licenses page | ✅ trophy earned times (plus first/last played) | ✅ achievement unlock times; screenshot / clip dates | — | — | Dates pre-tracking history |
+| Achievements / trophies | ✅ names, icons, hidden flag, rarity | ✅ names, icons, grade, rarity, DLC groups | ✅ names, icons, gamerscore, rarity (modern + Xbox 360) | ❌ | — | Kept per game, attached to sessions by time, achievement stats |
+| Release date | ✅ store `appdetails` | — | — | — | — | History can't start before release |
+| Account creation date | ✅ `timecreated` | — | — | — | — | History can't start before the account existed |
+| Date added / purchased | ❌ | ❌ | ❌ | ❌ | ✅ `date_added` (CSV/JSON) | Lower bound for history |
 
 ## Steam (official Web API)
 
@@ -111,6 +111,30 @@ Microsoft has no public consumer API, so Vestigo uses [OpenXBL](https://xbl.io).
 - **Third-party service:** endpoint shapes aren't officially documented and are parsed defensively. The Xbox Home and dashboard title ids are ignored.
 - **Missing playtime:** some titles (apps, some backward-compatible Xbox 360 games) have no `MinutesPlayed` stat.
 - **Lag:** the stat can trail the end of a session by several minutes, so the post-session sync runs after **10 minutes**.
+
+## Nintendo (Nintendo Switch Online app private API)
+
+Nintendo has no public API. Vestigo reads the play history the Nintendo Switch Online app shows, for the Nintendo Account you sign in with. A Nintendo Switch Online membership isn't needed.
+
+**Signing in:**
+1. In the account form, choose **Open Nintendo sign-in** and sign in to your Nintendo Account.
+2. On the "Select this person" page, right-click the button (long-press on a phone) and copy the link. It starts with `npf71b963c1b7b6d119://auth`.
+3. Paste it into **Sign-in link** within an hour and save. Each link works once.
+
+Vestigo exchanges the link for a session token, which lasts about two years. The code verifier behind the link never leaves the server. If you already have a session token for the Nintendo Switch Online app (from nxapi, for example), you can paste it instead.
+
+**Calls per sync:** 3 requests. One renews the access token, one reads the play history (`play_histories`), and one reads your nickname.
+
+**What it gives:**
+- Total minutes, first played and last played for every Switch and Switch 2 title you've played.
+- Minutes per title per day for the last 7 days. These are used like Steam's two-week counter on the first import.
+- Days played per title (kept with the game).
+
+**Limits:**
+- Play history reaches Nintendo when the console is online and uploads it. That can be hours after you play, so syncs place that play in the window since the previous sync.
+- No live "playing now", no achievements and no per-device minutes.
+- Titles you hid from play history in the app aren't listed.
+- Imported rows for Switch (CSV, JSON, GameTrack) join the synced Nintendo game of the same title instead of making a second copy.
 
 ## Custom accounts / API push
 

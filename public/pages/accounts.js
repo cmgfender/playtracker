@@ -51,7 +51,8 @@ export async function accountModal(platforms, existing = null) {
       body: `<form class="stack" id="acc-f" autocomplete="off">
         <p class="small muted" style="margin:0">${esc(info.notes)}</p>
         <div class="field"><label>Display name</label><input class="input" name="name" value="${esc(a.name)}"></div>
-        ${info.fields.map((f) => `<div class="field"><label>${esc(f.label)}${f.required ? '' : ' <span class="dim">(optional)</span>'}</label>
+        ${info.fields.map((f) => `<div class="field"><label>${esc(f.label)}${f.required || f.sign_in ? '' : ' <span class="dim">(optional)</span>'}</label>
+          ${f.sign_in ? `<button type="button" class="btn sm" data-sign-in style="justify-self:start">${icon('external')}Open ${esc(info.label)} sign-in</button>` : ''}
           ${f.type === 'select' ? `<select class="input" name="cfg_${f.key}">${f.options.map((o) => `<option value="${esc(o)}" ${(a.config[f.key] ?? f.options[0]) === o ? 'selected' : ''}>${esc(o)}</option>`).join('')}</select>`
             : `<input class="input" name="cfg_${f.key}" type="${f.type === 'password' ? 'password' : f.type === 'number' ? 'number' : 'text'}" value="${esc(a.config[f.key] ?? '')}" placeholder="${esc(f.placeholder || '')}" autocomplete="off" spellcheck="false">`}
           ${f.help ? `<div class="help">${esc(f.help).replace(/(https?:\/\/[^\s)]+)/g, '<a href="$1" target="_blank" rel="noopener">$1</a>')}</div>` : ''}</div>`).join('')}
@@ -64,6 +65,14 @@ export async function accountModal(platforms, existing = null) {
       foot: `${existing ? `<button class="btn danger" id="acc-del" aria-label="Unlink account" title="Unlink account">${icon('trash')}</button>` : ''}<span class="grow"></span>${info.push ? '' : '<button class="btn" id="acc-test">Test</button>'}<button class="btn primary" id="acc-save">${existing ? 'Save' : 'Connect & import'}</button>`,
       onMount(el, close) {
         bindScheduleFields(el, 'a_');
+        // the sign-in page opens in a new tab; the window is opened before the request so it is not blocked
+        el.querySelector('[data-sign-in]')?.addEventListener('click', async () => {
+          const w = window.open('about:blank', '_blank');
+          try {
+            const r = await api(`/platforms/${p}/sign-in`);
+            if (w) { w.opener = null; w.location.href = r.url; } else location.href = r.url;
+          } catch (e) { w?.close(); fail(e); }
+        });
         el.querySelector('#acc-own')?.addEventListener('change', (e) => el.querySelector('#acc-sched').classList.toggle('hide', !e.target.checked));
         const collect = () => {
           const f = el.querySelector('#acc-f');

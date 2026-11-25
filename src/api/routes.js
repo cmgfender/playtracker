@@ -89,6 +89,8 @@ function requireFields(platform, config) {
   if (!p) throw new HttpError(400, `Unknown platform "${platform}". Use one of: ${Object.keys(providers).join(', ')}`);
   const missing = p.fields.filter((f) => f.required && !String(config[f.key] ?? '').trim()).map((f) => f.label);
   if (missing.length) throw new HttpError(400, `Missing: ${missing.join(', ')}`);
+  const problem = p.checkConfig?.(config);
+  if (problem) throw new HttpError(400, problem);
 }
 
 function gameRow(g) {
@@ -213,6 +215,11 @@ export function registerRoutes(r, app) {
   // ---------- meta ----------
   r.get('/api/v1/health', () => ({ ok: true, version, revision, time: Date.now(), tz: Intl.DateTimeFormat().resolvedOptions().timeZone }), { summary: 'Health check', public: true });
   r.get('/api/v1/platforms', () => providerInfo(), { summary: 'Supported platforms and their credential fields' });
+  r.get('/api/v1/platforms/:id/sign-in', (c) => {
+    const p = providers[c.params.id];
+    if (!p?.signInUrl) throw new HttpError(404, 'This platform has no sign-in link');
+    return p.signInUrl();
+  }, { summary: 'A sign-in link for a platform account (Nintendo): open it, sign in, and paste the link it ends on into the account\'s sign-in field', returns: '{ url, expires_at }' });
 
   // ---------- auth ----------
   // password_env (the variable that sets the password) is configuration detail: signed-in callers only

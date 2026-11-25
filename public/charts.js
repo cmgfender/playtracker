@@ -280,7 +280,7 @@ export const BASIS_FILL = { imported: 'url(#vg-imported)', confirmed: 'url(#vg-c
 // ---------- bar chart ----------
 // Stack order, bottom up: neighbours differ in lightness (Steam and PlayStation 2.7:1 apart in dark),
 // other keys follow in their own order, estimated history always on top.
-const STACK_ORDER = ['steam', 'psn', 'xbox', 'custom', 'manual', 'import'];
+const STACK_ORDER = ['steam', 'psn', 'xbox', 'nintendo', 'custom', 'manual', 'import'];
 const HISTORY_ORDER = { imported: 60, confirmed: 70, anchored: 80, estimated: 99 };
 const stackRank = (k) => HISTORY_ORDER[k] ?? (STACK_ORDER.includes(k) ? STACK_ORDER.indexOf(k) : 50);
 
