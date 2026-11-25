@@ -1,0 +1,30 @@
+// Tony Hawk's. The format is described in ../franchises.js.
+export default {
+  id: 'tony-hawk', name: "Tony Hawk's", aliases: ["Tony Hawk's", "Tony Hawk's Pro Skater"], prefix: ['tony hawk'],
+  eras: [
+    ["Tony Hawk's Pro Skater", 'Pro Skater', "Neversoft's four Pro Skater games"],
+    ["Tony Hawk's Underground", 'Underground', "Neversoft's story-led games, from Underground to Proving Ground"],
+    ['Tony Hawk: Ride', 'Robomodo', "Robomodo's games: the board peripheral, the HD remake and Pro Skater 5"],
+    ["Tony Hawk's Pro Skater 1 + 2", 'Remakes', 'Pro Skater 1 to 4 remade by Vicarious Visions and Iron Galaxy'],
+  ],
+  entries: [
+    [1999, "Tony Hawk's Pro Skater", 'main', { aka: ["Tony Hawk's Skateboarding"] }],
+    [2000, "Tony Hawk's Pro Skater 2"],
+    [2001, "Tony Hawk's Pro Skater 3"],
+    [2001, "Tony Hawk's Pro Skater 2x", 'collection', { includes: ["Tony Hawk's Pro Skater", "Tony Hawk's Pro Skater 2"] }],
+    [2002, "Tony Hawk's Pro Skater 4"],
+    [2003, "Tony Hawk's Underground"],
+    [2004, "Tony Hawk's Underground 2"],
+    [2005, "Tony Hawk's Underground 2 Remix", 'rerelease', { of: "Tony Hawk's Underground 2" }],
+    [2005, "Tony Hawk's American Wasteland"],
+    [2006, "Tony Hawk's Downhill Jam", 'spinoff'],
+    [2006, "Tony Hawk's Project 8"],
+    [2007, "Tony Hawk's Proving Ground"],
+    [2009, 'Tony Hawk: Ride', 'spinoff'],
+    [2010, 'Tony Hawk: Shred', 'spinoff'],
+    [2012, "Tony Hawk's Pro Skater HD", 'remake', { of: ["Tony Hawk's Pro Skater", "Tony Hawk's Pro Skater 2"], partial: true }],
+    [2015, "Tony Hawk's Pro Skater 5"],
+    [2020, "Tony Hawk's Pro Skater 1 + 2", 'remake', { of: ["Tony Hawk's Pro Skater", "Tony Hawk's Pro Skater 2"] }],
+    [2025, "Tony Hawk's Pro Skater 3 + 4", 'remake', { of: ["Tony Hawk's Pro Skater 3", "Tony Hawk's Pro Skater 4"] }],
+  ],
+};

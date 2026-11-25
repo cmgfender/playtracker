@@ -1,0 +1,42 @@
+// Yu-Gi-Oh!. The format is described in ../franchises.js.
+// Only games released outside Japan on consoles, handhelds and PC; the Japan-only and mobile-only games
+// are left out.
+export default {
+  id: 'yu-gi-oh', name: 'Yu-Gi-Oh!', aliases: ['Yu-Gi-Oh!', 'Yugioh'], prefix: ['yu-gi-oh', 'yugioh'],
+  eras: [
+    ['Yu-Gi-Oh! Forbidden Memories', 'Duel Monsters', 'Yugi, Kaiba and Joey on PlayStation, Game Boy, GameCube, Xbox, DS and PC'],
+    ['Yu-Gi-Oh! GX: Tag Force', "GX and 5D's", "The Tag Force games on PSP and the World Championship games on DS"],
+    ['Yu-Gi-Oh! Millennium Duels', 'Consoles and PC', 'Millennium Duels, the Legacy of the Duelist games, Duel Links and Master Duel'],
+  ],
+  entries: [
+    [1999, 'Yu-Gi-Oh! Forbidden Memories'],
+    [2000, 'Yu-Gi-Oh! Dark Duel Stories'],
+    [2001, 'Yu-Gi-Oh! The Eternal Duelist Soul'],
+    [2001, 'Yu-Gi-Oh! The Duelists of the Roses'],
+    [2002, 'Yu-Gi-Oh! The Sacred Cards'],
+    [2002, 'Yu-Gi-Oh! The Falsebound Kingdom', 'spinoff'],
+    [2003, 'Yu-Gi-Oh! Reshef of Destruction'],
+    [2003, 'Yu-Gi-Oh! Power of Chaos: Yugi the Destiny'],
+    [2004, 'Yu-Gi-Oh! The Dawn of Destiny'],
+    [2004, 'Yu-Gi-Oh! Power of Chaos: Kaiba the Revenge'],
+    [2004, 'Yu-Gi-Oh! Power of Chaos: Joey the Passion'],
+    [2005, 'Yu-Gi-Oh! Nightmare Troubadour'],
+    [2006, 'Yu-Gi-Oh! GX: Tag Force'],
+    [2007, 'Yu-Gi-Oh! World Championship 2007'],
+    [2007, 'Yu-Gi-Oh! GX: Tag Force 2'],
+    [2007, 'Yu-Gi-Oh! World Championship 2008'],
+    [2008, 'Yu-Gi-Oh! GX: Tag Force 3'],
+    [2009, "Yu-Gi-Oh! 5D's Stardust Accelerator: World Championship 2009"],
+    [2009, "Yu-Gi-Oh! 5D's Tag Force 4"],
+    [2010, "Yu-Gi-Oh! 5D's World Championship 2010: Reverse of Arcadia"],
+    [2010, "Yu-Gi-Oh! 5D's Tag Force 5"],
+    [2011, "Yu-Gi-Oh! 5D's World Championship 2011: Over the Nexus"],
+    [2014, 'Yu-Gi-Oh! Millennium Duels'],
+    [2015, 'Yu-Gi-Oh! Legacy of the Duelist'],
+    [2016, 'Yu-Gi-Oh! Duel Links'],
+    [2019, 'Yu-Gi-Oh! Legacy of the Duelist: Link Evolution'],
+    [2021, 'Yu-Gi-Oh! Rush Duel: Dawn of the Battle Royale'],
+    [2022, 'Yu-Gi-Oh! Master Duel'],
+    [2025, 'Yu-Gi-Oh! Early Days Collection', 'collection', { includes: ['Yu-Gi-Oh! Dark Duel Stories', 'Yu-Gi-Oh! The Eternal Duelist Soul', 'Yu-Gi-Oh! The Sacred Cards', 'Yu-Gi-Oh! Reshef of Destruction'] }],
+  ],
+};

@@ -99,7 +99,7 @@ test('migration 10 sorts the history of an existing database', () => {
   db.close();
 });
 
-test('migration 10 marks history exactly as re-dating by v6 would, so nothing is re-dated on upgrade', async () => {
+test('migration 10 marks history exactly as re-dating by v6 would, so v6 history is not re-dated by it', async () => {
   const { importRows } = await import('../src/services/importer.js');
   const { reinferPending, mergeEvidence, reinferMany, INFER_VERSION } = await import('../src/services/inference.js');
   const { Settings } = await import('../src/services/settings.js');
@@ -136,7 +136,9 @@ test('migration 10 marks history exactly as re-dating by v6 would, so nothing is
   const db = openDb(file);
   assert.equal(snap(db), want, 'sessions marked as re-dating would');
   assert.equal(pd(db), wantDays, 'per-day rows marked as re-dating would');
-  assert.equal(db.prepare('SELECT COUNT(*) n FROM entries WHERE baseline_min > 0 AND inferred_v < ?').get(INFER_VERSION).n, 0, 'nothing left to re-date');
+  // marked as dated by v6; a later version (v7: placeholder dates, unlocks as play, even periods) re-dates once on start
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM entries WHERE baseline_min > 0 AND inferred_v <> 6').get().n, 0, 'marked as dated by v6');
+  assert.ok(INFER_VERSION > 6);
   assert.match(db.prepare("SELECT sql FROM sqlite_master WHERE name = 'play_days_range'").get().sql, /platform, basis/);
   db.close();
 });

@@ -1,11 +1,10 @@
-import { $, esc, fmtMin, fmtHours, fmtDate, plat, platDot, cover, icon, api, toast, fail } from '../app.js';
+import { $, esc, fmtMin, fmtHours, fmtDate, plat, platDot, cover, icon, api, toast, fail, rerender } from '../app.js';
+import { periodPicker, periodChange, readPeriod, evidenceLine, whenDialog, conflictList } from './when.js';
 
 // =====================================================================
-// Improve history: answer "when did you play this?" for the least certain games
+// Improve history: answer "when did you play this?" for the least certain games, with what is
+// known about each beside it; and a second look at your dates that the evidence disagrees with
 // =====================================================================
-const PERIODS = [['year', 'Whole year', 0, 11], ['q1', 'Jan – Mar', 0, 2], ['q2', 'Apr – Jun', 3, 5], ['q3', 'Jul – Sep', 6, 8], ['q4', 'Oct – Dec', 9, 11],
-  ...['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'].map((m, i) => [`m${i}`, m, i, i])];
-
 export async function historyPage(view, stale) {
   const [rev, accts] = await Promise.all([api('/history/review?limit=30'), api('/accounts')]);
   if (stale()) return;
@@ -14,30 +13,46 @@ export async function historyPage(view, stale) {
   const all = Object.values(m).reduce((a, x) => a + x, 0) || 1;
   const seg = [['high', 'var(--good)', 'High confidence'], ['manual', 'var(--accent-mark)', 'Set by you'], ['medium', 'var(--warn)', 'Medium'], ['low', 'var(--bad)', 'Low'], ['undated', 'var(--line)', 'Undated']];
   const sure = Math.round(((m.high + m.manual + m.medium * 0.5) / all) * 100);
-  const yearOpts = (it) => {
+  // years from the oldest evidence (release, first unlock, first played...) to tracking start;
+  // with none, 25 years back (and never later than 1970: an old console's games go back that far)
+  const years = (it) => {
     const hi = new Date(Math.min(Date.now(), it.evidence.tracking_start || Date.now())).getFullYear();
-    const lo = Math.max(2003, it.evidence.release_at ? new Date(it.evidence.release_at).getFullYear() : hi - 20);
-    const guess = it.window ? new Date((it.window[0] + it.window[1]) / 2).getFullYear() : hi;
-    const out = [];
-    for (let y = hi; y >= lo; y--) out.push(`<option value="${y}" ${y === guess ? 'selected' : ''}>${y}</option>`);
-    return out.join('');
+    const marks = (it.marks || []).filter((x) => x.key !== 'tracking' && x.key !== 'first_tracked').map((x) => new Date(x.at).getFullYear());
+    const lo = Math.max(1970, Math.min(hi, marks.length ? Math.min(...marks) : hi - 25));
+    const at = (k) => it.marks?.find((x) => x.key === k)?.at;
+    const hint = it.window ? (it.window[0] + it.window[1]) / 2 : at('first_unlock') ?? at('first_played') ?? at('last_played');
+    return { hi, lo, guess: hint ? Math.min(hi, Math.max(lo, new Date(hint).getFullYear())) : hi };
   };
-  const row = (it) => `<div class="item hist-row" data-entry="${it.entry_id}" style="align-items:flex-start;padding:14px 4px">
+  const row = (it) => {
+    const ev = evidenceLine(it);
+    return `<div class="item hist-row" data-entry="${it.entry_id}" data-period style="align-items:flex-start;padding:14px 4px">
       ${cover({ title: it.title, cover_url: it.cover_url }, 'sm')}
       <div class="grow stack" style="gap:6px;min-width:0">
         <div class="row between wrap"><a class="ttl" href="/game/${it.game_id}" data-link>${esc(it.title)}</a><b class="nowrap">${fmtMin(it.minutes, { short: it.minutes >= 600 })}</b></div>
         <div class="tiny muted">${platDot(it.platform)} ${esc(it.account_name || plat(it.platform).label)} · ${it.window
           ? `now guessed <b>${fmtDate(it.window[0], { year: 'numeric', month: 'short' })} – ${fmtDate(it.window[1], { year: 'numeric', month: 'short' })}</b> <span class="conf-${it.confidence}">(${it.confidence})</span>`
-          : 'no dates known'}${it.undated ? ` · ${fmtMin(it.undated)} undated` : ''}${it.evidence.last_played_at ? ` · last played ${fmtDate(it.evidence.last_played_at, { year: 'numeric', month: 'short', day: 'numeric' })}` : ''}</div>
-        ${it.window ? `<div class="row wrap" style="gap:6px"><button class="btn sm" data-confirm>${icon('check')}Looks right</button><span class="tiny muted">or correct it:</span></div>` : ''}
-        <div class="row wrap" style="gap:6px"><span class="small">Mostly played in</span>
-          <select class="input sm" name="y" style="width:auto" aria-label="Year">${yearOpts(it)}</select>
-          <select class="input sm" name="p" style="width:auto" aria-label="Period">${PERIODS.map(([k, l]) => `<option value="${k}">${l}</option>`).join('')}</select>
-          <label class="small row" style="gap:4px"><input type="checkbox" name="span"> until</label>
-          <select class="input sm hide" name="y2" style="width:auto" aria-label="Until year">${yearOpts(it)}</select>
+          : 'no dates known'}${it.undated ? ` · ${fmtMin(it.undated)} undated` : ''}</div>
+        ${ev ? `<div class="tiny">${esc(ev)}</div>` : ''}
+        ${it.enrich_pending ? '<div class="tiny" style="color:var(--warn-ink)">Achievement times are still being read: the guess may move.</div>'
+          : it.window ? `<div class="row wrap" style="gap:6px"><button class="btn sm" data-confirm>${icon('check')}Looks right</button><span class="tiny muted">or correct it:</span></div>` : ''}
+        <div class="row wrap" style="gap:6px">${periodPicker(years(it))}
           <button class="btn sm primary" data-answer>${icon('check')}Save</button>
+          <button class="btn sm ghost" data-exact>${icon('edit')}Exact dates…</button>
           <button class="btn sm ghost" data-undated>Don’t chart</button>
           <button class="btn sm ghost" data-skip>Skip</button></div>
+      </div></div>`;
+  };
+  // your dates (or estimates you confirmed) that the evidence disagrees with
+  const checkRow = (it) => `<div class="item hist-check" data-entry="${it.entry_id}" style="align-items:flex-start;padding:14px 4px">
+      ${cover({ title: it.title, cover_url: it.cover_url }, 'sm')}
+      <div class="grow stack" style="gap:6px;min-width:0">
+        <div class="row between wrap"><a class="ttl" href="/game/${it.game_id}" data-link>${esc(it.title)}</a><b class="nowrap">${fmtMin(it.minutes, { short: it.minutes >= 600 })}</b></div>
+        <div class="tiny muted">${platDot(it.platform)} ${esc(it.account_name || plat(it.platform).label)} · ${it.manual.confirmed ? 'you confirmed' : 'you set'} <b>${it.manual.start ? fmtDate(it.manual.start, { year: 'numeric', month: 'short' }) : '…'} – ${it.manual.end ? fmtDate(it.manual.end, { year: 'numeric', month: 'short' }) : '…'}</b></div>
+        ${evidenceLine(it) ? `<div class="tiny">${esc(evidenceLine(it))}</div>` : ''}
+        ${conflictList(it.conflicts)}
+        <div class="row wrap" style="gap:6px"><button class="btn sm primary" data-exact>${icon('edit')}Check dates</button>
+          <button class="btn sm ghost" data-auto>Let Vestigo date it</button>
+          <button class="btn sm ghost" data-keep>Keep mine</button></div>
       </div></div>`;
   view.innerHTML = `
     <div class="page-h"><div><h1>Improve history</h1><p>Platforms only report lifetime totals, so play from before tracking is dated from whatever evidence exists. Answer roughly when you played the least certain games — one click each.</p></div></div>
@@ -50,17 +65,29 @@ export async function historyPage(view, stale) {
       <div class="field"><textarea class="input" id="lic-text" aria-label="Steam licenses table" rows="4" style="height:auto;padding:10px 12px;font-family:var(--mono, monospace);font-size:12.5px" placeholder="20 Nov, 2015	Counter-Strike: Global Offensive	Steam Store"></textarea></div>
       <div class="row wrap" style="margin-top:10px">${steam.length > 1 ? `<select class="input sm" id="lic-acc" style="width:auto" aria-label="Steam account">${steam.map((a) => `<option value="${a.id}">${esc(a.name)}</option>`).join('')}</select>` : `<input type="hidden" id="lic-acc" value="${steam[0].id}">`}
         <button class="btn primary sm" id="lic-go">Import purchase dates</button><span class="tiny muted" id="lic-res"></span></div></div>` : ''}
+    ${rev.check?.length ? `<div class="card" style="margin-top:16px" id="hist-check"><div class="card-h"><h2>Check your dates</h2><span class="tiny muted">${rev.check.length} game${rev.check.length === 1 ? '' : 's'}</span></div>
+      <p class="small muted" style="margin-top:-6px">Dates you set (or estimates you confirmed) that achievements or the platform's own dates disagree with. Check them against what is known, let Vestigo date them from the evidence, or keep yours.</p>
+      ${rev.check.map(checkRow).join('')}</div>` : ''}
     <div class="card" style="margin-top:16px"><div class="card-h"><h2>Least certain first</h2><span class="tiny muted">${rev.total} games · ${fmtHours(rev.uncertain_minutes, 0)}h uncertain</span></div>
       <div id="hist-list">${rev.items.map(row).join('') || `<div class="empty" style="padding:24px"><div class="em-ic">${icon('check')}</div><h2>Nothing left to answer</h2><p>All pre-tracking history is dated from solid evidence or by you.</p></div>`}</div>
       ${rev.total > rev.items.length ? '<button class="btn sm ghost" id="hist-more" style="margin-top:10px">Show more</button>' : ''}</div>`;
   let offset = rev.items.length;
   const done = (el, msg) => { el.style.opacity = '.45'; el.querySelectorAll('button,select,input').forEach((x) => { x.disabled = true; }); if (msg) toast(msg); };
-  view.addEventListener('change', (e) => {
-    if (e.target.name === 'span') e.target.closest('.hist-row').querySelector('[name=y2]').classList.toggle('hide', !e.target.checked);
-  });
+  view.addEventListener('change', periodChange);
   view.addEventListener('click', async (e) => {
+    const ck = e.target.closest('.hist-check');
+    if (ck && e.target.closest('[data-exact]')) return whenDialog(Number(ck.dataset.entry), { onDone: rerender });
+    if (ck && e.target.closest('[data-auto]')) {
+      try { await api(`/entries/${ck.dataset.entry}/history`, { method: 'PATCH', body: { reset: true } }); done(ck, 'Dated from the evidence'); } catch (err) { fail(err); }
+      return undefined;
+    }
+    if (ck && e.target.closest('[data-keep]')) {
+      try { await api(`/entries/${ck.dataset.entry}/history`, { method: 'PATCH', body: { acknowledge: true } }); done(ck, 'Your dates are kept'); } catch (err) { fail(err); }
+      return undefined;
+    }
     const el = e.target.closest('.hist-row');
-    if (el && e.target.closest('[data-skip]')) { el.remove(); return; }
+    if (el && e.target.closest('[data-skip]')) { el.remove(); return undefined; }
+    if (el && e.target.closest('[data-exact]')) return whenDialog(Number(el.dataset.entry), { onDone: () => done(el) });
     if (el && e.target.closest('[data-confirm]')) {
       try { await api(`/entries/${el.dataset.entry}/history`, { method: 'PATCH', body: { confirm: true } }); done(el, 'Kept as guessed'); } catch (err) { fail(err); }
       return;
@@ -70,16 +97,13 @@ export async function historyPage(view, stale) {
       return;
     }
     if (el && e.target.closest('[data-answer]')) {
-      const y = Number(el.querySelector('[name=y]').value);
-      const [, , m0, m1] = PERIODS.find(([k]) => k === el.querySelector('[name=p]').value);
-      const y2 = el.querySelector('[name=span]').checked ? Math.max(y, Number(el.querySelector('[name=y2]').value)) : y;
-      const start = new Date(y, m0, 1, 12);
-      const end = new Date(Math.min(Date.now(), new Date(y2, m1 + 1, 0, 20).getTime()));
+      // a period: spread evenly over it (coarse), not front-loaded on its first day
+      const [start, end] = readPeriod(el);
       try {
-        await api(`/entries/${el.dataset.entry}/history`, { method: 'PATCH', body: { first_played_at: start.toISOString(), last_played_at: end.toISOString(), mode: 'auto' } });
+        await api(`/entries/${el.dataset.entry}/history`, { method: 'PATCH', body: { first_played_at: new Date(start).toISOString(), last_played_at: new Date(end).toISOString(), coarse: true, mode: 'auto' } });
         done(el, `Re-dated to ${fmtDate(start, { year: 'numeric', month: 'short' })} – ${fmtDate(end, { year: 'numeric', month: 'short' })}`);
       } catch (err) { fail(err); }
-      return;
+      return undefined;
     }
     if (e.target.closest('#hist-more')) {
       const more = await api(`/history/review?limit=30&offset=${offset}`);

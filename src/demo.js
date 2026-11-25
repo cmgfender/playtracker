@@ -110,6 +110,8 @@ export function seedDemo(db, { days = 120, now = Date.now() } = {}) {
   db.prepare("UPDATE games SET status = 'completed', rating = 10, favorite = 1 WHERE title IN ('Hades', 'Hollow Knight', 'Astro Bot')").run();
   db.prepare("UPDATE games SET status = 'backlog' WHERE title = 'Outer Wilds'").run();
   seedAchievements(db, rand, now);
+  // their achievement times are read (as a real first sync leaves them a few minutes later)
+  db.prepare('UPDATE entries SET enriched_at = ? WHERE account_id IS NOT NULL AND baseline_min > 0').run(now);
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {

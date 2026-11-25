@@ -96,7 +96,7 @@ describe('Vestigo web UI: Insights wording on a tiny library', UI, () => {
       assert.ok(b >= 200 && a > b, `the fixture: ${a} against ${b}`);
       const lead = await sec.locator('.ins-lead').innerText();
       assert.doesNotMatch(lead, /so far/, lead);
-      assert.match(lead, new RegExp(`^${Math.floor(a / 60)}h.* in ${YEAR - 1} — ${Math.round(((a - b) / b) * 100)}% more than ${YEAR - 2} \\(${Math.floor(b / 60)}h`), lead);
+      assert.match(lead, new RegExp(`^${Math.round(a / 60)}h.* in ${YEAR - 1} — ${Math.round(((a - b) / b) * 100)}% more than ${YEAR - 2} \\(${Math.round(b / 60)}h`), lead);
       // the column of every year's total to today's date names the day, not one year's
       assert.match(await sec.locator('th', { hasText: 'So far' }).innerText(), /^so far \(to [^\d]*\d{1,2}[^\d]*\)$/i);
       clean(h);

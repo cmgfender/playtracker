@@ -1,0 +1,31 @@
+// Dragon Quest. The format is described in ../franchises.js.
+export default {
+  id: 'dragon-quest', name: 'Dragon Quest', aliases: ['Dragon Quest', 'Dragon Warrior'], prefix: ['dragon quest'],
+  eras: [
+    ['Dragon Quest', 'The Erdrick trilogy', 'I to III on the Famicom: the legend of Erdrick'],
+    ['Dragon Quest IV', 'The Zenithian trilogy', 'IV to VI: the legend of the Zenithian hero'],
+    ['Dragon Quest VII', 'Worlds of their own', 'VII to XI, online in X, and the Builders and Heroes spin-offs'],
+    ['Dragon Quest III HD-2D Remake', 'Remakes', 'The Erdrick trilogy remade in HD-2D, and VII reimagined'],
+  ],
+  entries: [
+    [1986, 'Dragon Quest', 'main', { aka: ['Dragon Warrior'] }],
+    [1987, 'Dragon Quest II', 'main', { aka: ['Dragon Warrior II'] }],
+    [1988, 'Dragon Quest III', 'main', { aka: ['Dragon Warrior III'] }],
+    [1990, 'Dragon Quest IV', 'main', { aka: ['Dragon Warrior IV'] }],
+    [1992, 'Dragon Quest V'],
+    [1995, 'Dragon Quest VI'],
+    [2000, 'Dragon Quest VII', 'main', { aka: ['Dragon Warrior VII'] }],
+    [2004, 'Dragon Quest VIII'],
+    [2009, 'Dragon Quest IX'],
+    [2012, 'Dragon Quest X'],
+    [2015, 'Dragon Quest Heroes', 'spinoff'],
+    [2016, 'Dragon Quest Builders', 'spinoff'],
+    [2017, 'Dragon Quest XI', 'main', { aka: ['Dragon Quest XI: Echoes of an Elusive Age'] }],
+    [2018, 'Dragon Quest Builders 2', 'spinoff'],
+    [2019, 'Dragon Quest XI S', 'rerelease', { of: 'Dragon Quest XI', aka: ['Dragon Quest XI S: Echoes of an Elusive Age'] }],
+    [2023, 'Dragon Quest Monsters: The Dark Prince', 'spinoff'],
+    [2024, 'Dragon Quest III HD-2D Remake', 'remake', { of: 'Dragon Quest III' }],
+    [2025, 'Dragon Quest I & II HD-2D Remake', 'remake', { of: ['Dragon Quest', 'Dragon Quest II'] }],
+    [2026, 'Dragon Quest VII Reimagined', 'remake', { of: 'Dragon Quest VII' }],
+  ],
+};

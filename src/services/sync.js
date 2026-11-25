@@ -23,6 +23,7 @@ const PIN_MAX = 360; // a single delta up to 6h is treated as one continuous ses
 // (its spans at most this far apart) during which Steam's presence saw that game played is this
 // echo, not play: such spans are marked session_id = 0 (see steamEcho) - never shown or counted.
 const ECHO_GAP = 6 * HOUR;
+const REJOIN_MIN = 10 * MIN; // a title seen again this soon after it left was not put down (see applyPresence)
 const TYPICAL_SESSION = { median: 120, long: 240 }; // until learned from exactly observed sessions
 
 // Achievements read per enrichment run, after the history pass: titles played since they were
@@ -875,6 +876,12 @@ export class SyncService {
       });
       this.refreshNext(account.id);
       this.presenceSessions(account.id, { fallbacks: items.filter((i) => i.unmeteredPlayAt).map((i) => ({ extId: String(i.extId), at: i.unmeteredPlayAt, prev: i.prevPlayedAt })) });
+      // once per account: sittings an earlier version recorded as two or three sessions (see joinSittings)
+      if (!this.account(account.id)?.state?.sittings_joined) {
+        const joined = joinSittings(db, account);
+        db.prepare("UPDATE accounts SET state = json_set(COALESCE(NULLIF(state, ''), '{}'), '$.sittings_joined', 1) WHERE id = ?").run(account.id);
+        if (joined) this.log.info(`${label}: ${joined} session${joined > 1 ? 's' : ''} joined to the sitting they were part of (a game out of sight for a moment used to end its session)`);
+      }
       // a session this sync recorded may be the same play another account's presence already counted
       const doubled = dropDoubledPresence(db);
       if (doubled) this.log.info(`Removed ${doubled} presence session${doubled > 1 ? 's' : ''} another account already counts`);
@@ -1134,6 +1141,9 @@ export class SyncService {
     // it was last seen: what happened in the gap is unknown, so it is not claimed
     const gap = lapseAfter(intervalSec);
     const lapsed = new Set(open.filter((s) => now - s.last_seen_at > gap).map((s) => s.id));
+    // how soon after leaving a title can be rejoined (0: never - the platform writes its total when
+    // the game closes, so leaving and coming back are two plays there)
+    const rejoin = modelFor(providers[account.platform], account).countsInProgress() ? Math.max(REJOIN_MIN, 3 * intervalSec * 1000) : 0;
     tx(db, () => {
       for (const s of open) {
         if (ids.has(s.ext_id) && !lapsed.has(s.id)) unmemoized(db, db.prepare('UPDATE presence SET last_seen_at = ? WHERE id = ?').run(now, s.id));
@@ -1144,6 +1154,17 @@ export class SyncService {
       }
       for (const p of playing) {
         if (open.some((s) => s.ext_id === String(p.extId) && !lapsed.has(s.id))) continue;
+        // Back within a few polls of leaving (the console's Home screen, a poll that missed it): on a
+        // platform whose counter runs while the game does, it was never put down. The span goes on
+        // as one sitting instead of a second session beside a hole of five minutes - unless another
+        // game was played in between, or the title has no counter (its span is its session already).
+        const back = rejoin ? db.prepare('SELECT * FROM presence WHERE account_id = ? AND ext_id = ? AND ended_at IS NOT NULL ORDER BY ended_at DESC LIMIT 1').get(account.id, String(p.extId)) : null;
+        if (back && back.session_id !== 0 && !lapsed.has(back.id) && now - back.ended_at <= rejoin && !account.state?.unmetered?.[back.ext_id]
+          && !db.prepare('SELECT 1 FROM presence WHERE account_id = ? AND ext_id != ? AND COALESCE(ended_at, last_seen_at) > ? LIMIT 1').get(account.id, back.ext_id, back.ended_at)) {
+          db.prepare('UPDATE presence SET ended_at = NULL, last_seen_at = ? WHERE id = ?').run(now, back.id);
+          this.plog.info(`${account.platform}/${account.name} is back in ${p.title || p.extId}: the same session goes on`);
+          continue;
+        }
         const start = prev.lastPoll && now - prev.lastPoll < intervalSec * 3000 ? Math.round((prev.lastPoll + now) / 2) : now;
         db.prepare('INSERT INTO presence(account_id, ext_id, title, started_at, last_seen_at, device) VALUES (?, ?, ?, ?, ?, ?)').run(account.id, String(p.extId), p.title || null, start, now, p.device || null);
         this.plog.info(`${account.platform}/${account.name} started playing ${p.title || p.extId}`);
@@ -1453,6 +1474,38 @@ function playedElsewhere(db, entry, from, to) {
       WHERE e.game_id = ? AND e.id != ? AND e.excluded = 0 AND e.account_id != ?
         AND p.started_at < ? AND COALESCE(p.ended_at, p.last_seen_at) > ?
     LIMIT 1`).get(entry.game_id, entry.id, to, from, entry.game_id, entry.id, entry.account_id ?? -1, to, from);
+}
+
+/**
+ * A one-time repair of sessions recorded before a game back within a few polls went on as the
+ * same session (see applyPresence): on a platform whose counter runs while the game does, exact
+ * sessions of one title that follow each other within the rejoin gap, with no other play of the
+ * account between them, were one sitting. The later one is folded into the earlier (its minutes
+ * added, its end taken), so nothing is lost and every total stays what it was. Returns how many
+ * sessions were folded away.
+ */
+export function joinSittings(db, account) {
+  const provider = providers[account.platform];
+  if (!modelFor(provider, account).countsInProgress()) return 0;
+  const gap = Math.max(REJOIN_MIN, 3 * (provider?.profile?.presence?.interval_sec || 120) * 1000);
+  const rows = db.prepare(`SELECT s.id, s.entry_id, s.minutes, s.started_at, s.ended_at, s.window_end, s.source, s.confidence FROM sessions s JOIN entries e ON e.id = s.entry_id
+    WHERE e.account_id = ? AND s.kind = 'play' AND s.started_at IS NOT NULL AND s.ended_at IS NOT NULL ORDER BY s.started_at, s.id`).all(account.id);
+  let n = 0;
+  tx(db, () => {
+    let prev = null;
+    for (const r of rows) {
+      const whole = (x) => x.source === 'sync' && x.confidence === 'exact';
+      if (prev && whole(prev) && whole(r) && r.entry_id === prev.entry_id && r.started_at >= prev.ended_at && r.started_at - prev.ended_at <= gap) {
+        prev.minutes += r.minutes; prev.ended_at = r.ended_at; prev.window_end = Math.max(prev.window_end || 0, r.window_end || 0, r.ended_at);
+        db.prepare('UPDATE sessions SET minutes = ?, ended_at = ?, window_end = ? WHERE id = ?').run(prev.minutes, prev.ended_at, prev.window_end, prev.id);
+        db.prepare('UPDATE presence SET session_id = ? WHERE session_id = ?').run(prev.id, r.id);
+        db.prepare('DELETE FROM sessions WHERE id = ?').run(r.id);
+        n++;
+      } else prev = r;
+    }
+    if (n) flushRollups(db);
+  });
+  return n;
 }
 
 /**

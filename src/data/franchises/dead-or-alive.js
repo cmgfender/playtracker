@@ -1,0 +1,30 @@
+// Dead or Alive. The format is described in ../franchises.js.
+export default {
+  id: 'dead-or-alive', name: 'Dead or Alive', aliases: ['Dead or Alive'], prefix: ['dead or alive', 'venus vacation'],
+  eras: [
+    ['Dead or Alive', 'Arcade beginnings', '1 and 2 in arcades, then on Saturn, PlayStation, Dreamcast and PS2'],
+    ['Dead or Alive 3', 'Xbox', '3, Ultimate and 4 on Xbox and Xbox 360, and the first Xtreme games'],
+    ['Dead or Alive Paradise', 'After Itagaki', 'Team Ninja after Tomonobu Itagaki left: Dimensions, 5, 6 and later Xtreme games'],
+  ],
+  entries: [
+    [1996, 'Dead or Alive'],
+    [1999, 'Dead or Alive 2'],
+    [2000, 'Dead or Alive 2: Hardcore', 'rerelease', { of: 'Dead or Alive 2' }],
+    [2001, 'Dead or Alive 3'],
+    [2003, 'Dead or Alive Xtreme Beach Volleyball', 'spinoff'],
+    [2004, 'Dead or Alive Ultimate', 'collection', { includes: ['Dead or Alive', 'Dead or Alive 2'] }],
+    [2005, 'Dead or Alive 4'],
+    [2006, 'Dead or Alive Xtreme 2', 'spinoff'],
+    [2010, 'Dead or Alive Paradise', 'spinoff'],
+    [2011, 'Dead or Alive: Dimensions', 'spinoff'],
+    [2012, 'Dead or Alive 5'],
+    [2013, 'Dead or Alive 5 Plus', 'rerelease', { of: 'Dead or Alive 5' }],
+    [2013, 'Dead or Alive 5 Ultimate', 'rerelease', { of: 'Dead or Alive 5' }],
+    [2015, 'Dead or Alive 5 Last Round', 'rerelease', { of: 'Dead or Alive 5' }],
+    [2016, 'Dead or Alive Xtreme 3', 'spinoff'],
+    [2017, 'Dead or Alive Xtreme Venus Vacation', 'spinoff'],
+    [2019, 'Dead or Alive 6'],
+    [2025, 'Venus Vacation Prism: Dead or Alive Xtreme', 'spinoff'],
+    [2026, 'Dead or Alive 6 Last Round', 'rerelease', { of: 'Dead or Alive 6' }],
+  ],
+};
