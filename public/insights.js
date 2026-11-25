@@ -1,6 +1,7 @@
 import { $, $$, esc, fmtMin, fmtHours, fmtDate, plat, platDot, cover, icon, api, state, plural, STATUSES, a11y, tagHref } from './app.js';
 import { mountCharts, punchcard, histogram, areaChart, swimlanes, scatterChart, lineChart, barChart, dayName, chart, registerChart, textWidth } from './charts.js';
 import { seriesLabel, seriesName, hourLabel, emptyState, kpi, rarityText, achIcon } from './pages.js';
+import { whenReached, CATS as MS_CATS } from './pages/milestones.js';
 
 /*
  * Insights: when, what and how you play, from the insights API. Sections load as they come near
@@ -18,12 +19,17 @@ const SECTIONS = [
   ['what', 'What you played', 'Games over time, eras and platforms', 1500],
   ['style', 'How you play', 'Focus, the games you start, comebacks · tracked play', 900],
   ['records', 'Records & highlights', '', 720],
-  ['milestones', 'Milestones', 'Play, games, series, genres and achievements: the round numbers and the day you reached them · whatever the range', 620],
+  ['milestones', 'Milestones', 'The round numbers of your whole career, history before tracking included · whatever the range', 620],
   ['ach', 'Achievements', 'Unlocks, rarities and completion', 900],
   ['yoy', 'Year over year', 'Month by month, and the year so far', 700],
   ['library', 'Your library', 'Everything you own, whatever the range', 1500],
 ];
 const day = (k) => new Date(`${k}T12:00`).getTime();
+/**
+ * Cards in two columns that stack on their own: a tall card no longer leaves a hole beside a short
+ * one (a grid lines its rows up). One column on a phone, the left one first.
+ */
+const cols = (left, right) => `<div class="ins-cols"><div class="stack">${left.filter(Boolean).join('')}</div><div class="stack">${right.filter(Boolean).join('')}</div></div>`;
 const longDay = (k) => fmtDate(day(k), { year: 'numeric', month: 'short', day: 'numeric' });
 const monthName = (k, opts = { month: 'short', year: 'numeric' }) => new Date(`${k}-01T12:00`).toLocaleDateString(undefined, opts);
 const pct = (x) => `${Math.round(x * 100)}%`;
@@ -48,7 +54,7 @@ export async function insights(view, stale) {
   // genres and the rest appear once IGDB has matched games (or while it is matching them)
   const SECS = ig && (ig.coverage.matched || ig.running) ? [...SECTIONS.slice(0, 3), ['genres', 'Genres & series', 'From IGDB · a game counts in each of its genres', 900], ...SECTIONS.slice(3)] : SECTIONS;
   if (!f.years.length) f.years = years.slice(0, 2).reverse();
-  const head = `<div class="page-h"><div><h1>Insights</h1><p>${lt.games ? `${plural(lt.games, 'game')} · ${fmtHours(lt.total_minutes)}h lifetime · ${fmtHours(lt.tracked_minutes)}h tracked` : 'When, what and how you play'}</p></div>
+  const head = `<div class="page-h"><div><h1>Insights</h1><p>${lt.games ? `${lt.games.toLocaleString()} game${lt.games === 1 ? '' : 's'} · ${fmtHours(lt.total_minutes)}h lifetime · ${fmtHours(lt.tracked_minutes)}h tracked` : 'When, what and how you play'}</p></div>
     <a class="btn ghost desk-only" href="/stats" data-link>${icon('stats')}Stats</a></div>`;
   if (!lt.games) {
     view.innerHTML = `${head}<div class="card">${emptyState('stats', 'No tracks yet', 'Insights draw on your sessions and library. Connect Steam, Xbox or PlayStation and Vestigo picks up your library — and every hour you’ve already played.', `<a class="btn primary" href="/accounts?add=1" data-link>${icon('plus')}Connect an account</a><a class="btn" href="/settings#import" data-link>${icon('upload')}Import CSV / JSON</a>`)}</div>`;
@@ -155,11 +161,13 @@ export async function insights(view, stale) {
     const weekEnd = (k) => { const d = new Date(`${k}T12:00`); d.setDate(d.getDate() + 6); return d; };
     const ymd = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
     const STYLE_WORDS = { focused: 'Focused', balanced: 'Balanced', varied: 'Varied' };
+    // the accent at half strength: apart from the accent itself with any accent colour
+    const SPREAD = 'color-mix(in srgb, var(--accent-mark) 45%, var(--panel))';
     const focus = fo ? `<p class="ins-lead"><b>${STYLE_WORDS[fo.style]}</b>: ${fo.style === 'varied' ? `your top game takes ${pct(fo.median_top_share)} of a typical week, ${plural(fo.games_per_week, 'game')} a week on average` : `one game takes ${pct(fo.median_top_share)} of a typical week, with ${plural(fo.games_per_week, 'game')} a week on average`}.</p>
       ${barChart(fo.series.map((w) => ({ label: seriesLabel(w.key, 'week'), name: `the week of ${seriesName(w.key, 'day')}`, value: w.games, href: `/sessions?from=${w.key}&to=${ymd(weekEnd(w.key))}`,
-        tip: `Week of ${seriesName(w.key, 'day')}${w.partial ? ' (so far)' : ''}: ${plural(w.games, 'game')}, the top one ${pct(w.top_share)} of ${fmtMin(w.minutes)}`, color: w.partial ? 'var(--line-strong)' : w.top_share >= s.rules.focused ? 'var(--accent-mark)' : 'var(--accent2)' })),
+        tip: `Week of ${seriesName(w.key, 'day')}${w.partial ? ' (so far)' : ''}: ${plural(w.games, 'game')}, the top one ${pct(w.top_share)} of ${fmtMin(w.minutes)}`, color: w.partial ? 'var(--line-strong)' : w.top_share >= s.rules.focused ? 'var(--accent-mark)' : SPREAD })),
       { unit: 'count', size: 'card', title: 'Games played per week', hrefHint: 'see sessions', keys: 'Games per week; arrow keys read each week, Enter opens its sessions', summary: (d) => summarizeCount('Games played per week', d, 'game') })}
-      <div class="legend"><span><i class="dot" style="background:var(--accent-mark)"></i>One game ${pct(s.rules.focused)}+ of the week</span><span><i class="dot" style="background:var(--accent2)"></i>Spread out</span></div>`
+      <div class="legend"><span><i class="dot" style="background:var(--accent-mark)"></i>One game ${pct(s.rules.focused)}+ of the week</span><span><i class="dot" style="background:${SPREAD}"></i>Spread out</span>${fo.series.some((w) => w.partial) ? '<span><i class="dot" style="background:var(--line-strong)"></i>This week so far</span>' : ''}</div>`
       : none('No tracked play in this range.');
     const st = s.starts;
     const OUT = [['finished', 'Finished', 'var(--good)', 'good'], ['playing', 'Still going', 'var(--accent-mark)', 'accent'], ['invested', `Stuck with (${fmtMin(s.rules.invested, { short: true })}+)`, 'var(--accent2)', ''],
@@ -174,15 +182,18 @@ export async function insights(view, stale) {
     const sp = s.staying_power;
     const staying = sp ? `<div class="kpis k2 strip">${kpi('First week', `${Math.round(sp.median_early_share * 100)}<small>%</small>`, `of a game’s hours, at the median`)}${kpi('Played over', plural(Math.round(sp.median_span_days), 'day'), 'first to last session, at the median')}</div>
       ${note(`From the ${plural(sp.games, 'game')} started at least ${s.rules.settled} days ago and played ${fmtMin(s.rules.tried)} or more. ${sp.median_early_share >= 0.5 ? 'Most of a game’s time comes right after you start it.' : 'You keep coming back to games well after the first week.'}`)}`
-      : none(`Needs games started at least ${s.rules.settled} days ago: try a longer range.`);
+      : none(['7d', '30d', '90d'].includes(f.range) ? `Needs games started at least ${s.rules.settled} days ago: try a longer range.`
+        : `Needs games started at least ${s.rules.settled} days ago: none started in this range is that old yet (games are started by tracked play).`);
     const cb = s.comebacks;
     const comebacks = cb.count ? `<div class="list">${cb.items.map((x) => `<a class="item" href="/game/${x.game_id}" data-link>${cover(x)}<div class="grow"><div class="ttl ellipsis">${esc(x.title)}</div><div class="sub">back on ${fmtDate(day(x.returned_on))} after ${x.gap_days >= 61 ? plural(Math.round(x.gap_days / 30.4), 'month') : plural(x.gap_days, 'day')}</div></div><div class="amt">${fmtMin(x.minutes_since, { short: x.minutes_since >= 600 })}<div class="tiny muted">since</div></div></a>`).join('')}</div>${cb.count > cb.items.length ? note(`The latest ${cb.items.length} of ${cb.count}.`) : ''}`
       : none(`No comebacks in this range: a return to a game after ${s.rules.gap}+ days without it.`);
-    return `<div class="grid grid-2 ins-grid">
-      <div class="card"><div class="card-h"><h3>Focus</h3><span class="tiny muted">${esc(s.range.label)} · games per week</span></div>${focus}</div>
-      <div class="card"><div class="card-h"><h3>Staying power</h3></div>${staying}</div>
-      <div class="card"><div class="card-h"><h3>Games you started</h3><span class="tiny muted">${esc(s.range.label)}</span></div>${starts}</div>
-      <div class="card"><div class="card-h"><h3>Comebacks</h3><span class="tiny muted">back after ${s.rules.gap}+ days</span></div>${comebacks}</div></div>`;
+    return cols([
+      `<div class="card"><div class="card-h"><h3>Focus</h3><span class="tiny muted">${esc(s.range.label)} · games per week</span></div>${focus}</div>`,
+      `<div class="card"><div class="card-h"><h3>Games you started</h3><span class="tiny muted">${esc(s.range.label)}</span></div>${starts}</div>`,
+    ], [
+      `<div class="card"><div class="card-h"><h3>Staying power</h3></div>${staying}</div>`,
+      `<div class="card"><div class="card-h"><h3>Comebacks</h3><span class="tiny muted">back after ${s.rules.gap}+ days</span></div>${comebacks}</div>`,
+    ]);
   }
 
   async function genres() {
@@ -207,12 +218,14 @@ export async function insights(view, stale) {
     const paceCard = pace.games ? `<p class="ins-lead">You finish games in <b>${pace.median_ratio.toFixed(1)}×</b> the typical main story time${pace.median_ratio >= 1.3 ? ': you take your time' : pace.median_ratio <= 0.8 ? ': you move fast' : ''}.</p>
       <div class="list">${pace.items.map((x) => `<a class="item" href="/game/${x.game_id}" data-link>${cover(x)}<div class="grow"><div class="ttl ellipsis">${esc(x.title)}</div><div class="sub">${fmtMin(x.minutes, { short: x.minutes >= 600 })} against ${fmtMin(x.typical_minutes, { short: x.typical_minutes >= 600 })} typical${x.basis === 'extra' ? ' (main + extras)' : ''}</div></div><div class="amt">${x.ratio.toFixed(1)}×</div></a>`).join('')}</div>
       ${note(`From ${plural(pace.games, 'finished game')} with IGDB’s times to beat (all time).`)}` : none('Mark games Completed or Beaten and, where IGDB knows a time to beat, your pace shows here.');
-    return `${progress}<div class="grid grid-2 ins-grid">
-      <div class="card"><div class="card-h"><h3>Genres</h3><span class="tiny muted">${esc(g.range.label)}</span></div>${rows}${coverage}</div>
-      <div class="card"><div class="card-h"><h3>Genres over time</h3><span class="tiny muted">top 5 · by ${grp}</span></div>${chart || none('A longer range shows how your genres change.')}</div>
-      <div class="card"><div class="card-h"><h3>Series</h3><span class="tiny muted">${esc(fr.range.label)}</span></div>${list(fr, 'franchise')}</div>
-      <div class="card"><div class="card-h"><h3>Developers</h3><span class="tiny muted">${esc(dev.range.label)}</span></div>${list(dev, 'developer')}</div>
-      <div class="card"><div class="card-h"><h3>Your pace</h3><span class="tiny muted">against the typical time to beat</span></div>${paceCard}</div></div>`;
+    return `${progress}${cols([
+      `<div class="card"><div class="card-h"><h3>Genres</h3><span class="tiny muted">${esc(g.range.label)}</span></div>${rows}${coverage}</div>`,
+      `<div class="card"><div class="card-h"><h3>Your pace</h3><span class="tiny muted">against the typical time to beat</span></div>${paceCard}</div>`,
+    ], [
+      `<div class="card"><div class="card-h"><h3>Genres over time</h3><span class="tiny muted">top 5 · by ${grp}</span></div>${chart || none('A longer range shows how your genres change.')}</div>`,
+      `<div class="card"><div class="card-h"><h3>Series</h3><span class="tiny muted">${esc(fr.range.label)}</span></div>${list(fr, 'franchise')}</div>`,
+      `<div class="card"><div class="card-h"><h3>Developers</h3><span class="tiny muted">${esc(dev.range.label)}</span></div>${list(dev, 'developer')}</div>`,
+    ])}`;
   }
   let genreTimer;
 
@@ -244,30 +257,23 @@ export async function insights(view, stale) {
       </div>`;
   }
 
-  // Milestones: what is coming up with how far along it is, then the notable ones reached (of each
-  // kind, the highest rungs of this career), newest first; every one of them folded away below
+  // Milestones: what is coming up with how far along it is, and the latest highlights of the career
+  // (tracked and estimated history, dated as precisely as known); the whole career on its own page
   async function milestones() {
-    const m = await api('/stats/milestones?all=true&limit=300');
-    if (!m.total && !m.coming.some((x) => x.current > 0)) return none('No milestones yet: the first come with ten hours, ten days or five games of tracked play.');
-    const KIND = {
-      hours: 'Hours', game_hours: 'A game', series_hours: 'A series', genre_hours: 'A genre', games: 'Games', series_games: 'A series', genre_games: 'A genre', days: 'Days', sessions: 'Sessions',
-      streak: 'Streak', achievements: 'Achievements', completions: 'Completed', platinums: 'Platinum', gamerscore: 'Gamerscore', rare: 'Rare',
-    };
+    const m = await api('/stats/milestones?limit=8');
+    if (!m.total && !m.coming.some((x) => x.current > 0)) return none('No milestones yet: they start with your first game, hour and achievement.');
     const unit = (x) => (/hours$/.test(x.kind) ? 'h' : '');
-    // the game's name is a link; everything else is the text as it is
     const label = (x) => (x.game_id && x.title ? esc(x.text).replace(esc(x.title), () => `<a class="link" href="/game/${x.game_id}" data-link>${esc(x.title)}</a>`) : esc(x.text));
     const coming = m.coming.filter((x) => x.current > 0).slice(0, 8);
     const ahead = coming.length ? coming.map((x) => meterRow(label(x), x.current, x.target, `${Math.floor(x.current).toLocaleString()}${unit(x)} of ${x.target.toLocaleString()}${unit(x)}`)).join('')
       : none('Nothing under way yet.');
-    const row = (x) => `<div class="item"><div class="grow"><div class="ttl">${label(x)}</div><div class="sub">${longDay(x.day)}</div></div><span class="badge">${KIND[x.kind] || esc(x.kind)}</span></div>`;
-    const notable = m.reached.filter((x) => x.notable);
-    const shown = notable.slice(0, 40);
-    const reached = shown.length ? `<div class="list" id="ms-notable">${shown.map(row).join('')}</div>` : none('None reached yet.');
-    // the rest: the lower rungs, and what the list above had no room for
-    const rest = m.total > shown.length ? `<details id="ms-all" style="margin-top:10px"><summary class="small muted" style="cursor:pointer">All ${m.total.toLocaleString()} milestones${m.total > m.reached.length ? ` (the latest ${m.reached.length})` : ''}</summary><div class="list" style="margin-top:6px">${m.reached.map(row).join('')}</div></details>` : '';
-    return `<div class="grid grid-2 ins-grid">
+    const CAT = Object.fromEntries(MS_CATS.map(([k, l]) => [k, l]));
+    const row = (x) => `<div class="item"><div class="grow"><div class="ttl">${label(x)}</div><div class="sub">${esc(whenReached(x))}${x.basis === 'estimated' ? ' · estimated' : ''}</div></div><span class="badge">${CAT[x.category] || esc(x.category)}</span></div>`;
+    const reached = m.reached.length ? `<div class="list" id="ms-notable">${m.reached.map(row).join('')}</div>` : none('None reached yet.');
+    return `<div class="grid grid-2 ins-grid ms-latest">
         <div class="card" id="ms-coming"><div class="card-h"><h3>Coming up</h3><span class="tiny muted">nearest first</span></div>${ahead}</div>
-        <div class="card" id="ms-reached"><div class="card-h"><h3>Reached</h3><span class="tiny muted">${m.total.toLocaleString()} in all</span></div>${reached}${rest}</div>
+        <div class="card" id="ms-reached"><div class="card-h"><h3>Latest</h3><span class="tiny muted">${m.total.toLocaleString()} in all</span></div>${reached}
+          <a class="btn sm" href="/milestones" data-link style="margin-top:12px">${icon('trophy')}Your whole career, year by year</a></div>
       </div>`;
   }
 
@@ -290,12 +296,14 @@ export async function insights(view, stale) {
     const done = a.completed.length ? `<div class="list">${a.completed.map((x) => `<a class="item" href="/game/${x.game_id}" data-link>${cover(x)}<div class="grow"><div class="ttl ellipsis">${esc(x.title)}</div><div class="sub">${platDot(x.platform)}${x.platinum ? 'Platinum' : `${x.unlocked} of ${x.total}`} · ${fmtDate(x.completed_at, { year: 'numeric', month: 'short', day: 'numeric' })}</div></div><span class="badge good">${x.platinum ? 'Platinum' : '100%'}</span></a>`).join('')}</div>` : none('No games completed in this range.');
     const c = a.completion;
     const dist = c.entries ? `${barChart(c.buckets.map((b) => ({ label: b.label.replace('-', '–'), name: b.label, value: b.count, tip: `${b.label.replace('-', '–')} complete: ${plural(b.count, 'game')}`, color: b.label === '100%' ? 'var(--good)' : undefined })), { unit: 'count', size: 'card', title: 'Played games by completion', summary: (d) => summarizeCount('Played games by completion', d, 'game') })}
-      ${note(`${plural(c.entries, 'played game')} with achievements, ${Math.round(c.average_percent)}% complete on average.`)}` : none('No played games with achievements.');
-    return `${kpis}<div class="grid grid-2 ins-grid" style="margin-top:16px">
-      <div class="card"><div class="card-h"><h3>Unlocks per ${g}</h3><span class="tiny muted">${esc(a.range.label)}</span></div>${per}</div>
-      <div class="card"><div class="card-h"><h3>Completion</h3><span class="tiny muted">all time</span></div>${dist}</div>
-      <div class="card"><div class="card-h"><h3>Rarest unlocks</h3><span class="tiny muted">${esc(a.range.label)}</span></div>${rarest}</div>
-      <div class="card"><div class="card-h"><h3>Recently completed</h3><span class="tiny muted">${esc(a.range.label)}</span></div>${done}</div></div>`;
+      ${note(`${c.games != null && c.games !== c.entries ? `${plural(c.entries, 'achievement list')} of ${plural(c.games, 'played game')} (a game on two platforms has two)` : `${plural(c.entries, 'played game')} with achievements`}, ${Math.round(c.average_percent)}% complete on average.`)}` : none('No played games with achievements.');
+    return `${kpis}<div style="margin-top:16px">${cols([
+      `<div class="card"><div class="card-h"><h3>Unlocks per ${g}</h3><span class="tiny muted">${esc(a.range.label)}</span></div>${per}</div>`,
+      `<div class="card"><div class="card-h"><h3>Rarest unlocks</h3><span class="tiny muted">${esc(a.range.label)}</span></div>${rarest}</div>`,
+    ], [
+      `<div class="card"><div class="card-h"><h3>Completion</h3><span class="tiny muted">all time</span></div>${dist}</div>`,
+      `<div class="card"><div class="card-h"><h3>Recently completed</h3><span class="tiny muted">${esc(a.range.label)}</span></div>${done}</div>`,
+    ])}</div>`;
   }
 
   async function yoy() {
@@ -350,7 +358,7 @@ export async function insights(view, stale) {
     const hours = barChart(l.hours.map((b) => ({ label: b.label.replace('-', '–'), name: b.label, value: b.games, tip: `${b.label.replace('-', '–')}: ${plural(b.games, 'game')}${b.minutes ? ` (${fmtMin(b.minutes, { short: true })})` : ''}`, color: b.label === 'Never' ? 'var(--line-strong)' : undefined })), { unit: 'count', size: 'card', title: 'Games by hours played', summary: (d) => summarizeCount('Games by hours played', d, 'game') });
     const fy = l.by_first_played_year;
     const first = fy.length ? barChart(fy.map((x) => ({ label: String(x.year), name: String(x.year), value: x.games, tip: `${x.year}: ${plural(x.games, 'game')} first played${x.from_history ? ` (${x.from_history} dated from history)` : ''}` })), { unit: 'count', size: 'small', title: 'Games by the year first played', summary: (d) => summarizeCount('Games by the year first played', d, 'game') }) : none('No first-play dates known.');
-    const dusty = l.dusty.items.length ? `<div class="list">${l.dusty.items.map((x) => `<a class="item" href="/game/${x.game_id}" data-link>${cover(x)}<div class="grow"><div class="ttl ellipsis">${esc(x.title)}</div><div class="sub">Last played ${fmtDate(x.last_played_at, { year: 'numeric', month: 'short' })} · ${plural(Math.round(x.days_since / 30.4), 'month')} ago${x.status !== 'unset' ? ` · ${esc(STATUSES[x.status]?.label || x.status)}` : ''}</div></div><div class="amt">${fmtMin(x.minutes, { short: x.minutes >= 600 })}</div></a>`).join('')}</div>${l.dusty.count > l.dusty.items.length ? note(`Showing ${l.dusty.items.length} of ${l.dusty.count}, most hours first.`) : ''}`
+    const dusty = l.dusty.items.length ? `<div class="list two-col">${l.dusty.items.map((x) => `<a class="item" href="/game/${x.game_id}" data-link>${cover(x)}<div class="grow"><div class="ttl ellipsis">${esc(x.title)}</div><div class="sub">Last played ${fmtDate(x.last_played_at, { year: 'numeric', month: 'short' })} · ${plural(Math.round(x.days_since / 30.4), 'month')} ago${x.status !== 'unset' ? ` · ${esc(STATUSES[x.status]?.label || x.status)}` : ''}</div></div><div class="amt">${fmtMin(x.minutes, { short: x.minutes >= 600 })}</div></a>`).join('')}</div>${l.dusty.count > l.dusty.items.length ? note(`Showing ${l.dusty.items.length} of ${l.dusty.count}, most hours first.`) : ''}`
       : none('No dusty games: everything you played has been touched within a year, or is finished.');
     const b = l.backlog;
     const maxB = Math.max(1, ...b.buckets.map((x) => x.games));
@@ -372,14 +380,15 @@ export async function insights(view, stale) {
         ${kpi('Lifetime', `${fmtHours(l.minutes)}<small>h</small>`, `${fmtHours(l.tracked_minutes)}h tracked · ${fmtHours(l.history_minutes)}h history`)}
         ${kpi('Backlog', String(b.count), b.count ? `median ${waited(b.median_days || 0)} waiting` : 'nothing waiting')}
       </div>
-      <div class="grid grid-2 ins-grid" style="margin-top:16px">
-        <div class="card"><div class="card-h"><h3>By status</h3><span class="tiny muted">hours, history hatched</span></div>${status || none('No games.')}</div>
-        <div class="card"><div class="card-h"><h3>By platform</h3><span class="tiny muted">a game on two platforms counts on both</span></div>${plats || none('No platforms.')}</div>
-        <div class="card"><div class="card-h"><h3>Hours played</h3></div>${hours}</div>
-        <div class="card"><div class="card-h"><h3>First played</h3></div>${first}</div>
-        <div class="card"><div class="card-h"><h3>Dusty games</h3><span class="tiny muted">played, untouched for a year, not finished</span></div>${dusty}</div>
-        <div class="card"><div class="card-h"><h3>Backlog age</h3></div>${backlog}</div>
-      </div>
+      <div style="margin-top:16px">${cols([
+        `<div class="card"><div class="card-h"><h3>By status</h3><span class="tiny muted">hours, history hatched</span></div>${status || none('No games.')}</div>`,
+        `<div class="card"><div class="card-h"><h3>Hours played</h3></div>${hours}</div>`,
+        `<div class="card"><div class="card-h"><h3>Backlog age</h3></div>${backlog}</div>`,
+      ], [
+        `<div class="card"><div class="card-h"><h3>By platform</h3><span class="tiny muted">a game on two platforms counts on both</span></div>${plats || none('No platforms.')}</div>`,
+        `<div class="card"><div class="card-h"><h3>First played</h3></div>${first}</div>`,
+      ])}</div>
+      <div class="card" style="margin-top:16px"><div class="card-h"><h3>Dusty games</h3><span class="tiny muted">played, untouched for a year, not finished</span></div>${dusty}</div>
       <div class="card" style="margin-top:16px"><div class="card-h"><h3>Completion vs hours</h3><span class="tiny muted">games with achievements</span></div>${scatter}</div>`;
   }
 
@@ -479,7 +488,13 @@ function fitText(s, room) {
   const per = 7.1;
   if (s.length * per <= room) return s;
   const n = Math.floor(room / per) - 1;
-  return n >= 3 ? `${s.slice(0, n).trimEnd()}…` : '';
+  // cut after a whole word ("Far Cry…", not "Far Cr…"); a longer first word is cut, in a block
+  // wide enough to show most of it; a narrow block shows no stub ("007 Fi…"): the list names it
+  const words = s.slice(0, n + 1).split(/\s+/);
+  if (words.length > 1) words.pop();
+  const whole = words.join(' ').replace(/[\s:,–-]+$/, '');
+  if (whole.length >= 3 && whole.length <= n && s.length > whole.length) return `${whole}…`;
+  return n >= 8 ? `${s.slice(0, n).trimEnd()}…` : '';
 }
 
 registerChart('erastrip', ({ eras, from, to, through }, opts, box) => {

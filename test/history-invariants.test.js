@@ -92,6 +92,11 @@ function checkGame(e, opts, res, at) {
   const lastPlayed = e.lastPlayedAt ? Math.min(e.lastPlayedAt, T) : null;
   const lastKnown = e.manual?.end ?? lastPlayed;
   const bound = Math.max(e.releaseAt || 0, e.accountCreatedAt || 0, EARLIEST);
+  // an unlock is play: one before the release / account day lowers that bound to it, one after
+  // the platform's last played date moves the end to it (that date is stale)
+  const unlocks = (e.anchors || []).filter((a) => a >= EARLIEST && a <= T && (hard == null || a >= hard)).sort((a, b) => a - b);
+  const floorAt = unlocks.length && unlocks[0] < bound ? unlocks[0] : bound;
+  const lastAt = lastPlayed != null && unlocks.length ? Math.max(lastPlayed, unlocks.at(-1)) : lastPlayed;
   let prevEnd = -Infinity;
   for (const c of res.chunks) {
     const where = `${at} chunk ${new Date(c.start).toISOString()}..${new Date(c.end).toISOString()} ${c.minutes} min`;
@@ -107,12 +112,12 @@ function checkGame(e, opts, res, at) {
       assert.ok(!(c.start < hard && c.end > hard), `never across the first played time ${where}`);
     }
     // (the recent-play counter overrides a last played date older than its window; dates you set replace it)
-    if (lastPlayed != null && !e.recent && !e.manual?.end && !(e.manual?.start > lastPlayed)) assert.ok(c.end <= lastPlayed, `not after last played ${where}`);
+    if (lastPlayed != null && !e.recent && !e.manual?.end && !(e.manual?.start > lastPlayed)) assert.ok(c.end <= lastAt, `not after last played (or the last unlock after it) ${where}`);
     if (e.manual?.end && c.why === 'history') assert.ok(c.end <= e.manual.end, `not after the end you set ${where}`);
     // release / account creation bound the start unless the game was last played before them
     // (or, with a recent-play counter, the rest has to lie before its days; an end worked out from
     // unlock times may be the last moment of the day before)
-    if (!e.recent && startOfDay(bound) < (lastKnown ?? T) && (lastKnown != null || !e.anchors?.length)) assert.ok(c.start >= startOfDay(bound), `not before the release / account day ${where}`);
+    if (!e.recent && startOfDay(bound) < (lastKnown ?? T) && (lastKnown != null || !e.anchors?.length)) assert.ok(c.start >= startOfDay(floorAt), `not before the release / account day (or an unlock before it) ${where}`);
     assert.ok(['recent', 'history'].includes(c.why) && ['high', 'medium', 'low'].includes(c.confidence), `labelled ${where}`);
     if (c.basis === 'anchored') assert.ok((e.anchors || []).some((a) => a >= c.start && a <= c.end), `anchored means an unlock inside ${where}`);
     if (c.basis === 'confirmed') assert.ok(e.manual?.start || e.manual?.end, `confirmed means dates you set ${where}`);

@@ -1,5 +1,5 @@
-// Vestigo web UI, end to end: the Milestones section of Insights: what is coming up with how far
-// along it is, and every milestone reached with its day, on a phone and on a desktop.
+// Vestigo web UI, end to end: the Milestones section of Insights (what is coming up, the latest
+// highlights) and the career page (badges by year, highlights or everything, a category at a time).
 // Run: node --disable-warning=ExperimentalWarning --test test/suite/ui-e2e-milestones.test.js
 import { describe, test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
@@ -63,30 +63,28 @@ describe('Vestigo web UI: milestones', UI, () => {
   };
 
   for (const [name, viewport] of [['a 360px phone', PHONE_SMALL], ['a desktop', DESKTOP]]) {
-    test(`reached milestones with their day, newest first, and what is coming up, on ${name}`, async () => {
+    test(`the latest highlights with their day, and what is coming up, on ${name}`, async () => {
       const { h, sec } = await section(S, viewport);
       try {
-        const want = await S.ok('/stats/milestones?limit=40');
-        // 56 then 60 hours: 10, 25 and 50 in all and in the game; ten days; seven in a row
-        assert.deepEqual(want.counts, { hours: 3, game_hours: 3, streak: 1, days: 1 });
-        assert.deepEqual([want.total, want.notable_total], [8, 8]);
+        const want = await S.ok('/stats/milestones?limit=8');
+        // 60 hours: 10 and 50 in all; the first game; ten days, seven in a row, a 7-hour session (the 5-hour rung)
+        assert.deepEqual(want.counts, { hours: 2, games: 1, days: 1, streak: 1, long_session: 1 });
+        assert.equal(want.reached.find((x) => x.kind === 'games').text, 'Your first game: Big <One>');
         const rows = sec.locator('#ms-notable .item');
-        assert.equal(await rows.count(), want.total);
-        assert.equal(await sec.locator('#ms-all').count(), 0, 'nothing folded away: every one is notable');
         // (rows off screen are not laid out until scrolled to: read their text, then look at the first and the last)
         assert.deepEqual((await rows.locator('.ttl').allTextContents()).map((x) => x.trim()), want.reached.map((x) => x.text), 'what the API reports, in its order');
         for (const row of [rows.first(), rows.last()]) { await row.scrollIntoViewIfNeeded(); assert.ok(await row.locator('.ttl').isVisible()); }
         assert.match((await rows.first().locator('.sub').textContent()).trim(), /^\w{3} \d{1,2}, \d{4}$/, 'the day, in words');
         // a game's name is a link and stays text
-        const link = sec.locator('#ms-notable .item', { hasText: '50 hours in' }).locator('a');
+        const link = sec.locator('#ms-notable .item', { hasText: 'Your first game' }).locator('a');
         assert.equal(await link.textContent(), 'Big <One>');
         assert.equal(await link.getAttribute('href'), `/game/${big}`);
         assert.equal((await sec.locator('#ms-reached .card-h .tiny').innerText()).trim(), `${want.total} in all`);
-        // coming up: 60 of 100 hours in the game, 60 of 100 in all, ten of twenty-five days with play
+        assert.equal(await sec.locator('#ms-reached a[href="/milestones"]').count(), 1, 'the whole career is a link away');
+        // coming up: 60 of 100 hours in all, ten of fifty days with play
         const coming = (await sec.locator('#ms-coming .mrow').allTextContents()).map((x) => x.replace(/\s+/g, ' ').trim());
-        assert.ok(coming.some((x) => /^100 hours in Big <One>\s*60h of 100h$/.test(x)), coming.join(' | '));
         assert.ok(coming.some((x) => /^100 hours of play\s*60h of 100h$/.test(x)), coming.join(' | '));
-        assert.ok(coming.some((x) => /^25 days with play\s*10 of 25$/.test(x)), coming.join(' | '));
+        assert.ok(coming.some((x) => /^50 days with tracked play\s*10 of 50$/.test(x)), coming.join(' | '));
         const o = await overflow(h.page, viewport.width);
         assert.ok(o.doc <= o.client, `no horizontal overflow: ${JSON.stringify(o)}`);
         clean(h);
@@ -94,34 +92,41 @@ describe('Vestigo web UI: milestones', UI, () => {
     });
   }
 
-  test('a longer career: a series milestone, the lower rungs folded under "All milestones"', async () => {
-    const { h, sec } = await section(G, PHONE_SMALL);
+  test('the career page: badges by year, the highlights or everything, a category at a time', async () => {
+    const h = await openPage(browser, G.origin, { viewport: PHONE_SMALL });
     try {
-      const want = await G.ok('/stats/milestones?all=true&limit=300');
-      assert.ok(want.total > want.notable_total, 'ten hours is no longer notable beside a hundred');
-      const shown = (await sec.locator('#ms-notable .item .ttl').allTextContents()).map((x) => x.trim());
-      assert.deepEqual(shown, want.reached.filter((x) => x.notable).map((x) => x.text));
-      assert.ok(shown.includes('3 games of the Halo series'), shown.join(' | '));
-      assert.ok(shown.includes('100 hours in Long Haul') && !shown.includes('10 hours in Long Haul'), shown.join(' | '));
-      const all = sec.locator('#ms-all');
-      assert.equal((await all.locator('summary').innerText()).trim(), `All ${want.total} milestones`);
-      assert.equal(await all.getAttribute('open'), null, 'closed until asked for');
-      await all.locator('summary').click();
-      assert.deepEqual((await all.locator('.item .ttl').allTextContents()).map((x) => x.trim()), want.reached.map((x) => x.text));
+      await h.page.goto(`${G.origin}/milestones`);
+      await waitView(h.page);
+      await h.page.locator('.ms-badge').first().waitFor();
+      await h.settle();
+      const all = await G.ok('/stats/milestones?all=true&limit=1000');
+      const notable = all.reached.filter((x) => x.notable);
+      assert.ok(all.reached.some((x) => x.text === '100 hours in Long Haul'), all.reached.map((x) => x.text).join(' | '));
+      assert.ok(all.reached.some((x) => x.text === '3 games of the Halo series'));
+      assert.equal(await h.page.locator('.ms-badge').count(), notable.length, 'the highlights first');
+      assert.deepEqual(await h.page.locator('.ms-year .ms-yh h2').allInnerTexts(), [...new Set(notable.map((x) => x.day.slice(0, 4)))]);
+      await h.page.locator('[data-every="1"]').click();
+      assert.equal(await h.page.locator('.ms-badge').count(), all.total, 'everything');
+      assert.match(h.page.url(), /show=all/);
+      await h.page.locator('[data-cat="series"]').click();
+      const series = all.reached.filter((x) => x.category === 'series');
+      assert.equal(await h.page.locator('.ms-badge').count(), series.length);
+      assert.ok(await h.page.locator('.ms-badge', { hasText: '3 games of the Halo series' }).isVisible());
+      assert.match((await h.page.locator('.ms-badge .ms-when span').first().innerText()).trim(), /^\w{3} \d{1,2}, \d{4}$/, 'tracked play: the day');
       const o = await overflow(h.page, PHONE_SMALL.width);
       assert.ok(o.doc <= o.client, `fits a 360px phone: ${JSON.stringify(o)}`);
       clean(h);
     } finally { await h.close(); }
   });
 
-  test('a library that has reached nothing yet says so, and shows the first milestones ahead', async () => {
+  test('half an hour of play: the first game reached, the first rungs ahead', async () => {
     const { h, sec } = await section(E, PHONE_SMALL);
     try {
-      assert.match(await sec.locator('#ms-reached .ins-none').innerText(), /None reached yet\./);
-      assert.equal((await sec.locator('#ms-reached .card-h .tiny').innerText()).trim(), '0 in all');
+      assert.deepEqual((await sec.locator('#ms-notable .item .ttl').allTextContents()).map((x) => x.trim()), ['Your first game: First']);
+      assert.equal((await sec.locator('#ms-reached .card-h .tiny').innerText()).trim(), '1 in all');
       const coming = (await sec.locator('#ms-coming .mrow').allTextContents()).map((x) => x.replace(/\s+/g, ' ').trim());
       assert.ok(coming.some((x) => /^10 hours of play\s*0h of 10h$/.test(x)), coming.join(' | '));
-      assert.ok(coming.some((x) => /^10 days with play\s*1 of 10$/.test(x)), coming.join(' | '));
+      assert.ok(coming.some((x) => /^10 days with tracked play\s*1 of 10$/.test(x)), coming.join(' | '));
       clean(h);
     } finally { await h.close(); }
   });

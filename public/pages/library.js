@@ -1,5 +1,6 @@
-import { $, $$, esc, fmtMin, fmtHours, ago, plat, platDot, STATUSES, cover, icon, api, fail, toast, modal, navigate, state, tagItem, splitTags } from '../app.js';
+import { $, $$, esc, fmtMin, fmtHours, ago, plat, platDot, STATUSES, cover, icon, api, fail, modal, navigate, state, tagItem, splitTags } from '../app.js';
 import { emptyState, saveSettings } from './shared.js';
+import { addGameModal } from './when.js';
 
 // =====================================================================
 // Library
@@ -64,7 +65,7 @@ export async function library(view, stale) {
     const host = box.firstElementChild;
     host.insertAdjacentHTML('beforeend', items.map((g) => st.view === 'grid'
       ? `<a class="tile" href="/game/${g.id}" data-link><div style="position:relative">${cover(g)}<div class="flags">${g.favorite ? `<span class="badge" title="Favorite">${icon('heartFill')}</span>` : '<span></span>'}${g.status !== 'unset' ? `<span class="badge">${STATUSES[g.status]?.label || g.status}</span>` : ''}</div>${g.minutes ? `<div class="bar"><i style="width:${Math.max(3, Math.sqrt(g.minutes / maxMin) * 100)}%"></i></div>` : ''}</div>
-          <div class="t">${esc(g.title)}</div><div class="m">${g.platforms.filter((p) => p !== 'manual' || g.platforms.length === 1).map(platDot).join('')}<span>${g.minutes ? fmtMin(g.minutes, { short: g.minutes >= 600 }) : 'Unplayed'}</span>${g.entry_count > 1 ? `<span class="dim">· ${g.entry_count}×</span>` : ''}</div></a>`
+          <div class="t">${esc(g.title)}</div><div class="m">${g.platforms.filter((p) => p !== 'manual' || g.platforms.length === 1).map(platDot).join('')}<span>${g.minutes ? fmtMin(g.minutes, { short: g.minutes >= 600 }) : g.last_played_at ? 'Played' : 'Unplayed'}</span>${g.entry_count > g.platforms.length ? `<span class="dim" title="${g.entry_count} copies across your accounts">· ${g.entry_count} copies</span>` : ''}</div></a>`
       : `<a class="li" href="/game/${g.id}" data-link>${cover(g)}<div class="grow"><div class="ellipsis" style="font-weight:620">${esc(g.title)}</div><div class="small muted row" style="gap:6px">${g.platforms.map(platDot).join('')}${g.last_played_at ? `Played ${ago(g.last_played_at)}` : 'Never played'}${g.status !== 'unset' ? ` · ${STATUSES[g.status]?.label}` : ''}</div></div><div class="amt" style="font-weight:700">${fmtMin(g.minutes, { short: g.minutes >= 600 })}</div></a>`).join(''));
   };
   /** The filters as query parameters (the same names in the page URL and in GET /games). */
@@ -287,24 +288,8 @@ export async function library(view, stale) {
   };
   $$('[data-view]', view).forEach((b) => b.addEventListener('click', () => setView(b.dataset.view)));
   $('#lib-view-t').addEventListener('click', () => setView(st.view === 'grid' ? 'list' : 'grid'));
-  const addGame = () => modal({
-    title: 'Add a game',
-    body: `<form class="stack" id="ag"><div class="field"><label>Title</label><input class="input" name="title" required placeholder="The Legend of Zelda: Tears of the Kingdom"></div>
-      <div class="field"><label>Cover image URL <span class="dim">(optional)</span></label><input class="input" name="cover_url" placeholder="https://…"></div>
-      <div class="field"><label>Status</label><select class="input" name="status">${Object.entries(STATUSES).map(([k, v]) => `<option value="${k}">${v.label}</option>`).join('')}</select></div>
-      <p class="small muted" style="margin:0">Manual games are perfect for Switch, retro or anything without an API. Log sessions on the game page.</p></form>`,
-    foot: '<button class="btn" data-close>Cancel</button><button class="btn primary" id="ag-save">Add game</button>',
-    onMount(el, close) {
-      let saving = false; // a second click while the first save is out must not add the game twice
-      el.querySelector('#ag-save').addEventListener('click', async () => {
-        const f = el.querySelector('#ag');
-        if (saving) return;
-        if (!f.title.value.trim()) { toast('Enter a title', { bad: true }); f.title.focus(); return; }
-        saving = true;
-        try { const g = await api('/games', { method: 'POST', body: { title: f.title.value, cover_url: f.cover_url.value, status: f.status.value } }); close(); navigate(`/game/${g.id}`); } catch (e) { fail(e); } finally { saving = false; }
-      });
-    },
-  });
+  // your library and IGDB as you type, where it was played and the hours played before (when.js)
+  const addGame = () => addGameModal().catch(fail);
   $('#lib-add').addEventListener('click', addGame);
   $('#fab-add').addEventListener('click', addGame);
   const io = new IntersectionObserver((es) => { if (es[0].isIntersecting) more(); }, { rootMargin: '800px' });

@@ -77,7 +77,7 @@ export function estimatedLegend(stats) {
 }
 
 const CONF = {
-  exact: ['live', 'good', 'Exact times from live presence or a manual log'],
+  exact: ['exact', 'good', 'Exact times from live presence or a manual log'],
   pinned: ['', '', 'End pinned to the platform\'s last-played time'],
   window: ['≈', '', 'Exact time unknown — spread across the sync window'],
   high: ['high', 'good', 'Dated from first and last played'],
@@ -116,6 +116,17 @@ function sessionWhenShort(s) {
   return fmtDate(s.window_end || s.created_at);
 }
 
+/**
+ * A device as people call it: Xbox reports its consoles by codename ("Scarlett" is a Series X|S),
+ * Steam by platform ("deck", "windows").
+ */
+const DEVICES = {
+  scarlett: 'Xbox Series X|S', anaconda: 'Xbox Series X', lockhart: 'Xbox Series S', xboxseries: 'Xbox Series X|S', xboxone: 'Xbox One', durango: 'Xbox One',
+  edmonton: 'Xbox One S', scorpio: 'Xbox One X', xbox360: 'Xbox 360', win32: 'PC', windowsonecore: 'PC', windows: 'PC', pc: 'PC', deck: 'Steam Deck', steamdeck: 'Steam Deck',
+  linux: 'Linux', mac: 'Mac', macos: 'Mac', ios: 'iPhone or iPad', android: 'Android', xcloud: 'Cloud gaming', web: 'Browser', ps5: 'PS5', ps4: 'PS4', ps3: 'PS3', psvita: 'PS Vita', offline: 'Offline',
+};
+export const deviceName = (d) => (d ? DEVICES[String(d).toLowerCase().replace(/[^a-z0-9]/g, '')] || d : d);
+
 function sourceBadge(s) {
   // the "≈" badges carry the session's note too: on a phone the note itself is not shown
   const approx = (t) => esc(s.note ? `${t} · ${s.note}` : t);
@@ -127,8 +138,9 @@ function sourceBadge(s) {
   }
   if (s.source === 'manual') return '<span class="badge accent">manual</span>';
   if (s.note?.startsWith('Length estimated')) return '<span class="badge" title="The platform reports no playtime for this game and live presence missed this session: it ends at the reported last-played time, with your typical session length. Edit it if you know better.">≈ length</span>';
-  if (s.confidence === 'exact') return `<span class="badge good" title="${CONF.exact[2]}">● live</span>${s.device ? `<span class="badge">${esc(s.device)}</span>` : ''}`;
-  if (s.device) return `<span class="badge">${esc(s.device)}</span>${s.precise ? '' : `<span class="badge" title="${approx('Exact time unknown — spread across the sync window')}">≈</span>`}`;
+  // (exact start and end times: "live" read as still being played)
+  if (s.confidence === 'exact') return `<span class="badge good" title="${CONF.exact[2]}">● exact</span>${s.device ? `<span class="badge">${esc(deviceName(s.device))}</span>` : ''}`;
+  if (s.device) return `<span class="badge">${esc(deviceName(s.device))}</span>${s.precise ? '' : `<span class="badge" title="${approx('Exact time unknown — spread across the sync window')}">≈</span>`}`;
   if (s.source === 'import') return `<span class="badge basis-b" title="${BASIS[0][2]}"><i class="dot basis-imported" aria-hidden="true"></i>imported</span>`;
   if (s.source === 'api') return '<span class="badge">api</span>';
   return s.precise ? '' : `<span class="badge" title="${approx('Exact time unknown — spread across the sync window')}">≈</span>`;

@@ -479,6 +479,7 @@ export function achievementStats(db, { range = '30d', group, platform = null, we
     const completed = [];
     let pctSum = 0;
     let played = 0;
+    const playedGames = new Set(); // (a game on two platforms has two lists of achievements)
     for (const r of per) {
       const s = summaryOf(r, r.ach_at, r.ach_total);
       totals.unlocked += s.unlocked;
@@ -493,6 +494,7 @@ export function achievementStats(db, { range = '30d', group, platform = null, we
       }
       if (!s.total || !r.played) continue;
       played++;
+      playedGames.add(r.game_id);
       pctSum += s.percent;
       buckets[bucketOf(s.percent)].count++;
     }
@@ -508,7 +510,7 @@ export function achievementStats(db, { range = '30d', group, platform = null, we
       completed: completed.slice(0, limit),
       completed_count: completed.length,
       totals,
-      completion: { entries: played, average_percent: played ? Math.round((pctSum / played) * 10) / 10 : 0, buckets },
+      completion: { entries: played, games: playedGames.size, average_percent: played ? Math.round((pctSum / played) * 10) / 10 : 0, buckets },
     };
   });
 }
