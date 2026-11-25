@@ -196,6 +196,7 @@ describe('backups', () => {
       const sys = await (await call('GET', '/system')).json();
       assert.equal(sys.backups.last.name, made.name);
       assert.equal(sys.backups.files, undefined);
+      assert.equal(sys.backups.kept, 1, 'every file kept, as Settings counts them');
       assert.equal((await call('DELETE', `/backups/${made.name}`)).status, 200);
       assert.equal(fs.readdirSync(path.join(dir, 'backups')).length, 0);
       assert.equal(a.backups.status().count, 0);

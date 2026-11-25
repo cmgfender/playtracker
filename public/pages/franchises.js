@@ -39,6 +39,8 @@ function card(f) {
     </div></a>`;
 }
 
+const FIRST = 36;
+
 export async function franchises(view, stale) {
   const r = await api('/franchises');
   if (stale()) return;
@@ -50,19 +52,23 @@ export async function franchises(view, stale) {
     host.innerHTML = `<div class="card">${emptyState('grid', 'No series yet', 'Series show up as soon as your library holds a game of one: the big ones (Halo, Final Fantasy, Resident Evil…) with every entry in release order, the rest from IGDB and the titles.')}</div>`;
     return;
   }
-  const st = { q: '', only: '' };
+  const st = { q: '', only: '', all: false };
   const paint = () => {
     const want = st.q.toLowerCase();
     const list = r.items.filter((f) => (!want || f.name.toLowerCase().includes(want)) && (!st.only || (st.only === 'curated') === f.curated));
-    host.querySelector('#fr-list').innerHTML = list.length ? list.map(card).join('') : '<p class="muted">No series match.</p>';
+    // a big library has hundreds of series (a 75,000px page on a phone): the most played first, the rest on request
+    const some = st.all || list.length <= FIRST + 6 ? list : list.slice(0, FIRST);
+    host.querySelector('#fr-list').innerHTML = list.length ? some.map(card).join('') : '<p class="muted">No series match.</p>';
+    host.querySelector('#fr-more').innerHTML = some.length < list.length ? `<button class="btn" data-all>Show all ${list.length.toLocaleString()} series</button>` : '';
   };
   host.innerHTML = `<div class="row wrap between" style="gap:10px;margin-bottom:14px">
       <div class="search grow" style="max-width:360px">${icon('search')}<input class="input" id="fr-q" placeholder="Search series" aria-label="Search series"></div>
       <div class="seg" aria-label="Show"><button data-only="" class="on">All</button><button data-only="curated">The big ones</button><button data-only="other">Others</button></div></div>
-    <div class="fr-grid" id="fr-list"></div>`;
+    <div class="fr-grid" id="fr-list"></div><div id="fr-more" class="row" style="justify-content:center;margin-top:16px"></div>`;
   paint();
   host.querySelector('#fr-q').addEventListener('input', (e) => { st.q = e.target.value; paint(); });
   host.addEventListener('click', (e) => {
+    if (e.target.closest('[data-all]')) { st.all = true; paint(); return; }
     const b = e.target.closest('[data-only]');
     if (!b) return;
     st.only = b.dataset.only;

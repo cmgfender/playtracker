@@ -112,7 +112,7 @@ export function partsOf(g, now = Date.now()) {
     const state = main && (g.state === 'finished' || g.state === 'dropped') ? g.state
       : minutes > 0 && last && last >= recent ? 'playing'
         : main && g.state === 'playing' && !last ? 'playing'
-          : minutes > 0 ? 'played' : 'owned';
+          : minutes > 0 || ens.some((e) => e.seen) ? 'played' : 'owned';
     return {
       ...g, uid: `${g.id}:${hit.e.i}`, minutes, first_day: first, last_day: last, state, complete: main ? g.complete : false,
       platforms: [...new Set(ens.map((e) => e.platform))], ids: ens.map((e) => `${e.platform}:${e.ext_id}`),

@@ -195,7 +195,9 @@ function signals(g, ctx) {
     s.dusty = clamp01(g.minutes / 1200) * clamp01(0.5 + daysSince / 730);
     why.dusty = { text: `${fmt(g.minutes)} played, untouched for ${span(daysSince)}`, value: Math.floor(daysSince) };
   }
-  if (g.minutes < 60 && (daysSince == null || daysSince >= 60)) {
+  // played with no time on record (an older console reports unlocks and a last played date only): not new to you
+  const timeless = g.minutes === 0 && (lastAt > 0 || g.ach_unlocked > 0);
+  if (g.minutes < 60 && !timeless && (daysSince == null || daysSince >= 60)) {
     const since = typeof g.added === 'number' && g.added > 0 ? g.added : g.created_at;
     const age = Math.max(0, (now - since) / DAY);
     s.fresh = (g.minutes === 0 ? 1 : 0.75) * (0.8 + 0.2 * clamp01(age / 365));
@@ -213,7 +215,8 @@ function signals(g, ctx) {
   // when nothing else stands out: what is known about it
   why.played = g.minutes > 0
     ? { text: `${fmt(g.minutes)} played${daysSince != null ? `, last played ${daysSince < 7 ? ago(lastAt, now) : `${span(daysSince)} ago`}` : ''}`, value: g.minutes, weak: true, fallback: true }
-    : { text: now - g.created_at < DAY ? 'Added to your library today' : `In your library for ${span((now - g.created_at) / DAY)}`, value: 0, weak: true, fallback: true };
+    : timeless ? { text: daysSince != null ? `Last played ${daysSince < 7 ? ago(lastAt, now) : `${span(daysSince)} ago`}, no time on record` : 'Played, no time on record', value: 0, weak: true, fallback: true }
+      : { text: now - g.created_at < DAY ? 'Added to your library today' : `In your library for ${span((now - g.created_at) / DAY)}`, value: 0, weak: true, fallback: true };
 
   return { s, why, T, source, ach, lastAt: lastAt || null };
 }

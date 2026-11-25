@@ -269,7 +269,7 @@ describe('insights on a hand-built library', () => {
     assert.equal(l.first_played_unknown, 0);
     assert.deepEqual(l.by_year_added, [{ year: 2022, games: 1, minutes: 740 }, { year: 2023, games: 1, minutes: 320 }]);
     assert.equal(l.added_unknown, 4);
-    assert.deepEqual(l.hours.map((b) => [b.label, b.games, b.minutes]), [['Never', 2, 0], ['<1h', 0, 0], ['1-5h', 0, 0], ['5-10h', 2, 635], ['10-25h', 2, 1580], ['25-50h', 0, 0], ['50-100h', 0, 0], ['100h+', 0, 0]]);
+    assert.deepEqual(l.hours.map((b) => [b.label, b.games, b.minutes]), [['No time', 2, 0], ['<1h', 0, 0], ['1-5h', 0, 0], ['5-10h', 2, 635], ['10-25h', 2, 1580], ['25-50h', 0, 0], ['50-100h', 0, 0], ['100h+', 0, 0]]);
     assert.deepEqual(l.dusty, { count: 1, minutes: 740, items: [{ game_id: ids.g.old, title: 'Old', cover_url: null, status: 'paused', minutes: 740, last_played_at: local(2024, 6, 3, 12), days_since: 653 }] });
     assert.deepEqual([l.backlog.count, l.backlog.minutes, l.backlog.median_days], [1, 320, 1052]);
     assert.deepEqual(l.backlog.buckets.map((b) => b.games), [0, 0, 0, 0, 1]);
