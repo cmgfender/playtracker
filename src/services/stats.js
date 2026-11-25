@@ -318,10 +318,13 @@ export function lifetime(db) {
         COUNT(DISTINCT game_id) games,
         COUNT(DISTINCT CASE WHEN excluded = 0 AND (playtime_min > 0 OR last_played_at IS NOT NULL) THEN game_id END) played
       FROM entries`).get();
+    // a game you marked beaten, completed, playing or dropped was played, whatever a platform knows of it
+    tot.played = db.prepare(`SELECT COUNT(*) n FROM games g WHERE EXISTS (SELECT 1 FROM entries e WHERE e.game_id = g.id AND e.excluded = 0 AND (e.playtime_min > 0 OR e.last_played_at IS NOT NULL))
+      OR (g.status IN ('beaten', 'completed', 'playing', 'dropped') AND EXISTS (SELECT 1 FROM entries e WHERE e.game_id = g.id))`).get().n;
     const kinds = db.prepare('SELECT s.kind, COALESCE(SUM(s.minutes),0) m, COUNT(*) n FROM sessions s JOIN entries e ON e.id = s.entry_id WHERE e.excluded = 0 GROUP BY s.kind').all();
     const k = Object.fromEntries(kinds.map((x) => [x.kind, x]));
     const status = db.prepare('SELECT status, COUNT(*) n FROM games GROUP BY status').all();
-    const byPlatform = db.prepare('SELECT platform, COALESCE(SUM(playtime_min),0) minutes, COUNT(*) games FROM entries WHERE excluded = 0 GROUP BY platform ORDER BY minutes DESC').all();
+    const byPlatform = db.prepare('SELECT platform, COALESCE(SUM(playtime_min),0) minutes, COUNT(DISTINCT game_id) games FROM entries WHERE excluded = 0 GROUP BY platform ORDER BY minutes DESC').all();
     // hours assumed for games a platform reports no time for (services/assumed.js): part of the total, and told apart
     const assumed = db.prepare("SELECT COALESCE(SUM(playtime_min), 0) m, COUNT(*) n FROM entries WHERE excluded = 0 AND account_id IS NULL AND ext_id LIKE 'assumed:%'").get();
     return {
