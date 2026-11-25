@@ -247,7 +247,9 @@ describe('Vestigo web UI, batch 5: palette, filters, achievements, sessions', UI
       // the session group opens that session
       await card.locator('.ach-gh-link').first().click();
       await page.locator('.modal .ach-sess').waitFor();
-      assert.match(await page.locator('.modal .ach-sess').innerText(), /2 achievements unlocked during this session[\s\S]*Shrine Seeker[\s\S]*Paraglider/);
+      // (textContent: list rows are content-visibility: auto, and innerText leaves out the ones not
+      // laid out yet - while the dialog is still opening, that can be all of them)
+      assert.match(await page.locator('.modal .ach-sess').textContent(), /2 achievements unlocked during this session[\s\S]*Shrine Seeker[\s\S]*Paraglider/);
       await page.keyboard.press('Escape');
       // rarity: a percent, "rare" under 10%
       const rare = card.locator('.ach-row', { hasText: 'Shrine Seeker' }).locator('.rar');
