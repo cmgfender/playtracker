@@ -27,6 +27,7 @@ import { BY_ALIAS, BY_ID, yearless, slug } from './franchises/catalog.js';
 import { entryOf, curatedOf } from './franchises/match.js';
 import { libraryGames } from './franchises/library.js';
 import { build } from './franchises/timeline.js';
+import { partsOf } from './franchises/parts.js';
 
 // The parts, each on its own: franchises/catalog.js (the curated data, prepared), franchises/match.js
 // (what a game is: RULES for store titles), franchises/library.js (your games), franchises/timeline.js
@@ -46,8 +47,9 @@ export function franchiseIndex(db, { now = Date.now() } = {}) {
     const byGame = new Map(games.map((g) => [g.id, g]));
     const out = new Map();
     const placed = new Set();
-    for (const g of games) {
-      const hit = entryOf(g);
+    // (a game whose entries are different releases of one series entry is placed as its parts)
+    for (const g of games.flatMap((x) => partsOf(x, now) || [x])) {
+      const hit = g.hit || entryOf(g);
       if (hit) {
         const r = record(out, hit.f);
         if (hit.how === 'hub') r.hubs.push({ g, hub: hit.hub });
@@ -122,11 +124,19 @@ export function franchiseDetail(db, key, { now = Date.now() } = {}) {
 
 const detail = (r) => ({ ...summary(r), eras: r.eras, items: r.items, your_order: r.your_order, story: r.story });
 
+/** The releases a game told in parts holds, oldest first: [{ title, year, kind, minutes, state, entries, main }], or null. */
+function partsIn(r, gameId) {
+  const its = r.items.filter((it) => it.game?.id === gameId && it.game.part);
+  return its.length > 1 ? its.map((it) => ({ title: it.title, year: it.year, kind: it.kind, minutes: it.game.minutes, state: it.state, entries: it.game.part.entries, main: it.game.part.main })) : null;
+}
+
 /** The franchise a game is part of: its place in it, its era, what it is a version of, and the entries either side (release order). */
 export function gameFranchise(db, gameId, { now = Date.now() } = {}) {
   for (const r of franchiseIndex(db, { now }).values()) {
     let addon = null; // a beta or bonus content of the entry
-    let i = r.items.findIndex((it) => it.game?.id === gameId || (it.game && it.others?.some((o) => o.id === gameId)));
+    // (a game told in parts: the release the game itself is speaks for it)
+    let i = r.items.findIndex((it) => it.game?.id === gameId && it.game.part?.main);
+    if (i < 0) i = r.items.findIndex((it) => it.game?.id === gameId || (it.game && it.others?.some((o) => o.id === gameId)));
     if (i < 0) { i = r.items.findIndex((it) => it.addons?.some((t) => t.id === gameId)); if (i >= 0) addon = r.items[i].addons.find((t) => t.id === gameId).kind; }
     if (i < 0) continue;
     const near = (it) => (it ? { title: it.title, year: it.year, game_id: it.game?.id ?? it.via?.game_id ?? null, state: it.state } : null);
@@ -143,7 +153,9 @@ export function gameFranchise(db, gameId, { now = Date.now() } = {}) {
     const era = it.era != null ? r.eras[it.era] : null;
     return { id: r.id, name: r.name, curated: r.curated, kind: it.kind, year: it.year, title: it.title, addon, position: pos >= 0 ? pos + 1 : null, of: mains.length, index: i + 1, count: r.items.length,
       prev: near(around[0]), next: near(around[1]), mainline: r.mainline, era: era ? { name: era.name, note: era.note, from: era.from, to: era.to, index: era.index } : null, eras: r.eras.length,
-      version_of: it.kind !== 'collection' ? it.of || [] : [], holds: it.kind === 'collection' ? it.of : [], versions: it.versions || [], via: it.via || null, note: it.note || null };
+      version_of: it.kind !== 'collection' ? it.of || [] : [], holds: it.kind === 'collection' ? it.of : [], versions: it.versions || [], via: it.via || null, note: it.note || null,
+      // the releases this one game holds (an original and its remake, kept together), each with its own entries, time and state
+      parts: partsIn(r, gameId) };
   }
   return null;
 }

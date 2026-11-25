@@ -591,6 +591,8 @@ let renderSeq = 0;
 /** Render the current URL into a new #view. `focus`: move focus to its heading (links and Back, not the first load). */
 export async function route({ focus = false } = {}) {
   if (state.needLogin) return render();
+  // a year in review without its year (typed, or an old bookmark): the latest one
+  if (/^\/wrapped\/?$/.test(location.pathname)) history.replaceState(history.state, '', `/wrapped/${state.latestYear || new Date().getFullYear()}${location.search}`);
   const p = current();
   if (!$('#app .shell')) {
     $('#app').innerHTML = shell();

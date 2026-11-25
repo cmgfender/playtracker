@@ -272,3 +272,72 @@ test('GameTrack achievement tables are read defensively: other column names, epo
   const none = importGameTrack(db, { games: table([['uuid', 'title'], ['Z', 'Nothing']]) }, { settings, now: NOW });
   assert.deepEqual([none.achievements_imported, none.achievements_matched, none.achievements_unmatched], [0, 0, 0]);
 });
+
+// GameTrack 7: a Switch game is found by Nintendo's title id (GameTrack names it as IGDB does,
+// Nintendo as it sells it, and owned_platform can be wrong), the diary's sessions date history, and
+// Xbox achievements carry Xbox's own ids.
+function switchLibrary({ nintendo = true } = {}) {
+  const db = openDb(':memory:');
+  const settings = new Settings(db).all();
+  if (nintendo) {
+    db.prepare("INSERT INTO accounts(platform, name, config, enabled, created_at) VALUES ('nintendo', 'Nintendo', '{}', 1, 0)").run();
+    const acc = parseAccount(db.prepare('SELECT * FROM accounts WHERE id = 1').get());
+    tx(db, () => applyItems(db, acc, [
+      { extId: '010019A01E2F2000', title: 'Metroid Prime 4: Beyond – Nintendo Switch 2 Edition', playtimeMin: 400, lastPlayedAt: ago(3) },
+      { extId: '010089C01E9CA000', title: 'SteamWorld Heist II', playtimeMin: 42, lastPlayedAt: ago(30) },
+    ], { settings, now: NOW, initial: true }));
+  }
+  return { db, settings };
+}
+const switchTables = () => {
+  const t = (rows) => parseCsv(csv(rows), { commaOnly: true });
+  return {
+    games: t([['uuid', 'title', 'status', 'user_rating', 'hours_played', 'owned_platform', 'start_date', 'finish_date', 'added_date'],
+      ['M', 'Metroid Prime 4: Beyond', 'Finished', '9', '6.666666666666667', 'Switch 2', '', '', ''],
+      ['S', 'SteamWorld Heist II', '', '0', '0.7', 'Series X', '', '', '']]), // GameTrack says Series X: Nintendo's history says otherwise
+    nintendo_games: t([['game_uuid', 'title_id', 'product_id', 'name', 'platform', 'image_url', 'total_played_minutes', 'total_played_days', 'first_played_at', 'last_played'],
+      ['M', '010019a01e2f2000', '', 'Metroid Prime 4: Beyond – Nintendo Switch 2 Edition', 'Switch 2', '', '400', '5', iso(ago(20)), iso(ago(3))],
+      ['S', '010089c01e9ca000', '', 'SteamWorld Heist II', 'Switch', '', '42', '2', iso(ago(40)), iso(ago(30))]]),
+    diary: t([['uuid', 'game_uuid', 'kind', 'date', 'hours_played', 'source'],
+      ['d1', 'M', 'session', iso(ago(10) + 3_600_000), '2.5', 'nintendo'],
+      ['d2', 'M', 'session', iso(ago(4) + 3_600_000), '1.0', 'nintendo'],
+      ['d3', 'M', 'finished', iso(ago(3)), '6.6', 'status']]), // not a session: not evidence of a day played
+  };
+};
+
+test('GameTrack Switch games: matched by Nintendo title id, never counted twice, dated by the diary; details filled', () => {
+  const { db, settings } = switchLibrary();
+  const r = importGameTrack(db, switchTables(), { settings, now: NOW });
+  assert.equal(r.skipped_synced, 2, 'both are counted by the Nintendo account here');
+  assert.deepEqual([r.imported_titles, r.hours_added], [0, []]);
+  assert.deepEqual(db.prepare('SELECT title, playtime_min FROM entries ORDER BY id').all().map((x) => [x.title, x.playtime_min]),
+    [['Metroid Prime 4: Beyond – Nintendo Switch 2 Edition', 400], ['SteamWorld Heist II', 42]], 'no hours added, no entry made');
+  const metroid = db.prepare("SELECT e.hist, g.status, g.rating FROM entries e JOIN games g ON g.id = e.game_id WHERE e.ext_id = '010019A01E2F2000'").get();
+  assert.deepEqual([metroid.status, metroid.rating], ['beaten', 9], 'found by its id, under another name');
+  assert.deepEqual(JSON.parse(metroid.hist).anchors, [ago(10) + 3_600_000, ago(4) + 3_600_000], "the diary's two sessions, not its 'finished' note");
+});
+
+test('GameTrack Switch games with no Nintendo account here: Nintendo\'s minutes and dates as GameTrack read them; a second import adds nothing', () => {
+  const { db, settings } = switchLibrary({ nintendo: false });
+  const r = importGameTrack(db, switchTables(), { settings, now: NOW });
+  assert.deepEqual(r.hours_added, [{ title: 'Metroid Prime 4: Beyond', platform: 'switch', minutes: 400 }, { title: 'SteamWorld Heist II', platform: 'switch', minutes: 42 }],
+    "Nintendo's minutes (not GameTrack's rounded hours), on Switch (not the Series X GameTrack says)");
+  const heist = db.prepare("SELECT platform, playtime_min, hist FROM entries WHERE title = 'SteamWorld Heist II'").get();
+  assert.equal(heist.platform, 'switch');
+  assert.equal(heist.playtime_min, 42);
+  const again = importGameTrack(db, switchTables(), { settings, now: NOW + DAY });
+  assert.deepEqual([again.imported_titles, again.hours_added, again.already_imported], [0, [], 2]);
+  assert.equal(db.prepare('SELECT SUM(playtime_min) n FROM entries').get().n, 442);
+});
+
+test('GameTrack Xbox achievements under the "id" column keep Xbox\'s own ids, so a later Xbox read updates them', () => {
+  const { db, settings, entries } = library();
+  const t = (rows) => parseCsv(csv(rows), { commaOnly: true });
+  importGameTrack(db, {
+    games: t([['uuid', 'title', 'hours_played', 'owned_platform'], ['H', 'Halo Infinite', '12', 'XSX']]),
+    xbox_games: t([['game_uuid', 'title_id', 'modern_title_id', 'name'], ['H', '2043073184', '2043073184', 'Halo Infinite']]),
+    xbox_achievements: t([['xbox_game_title_id', 'id', 'name', 'description', 'score', 'progress_state', 'time_unlocked'],
+      ['2043073184', '9', 'Welcome', 'Start', '10', 'Achieved', iso(ago(5))], ['2043073184', '26', 'Finisher', 'Finish', '50', 'NotStarted', '']]),
+  }, { settings, now: NOW });
+  assert.deepEqual(rowsOf(db, entries.xbox).map((x) => [x.ach_id, x.name, x.unlocked]), [['9', 'Welcome', 1], ['26', 'Finisher', 0]]);
+});

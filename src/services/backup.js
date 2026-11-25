@@ -12,10 +12,12 @@ import { nextRun } from './schedule.js';
 const HOUR = 3600_000;
 const RETRY_AFTER = 6 * HOUR; // a failed backup (disk full, folder not writable) is tried again this much later
 const KEEP_BEFORE_UPGRADE = 3;
+const KEEP_BEFORE_IMPORT = 3;
 const SCHEDULED = /^vestigo-\d{4}-\d{2}-\d{2}-\d{6}\.db$/;
 const BEFORE_UPGRADE = /^vestigo-before-v\d+-\d{4}-\d{2}-\d{2}-\d{6}\.db$/;
+const BEFORE_IMPORT = /^vestigo-before-import-\d{4}-\d{2}-\d{2}-\d{6}\.db$/;
 // the temporary name of a copy being written (see snapshot); one left behind was interrupted
-const PARTIAL = /^vestigo-(?:before-v\d+-)?\d{4}-\d{2}-\d{2}-\d{6}\.db\.partial$/;
+const PARTIAL = /^vestigo-(?:before-v\d+-|before-import-)?\d{4}-\d{2}-\d{2}-\d{6}\.db\.partial$/;
 const STALE_PARTIAL = HOUR; // no copy is still being written this long after its file last grew
 
 const pad = (n) => String(n).padStart(2, '0');
@@ -83,21 +85,21 @@ export async function snapshotAsync({ db, dbFile, dest, track }) {
   return (await fs.promises.stat(dest)).size;
 }
 
-/** The backups in `dir`, newest first: { name, kind: 'scheduled' | 'before-upgrade', at, bytes }. */
+/** The backups in `dir`, newest first: { name, kind: 'scheduled' | 'before-upgrade' | 'before-import', at, bytes }. */
 export function listBackups(dir) {
   if (!dir) return [];
   let names;
   try { names = fs.readdirSync(dir); } catch { return []; }
   const out = [];
   for (const name of names) {
-    const kind = SCHEDULED.test(name) ? 'scheduled' : BEFORE_UPGRADE.test(name) ? 'before-upgrade' : null;
+    const kind = SCHEDULED.test(name) ? 'scheduled' : BEFORE_UPGRADE.test(name) ? 'before-upgrade' : BEFORE_IMPORT.test(name) ? 'before-import' : null;
     if (!kind) continue;
     try { const st = fs.statSync(path.join(dir, name)); out.push({ name, kind, at: Math.round(st.mtimeMs), bytes: st.size }); } catch { /* removed meanwhile */ }
   }
   return out.sort((a, b) => b.at - a.at || b.name.localeCompare(a.name));
 }
 
-export const isBackupName = (name) => SCHEDULED.test(name) || BEFORE_UPGRADE.test(name);
+export const isBackupName = (name) => SCHEDULED.test(name) || BEFORE_UPGRADE.test(name) || BEFORE_IMPORT.test(name);
 
 /** Remove the oldest backups of `kind` beyond `keep`. Returns the names removed. */
 function prune(dir, kind, keep) {
@@ -204,6 +206,29 @@ export class Backups {
       return this.saved(job, await snapshotAsync({ db: this.db, dbFile: this.dbFile, dest: job.dest, track }), reason);
     } catch (err) {
       throw this.failed(err, reason);
+    } finally {
+      this.running = false;
+    }
+  }
+
+  /**
+   * A copy of the library before an import changes it: the way back from an import that went wrong.
+   * Made whatever the backup schedule is, kept apart from the scheduled backups (the newest 3), so it
+   * never pushes one of those out. Returns { name, bytes }, or null for a library in memory.
+   */
+  async beforeImport() {
+    if (!this.dir) return null;
+    if (this.running) throw new Error('A backup is being made right now: try the import again in a minute');
+    this.running = true;
+    const t0 = Date.now();
+    const name = `vestigo-before-import-${stamp(t0)}.db`;
+    try {
+      fs.mkdirSync(this.dir, { recursive: true });
+      const track = (worker, part) => { this.worker = worker; this.partial = part; };
+      const bytes = await snapshotAsync({ db: this.db, dbFile: this.dbFile, dest: path.join(this.dir, name), track });
+      prune(this.dir, 'before-import', KEEP_BEFORE_IMPORT);
+      this.log?.info(`Saved a copy before an import: ${name} (${(bytes / 1048576).toFixed(1)} MB, ${Date.now() - t0}ms)`);
+      return { name, bytes };
     } finally {
       this.running = false;
     }

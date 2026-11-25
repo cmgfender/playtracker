@@ -92,6 +92,63 @@ describe('backups', () => {
     assert.ok(b.nextAt() - Date.now() > 5 * 3600e3);
   });
 
+  test('an import saves a copy first, kept apart (the newest 3) from the scheduled backups; a preview saves none', async () => {
+    const { a, close, dir } = app();
+    try {
+      a.settings.set({ backup_keep: 1 });
+      a.backups.run(); // one scheduled backup, which an import must not push out
+      const scheduled = listBackups(path.join(dir, 'backups')).map((b) => b.name);
+      for (let i = 0; i < 4; i++) {
+        const r = await a.backups.beforeImport();
+        assert.match(r.name, /^vestigo-before-import-\d{4}-\d{2}-\d{2}-\d{6}\.db$/);
+        const f = path.join(dir, 'backups', r.name);
+        // distinct names and mtimes: each next one is later
+        const stamped = f.replace(/\d{6}\.db$/, `00000${i}.db`);
+        fs.renameSync(f, stamped);
+        fs.utimesSync(stamped, new Date(Date.now() - (4 - i) * 3600e3), new Date(Date.now() - (4 - i) * 3600e3));
+      }
+      const kept = listBackups(path.join(dir, 'backups'));
+      assert.deepEqual(kept.filter((b) => b.kind === 'before-import').length, 3, 'the newest 3 copies before an import');
+      assert.deepEqual(kept.filter((b) => b.kind === 'scheduled').map((b) => b.name), scheduled, 'the scheduled one stays');
+    } finally { close(); }
+  });
+
+  test('the GameTrack import route: a preview saves no copy, an import saves one first and names it', async () => {
+    const dir = tmpDir();
+    const { app: a, server, close } = createApp({ dbFile: path.join(dir, 'vestigo.db'), password: '', scheduler: false, log: quiet });
+    await new Promise((r) => server.listen(0, '127.0.0.1', r));
+    const url = `http://127.0.0.1:${server.address().port}/api/v1/import/gametrack`;
+    // a stored (uncompressed) ZIP with one games.csv
+    const body = Buffer.from('uuid,title,hours_played,owned_platform\nA,Gone Home,2,PC\n');
+    const name = Buffer.from('games.csv');
+    const crc = (buf) => { let c = ~0; for (const x of buf) { c ^= x; for (let k = 0; k < 8; k++) c = (c >>> 1) ^ (0xedb88320 & -(c & 1)); } return ~c >>> 0; };
+    const lh = Buffer.alloc(30); lh.writeUInt32LE(0x04034b50, 0); lh.writeUInt16LE(20, 4); lh.writeUInt32LE(crc(body), 14); lh.writeUInt32LE(body.length, 18); lh.writeUInt32LE(body.length, 22); lh.writeUInt16LE(name.length, 26);
+    const ch = Buffer.alloc(46); ch.writeUInt32LE(0x02014b50, 0); ch.writeUInt16LE(20, 6); ch.writeUInt32LE(crc(body), 16); ch.writeUInt32LE(body.length, 20); ch.writeUInt32LE(body.length, 24); ch.writeUInt16LE(name.length, 28);
+    const cdOff = 30 + name.length + body.length;
+    const end = Buffer.alloc(22); end.writeUInt32LE(0x06054b50, 0); end.writeUInt16LE(1, 8); end.writeUInt16LE(1, 10); end.writeUInt32LE(46 + name.length, 12); end.writeUInt32LE(cdOff, 16);
+    const zipped = Buffer.concat([lh, name, body, ch, name, end]);
+    const post = async (q) => { const r = await fetch(url + q, { method: 'POST', headers: { 'Content-Type': 'application/zip' }, body: zipped }); return { status: r.status, json: await r.json() }; };
+    try {
+      const p = await post('?dry_run=true');
+      assert.equal(p.status, 200, JSON.stringify(p.json));
+      assert.equal(p.json.dry_run, true);
+      assert.equal(p.json.backup, undefined);
+      assert.deepEqual(listBackups(path.join(dir, 'backups')), [], 'a preview saves no copy');
+      const r = await post('');
+      assert.equal(r.status, 200, JSON.stringify(r.json));
+      assert.match(r.json.backup, /^vestigo-before-import-/);
+      assert.deepEqual(listBackups(path.join(dir, 'backups')).map((b) => [b.name, b.kind]), [[r.json.backup, 'before-import']]);
+      const copy = new DatabaseSync(path.join(dir, 'backups', r.json.backup), { readOnly: true });
+      assert.equal(copy.prepare("SELECT COUNT(*) n FROM games WHERE title = 'Gone Home'").get().n, 0, 'the copy is from before the import');
+      copy.close();
+      assert.equal(a.db.prepare("SELECT COUNT(*) n FROM games WHERE title = 'Gone Home'").get().n, 1);
+      // the copy can be downloaded like any kept backup
+      const dl = await fetch(`http://127.0.0.1:${server.address().port}/api/v1/backups/${r.json.backup}`);
+      assert.equal(dl.status, 200);
+      await dl.arrayBuffer();
+    } finally { close(); }
+  });
+
   test('an in-memory database has no backups', () => {
     const { app: a, close } = createApp({ dbFile: ':memory:', password: '', scheduler: false, log: quiet });
     try {

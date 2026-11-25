@@ -26,7 +26,8 @@ const TREND_MIN_GAMES = 2;
 const PLATFORM_NAMES = { steam: 'Steam', xbox: 'Xbox', psn: 'PlayStation', nintendo: 'Nintendo Switch', manual: 'games added by hand' };
 const platformName = (p) => PLATFORM_NAMES[p] || p;
 
-const playsOf = (m, ids) => careerPlays((ids || []).map((id) => m.games.get(id)).filter(Boolean));
+// (a generation's members can be parts of a game: one release of the game each - see legends/members.js)
+const playsOf = (m, ids) => careerPlays((ids || []).map((id) => m.units?.get(id) ?? m.games.get(id)).filter(Boolean));
 const eraWindow = (era, today) => ({ from: era.from, to: era.to && era.to < today ? era.to : today });
 
 /**

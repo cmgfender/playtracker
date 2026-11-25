@@ -205,6 +205,12 @@ export function registerRoutes(r, app) {
     db.exec('BEGIN IMMEDIATE');
     try { return { ...fn(), dry_run: true }; } finally { db.exec('ROLLBACK'); }
   };
+  // an import that is not a preview saves a copy of the library first: the way back. If that fails,
+  // nothing is imported (a full disk is better found now than after the import).
+  const copyBeforeImport = async (c) => {
+    if (c.query.dry_run === 'true' || c.query.dry_run === '1' || !app.backups) return null;
+    try { return await app.backups.beforeImport(); } catch (err) { throw new HttpError(409, `Could not save a copy of your library first, so nothing was imported: ${err.message}`); }
+  };
   const arr = (v, name) => {
     if (v == null) return [];
     if (!Array.isArray(v)) throw new HttpError(400, `${name} must be an array`);
@@ -1305,12 +1311,13 @@ export function registerRoutes(r, app) {
     });
   }, { query: { dry_run: 'true = report what would happen without changing anything' }, summary: 'Import games/history (CSV or JSON). Joins what is here: synced games keep their platform totals and gain dates / exact past sessions; manual and imported games are updated; empty details are filled, never overwritten.', body: 'CSV text or { games: [{ title, platform?, playtime_minutes|playtime_hours, last_played?, status?, rating?, notes?, sessions?: [{ date|started_at, minutes }] }] }', bodyType: ['text/csv'], bigBody: true });
 
-  r.post('/api/v1/import/gametrack', (c) => {
+  r.post('/api/v1/import/gametrack', async (c) => {
     const buf = c.rawBuffer;
     if (!isZip(buf)) throw new HttpError(400, 'Upload the GameTrack export .zip (Settings → Export in GameTrack)');
     const tables = gameTrackTables(readZip(buf));
-    return preview(c, () => importGameTrack(db, tables, { settings: settings.all() }));
-  }, { query: { dry_run: 'true = preview only' }, summary: 'Import a GameTrack export ZIP: unlock times date synced history, untracked hours become history, statuses/ratings/covers fill gaps', body: 'the .zip file (Content-Type: application/zip)', bodyType: ['application/zip'], bigBody: true, binary: true });
+    const backup = await copyBeforeImport(c);
+    return { ...preview(c, () => importGameTrack(db, tables, { settings: settings.all() })), ...(backup ? { backup: backup.name } : {}) };
+  }, { query: { dry_run: 'true = preview only' }, summary: 'Import a GameTrack export ZIP: unlock times date synced history, untracked hours become history, statuses/ratings/covers fill gaps. A copy of the library is saved first (backups/vestigo-before-import-…, the newest 3 kept); if it cannot be, nothing is imported', body: 'the .zip file (Content-Type: application/zip)', bodyType: ['application/zip'], bigBody: true, binary: true });
 
   r.get('/api/v1/export', async (c) => {
     const csv = c.query.format === 'csv';
