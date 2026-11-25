@@ -238,7 +238,7 @@ export async function addGameModal() {
     title: 'Add a game',
     wide: true,
     body: `<form class="stack" id="ag" autocomplete="off">
-      <div class="field"><label for="ag-title">Title</label><input class="input" id="ag-title" name="title" required placeholder="Super Mario 64" aria-describedby="ag-hint">
+      <div class="field"><label for="ag-title">Title</label><input class="input" id="ag-title" name="title" maxlength="300" required placeholder="Super Mario 64" aria-describedby="ag-hint">
         <div id="ag-sugg" class="list ag-sugg" hidden></div>
         <p class="tiny muted" id="ag-hint" style="margin:6px 0 0">${igdbOn ? 'Type to look it up on IGDB (cover, release date, platforms) and in your library.' : 'Type to find it in your library. With IGDB set up (under Game metadata in Settings) it is looked up as you type, with its cover and release date.'}</p></div>
       <div id="ag-picked"></div>
@@ -262,7 +262,7 @@ export async function addGameModal() {
         <p class="tiny muted" style="margin:0">Dated like history from a platform (hatched in charts): it never counts as today's play. You can change the hours and the dates later on the game page; sessions from now on are logged there too.</p>
       </fieldset>
       <details><summary class="small muted" style="cursor:pointer">Cover image</summary>
-        <div class="field" style="margin-top:8px"><label for="ag-cover">Cover image URL <span class="dim">(optional)</span></label><input class="input" id="ag-cover" name="cover_url" placeholder="https://…"></div></details>
+        <div class="field" style="margin-top:8px"><label for="ag-cover">Cover image URL <span class="dim">(optional)</span></label><input class="input" id="ag-cover" name="cover_url" maxlength="2000" placeholder="https://…"></div></details>
     </form>`,
     foot: '<button class="btn" data-close>Cancel</button><button class="btn primary" id="ag-save">Add game</button>',
     onMount(el, close) {

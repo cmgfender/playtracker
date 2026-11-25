@@ -174,11 +174,18 @@ function timeField(b, k) {
   return t;
 }
 /** A body field that is text, or null when empty; anything else is a 400 (an object or a number cannot be stored as text). */
-function textField(b, k) {
+function textField(b, k, max = 0) {
   if (b[k] == null || b[k] === '') return null;
   if (typeof b[k] !== 'string') throw new HttpError(400, `${k} must be text`);
+  if (max && b[k].length > max) throw new HttpError(400, `${k} is at most ${max.toLocaleString('en-US')} characters`);
   return b[k];
 }
+// What a body's free text may hold: a title is matched against every series and every other game
+// (100,000 characters of one took five seconds, and five more on each page that lists series)
+const MAX_TITLE = 300;
+const MAX_URL = 2000;
+const MAX_NOTE = 2000;
+const tooLong = (title) => { if (title.length > MAX_TITLE) throw new HttpError(400, `title is at most ${MAX_TITLE} characters`); };
 /** An account's config or schedule in a body: an object when given (a string would be stored letter by letter). */
 function objectField(b, k) {
   if (b[k] != null && (typeof b[k] !== 'object' || Array.isArray(b[k]))) throw new HttpError(400, `${k} must be an object`);
@@ -326,7 +333,8 @@ export function registerRoutes(r, app) {
   r.post('/api/v1/games', (c) => {
     const title = typeof c.body.title === 'string' ? c.body.title.trim() : '';
     if (!title) throw new HttpError(400, 'title is required');
-    const coverUrl = textField(c.body, 'cover_url');
+    tooLong(title);
+    const coverUrl = textField(c.body, 'cover_url', MAX_URL);
     // where it was played (a console without an account here: "Nintendo 64")
     const playedOn = textField(c.body, 'played_on')?.trim().slice(0, 60) || null;
     // the hours played before it was added, and roughly when: dated like a platform's history
@@ -466,9 +474,10 @@ export function registerRoutes(r, app) {
     if ('title' in b) {
       const t = typeof b.title === 'string' && b.title.trim() ? cleanTitle(b.title) : '';
       if (!t) throw new HttpError(400, 'title must be a non-empty string');
+      tooLong(t);
       sets.push('title = ?', 'norm_title = ?'); args.push(t, normalizeTitle(t));
     }
-    if ('cover_url' in b) { sets.push('cover_url = ?'); args.push(textField(b, 'cover_url')); }
+    if ('cover_url' in b) { sets.push('cover_url = ?'); args.push(textField(b, 'cover_url', MAX_URL)); }
     if ('status' in b) { if (!STATUSES.includes(b.status)) throw new HttpError(400, `status must be one of ${STATUSES.join(', ')}`); sets.push('status = ?'); args.push(b.status); }
     if ('rating' in b) {
       const n = b.rating == null || b.rating === '' ? null : Number(b.rating);
@@ -533,7 +542,7 @@ export function registerRoutes(r, app) {
     if (!e) throw new HttpError(404, 'Entry not found');
     const total = toInt(c.body.playtime_minutes);
     if (total == null || total < 0) throw new HttpError(400, 'playtime_minutes (lifetime total) is required');
-    const note = textField(c.body, 'note');
+    const note = textField(c.body, 'note', MAX_NOTE);
     if (total > MAX_PLAYTIME_MIN) throw new HttpError(400, `playtime_minutes cannot be more than ${MAX_PLAYTIME_MIN} (a hundred years)`);
     if (e.account_id) {
       const res = await sync.report(e.account_id, [{ extId: e.ext_id, title: e.title, playtimeMin: total, lastPlayedAt: toTime(c.body.last_played_at) }]);
@@ -610,7 +619,7 @@ export function registerRoutes(r, app) {
     const minutes = toInt(b.minutes) ?? (b.hours ? Math.round(Number(b.hours) * 60) : null);
     if (!gameId || !db.prepare('SELECT id FROM games WHERE id = ?').get(gameId)) throw new HttpError(400, 'Valid game_id is required');
     if (!minutes || minutes <= 0 || minutes > 7 * 1440) throw new HttpError(400, 'minutes must be between 1 and 10080');
-    const note = textField(b, 'note');
+    const note = textField(b, 'note', MAX_NOTE);
     const now = Date.now();
     let started = timeField(b, 'started_at');
     let ended = timeField(b, 'ended_at');
@@ -646,7 +655,7 @@ export function registerRoutes(r, app) {
     if (!s) throw new HttpError(404, 'Session not found');
     const local = s.source === 'manual' || s.source === 'import' || s.source === 'api';
     const sets = []; const args = [];
-    if ('note' in patch) { sets.push('note = ?'); args.push(textField(patch, 'note')); }
+    if ('note' in patch) { sets.push('note = ?'); args.push(textField(patch, 'note', MAX_NOTE)); }
     if ('kind' in patch) {
       if (!['play', 'baseline'].includes(patch.kind)) throw new HttpError(400, 'kind must be play or baseline');
       // history is never recorded as play: it can only leave the stats

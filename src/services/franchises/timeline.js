@@ -31,7 +31,7 @@ export function build(r, now) {
       const gs = (r.matched.get(e.i) || []).sort((a, b) => b.minutes - a.minutes);
       // two copies of one entry (a game the library keeps apart): the most played speaks for it
       const g = gs[0] || null;
-      items.push({ key: `e${e.i}`, year: e.year, title: e.title, kind: e.kind, curated: true, era: e.era, eraFixed: !!e.eraName, game: pub(g), others: gs.slice(1).map((x) => ({ id: x.id, title: x.title })),
+      items.push({ key: `e${e.i}`, year: e.year, title: e.title, kind: e.kind, curated: true, era: e.era, eraFixed: !!e.eraName, game: pub(g), others: gs.slice(1).map((x) => ({ id: x.id, title: x.title, minutes: x.minutes, first_day: x.first_day, last_day: x.last_day })),
         addons: (r.addons.get(e.i) || []).map((x) => ({ id: x.id, title: x.title, minutes: x.minutes, kind: x.addon })), state: g ? g.state : 'missing', own: g ? g.state : 'missing',
         via: null, of: [], versions: [], partial: e.partial, entry: e });
     }
@@ -97,9 +97,11 @@ export function build(r, now) {
   const games = new Map();
   for (const it of items) if (it.game) games.set(it.game.uid, it.game);
   const list = [...games.values()];
-  const addonMinutes = items.reduce((a, it) => a + it.addons.reduce((b, t) => b + t.minutes, 0), 0);
-  const firsts = list.map((g) => g.first_day).filter(Boolean).sort();
-  const lasts = list.map((g) => g.last_day).filter(Boolean).sort();
+  // (a second copy of an entry - another edition the library keeps apart - is no game more, but its hours are the series')
+  const copies = items.flatMap((it) => it.others || []);
+  const addonMinutes = items.reduce((a, it) => a + it.addons.reduce((b, t) => b + t.minutes, 0), 0) + copies.reduce((a, o) => a + (o.minutes || 0), 0);
+  const firsts = [...list, ...copies].map((g) => g.first_day).filter(Boolean).sort();
+  const lasts = [...list, ...copies].map((g) => g.last_day).filter(Boolean).sort();
   const main = items.filter((it) => it.kind === 'main');
   const isPlayed = (it) => PLAYED.has(it.state);
   // next: in release order, the first main game (or part of a remake told in parts) not played
@@ -129,7 +131,7 @@ export function build(r, now) {
     const fd = gs.map((g) => g.first_day).filter(Boolean).sort(); const ld = gs.map((g) => g.last_day).filter(Boolean).sort();
     return { index: j, name: x.name, note: x.note, from: ys.length ? Math.min(...ys) : x.from, to: ys.length ? Math.max(...ys) : x.from,
       main: { total: m.length, owned: m.filter((it) => HAVE(it.state)).length, played: m.filter(isPlayed).length, finished: m.filter((it) => it.state === 'finished').length },
-      games: gs.length, minutes: gs.reduce((a, g) => a + g.minutes, 0) + its.reduce((a, it) => a + it.addons.reduce((b, t) => b + t.minutes, 0), 0), first_day: fd[0] || null, last_day: ld.at(-1) || null };
+      games: gs.length, minutes: gs.reduce((a, g) => a + g.minutes, 0) + its.reduce((a, it) => a + it.addons.reduce((b, t) => b + t.minutes, 0) + (it.others || []).reduce((b, o) => b + (o.minutes || 0), 0), 0), first_day: fd[0] || null, last_day: ld.at(-1) || null };
   });
   const top = r.eras.reduce((a, x) => (x.minutes > (a?.minutes || 0) ? x : a), null);
   r.your_era = top ? top.index : null;

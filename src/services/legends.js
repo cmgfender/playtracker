@@ -106,7 +106,9 @@ export function legend(db, settings, kind, id, { now = Date.now() } = {}) {
     if (kind === 'series') {
       const f = franchiseDetail(db, id, { now });
       if (!f) return null;
-      Object.assign(L, { id: f.id, name: f.name, tagline: f.curated ? null : 'A series in your library', series: f, plays: playsOf(m, m.sets.series.get(f.id)) });
+      Object.assign(L, { id: f.id, name: f.name, tagline: f.curated ? null : 'A series in your library', series: f, plays: playsOf(m, m.sets.series.get(f.id)),
+        // counted as the Series page counts it: two editions of one entry are one game, an add-on is none
+        count: { games: f.games, played: f.played, finished: f.finished } });
       own = { series_detail: f };
     } else if (kind === 'maker') {
       const name = MAKER_BY_ID.get(id)?.name || m.studios.get(id);

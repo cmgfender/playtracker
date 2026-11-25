@@ -373,8 +373,8 @@ export async function game(view, id, stale) {
   }));
   const editGame = () => modal({
     title: 'Edit game',
-    body: `<form class="stack" id="ge"><div class="field"><label>Title</label><input class="input" name="title" value="${esc(g.title)}"></div>
-      <div class="field"><label>Cover image URL</label><input class="input" name="cover_url" value="${esc(g.cover_url || '')}"></div>
+    body: `<form class="stack" id="ge"><div class="field"><label>Title</label><input class="input" name="title" maxlength="300" value="${esc(g.title)}"></div>
+      <div class="field"><label>Cover image URL</label><input class="input" name="cover_url" maxlength="2000" value="${esc(g.cover_url || '')}"></div>
       ${g.entries.filter((e) => e.cover_url && e.cover_url !== g.cover_url).length ? `<div class="field"><label>Use a platform cover</label><div class="row wrap">${g.entries.filter((e) => e.cover_url).map((e) => `<button type="button" class="btn sm" data-cov="${esc(e.cover_url)}">${platDot(e.platform)}${esc(plat(e.platform).label)}</button>`).join('')}</div></div>` : ''}</form>`,
     foot: '<button class="btn" data-close>Cancel</button><button class="btn primary" id="ge-save">Save</button>',
     onMount(el, close) {

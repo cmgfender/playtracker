@@ -296,6 +296,8 @@ select.input { appearance: none; background-image: linear-gradient(45deg, transp
 .chip { flex: none; display: inline-flex; align-items: center; gap: 6px; min-height: 32px; padding: 0 12px; border-radius: 99px; border: 1px solid var(--line); background: var(--panel); font-size: 13px; font-weight: 600; color: var(--muted); cursor: pointer; white-space: nowrap; }
 .chip.on { color: var(--on-accent); border-color: var(--accent); background: var(--accent); }
 .chip.on .dot { box-shadow: 0 0 0 1.5px var(--on-accent); }
+/* a count inside the chosen chip is the chip's own colour, a little quieter: grey on the accent could not be read */
+.chip.on .dim, .chip.on .muted { color: inherit; opacity: .8; }
 .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; display: inline-block; }
 .badge { display: inline-flex; align-items: center; gap: 5px; min-height: 22px; padding: 2px 8px; border-radius: 99px; font-size: 11.5px; font-weight: 600; background: var(--panel2); color: var(--muted); border: 1px solid var(--line); white-space: nowrap; }
 .badge.accent { background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--accent-ink); border-color: transparent; }

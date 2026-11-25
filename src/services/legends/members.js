@@ -63,13 +63,15 @@ export function membership(db, { now = Date.now() } = {}) {
         }
         for (const id of [it.game?.id, ...(it.others || []).map((o) => o.id), ...(it.addons || []).map((a) => a.id)].filter(Boolean)) {
           const g = games.get(id);
-          if (!g || g.series) continue; // (a game in two inferred series: the first)
+          if (!g) continue;
+          // a game in two series (Marvel's Avengers: Marvel and The Avengers) is told in both; it names the first as its own
+          if (!sets.series.get(r.id)?.includes(id)) put('series', r.id, id);
+          if (g.series) continue;
           g.series = r.id;
           g.entry = it.curated ? { title: it.title, year: it.year } : null;
           // a series' app (the Battlefield app, Call of Duty HQ): its time is the series' games of its years -
           // not the year of whatever IGDB matched its bare name to (a 1997 "Battlefield")
           if (it.kind === 'hub' && it.year != null && id === it.game?.id) g.hubYear = it.year;
-          put('series', r.id, id);
         }
       }
     }

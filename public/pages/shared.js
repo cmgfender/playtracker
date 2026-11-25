@@ -308,7 +308,7 @@ export function logSessionModal(game = null, onDone = rerender, { minutes = 60 }
         <div class="chips" style="margin-top:0">${[15, 30, 60, 90, 120, 180].map((m) => `<button type="button" class="chip" data-quick="${m}">${fmtMin(m)}</button>`).join('')}</div>
       </div>
       <div class="field"><label>Ended at</label><input class="input" type="datetime-local" name="ended" value="${localInput(now)}"></div>
-      <div class="field"><label>Note <span class="dim">(optional)</span></label><input class="input" name="note" placeholder="Beat the first boss…"></div>
+      <div class="field"><label>Note <span class="dim">(optional)</span></label><input class="input" name="note" maxlength="2000" placeholder="Beat the first boss…"></div>
     </form>`,
     foot: '<button class="btn" data-close>Cancel</button><button class="btn primary" id="log-save">Save session</button>',
     autofocus: !game, // the search is what you came for, keyboard and all
@@ -365,7 +365,7 @@ async function editSessionModal(id, onDone = rerender) {
         <div class="field"><label>Started</label><input class="input" type="datetime-local" name="started" value="${s.started_at ? localInput(s.started_at) : ''}"></div>
         <div class="field"><label>Ended</label><input class="input" type="datetime-local" name="ended" value="${s.ended_at ? localInput(s.ended_at) : ''}"></div>
       </div>
-      <div class="field"><label>Note</label><input class="input" name="note" value="${esc(s.note || '')}"></div>
+      <div class="field"><label>Note</label><input class="input" name="note" maxlength="2000" value="${esc(s.note || '')}"></div>
       ${!inferred ? `<div class="setting" style="border:0;padding:0"><div><div class="t">Count in stats</div><div class="d">Off = treat as pre-tracking history (still counts toward lifetime)</div></div>
         <label class="switch"><input type="checkbox" name="play" ${s.kind === 'play' ? 'checked' : ''}><span></span></label></div>` : ''}
     </div>`,
