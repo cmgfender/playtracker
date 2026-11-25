@@ -5,17 +5,20 @@ import { memo, dayKey } from '../stats.js';
 import { franchiseIndex } from '../franchises.js';
 import { libraryGames } from '../franchises/library.js';
 import { slug } from '../franchises/catalog.js';
-import { generationOf, makersOf, trendsOf, isMakers, MAKER_LIST, MAKER_BY_ID } from './catalog.js';
+import { generationOf, makersOf, trendsOf, genresOf, isMakers, MAKER_LIST, MAKER_BY_ID } from './catalog.js';
 
-// Houses that sell other makers' games in Japan under their own name (not Sega or Bandai Namco: Atlus's
-// and FromSoftware's publishers abroad are part of those games' story)
-const JAPAN_PUBLISHERS = ['square-enix', 'capcom', 'konami', 'koei-tecmo', 'spike-chunsoft'];
+// Houses that sell other makers' games under their own name in one region: in Japan (not Sega or Bandai
+// Namco: Atlus's and FromSoftware's publishers abroad are part of those games' story), and Deep Silver
+// and 505 Games in Europe and on disc (Persona 5, Control)
+const JAPAN_PUBLISHERS = ['square-enix', 'capcom', 'konami', 'koei-tecmo', 'spike-chunsoft', 'deep-silver', '505-games'];
+// (makers.js: studio) counted by what they developed only
+const STUDIOS = MAKER_LIST.filter((m) => m.studio);
 
 /** A studio IGDB names as developer gets a legend of its own from this many games of yours. */
 const STUDIO_MIN_GAMES = 3;
 
 /**
- * { games: Map id -> game, sets: { series, maker, generation, trend, platform }: Map legend id -> [game ids],
+ * { games: Map id -> game, sets: { series, maker, generation, trend, genre, platform }: Map legend id -> [game ids],
  *   studios: Map id -> name (makers found in IGDB's developers, not curated), seriesNames: Map id -> name }
  * A game: the library's (id, title, cover_url, minutes, state, platforms, first_day, last_day, release_at,
  * release_year) plus series (id | null), gen (id | null), years: [{ year, minutes, estimated, first, last, days }]
@@ -41,12 +44,12 @@ export function membership(db, { now = Date.now() } = {}) {
     for (const g of games.values()) { g.plat = new Map(); g.unlocked = 0; }
     for (const r of db.prepare('SELECT game_id, platform, SUM(playtime_min) m FROM entries WHERE excluded = 0 GROUP BY game_id, platform').all()) games.get(r.game_id)?.plat.set(r.platform, r.m);
     for (const r of db.prepare('SELECT e.game_id, SUM(a.unlocked) u FROM achievements a JOIN entries e ON e.id = a.entry_id WHERE e.excluded = 0 GROUP BY e.game_id').all()) { const g = games.get(r.game_id); if (g) g.unlocked = r.u || 0; }
-    const tags = new Map(); // game id -> { developer: [], publisher: [], platform: [] }
-    for (const t of db.prepare("SELECT game_id, kind, name FROM game_tags WHERE kind IN ('developer', 'publisher', 'platform')").all()) {
-      if (!tags.has(t.game_id)) tags.set(t.game_id, { developer: [], publisher: [], platform: [] });
+    const tags = new Map(); // game id -> { developer: [], publisher: [], platform: [], genre: [], theme: [] }
+    for (const t of db.prepare("SELECT game_id, kind, name FROM game_tags WHERE kind IN ('developer', 'publisher', 'platform', 'genre', 'theme')").all()) {
+      if (!tags.has(t.game_id)) tags.set(t.game_id, { developer: [], publisher: [], platform: [], genre: [], theme: [] });
       tags.get(t.game_id)[t.kind].push(t.name);
     }
-    const sets = { series: new Map(), maker: new Map(), generation: new Map(), trend: new Map(), platform: new Map() };
+    const sets = { series: new Map(), maker: new Map(), generation: new Map(), trend: new Map(), genre: new Map(), platform: new Map() };
     const put = (kind, id, gameId) => { const m = sets[kind]; if (!m.has(id)) m.set(id, []); m.get(id).push(gameId); };
     // series: the franchise pages' own placing (entries, versions, betas, launchers, the rest of the series)
     const seriesNames = new Map();
@@ -104,7 +107,7 @@ export function membership(db, { now = Date.now() } = {}) {
     for (const u of units.values()) { if (!unitsOf.has(u.id)) unitsOf.set(u.id, []); unitsOf.get(u.id).push(u); }
     const studioGames = new Map(); // IGDB developer -> [game ids] of developers no curated maker claims
     for (const g of games.values()) {
-      const t = tags.get(g.id) || { developer: [], publisher: [], platform: [] };
+      const t = tags.get(g.id) || { developer: [], publisher: [], platform: [], genre: [], theme: [] };
       // a curated entry with no release date of its own: its year, mid-year; a series' app: the years it holds
       const release = g.hubYear ? new Date(g.hubYear, 6, 1).getTime() : g.release_at ?? (g.entry?.year ? new Date(g.entry.year, 6, 1).getTime() : null);
       const parts = unitsOf.get(g.id) || [];
@@ -123,7 +126,8 @@ export function membership(db, { now = Date.now() } = {}) {
       // a game its own maker publishes, with a Japanese house among IGDB's publishers: that one sold it
       // in Japan (Square Enix for Overwatch and Call of Duty) and made no part of it
       const own = MAKER_LIST.filter((m) => t.developer.some((c) => isMakers(m, c)) && t.publisher.some((c) => isMakers(m, c)));
-      const publishers = own.length ? t.publisher.filter((c) => !JAPAN_PUBLISHERS.some((id) => !own.some((m) => m.id === id) && isMakers(MAKER_BY_ID.get(id), c))) : t.publisher;
+      const publishers = (own.length ? t.publisher.filter((c) => !JAPAN_PUBLISHERS.some((id) => MAKER_BY_ID.has(id) && !own.some((m) => m.id === id) && isMakers(MAKER_BY_ID.get(id), c))) : t.publisher)
+        .filter((c) => !STUDIOS.some((m) => isMakers(m, c)));
       const makers = makersOf(g.series, g.hubYear ? [] : [...t.developer, ...publishers], g.hubYear ?? g.entry?.year ?? g.release_year);
       for (const m of makers) put('maker', m.id, g.id);
       for (const d of t.developer) {
@@ -132,6 +136,8 @@ export function membership(db, { now = Date.now() } = {}) {
         studioGames.get(d).push(g.id);
       }
       for (const tr of trendsOf(g.title, g.series, g.entry?.title)) put('trend', tr.id, g.id);
+      // (what IGDB matched a series' app to says nothing of the games it holds)
+      if (!g.hubYear) for (const ge of genresOf(t.genre, t.theme)) put('genre', ge.id, g.id);
       for (const p of g.platforms) put('platform', p, g.id);
     }
     const studios = new Map();

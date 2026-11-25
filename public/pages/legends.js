@@ -1,12 +1,14 @@
 // Legends: the stories in your career. Insights digs for findings and Milestones hands out badges;
-// a legend follows one thread - a series, a maker, a console generation, a trend, a platform, an
-// era of your own - from where it began to where it stands.
+// a legend follows one thread - a series, a maker, a console generation, a trend, a genre, a platform,
+// an era of your own - from where it began to where it stands, and says where it stands among its kind.
 import { esc, fmtMin, fmtDate, plat, platDot, icon, api, plural, setTitle, cover, coverHue, monogram, navigate, modal, toast, fail, confirmBox } from '../app.js';
 import { barChart, mountCharts, BASIS_FILL } from '../charts.js';
 import { emptyState, prose } from './shared.js';
 import { franchiseBody } from './franchises.js';
 
-const KIND = { series: 'Series', maker: 'Maker', generation: 'Console generation', trend: 'Trend', platform: 'Platform', era: 'Your era', career: 'Career' };
+const KIND = { series: 'Series', maker: 'Maker', generation: 'Console generation', trend: 'Trend', genre: 'Genre', platform: 'Platform', era: 'Your era', career: 'Career' };
+const KINDS = { series: 'series', maker: 'makers', generation: 'generations', trend: 'trends', genre: 'genres', platform: 'platforms' };
+const perWeek = (h) => `${h.toLocaleString(undefined, { maximumFractionDigits: 1 })}h a week`;
 const hours = (m) => fmtMin(m, { short: m >= 600 });
 const span = (a, b) => (a && b && a !== b ? `${a}–${b}` : a || b || '');
 const href = (c) => `/legend/${c.kind}/${encodeURIComponent(c.id)}`;
@@ -17,7 +19,7 @@ const platName = (c) => (c.kind === 'platform' ? plat(c.id).label : c.name);
 
 // an era's games: the ones with time in it, and what was unlocked then (often all an older console left)
 const eraGames = (c) => [c.played || !c.unlocks ? plural(c.played, 'game') : null,
-  c.unlocks ? `${c.unlocks.toLocaleString()} ${c.unlocks === 1 ? 'achievement' : 'achievements'} in ${plural(c.unlock_games, 'game')}` : null].filter(Boolean).join(' · ');
+  c.unlocks ? `${c.unlocks.toLocaleString()} ${c.unlocks === 1 ? 'achievement' : 'achievements'} in ${plural(c.unlock_games, 'game')}` : null, c.weekly ? perWeek(c.weekly) : null].filter(Boolean).join(' · ');
 
 /** A legend's card: up to three covers, its name, what it is, and how much of your time is in it. */
 function card(c) {
@@ -41,7 +43,16 @@ export async function legendsPage(view, stale) {
   const l = await api('/legends');
   if (stale()) return;
   const c = l.career;
-  const grid = (cards) => `<div class="fr-grid">${cards.map(card).join('')}</div>`;
+  // a kind with many legends opens on its most played; the rest are one click away
+  const FIRST = 8;
+  const grid = (cards, what = '') => `<div class="fr-grid">${cards.slice(0, FIRST).map(card).join('')}</div>${cards.length > FIRST ? `<div class="fr-grid lg-rest" hidden>${cards.slice(FIRST).map(card).join('')}</div>
+    <button class="btn sm ghost lg-all" data-lg-all aria-expanded="false">Show all ${cards.length} ${what}</button>` : ''}`;
+  // eras found in the play itself: a name and its months, to adopt as they are or set aside
+  const range = (s) => `${monthYear(s.from)} – ${s.to ? monthYear(s.to) : 'today'}`;
+  const suggested = (l.suggested || []).length ? `<div class="lg-sug" id="lg-suggested"><div class="tiny muted lg-sug-h">Found in your play</div>
+    ${l.suggested.map((s, i) => `<div class="lg-sug-row" data-sug="${i}">${s.game?.cover_url ? `<img src="${esc(s.game.cover_url)}" alt="" loading="lazy" onerror="this.style.visibility='hidden'">` : `<span class="lg-sug-ph" style="--ph-h:${coverHue(s.name)}">${esc(monogram(s.name.replace(/^The /, '')))}</span>`}
+      <div class="grow"><div class="ttl">${esc(s.name)}</div><div class="tiny muted">${esc(range(s))} · ${hours(s.minutes)} · ${esc(s.why)}</div></div>
+      <button class="btn sm" data-sug-add="${i}">${icon('plus')}Add</button><button class="btn sm ghost icon" data-sug-no="${i}" aria-label="Not an era: ${esc(s.name)}" title="Not an era">${icon('x')}</button></div>`).join('')}</div>` : '';
   const eras = l.eras.length ? `<div class="fr-grid">${l.eras.map(card).join('')}</div>`
     : `<div class="card lg-empty"><p><b>Name a stretch of your life</b> - college, a first job, the year in another city - and see what you played in it: the games that defined it, what was new, how it ended.</p>
         <button class="btn primary" data-era-add>${icon('plus')}Add an era</button></div>`;
@@ -50,14 +61,63 @@ export async function legendsPage(view, stale) {
       <div class="lg-career-t">${c.minutes ? hours(c.minutes) : 'No play yet'} <span class="muted">across ${plural(c.games, 'game')}${span(c.from, c.to) ? `, ${span(c.from, c.to)}` : ''}</span></div>
       <div class="small muted">${c.top ? `${esc(c.top)} most of all · ` : ''}Read the whole story${icon('arrowR', 'ic-inline')}</div></a>`
     : `<div class="card">${emptyState('trail', 'No legends yet', 'They appear with your library: connect an account or add a game, and the series, makers and console generations in it each get a story.', `<a class="btn primary" href="/accounts?add=1" data-link>${icon('plus')}Connect an account</a>`)}</div>`}
-    ${c.games ? section('eras', 'Your eras', 'Stretches of your life, and what you played in them', eras, l.eras.length ? `<button class="btn sm" data-era-add>${icon('plus')}Add an era</button>` : '') : ''}
+    ${c.games ? section('eras', 'Your eras', 'Stretches of your life, and what you played in them', eras + suggested, l.eras.length ? `<button class="btn sm" data-era-add>${icon('plus')}Add an era</button>` : '') : ''}
     ${l.series.length ? section('series', 'Series', 'The franchises you followed, each with its timeline and the games you have not played yet', grid(l.series),
       `<a class="btn sm ghost" href="/legends/series" data-link>${l.series_total > l.series.length ? `All ${l.series_total} series` : 'All series'}${icon('arrowR', 'ic-inline')}</a>`) : ''}
     ${l.generations.length ? section('generations', 'Console generations', 'The games of each hardware era, whenever you got to them', grid(l.generations)) : ''}
-    ${l.trends.length ? section('trends', 'Trends', 'The things games were into for a while, and whether you were there', grid(l.trends)) : ''}
-    ${l.makers.length ? section('makers', 'Makers', 'The studios and publishers behind what you play', grid(l.makers)) : ''}
+    ${l.trends.length ? section('trends', 'Trends', 'The things games were into for a while, and whether you were there', grid(l.trends, 'trends')) : ''}
+    ${(l.genres || []).length ? section('genres', 'Genres and worlds', 'The kinds of games you keep choosing, each with its own career', grid(l.genres, 'genres')) : ''}
+    ${l.makers.length ? section('makers', 'Makers', 'The studios and publishers behind what you play', grid(l.makers, 'makers')) : ''}
     ${l.platforms.length > 1 ? section('platforms', 'Platforms', 'Where you played', grid(l.platforms)) : ''}`;
-  view.addEventListener('click', (e) => { if (e.target.closest('[data-era-add]')) eraModal(); });
+  view.addEventListener('click', async (e) => {
+    if (e.target.closest('[data-era-add]')) return eraModal();
+    const all = e.target.closest('[data-lg-all]');
+    if (all) { all.previousElementSibling.hidden = false; all.remove(); return; }
+    const add = e.target.closest('[data-sug-add]'); const no = e.target.closest('[data-sug-no]');
+    const s = l.suggested?.[(add || no)?.dataset[add ? 'sugAdd' : 'sugNo']];
+    if (!s) return;
+    (add || no).disabled = true;
+    try {
+      if (add) {
+        const era = await api('/legends/eras', { method: 'POST', body: { name: s.name.slice(0, 60), from: s.from, to: s.to || '' } });
+        toast('Era added');
+        navigate(`/legend/era/${era.id}`);
+      } else {
+        await api('/legends/eras/suggestions/dismiss', { method: 'POST', body: { key: s.key } });
+        const row = (add || no).closest('.lg-sug-row'); const box = row.parentElement;
+        row.remove();
+        if (!box.querySelector('.lg-sug-row')) box.remove();
+      }
+    } catch (err) { (add || no).disabled = false; fail(err); }
+  });
+}
+
+/** Where a legend stands: its place among its kind, its share of all the time on record, what came with it. */
+function standingLine(l) {
+  const s = l.standing;
+  if (!s) return '';
+  const bits = [
+    s.rank ? `<span class="badge" data-st="rank"><b>#${s.rank}</b> of ${s.of.toLocaleString()} ${KINDS[l.kind] || ''} by hours</span>` : '',
+    s.weekly ? `<span class="badge" data-st="weekly"><b>${perWeek(s.weekly)}</b></span>` : '',
+    s.share != null && l.totals.minutes ? `<span class="badge" data-st="share"><b>${s.share < 0.1 ? 'under 0.1' : s.share.toLocaleString(undefined, { maximumFractionDigits: 1 })}%</b> of all your time on record</span>` : '',
+    s.achievements ? `<span class="badge" data-st="ach"><b>${s.achievements.toLocaleString()}</b> ${s.achievements === 1 ? 'achievement' : 'achievements'}</span>` : '',
+  ].filter(Boolean);
+  return bits.length ? `<div class="lg-stand" id="lg-stand">${bits.join('')}</div>` : '';
+}
+
+/** Every era of yours by the same measures, this one marked, the whole record below. */
+function eraCompare(l) {
+  const c = l.compare;
+  if (!c || c.eras.length < 2) return '';
+  const max = Math.max(...c.eras.map((e) => e.weekly), c.career.weekly, 0.1);
+  const bar = (w) => `<span class="lg-bar"><i style="width:${Math.max(2, Math.round((w / max) * 100))}%"></i></span>`;
+  const when = (e) => `${e.from.slice(0, 4)}–${e.to ? e.to.slice(0, 4) : 'now'}`;
+  return `<div class="card" style="margin-top:16px" id="lg-compare"><div class="card-h"><h2>Your eras, side by side</h2><span class="tiny muted">hours a week sets a long era against a short one</span></div>
+    <div class="scroll-x"><table class="tbl lg-cmp"><thead><tr><th>Era</th><th>Hours a week</th><th class="num">Played</th><th class="num">Games</th><th class="num">New to you</th><th class="num">Achievements</th><th>Most played</th></tr></thead><tbody>
+    ${c.eras.map((e) => `<tr class="${e.id === l.id ? 'here' : ''}"><td>${e.id === l.id ? `<b>${esc(e.name)}</b>` : `<a href="/legend/era/${e.id}" data-link class="link">${esc(e.name)}</a>`}<div class="tiny muted">${when(e)}</div></td>
+      <td><div class="lg-wk"><b>${e.weekly.toLocaleString(undefined, { maximumFractionDigits: 1 })}</b>${bar(e.weekly)}</div></td><td class="num">${e.minutes ? hours(e.minutes) : '—'}</td><td class="num">${e.games.toLocaleString()}</td><td class="num">${e.fresh.toLocaleString()}</td><td class="num">${e.achievements.toLocaleString()}</td><td class="muted">${esc(e.top || '—')}</td></tr>`).join('')}
+    <tr class="all"><td class="muted">The whole record</td><td><div class="lg-wk"><b>${c.career.weekly.toLocaleString(undefined, { maximumFractionDigits: 1 })}</b>${bar(c.career.weekly)}</div></td><td class="num">${hours(c.career.minutes)}</td><td colspan="4"></td></tr>
+    </tbody></table></div></div>`;
 }
 
 /** Hours by year (or by month, for a short era): estimated history hatched, the game that led in the tip. */
@@ -106,10 +166,12 @@ export async function legendPage(view, kind, id, stale) {
       <div class="kpi"><div class="label">${kind === 'era' ? 'Series' : 'Years'}</div><div class="value">${kind === 'era' ? t.series : t.active_years}</div><div class="sub">${kind === 'era' ? 'you were in' : t.first_day ? `${span(t.first_day.slice(0, 4), t.last_day.slice(0, 4))}` : 'no dated play yet'}</div></div>
       <div class="kpi"><div class="label">${kind === 'era' ? 'Badges' : 'Finished'}</div><div class="value">${kind === 'era' ? (l.milestones || []).length : t.finished ?? 0}</div><div class="sub">${kind === 'era' ? 'milestones reached in it' : 'completed or beaten'}</div></div>
     </div>
+    ${standingLine(l)}
     <div class="card lg-story" style="margin-top:16px"><div class="card-h"><h2>The story</h2></div>
       ${l.chapters.length ? l.chapters.map((c) => `<div class="lg-ch" data-ch="${c.id}"><h3>${esc(c.title)}</h3><p>${prose(c.parts)}</p></div>`).join('')
     : `<p class="muted">${kind === 'era' ? 'Nothing you played is dated to this era yet. History from before tracking fills in as its dates are set (Improve history).' : 'There is nothing to tell yet: none of it has been played.'}</p>`}</div>
     ${timeChart(l)}
+    ${kind === 'era' ? eraCompare(l) : ''}
     ${kind === 'era' && l.milestones?.length ? `<div class="card" style="margin-top:16px"><div class="card-h"><h2>Milestones reached in it</h2><a class="small" href="/milestones" data-link>All milestones${icon('arrowR', 'ic-inline')}</a></div>
       <div class="list two-col">${l.milestones.map((m) => `<div class="item"><span class="mi">${icon('trophy', 'ic-16')}</span><div class="grow"><div class="ttl">${esc(m.text)}</div><div class="sub">${esc(m.precision === 'day' ? fmtDate(dayTime(m.day), { year: 'numeric', month: 'short', day: 'numeric' }) : monthYear(m.day))}</div></div></div>`).join('')}</div></div>` : ''}
     ${l.games.length ? `<div class="card" style="margin-top:16px"><div class="card-h"><h2>${kind === 'era' ? 'What you played' : 'The games'}</h2><span class="tiny muted">most played first</span></div>

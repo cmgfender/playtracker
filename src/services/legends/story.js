@@ -191,7 +191,7 @@ export function tell(L) {
       firstPlay ? ['It opens with ', G(firstPlay.game), firstPlay.firstEstimated ? ' (dated from your history).' : '.'] : 'Nothing you played is dated to it yet: history from before tracking fills in as its dates are set.');
   } else {
     chapter('began', 'Where it began', first
-      ? [L.kind === 'career' ? 'As far back as the record goes: ' : L.kind === 'platform' ? `Your first game on ${name} on record: ` : `Your first ${name} game on record: `, first, '.']
+      ? [L.kind === 'career' ? 'As far back as the record goes: ' : L.kind === 'platform' ? `Your first game on ${name} on record: ` : L.kind === 'genre' ? 'The first of them on record: ' : `Your first ${name} game on record: `, first, '.']
       : (total > 0 ? 'None of your time with it has a date yet.' : ''));
   }
 
@@ -258,6 +258,15 @@ export function tell(L) {
     chapter('new', 'What was new', fresh.length === 1 ? ['One game you had never played before starts here: ', G(fresh[0].game), '.']
       : fresh.length ? [`${count(fresh.length, 'game')} you had never played before start here, `, G(fresh[0].game), ' and ', G(fresh[1].game), ' among them.'] : '',
       total > 0 ? [' It comes to ', B(`${(Math.round((total / 60 / weeks) * 10) / 10).toLocaleString('en-US')} hours a week`), L.careerWeekly ? `, against ${(Math.round(L.careerWeekly * 10) / 10).toLocaleString('en-US')} across the whole record.` : '.'] : '');
+  }
+
+  // an era still going: how the last month compares with the era so far
+  if (L.kind === 'era' && L.pace && total > 0) {
+    const weeks = Math.max(1, (day(L.window.to) - day(L.window.from)) / (7 * DAY));
+    const era = total / 60 / weeks;
+    const r = Math.round(L.pace.recent * 10) / 10; const e = Math.round(era * 10) / 10;
+    if (L.pace.days >= 14) chapter('pace', 'Lately', 'The last 30 days: ', B(`${r.toLocaleString('en-US')} hours a week`),
+      r > e * 1.15 ? `, above the era's ${e.toLocaleString('en-US')}: it is picking up.` : r < e * 0.85 ? `, below the era's ${e.toLocaleString('en-US')}: it is slowing down.` : `, right at the era's ${e.toLocaleString('en-US')}.`);
   }
 
   // the longest break

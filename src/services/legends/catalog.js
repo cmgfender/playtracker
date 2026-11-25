@@ -4,6 +4,7 @@
 import { GENERATIONS } from '../../data/legends/generations.js';
 import { MAKERS } from '../../data/legends/makers.js';
 import { TRENDS } from '../../data/legends/trends.js';
+import { GENRES } from '../../data/legends/genres.js';
 import { normalizeTitle } from '../titles.js';
 import { yearless } from '../franchises/catalog.js';
 
@@ -56,6 +57,12 @@ export function makersOf(franchiseId, companies = [], year = null) {
   }
   return [...out];
 }
+
+/** Genres and worlds: { id, name, tagline, genres: Set, themes: Set } (IGDB's names, lower case). */
+export const GENRE_LIST = GENRES.map((g) => ({ ...g, genres: new Set((g.genres || []).map((x) => x.toLowerCase())), themes: new Set((g.themes || []).map((x) => x.toLowerCase())) }));
+export const GENRE_BY_ID = new Map(GENRE_LIST.map((g) => [g.id, g]));
+/** The genre legends a game is part of, by IGDB's genres and themes of it. */
+export const genresOf = (genres = [], themes = []) => GENRE_LIST.filter((g) => genres.some((x) => g.genres.has(String(x).toLowerCase())) || themes.some((x) => g.themes.has(String(x).toLowerCase())));
 
 /** Trends: { id, name, tagline, from, to, franchises: Set, keys: Set of normalised titles, prefixes: [normalised] } */
 export const TREND_LIST = TRENDS.map((t) => ({
