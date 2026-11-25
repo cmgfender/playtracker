@@ -1,0 +1,33 @@
+// Mortal Kombat. The format is described in ../franchises.js.
+export default {
+  id: 'mortal-kombat', name: 'Mortal Kombat', aliases: ['Mortal Kombat'], prefix: ['mortal kombat'],
+  eras: [
+    ['Mortal Kombat (1992)', 'The arcade originals', 'Digitized fighters and fatalities: the first three games and their updates'],
+    ['Mortal Kombat 4', 'The 3D era', "Midway's 3D games, from Mortal Kombat 4 to Armageddon"],
+    ['Mortal Kombat (2011)', 'The NetherRealm reboot', 'Mortal Kombat 9 retells the first three games; X and 11 carry its story on'],
+    ['Mortal Kombat 1', 'A new era', "Liu Kang's new timeline"],
+  ],
+  entries: [
+    [1992, 'Mortal Kombat (1992)', 'main', { aka: ['Mortal Kombat'] }],
+    [1993, 'Mortal Kombat II'],
+    [1995, 'Mortal Kombat 3'],
+    [1995, 'Ultimate Mortal Kombat 3', 'rerelease', { of: 'Mortal Kombat 3' }],
+    [1996, 'Mortal Kombat Trilogy', 'rerelease', { of: 'Mortal Kombat 3' }],
+    [1997, 'Mortal Kombat 4'],
+    [1997, 'Mortal Kombat Mythologies: Sub-Zero', 'spinoff'],
+    [2000, 'Mortal Kombat: Special Forces', 'spinoff'],
+    [2002, 'Mortal Kombat: Deadly Alliance'],
+    [2004, 'Mortal Kombat: Deception'],
+    [2005, 'Mortal Kombat: Shaolin Monks', 'spinoff'],
+    [2006, 'Mortal Kombat: Armageddon'],
+    [2008, 'Mortal Kombat vs. DC Universe', 'spinoff'],
+    [2011, 'Mortal Kombat (2011)', 'main', { aka: ['Mortal Kombat', 'Mortal Kombat 9', 'Mortal Kombat Komplete Edition'] }],
+    [2011, 'Mortal Kombat Arcade Kollection', 'collection', { includes: ['Mortal Kombat (1992)', 'Mortal Kombat II', 'Ultimate Mortal Kombat 3'] }],
+    [2015, 'Mortal Kombat X'],
+    [2016, 'Mortal Kombat XL', 'rerelease', { of: 'Mortal Kombat X' }],
+    [2019, 'Mortal Kombat 11'],
+    [2020, 'Mortal Kombat 11 Ultimate', 'rerelease', { of: 'Mortal Kombat 11' }],
+    [2023, 'Mortal Kombat 1'],
+    [2025, 'Mortal Kombat: Legacy Kollection', 'collection', { includes: ['Mortal Kombat (1992)', 'Mortal Kombat II', 'Mortal Kombat 3', 'Ultimate Mortal Kombat 3', 'Mortal Kombat Trilogy', 'Mortal Kombat 4', 'Mortal Kombat Mythologies: Sub-Zero', 'Mortal Kombat: Special Forces'] }],
+  ],
+};

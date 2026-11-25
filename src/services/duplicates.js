@@ -1,6 +1,9 @@
 import { matchScore } from './titles.js';
 import { memo } from './stats.js';
 
+// the least time each of two copies holds for them to count anything twice
+const DOUBLE_MIN = 10;
+
 /**
  * Duplicate tracking:
  *  - suggestions:   separate games whose titles look like the same game (merge candidates)
@@ -65,6 +68,9 @@ function compute(db, threshold, limit) {
     for (let i = 0; i < counted.length; i++) {
       for (let j = i + 1; j < counted.length; j++) {
         const a = counted[i]; const b = counted[j];
+        // a copy with no time (or a minute or two) adds nothing to the totals: it counts nothing twice
+        // (Xbox keeps a 360 and a One title of one game, Steam a launcher and the game: 0m beside 19h)
+        if (Math.min(a.playtime_min, b.playtime_min) < DOUBLE_MIN) continue;
         let reason = null;
         if (a.platform === b.platform) reason = `Tracked twice on ${a.platform}`;
         else if (a.playtime_min >= 60 && Math.abs(a.playtime_min - b.playtime_min) <= Math.max(5, 0.02 * a.playtime_min)) reason = 'Near-identical playtime on two platforms (mirrored stats?)';

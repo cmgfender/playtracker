@@ -1,0 +1,31 @@
+// Ninja Gaiden. The format is described in ../franchises.js.
+export default {
+  id: 'ninja-gaiden', name: 'Ninja Gaiden', aliases: ['Ninja Gaiden', 'Ninja Ryukenden'], prefix: ['ninja gaiden', 'ninja ryukenden'],
+  eras: [
+    ['Ninja Gaiden', 'The 8-bit games', "Ryu Hayabusa's NES trilogy, the Game Boy spin-off and the SNES collection"],
+    ['Ninja Gaiden (2004)', 'Team Ninja', 'The 3D reboot by Team Ninja, its Black and Sigma versions, II, 3 and Yaiba'],
+    ['Ninja Gaiden 2 Black', 'The revival', '2 Black, the 2D Ragebound by The Game Kitchen, and 4 with PlatinumGames'],
+  ],
+  entries: [
+    [1988, 'Ninja Gaiden', 'main', { aka: ['Shadow Warriors'] }],
+    [1990, 'Ninja Gaiden II: The Dark Sword of Chaos'],
+    [1991, 'Ninja Gaiden III: The Ancient Ship of Doom'],
+    [1991, 'Ninja Gaiden Shadow', 'spinoff'],
+    [1995, 'Ninja Gaiden Trilogy', 'collection', { includes: ['Ninja Gaiden', 'Ninja Gaiden II: The Dark Sword of Chaos', 'Ninja Gaiden III: The Ancient Ship of Doom'] }],
+    [2004, 'Ninja Gaiden (2004)'],
+    [2005, 'Ninja Gaiden Black', 'rerelease', { of: 'Ninja Gaiden (2004)' }],
+    [2007, 'Ninja Gaiden Sigma', 'remaster', { of: 'Ninja Gaiden (2004)' }],
+    [2008, 'Ninja Gaiden: Dragon Sword', 'spinoff'],
+    [2008, 'Ninja Gaiden II'],
+    [2009, 'Ninja Gaiden Sigma 2', 'remaster', { of: 'Ninja Gaiden II' }],
+    [2012, 'Ninja Gaiden Sigma Plus', 'rerelease', { of: 'Ninja Gaiden Sigma' }],
+    [2012, 'Ninja Gaiden 3'],
+    [2012, "Ninja Gaiden 3: Razor's Edge", 'rerelease', { of: 'Ninja Gaiden 3' }],
+    [2013, 'Ninja Gaiden Sigma 2 Plus', 'rerelease', { of: 'Ninja Gaiden Sigma 2' }],
+    [2014, 'Yaiba: Ninja Gaiden Z', 'spinoff'],
+    [2021, 'Ninja Gaiden: Master Collection', 'collection', { includes: ['Ninja Gaiden Sigma', 'Ninja Gaiden Sigma 2', "Ninja Gaiden 3: Razor's Edge"] }],
+    [2025, 'Ninja Gaiden 2 Black', 'remaster', { of: 'Ninja Gaiden II' }],
+    [2025, 'Ninja Gaiden: Ragebound', 'spinoff'],
+    [2025, 'Ninja Gaiden 4'],
+  ],
+};

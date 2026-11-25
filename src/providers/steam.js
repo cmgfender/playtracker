@@ -145,7 +145,8 @@ export const steam = {
       playtimeMin: Number(g.playtime_forever) || 0,
       recentMin: Number(g.playtime_2weeks) || 0,
       recentWindowDays: 14,
-      lastPlayedAt: g.rtime_last_played ? g.rtime_last_played * 1000 : null,
+      // games last played before Steam kept the date report 1 Jan 1970 + a day: no date
+      lastPlayedAt: g.rtime_last_played > 31_536_000 ? g.rtime_last_played * 1000 : null,
       iconUrl: g.img_icon_url ? `https://media.steampowered.com/steamcommunity/public/images/apps/${g.appid}/${g.img_icon_url}.jpg` : null,
       // newer apps keep their art under hashed paths (resolved once via resolveCovers)
       coverUrl: account.state.covers?.[g.appid] || `https://cdn.cloudflare.steamstatic.com/steam/apps/${g.appid}/library_600x900.jpg`,

@@ -1,0 +1,30 @@
+// Mario Party. The format is described in ../franchises.js.
+export default {
+  id: 'mario-party', name: 'Mario Party', aliases: ['Mario Party'], prefix: ['mario party', 'super mario party'],
+  eras: [
+    ['Mario Party', 'Hudson Soft', "Hudson's games on N64, GameCube and Wii, and the first handheld ones"],
+    ['Mario Party 9', 'NDcube', 'NDcube takes over: the car in 9 and 10, and the 3DS games'],
+    ['Super Mario Party', 'Switch', 'Classic boards again, from Super Mario Party to Jamboree'],
+  ],
+  entries: [
+    [1998, 'Mario Party'],
+    [1999, 'Mario Party 2'],
+    [2000, 'Mario Party 3'],
+    [2002, 'Mario Party 4'],
+    [2003, 'Mario Party 5'],
+    [2004, 'Mario Party 6'],
+    [2005, 'Mario Party Advance', 'spinoff'],
+    [2005, 'Mario Party 7'],
+    [2007, 'Mario Party 8'],
+    [2007, 'Mario Party DS'],
+    [2012, 'Mario Party 9'],
+    [2013, 'Mario Party: Island Tour'],
+    [2015, 'Mario Party 10'],
+    [2016, 'Mario Party: Star Rush'],
+    [2017, 'Mario Party: The Top 100', 'spinoff'],
+    [2018, 'Super Mario Party'],
+    [2021, 'Mario Party Superstars'],
+    [2024, 'Super Mario Party Jamboree'],
+    [2025, 'Super Mario Party Jamboree – Nintendo Switch 2 Edition + Jamboree TV', 'rerelease', { of: 'Super Mario Party Jamboree' }],
+  ],
+};

@@ -1,7 +1,7 @@
 // The weekly summary: last week's play in a few lines, sent through the notification webhook on
 // the first day of the next week and shown on Home. Tracked play only (no estimated history).
 
-import { computeStats, dayKey, parseDay, resolveRange } from './stats.js';
+import { computeStats, dayKey, parseDay, resolveRange, memo, firstPlayedIn } from './stats.js';
 import { fmtMinutes } from '../util.js';
 
 const DAY = 86_400_000;
@@ -24,6 +24,12 @@ export function weeklySummary(db, { weeksAgo = 1, weekStartsOn = 1, now = Date.n
   const from = weekStart(now, weekStartsOn, weeksAgo);
   const next = new Date(from); next.setDate(next.getDate() + 7);
   const end = Math.min(now, next.getTime() - 1);
+  // kept until the next write (or day), like the stats it is made of (Home asks on every load); a
+  // week still under way ends now, so it is its own answer each time
+  return memo(db, `week:${dayKey(from)}:${weekStartsOn}:${weeksAgo}:${end < now ? '' : now}`, () => summarize(db, { from, next, end, now, weeksAgo, weekStartsOn }));
+}
+
+function summarize(db, { from, next, end, now, weeksAgo, weekStartsOn }) {
   const stats = (at) => computeStats(db, { range: 'week', now: at, weekStartsOn, estimates: 'exclude', topLimit: 5 });
   const week = stats(end);
   const prev = stats(from - 1);
@@ -37,8 +43,7 @@ export function weeklySummary(db, { weeksAgo = 1, weekStartsOn = 1, now = Date.n
     WHERE a.unlocked = 1 AND a.unlocked_at >= ? AND a.unlocked_at <= ? AND e.excluded = 0 AND a.grade = 'platinum' ORDER BY a.unlocked_at`).all(from, to).map((r) => r.title);
   // first played ever (estimated history included, so a game tracked only recently is not "new")
   const fromDay = dayKey(from); const toDay = dayKey(to);
-  const fresh = db.prepare(`SELECT g.id game_id, g.title, MIN(p.day) first FROM play_days p JOIN games g ON g.id = p.game_id
-    WHERE p.excluded = 0 GROUP BY p.game_id HAVING first >= ? AND first <= ? ORDER BY first`).all(fromDay, toDay);
+  const fresh = firstPlayedIn(db, { fromDay, toDay });
 
   const delta = prev.tracked_minutes ? Math.round(((week.tracked_minutes - prev.tracked_minutes) / prev.tracked_minutes) * 100) : null;
   const busiest = week.busiest_day ? { ...week.busiest_day, weekday: new Date(parseDay(week.busiest_day.day)).toLocaleDateString('en-US', { weekday: 'long' }) } : null;
@@ -118,8 +123,10 @@ export class WeeklySummary {
     if (!week || now < this.retryAt || this.busy) return false;
     // never sent before (just updated, or just turned on) and well past the slot: start with next week's
     if (s.weekly_summary_sent == null && now - slotTime(s, now) > 3600_000) { this.settings.set({ weekly_summary_sent: week }); return false; }
-    // one a week, even when the week now starts on another day (a changed week start names another week)
-    if (s.weekly_summary_sent_at && now - s.weekly_summary_sent_at < 6 * DAY) { this.settings.set({ weekly_summary_sent: week }); return false; }
+    // one a week, even when the week now starts on another day (a changed week start names another
+    // week that mostly overlaps the one sent). Weeks are compared, not send times: a summary that
+    // went out a day late (server off, webhook down) must not cost the next week its summary
+    if (s.weekly_summary_sent && parseDay(week) - parseDay(s.weekly_summary_sent) < 6 * DAY) { this.settings.set({ weekly_summary_sent: week }); return false; }
     this.busy = true;
     try {
       const summary = weeklySummary(this.db, { weeksAgo: 1, weekStartsOn: s.week_starts_on ?? 1, now });

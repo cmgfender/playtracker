@@ -258,7 +258,9 @@ describe('Vestigo web UI, polish on a one-game library', UI, () => {
   before(async () => {
     T = await startApp();
     solo = (await T.ok('/games', { method: 'POST', body: { title: 'Solo', status: 'playing' } })).id;
-    await T.ok('/sessions', { method: 'POST', body: { game_id: solo, minutes: 45, ended_at: NOW - 60_000 } });
+    // at noon yesterday: one day of play whatever the time now (a session ending a minute ago spans two days just after midnight)
+    const noon = new Date(NOW); noon.setHours(12, 0, 0, 0); noon.setDate(noon.getDate() - 1);
+    await T.ok('/sessions', { method: 'POST', body: { game_id: solo, minutes: 45, ended_at: noon.getTime() } });
   });
   after(() => { T?.close(); });
 
@@ -299,6 +301,29 @@ describe('Vestigo web UI, polish on a one-game library', UI, () => {
       await h.settle();
       assert.equal(await count(), before_ + 1, 'one game was added');
       assert.equal(T.db.prepare("SELECT COUNT(*) n FROM games WHERE title = 'Twice Pressed'").get().n, 1);
+      clean(h);
+    } finally { await h.close(); }
+  });
+
+  test('Add a game with past hours: the year is asked for, never assumed to be this one', async () => {
+    const h = await visit(T, '/library');
+    const { page } = h;
+    try {
+      await page.locator('#lib-add').click();
+      await modalReady(page);
+      await page.locator('.modal [name=title]').fill('An Old One');
+      await page.locator('.modal [name=hours]').fill('30');
+      assert.equal(await page.locator('.modal #ag-when [name=y]').inputValue(), '', 'no year picked for you');
+      await page.locator('#ag-save').click();
+      await toast(page, 'Pick the year you played it');
+      assert.equal(await page.locator('.modal').count(), 1, 'the dialog is still open');
+      await page.locator('.modal #ag-when [name=y]').selectOption('2004');
+      await page.locator('#ag-save').click();
+      await page.waitForURL(/\/game\/\d+$/);
+      await h.settle();
+      const g = T.db.prepare("SELECT id FROM games WHERE title = 'An Old One'").get();
+      const last = T.db.prepare('SELECT MAX(COALESCE(s.ended_at, s.window_end)) t FROM sessions s JOIN entries e ON e.id = s.entry_id WHERE e.game_id = ?').get(g.id).t;
+      assert.equal(new Date(last).getFullYear(), 2004, 'its 30 hours are dated in 2004, not this year');
       clean(h);
     } finally { await h.close(); }
   });

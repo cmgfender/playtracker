@@ -23,9 +23,19 @@ export async function sendSummary(url, summary, text) {
   await post(url, text, { event: 'summary.weekly', text, summary });
 }
 
+const DISCORD_MAX = 1900; // Discord refuses a message over 2000 characters
+
+/** `text` in at most `max` characters: cut at the end of a line where one is near, and marked as cut. */
+export function clip(text, max) {
+  if (text.length <= max) return text;
+  const cut = text.slice(0, max - 1);
+  const line = cut.lastIndexOf('\n');
+  return `${line > max / 2 ? cut.slice(0, line + 1) : cut}…`;
+}
+
 async function post(url, text, json) {
   let body;
-  if (/discord(app)?\.com\/api\/webhooks/.test(url)) body = { content: text.slice(0, 1900), username: 'Vestigo' };
+  if (/discord(app)?\.com\/api\/webhooks/.test(url)) body = { content: clip(text, DISCORD_MAX), username: 'Vestigo' };
   else if (/hooks\.slack\.com/.test(url)) body = { text };
   else body = json;
   const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal: AbortSignal.timeout(10_000) });

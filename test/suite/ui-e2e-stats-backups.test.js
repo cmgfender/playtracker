@@ -76,7 +76,12 @@ describe('Stats, Insights, Home recap, backups', UI, () => {
       assert.notEqual(await page.locator('#st-wdrows').innerText(), avg);
       // This week, from More…
       await page.selectOption('#st-year', 'week');
-      await waitUntil(async () => /vs last week, to the same point/.test((await page.locator('#st-body .kpi .delta').first().getAttribute('title')) || ''), { message: 'compared with last week' });
+      // (the platform filter still applies; early in a week that platform may have no play this
+      // week yet: then the page says so, with no numbers to compare)
+      const week = await S.ok(`/stats?range=week&compare=true&platform=${encodeURIComponent(first)}`);
+      await waitUntil(() => new URL(page.url()).searchParams.get('range') === 'week', { message: 'this week' });
+      if (week.total_minutes) await waitUntil(async () => /vs last week, to the same point/.test((await page.locator('#st-body .kpi .delta').first().getAttribute('title', { timeout: 2000 }).catch(() => '')) || ''), { message: 'compared with last week' });
+      else { await h.settle(); assert.equal(await page.locator('#st-body .kpi .delta').count(), 0, 'no play this week yet: no numbers to compare'); }
       clean(h);
     } finally { await h.close(); }
   });
@@ -103,7 +108,8 @@ describe('Stats, Insights, Home recap, backups', UI, () => {
       await page.locator('[data-jump=style]').click();
       const sec = page.locator('#ins-style');
       await sec.locator('.card h3').first().waitFor();
-      assert.deepEqual(await sec.locator('.card h3').allInnerTexts(), ['Focus', 'Staying power', 'Games you started', 'Comebacks']);
+      // two columns that stack on their own: focus and the games started, staying power and comebacks
+      assert.deepEqual(await sec.locator('.card h3').allInnerTexts(), ['Focus', 'Games you started', 'Staying power', 'Comebacks']);
       const s = await S.ok('/stats/style?range=all');
       assert.match(await sec.locator('.ins-lead').first().innerText(), new RegExp(`^(Focused|Balanced|Varied): .*${s.focus.games_per_week} games a week`));
       clean(h);
