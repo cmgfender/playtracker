@@ -61,7 +61,7 @@ export async function stats(view, stale) {
     return;
   }
   view.innerHTML = `
-    <div class="page-h"><div><h1>Stats</h1><p title="Tracked = observed between syncs. Estimated = playtime from before tracking, dated from first/last played, achievements and release dates. Undated = no dates available (lifetime only).">Lifetime ${fmtHours(lt.total_minutes)}h · ${fmtHours(lt.tracked_minutes)}h tracked · ${fmtHours(lt.estimated_minutes || 0)}h estimated history · ${fmtHours(lt.baseline_minutes)}h undated</p></div>
+    <div class="page-h"><div><h1>Stats</h1><p title="Tracked = observed between syncs. Estimated = playtime from before tracking, dated from first/last played, achievements and release dates. Undated = no dates available (lifetime only).">${[`Lifetime ${fmtHours(lt.total_minutes)}h`, `${fmtHours(lt.tracked_minutes)}h tracked`, lt.estimated_minutes ? `${fmtHours(lt.estimated_minutes)}h estimated history` : '', lt.baseline_minutes ? `${fmtHours(lt.baseline_minutes)}h undated` : ''].filter(Boolean).join(' · ')}</p></div>
       <div class="row wrap"><a class="btn" href="/insights" data-link>${icon('insights')}Insights</a><a class="btn" href="/wrapped/${years[0]}" data-link>${icon('trail')}${years[0]} in review</a></div></div>
     <div class="toolbar"><div class="row wrap">
       <div class="row wrap" style="gap:8px">

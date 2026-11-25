@@ -57,7 +57,7 @@ export async function insights(view, stale) {
   const yearOpts = [...years.map((y) => [`year:${y}`, String(y)]), ['all', 'All time']];
   view.innerHTML = `${head}
     <div class="toolbar"><div class="row wrap">
-      <div class="row" style="gap:8px">
+      <div class="row wrap" style="gap:8px">
         <div class="seg" id="in-range" aria-label="Range">${RANGES.map(([v, l, sh]) => `<button data-r="${v}" class="${f.range === v ? 'on' : ''}" title="Last ${l}"><span class="lg">${l}</span><span class="sm">${sh}</span></button>`).join('')}</div>
         <select class="input" id="in-year" aria-label="Year" style="width:auto"><option value="">Year…</option>${yearOpts.map(([v, l]) => `<option value="${v}" ${f.range === v ? 'selected' : ''}>${l}</option>`).join('')}</select>
       </div>
