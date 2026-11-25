@@ -10,7 +10,6 @@ export default {
     [1991, 'Duke Nukem', 'main', { aka: ['Duke Nukum'] }],
     [1993, 'Duke Nukem II'],
     [1996, 'Duke Nukem 3D'],
-    [1996, 'Duke Nukem 3D: Atomic Edition', 'rerelease', { of: 'Duke Nukem 3D' }],
     [1998, 'Duke Nukem: Time to Kill', 'spinoff'],
     [1999, 'Duke Nukem: Zero Hour', 'spinoff'],
     [2000, 'Duke Nukem: Land of the Babes', 'spinoff'],

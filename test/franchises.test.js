@@ -249,3 +249,23 @@ describe('versions, betas and launchers', () => {
     assert.deepEqual(l.items.find((x) => x.id === 'resident-evil').your_era.name, 'The RE Engine era');
   });
 });
+
+describe('store titles', () => {
+  test('betas, bonus content, modes, platform builds, versions, episodes, brands and launchers land where they belong', async () => {
+    const { matchTitle } = await import('../src/services/franchises.js');
+    const at = (title, opts) => { const r = matchTitle(title, opts); return r && [r.franchise, r.how, r.entry ?? r.title ?? null]; };
+    assert.deepEqual(at('Halo Infinite - Insider'), ['halo', 'test', 'Halo Infinite']);
+    assert.deepEqual(at('Fallout 76 Public Test Server', { year: 2018 }), ['fallout', 'test', 'Fallout 76']);
+    assert.deepEqual(at('The Dark Pictures Anthology: Little Hope - Friend\'s Pass'), ['the-dark-pictures', 'bonus', 'The Dark Pictures Anthology: Little Hope']);
+    assert.deepEqual(at('DOOM Eternal (BATTLEMODE)', { year: 2020 }), ['doom', 'title', 'Doom Eternal']);
+    assert.deepEqual(at('Battlefield 2042 Xbox Series X|S', { year: 2021 }), ['battlefield', 'title', 'Battlefield 2042']);
+    assert.deepEqual(at('METAL GEAR SOLID 4: Guns of the Patriots - Master Collection Version', { year: 2026 }), ['metal-gear', 'version', 'Metal Gear Solid 4: Guns of the Patriots']);
+    assert.deepEqual(at('Resident Evil', { year: 2015 }), ['resident-evil', 'title', 'Resident Evil HD Remaster'], 'a later release under the name that is a curated version');
+    assert.deepEqual(at('FINAL FANTASY VII', { year: 2013, igdbName: 'Final Fantasy VII' }), ['final-fantasy', 'version', 'Final Fantasy VII'], 'a later release under the same name');
+    assert.deepEqual(at('Tales from the Borderlands - Episode 1: Zer0 Sum'), ['borderlands', 'title', 'Tales from the Borderlands']);
+    assert.deepEqual(at('EA SPORTS FIFA 17', { year: 2016 }), ['ea-sports-fc', 'title', 'FIFA 17']);
+    assert.deepEqual(at('Call of Duty®', { year: 2003, ids: ['steam:1938090'] }), ['call-of-duty', 'hub', 'Call of Duty'], 'the app, known by its Steam id');
+    assert.deepEqual(at('Call of Duty®', { year: 2023, igdbName: 'Call of Duty HQ' }), ['call-of-duty', 'hub', null], 'named after the series, years from the 2003 game');
+    assert.equal(matchTitle('A Game Of Its Own'), null);
+  });
+});

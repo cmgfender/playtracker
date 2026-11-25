@@ -3,7 +3,7 @@ export default {
   id: 'deus-ex', name: 'Deus Ex', aliases: ['Deus Ex'], prefix: ['deus ex'],
   eras: [
     ['Deus Ex', 'Ion Storm', "JC Denton's conspiracy and its sequel, made by Ion Storm"],
-    ['Deus Ex: Human Revolution', 'Eidos-Montréal', 'Adam Jensen, 25 years before the first game'],
+    ['Deus Ex: Human Revolution', 'Eidos-Montréal', "Adam Jensen's story, set decades before the first game"],
   ],
   entries: [
     [2000, 'Deus Ex'],

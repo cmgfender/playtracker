@@ -4,7 +4,7 @@ export default {
   eras: [
     ['Life Is Strange', 'Max and Chloe', 'Arcadia Bay: the first game and its prequel'],
     ['The Awesome Adventures of Captain Spirit', 'The Diaz brothers', "Sean and Daniel's road trip, and the Captain Spirit spin-off"],
-    ['Life Is Strange: True Colors', 'Later games', 'Alex Chen in Haven Springs, then Max returns at Caledon University'],
+    ['Life Is Strange: True Colors', 'Later games', "Alex Chen in Haven Springs, then Max Caulfield's return"],
   ],
   entries: [
     [2015, 'Life Is Strange'],

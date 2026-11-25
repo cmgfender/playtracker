@@ -3,7 +3,7 @@ export default {
   id: 'rollercoaster-tycoon', name: 'RollerCoaster Tycoon', aliases: ['RollerCoaster Tycoon'], prefix: ['rollercoaster tycoon', 'roller coaster tycoon'],
   eras: [
     ['RollerCoaster Tycoon', "Chris Sawyer's games", 'Isometric parks hand-coded by Chris Sawyer, and their re-releases'],
-    ['RollerCoaster Tycoon 3', 'Frontier', "Frontier's fully 3D parks, with rides you can ride"],
+    ['RollerCoaster Tycoon 3', 'Frontier', "Frontier's fully 3D parks, with a camera that rides the coasters"],
     ['RollerCoaster Tycoon 3D', 'Other studios', 'Handheld, PC and console games from other developers'],
   ],
   entries: [

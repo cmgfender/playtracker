@@ -3,7 +3,7 @@ export default {
   id: 'dead-island', name: 'Dead Island', aliases: ['Dead Island'], prefix: ['dead island', 'escape dead island'],
   eras: [
     ['Dead Island', 'Banoi and Palanai', "Techland's island games, their spin-offs and remasters"],
-    ['Dead Island 2', 'Hell-A', 'Los Angeles, made by Dambuster Studios'],
+    ['Dead Island 2', 'Los Angeles', 'Los Angeles, made by Dambuster Studios'],
   ],
   entries: [
     [2011, 'Dead Island'],

@@ -5,7 +5,7 @@ export default {
     ['Castle Wolfenstein', 'Muse Software', 'The Apple II stealth games that started the series'],
     ['Wolfenstein 3D', 'id Software', 'The first-person shooter is born: Wolfenstein 3D and Spear of Destiny'],
     ['Return to Castle Wolfenstein', 'Activision years', 'Gray Matter, Splash Damage and Raven bring the series back'],
-    ['Wolfenstein: The New Order', 'MachineGames', 'B.J. Blazkowicz against a Nazi-ruled world in the 1960s and 80s'],
+    ['Wolfenstein: The New Order', 'MachineGames', 'An alternate history in which the Nazis won the war'],
   ],
   entries: [
     [1981, 'Castle Wolfenstein'],
