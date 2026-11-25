@@ -110,16 +110,26 @@ test('a date added (or first unlock) after the last played date is no start: no 
   const span = (res) => Math.round((res.window[1] - res.window[0]) / DAY);
   assert.ok(span(plain) > 60, 'last played alone: spread over months');
   // bought 90 days after the last session (played on a shared copy before): not five 10 h days
-  for (const late of [{ dateAdded: T - 10 * DAY }, { anchors: [T - 50 * DAY, T - 40 * DAY, T - 30 * DAY] }]) {
-    const res = inferHistory({ ...e, ...late });
-    assert.equal(dated(res), 3000);
-    assert.deepEqual(res.window, plain.window, JSON.stringify(late));
-    assert.equal(res.confidence, 'low');
-    assert.deepEqual(res.reasons, ['Only the last played date is known']);
-  }
-  // the earlier of the two hints still counts when the other is too late
+  const bought = inferHistory({ ...e, dateAdded: T - 10 * DAY });
+  assert.equal(dated(bought), 3000);
+  assert.deepEqual(bought.window, plain.window);
+  assert.equal(bought.confidence, 'low');
+  assert.deepEqual(bought.reasons, ['Only the last played date is known']);
+  // unlocks after it are play after it: the last played date is stale (Xbox reports such dates
+  // for a title's other versions), so the history runs from that date to the last unlock - weeks
+  // of play, not days packed before the stale date or around the unlocks
+  const unlocks = inferHistory({ ...e, anchors: [T - 50 * DAY, T - 40 * DAY, T - 30 * DAY] });
+  assert.equal(dated(unlocks), 3000);
+  assert.ok(unlocks.window[0] >= new Date(T - 100 * DAY).setHours(0, 0, 0, 0) && unlocks.window[0] <= T - 100 * DAY);
+  assert.ok(unlocks.window[1] >= T - 31 * DAY && unlocks.window[1] <= T - 30 * DAY);
+  assert.equal(unlocks.confidence, 'medium');
+  assert.ok(unlocks.reasons.some((r) => /after the platform's last played date/.test(r)));
+  // one unlock after it: from the stale date to the unlock, not five 10 h days before the unlock
   const mixed = inferHistory({ ...e, anchors: [T - 50 * DAY], dateAdded: T - 150 * DAY });
-  assert.ok(mixed.window[0] >= new Date(T - 150 * DAY).setHours(0, 0, 0, 0) && mixed.window[1] <= T - 100 * DAY);
+  assert.equal(dated(mixed), 3000);
+  assert.ok(mixed.window[0] >= new Date(T - 150 * DAY).setHours(0, 0, 0, 0) && mixed.window[0] <= T - 100 * DAY);
+  assert.ok(mixed.window[1] >= T - 51 * DAY && mixed.window[1] <= T - 50 * DAY);
+  assert.ok(span(mixed) >= 50);
   // added later on the last played day itself: that day is the start
   const sameDay = inferHistory({ minutes: 300, trackingStart: T, lastPlayedAt: T - 100 * DAY, dateAdded: T - 100 * DAY + 3_600_000 });
   assert.equal(dated(sameDay), 300);

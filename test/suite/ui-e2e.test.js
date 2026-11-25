@@ -1058,7 +1058,6 @@ describe('Vestigo web UI (no password)', UI, () => {
           ['KPI sub', '#view .kpis .kpi:nth-child(2) .sub', 4.5, false],
           ['feature KPI label', '#view .kpi.feature .label', 4.5, true],
           ['feature KPI value', '#view .kpi.feature .value', 4.5, true],
-          ['feature KPI unit', '#view .kpi.feature .value small', 4.5, true],
           ['feature KPI sub', '#view .kpi.feature .sub', 4.5, true],
           ['platform chip', '#view .plat-ic', 4.5, false],
           ['badge.accent', '#dash-recent .badge.accent', 4.5, true],

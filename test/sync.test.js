@@ -152,6 +152,11 @@ test('auto-merge groups same game across platforms; duplicates flagged', () => {
   const dup2 = findDuplicates(db);
   assert.equal(dup2.double_counted.length, 1);
   assert.match(dup2.double_counted[0].reason, /twice on steam/);
+
+  // a copy holding no time (a 360 title beside the One one, a launcher beside the game) counts nothing twice
+  const hk = db.prepare("SELECT game_id FROM entries WHERE title = 'Hollow Knight'").get().game_id;
+  db.prepare("INSERT INTO entries(account_id, game_id, platform, ext_id, title, playtime_min, first_seen_at, last_synced_at) VALUES (NULL, ?, 'steam', 'import:old:hk', 'Hollow Knight', 5, 0, 0)").run(hk);
+  assert.equal(findDuplicates(db).double_counted.length, 1, 'only DOOM: 5 minutes beside 100 is no double count');
 });
 
 test('import: sessions are tracked, remainder is baseline, re-import is idempotent', () => {
