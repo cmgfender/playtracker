@@ -212,6 +212,15 @@ test('title normalisation and matching', () => {
   assert.equal(normalizeTitle('Final Fantasy VII'), 'final fantasy 7');
   assert.ok(matchScore(normalizeTitle('Hades'), normalizeTitle('Hades II')) < 0.8);
   assert.ok(matchScore(normalizeTitle('Hollow Knight'), normalizeTitle('Hollow Knight: Voidheart Edition')) >= 0.8);
+  // numbered entries are different games however the number is written: a roman numeral past ten,
+  // digits glued to the title, a superscript ("Merge all" would have merged these at 95%+)
+  for (const [a, b] of [['FINAL FANTASY XV WINDOWS EDITION', 'FINAL FANTASY XVI'], ['Borderlands', 'Borderlands4'], ['Geometry Wars Evolved', 'Geometry Wars Evolved²'],
+    ['Watch_Dogs', 'Watch Dogs2'], ['Super Meat Boy', 'Super Meat Boy 3D'], ['Final Fantasy XIII', 'Final Fantasy XIII-2']]) {
+    assert.ok(matchScore(normalizeTitle(a), normalizeTitle(b)) <= 0.5, `${a} / ${b}`);
+  }
+  // the same number written two ways is still the same game
+  assert.equal(matchScore(normalizeTitle('Borderlands 4'), normalizeTitle('Borderlands4')), 1);
+  assert.ok(matchScore(normalizeTitle('Final Fantasy XV'), normalizeTitle('FINAL FANTASY XV WINDOWS EDITION')) >= 0.95);
 });
 
 test('provider parsers', () => {

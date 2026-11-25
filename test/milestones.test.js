@@ -244,3 +244,12 @@ describe('milestones: an empty library', () => {
       [['achievements', 1, 0, 0], ['days', 10, 0, 0], ['games', 1, 0, 0], ['genres', 5, 0, 0], ['hours', 10, 0, 0], ['platforms', 2, 0, 0], ['series', 5, 0, 0], ['sessions', 50, 0, 0], ['year_hours', 100, 0, 0]]);
   });
 });
+
+test('a series milestone reads right whatever the series is called', async () => {
+  const { TEXT } = await import('../src/services/milestones.js');
+  assert.equal(TEXT.series_hours(100, 'Halo'), '100 hours in the Halo series');
+  assert.equal(TEXT.series_hours(250, 'The Legend of Zelda'), '250 hours in The Legend of Zelda series', 'no "the The"');
+  assert.equal(TEXT.series_games(10, 'The Elder Scrolls'), '10 games of The Elder Scrolls series');
+  assert.equal(TEXT.series_games(5, 'Tom Clancy’s'), '5 Tom Clancy’s games', 'a series named for its owner');
+  assert.equal(TEXT.series_hours(100, "Sid Meier's"), "100 hours of Sid Meier's games");
+});

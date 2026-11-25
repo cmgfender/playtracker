@@ -352,3 +352,25 @@ test('migration 12: a stored rarity of 0 becomes unknown; a played game is no wi
     assert.deepEqual(again.prepare('SELECT title, status FROM games ORDER BY id').all().map((r) => [r.title, r.status]), [['X', 'unset'], ['Wish', 'wishlist']], 'played: no wish');
   } finally { again.close(); fs.rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('migration 13: a GameTrack import\'s "Wanted" on a game an account holds is taken back; other wishes stay', async () => {
+  const { openDb, SCHEMA_VERSION } = await import('../src/db.js');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vg-mig13-'));
+  const file = path.join(dir, 'vestigo.db');
+  const db = openDb(file);
+  const IMPORT = 1_795_620_466_221;
+  db.prepare("INSERT INTO accounts(platform, name, config, created_at) VALUES ('steam', 'Steam', '{}', 0)").run();
+  const game = (title, updated) => Number(db.prepare("INSERT INTO games(title, norm_title, status, created_at, updated_at) VALUES (?, ?, 'wishlist', 0, ?)").run(title, title.toLowerCase(), updated).lastInsertRowid);
+  const entry = (gameId, account, ext, seen = 0) => db.prepare('INSERT INTO entries(account_id, game_id, platform, ext_id, title, playtime_min, first_seen_at, last_synced_at) VALUES (?, ?, ?, ?, ?, 0, ?, 0)')
+    .run(account, gameId, account ? 'steam' : 'xbox', ext, 'x', seen);
+  const owned = game('Owned On Steam', IMPORT); entry(owned, 1, '10');
+  const mine = game('Wished By Hand', IMPORT + 5000); entry(mine, 1, '11'); // set in Vestigo, after the import
+  const wish = game('A Real Wish', IMPORT); entry(wish, null, 'import:gametrack:a real wish', IMPORT);
+  db.exec('PRAGMA user_version = 12'); db.close();
+  const again = openDb(file);
+  try {
+    assert.equal(again.prepare('PRAGMA user_version').get().user_version, SCHEMA_VERSION);
+    assert.deepEqual(again.prepare('SELECT title, status FROM games ORDER BY id').all().map((r) => [r.title, r.status]),
+      [['Owned On Steam', 'unset'], ['Wished By Hand', 'wishlist'], ['A Real Wish', 'wishlist']]);
+  } finally { again.close(); fs.rmSync(dir, { recursive: true, force: true }); }
+});

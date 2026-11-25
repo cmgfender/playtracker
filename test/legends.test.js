@@ -191,6 +191,8 @@ describe('legends in a library', () => {
     assert.deepEqual([now_.id, now_.to], [2, null]);
     const l = await h.get('/legends');
     assert.deepEqual(l.eras.map((x) => [x.kind, x.id, x.name, x.games, x.minutes, x.from, x.to]), [['era', '1', 'College', 3, 1260, 2011, 2013], ['era', '2', 'These days', 4, 1660, 2025, 2026]]);
+    // what was unlocked in an era is counted on its card too (often all an older console left of it)
+    for (const x of l.eras) assert.ok(Number.isInteger(x.unlocks) && Number.isInteger(x.unlock_games) && x.unlock_games <= x.unlocks, JSON.stringify(x));
     const s = await h.get('/legends/era/1');
     assert.deepEqual([s.name, s.tagline, s.window, s.totals.games, s.totals.minutes], ['College', 'Dorm room, shared 360', { from: '2011-01-01', to: '2014-05-31' }, 3, 1260]);
     assert.deepEqual(s.chapters.map((c) => c.id), ['began', 'peak', 'defined', 'reach', 'new', 'now']);

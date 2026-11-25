@@ -219,6 +219,7 @@ export async function settings(view, stale) {
       ${li(r.anchors, `${r.anchors.toLocaleString()} achievement, trophy and diary times date history${r.anchored_entries ? ` of ${r.anchored_entries} games` : ''}`)}
       ${li(r.achievements_imported, `${r.achievements_imported.toLocaleString()} achievements and trophies added to games that had none listed yet`)}
       ${li(r.statuses || r.ratings || r.covers, `${r.statuses} statuses, ${r.ratings} ratings, ${r.covers} covers filled in where empty`)}
+      ${li(r.matches, `${r.matches} game${r.matches === 1 ? '' : 's'} matched to the IGDB entry GameTrack has ${r.matches === 1 ? 'for it' : 'for them'} (details arrive with the next IGDB lookup)`)}
       ${li(r.wishlist_added, `${r.wishlist_added} wish-listed games added`)}
       ${li(r.skipped_no_playtime, `<span class="muted">${r.skipped_no_playtime} games you own in GameTrack but never played, and that are not here, left out</span>`)}
     </ul>${r.dry_run ? '<div class="small muted" style="margin-top:6px">Importing saves a copy of your library first (Backups, below), and importing the same file again changes nothing.</div>' : r.backup ? `<div class="small muted" style="margin-top:6px">A copy of your library from just before was saved: ${esc(r.backup)} (Backups, below).</div>` : ''}`;

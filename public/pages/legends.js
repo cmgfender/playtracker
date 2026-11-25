@@ -15,6 +15,10 @@ const dayTime = (k) => new Date(`${k}T12:00`).getTime();
 const monthYear = (k) => fmtDate(dayTime(k), { month: 'long', year: 'numeric' });
 const platName = (c) => (c.kind === 'platform' ? plat(c.id).label : c.name);
 
+// an era's games: the ones with time in it, and what was unlocked then (often all an older console left)
+const eraGames = (c) => [c.played || !c.unlocks ? plural(c.played, 'game') : null,
+  c.unlocks ? `${c.unlocks.toLocaleString()} ${c.unlocks === 1 ? 'achievement' : 'achievements'} in ${plural(c.unlock_games, 'game')}` : null].filter(Boolean).join(' · ');
+
 /** A legend's card: up to three covers, its name, what it is, and how much of your time is in it. */
 function card(c) {
   const covers = (c.covers || []).slice(0, 3);
@@ -26,7 +30,7 @@ function card(c) {
     <div class="fr-body">
       <div class="row between" style="gap:8px"><span class="ttl">${esc(platName(c))}</span><b class="nowrap">${c.minutes ? hours(c.minutes) : ''}</b></div>
       ${when ? `<div class="tiny muted lg-tag">${esc(when)}</div>` : ''}
-      <div class="sub">${c.kind === 'series' && c.mainline ? `${c.mainline.played} of ${plural(c.mainline.total, 'main game')} played` : plural(c.kind === 'era' ? c.played : c.games, 'game')}${c.kind !== 'era' && span(c.from, c.to) ? ` · played ${span(c.from, c.to)}` : ''}</div>
+      <div class="sub">${c.kind === 'series' && c.mainline ? `${c.mainline.played} of ${plural(c.mainline.total, 'main game')} played` : c.kind === 'era' ? eraGames(c) : plural(c.games, 'game')}${c.kind !== 'era' && span(c.from, c.to) ? ` · played ${span(c.from, c.to)}` : ''}</div>
       ${c.top ? `<div class="tiny muted ellipsis">Most of all: ${esc(c.top)}</div>` : c.your_era ? `<div class="tiny muted ellipsis">Your era: ${esc(c.your_era)}</div>` : ''}
     </div></a>`;
 }

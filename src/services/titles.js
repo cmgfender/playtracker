@@ -14,6 +14,9 @@ const PLATFORM_TAGS = [
 const EDITION_SUFFIX = /[\s:–—-]+(?:the\s+)?(?:game of the year|goty|deluxe|digital deluxe|standard|complete|ultimate|gold|premium|definitive|enhanced|anniversary|legendary|special|collector'?s|director'?s cut|launch|day one|cross-gen|bundle)(?:\s+(?:edition|version|bundle|cut))?\s*$/;
 
 const ROMAN = { ii: 2, iii: 3, iv: 4, v: 5, vi: 6, vii: 7, viii: 8, ix: 9, x: 10 };
+// past ten a roman numeral is only read when two titles are compared (never rewritten: stored titles keep their form)
+const ROMAN_HIGH = { xi: 11, xii: 12, xiii: 13, xiv: 14, xv: 15, xvi: 16, xvii: 17, xviii: 18, xix: 19, xx: 20 };
+const ROMAN_HIGH_RE = /(?<![\p{L}\p{N}\p{M}])(?:xi|xii|xiii|xiv|xv|xvi|xvii|xviii|xix|xx)(?![\p{L}\p{N}\p{M}])/gu;
 
 export function normalizeTitle(title) {
   let t = String(title || '')
@@ -82,7 +85,9 @@ function numbers(t) {
   let n = numberCache.get(t);
   if (n === undefined) {
     if (numberCache.size > 200_000) numberCache.clear();
-    numberCache.set(t, n = (t.match(/\b\d+\b/g) || []).sort().join(' '));
+    // digits wherever they sit ("borderlands4", "evolved²" spelled "evolved2", "3d"), and the roman
+    // numerals past ten, which normalisation leaves as letters ("final fantasy xv" / "xvi")
+    numberCache.set(t, n = [...(t.match(/\d+/g) || []), ...(t.match(ROMAN_HIGH_RE) || []).map((r) => String(ROMAN_HIGH[r]))].sort().join(' '));
   }
   return n;
 }

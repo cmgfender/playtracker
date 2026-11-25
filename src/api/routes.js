@@ -941,7 +941,7 @@ export function registerRoutes(r, app) {
     tag: 'stats',
     returns: '{ career, eras: [...], series: [...] (the top 8; series_total in all, the rest under GET /franchises), makers, generations (oldest first), trends, platforms }, each a card: '
       + '{ kind: series|maker|generation|trend|platform|era|career, id, name, tagline?, games, played, minutes (history included), from, to (the years you played it), top (its most played game), covers: [url], '
-      + 'from_day?, to_day? (an era, a generation), note? (an era), peak?: { from, to } (the years a trend was at its height) }',
+      + 'from_day?, to_day? (an era, a generation), note?, unlocks?, unlock_games? (an era: achievements unlocked in it and the games they are in), peak?: { from, to } (the years a trend was at its height) }',
   });
   r.get('/api/v1/legends/:kind/:id', (c) => {
     const l = legend(db, settings, c.params.kind, c.params.id);
@@ -1316,7 +1316,10 @@ export function registerRoutes(r, app) {
     if (!isZip(buf)) throw new HttpError(400, 'Upload the GameTrack export .zip (Settings → Export in GameTrack)');
     const tables = gameTrackTables(readZip(buf));
     const backup = await copyBeforeImport(c);
-    return { ...preview(c, () => importGameTrack(db, tables, { settings: settings.all() })), ...(backup ? { backup: backup.name } : {}) };
+    const out = preview(c, () => importGameTrack(db, tables, { settings: settings.all() }));
+    // games given GameTrack's IGDB entry: their details are fetched now, not at the next hourly check
+    if (out.matches && !out.dry_run) app.igdb?.kick?.();
+    return { ...out, ...(backup ? { backup: backup.name } : {}) };
   }, { query: { dry_run: 'true = preview only' }, summary: 'Import a GameTrack export ZIP: unlock times date synced history, untracked hours become history, statuses/ratings/covers fill gaps. A copy of the library is saved first (backups/vestigo-before-import-…, the newest 3 kept); if it cannot be, nothing is imported', body: 'the .zip file (Content-Type: application/zip)', bodyType: ['application/zip'], bigBody: true, binary: true });
 
   r.get('/api/v1/export', async (c) => {

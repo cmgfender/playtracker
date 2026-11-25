@@ -367,3 +367,53 @@ test('GameTrack\'s "Wanted" on a game played since is no wish: the status is lef
   assert.equal(status('Not Yet Bought'), 'wishlist');
   assert.ok(entries.steam);
 });
+
+test('GameTrack\'s "Wanted" on a game an account here already holds is no wish either (owned, never started)', () => {
+  const { db, settings } = library();
+  const t = (rows) => parseCsv(csv(rows), { commaOnly: true });
+  db.prepare('UPDATE entries SET playtime_min = 0 WHERE ext_id = ?').run('620'); // in the Steam library, no time yet
+  importGameTrack(db, {
+    games: t([['uuid', 'title', 'status', 'hours_played', 'owned_platform'], ['P', 'Portal 2', 'Wanted', '0', 'PC']]),
+    steam_games: t([['game_uuid', 'appid', 'name', 'playtime_forever'], ['P', '620', 'Portal 2', '0']]),
+  }, { settings, now: NOW });
+  assert.equal(db.prepare("SELECT status FROM games WHERE title = 'Portal 2'").get().status, 'unset');
+});
+
+test('GameTrack\'s IGDB ids: taken for games the import brings and where IGDB found nothing; never over a Steam-id or hand-made match', () => {
+  const { db, settings } = library();
+  const t = (rows) => parseCsv(csv(rows), { commaOnly: true });
+  const gameId = (title) => db.prepare('SELECT id FROM games WHERE title = ?').get(title).id;
+  const meta = (title) => db.prepare('SELECT igdb_id, matched_by, locked, fetched_at, name FROM game_meta WHERE game_id = ?').get(gameId(title)) || null;
+  const setMeta = (title, igdbId, by, locked = 0) => db.prepare("INSERT INTO game_meta(game_id, igdb_id, matched_by, locked, name, fetched_at, tries) VALUES (?, ?, ?, ?, 'Old', ?, 1)").run(gameId(title), igdbId, by, locked, NOW);
+  setMeta('Portal 2', 72, 'steam');          // matched by its Steam id: stays
+  setMeta('Halo Infinite', null, 'none');    // IGDB found nothing by the title: GameTrack's id fills in
+  setMeta('Bloodborne', 7334, 'manual', 1);  // set by hand: stays
+  const tables = {
+    games: t([['uuid', 'igdb_id', 'title', 'status', 'hours_played', 'owned_platform'],
+      ['P', '999', 'Portal 2', '', '15', 'PC'], ['H', '103281', 'Halo Infinite', '', '12', 'XSX'], ['B', '111', 'Bloodborne', '', '50', 'PS4'],
+      ['F', '92550', 'Fable', 'Wanted', '0', 'Series X'], ['M', '314272', 'Masters of Albion', '', '0.5', 'PC'], ['N', '', 'No Id Game', 'Wanted', '0', 'PC'], ['Z', 'abc', 'Bad Id Game', 'Wanted', '0', 'PC']]),
+    steam_games: t([['game_uuid', 'appid', 'name', 'playtime_forever'], ['P', '620', 'Portal 2', '900']]),
+    xbox_games: t([['game_uuid', 'title_id', 'modern_title_id', 'name'], ['H', '2043073184', '2043073184', 'Halo Infinite']]),
+    playstation_games: t([['game_uuid', 'title_id', 'np_communication_id', 'name', 'play_duration'], ['B', 'CUSA00207', 'NPWR08661_00', 'Bloodborne', '50']]),
+  };
+  const r = importGameTrack(db, tables, { settings, now: NOW });
+  assert.equal(r.matches, 3, 'Halo Infinite, Fable, Masters of Albion');
+  assert.deepEqual([meta('Portal 2').igdb_id, meta('Portal 2').matched_by], [72, 'steam']);
+  assert.deepEqual([meta('Bloodborne').igdb_id, meta('Bloodborne').matched_by], [7334, 'manual']);
+  // details wait for the next IGDB pass (fetched_at 0), and nothing stale is kept meanwhile
+  assert.deepEqual({ ...meta('Halo Infinite') }, { igdb_id: 103281, matched_by: 'import', locked: 0, fetched_at: 0, name: null });
+  assert.deepEqual([meta('Fable').igdb_id, meta('Fable').matched_by], [92550, 'import'], 'the game picked in GameTrack, not what its title alone finds');
+  assert.deepEqual([meta('Masters of Albion').igdb_id, meta('Masters of Albion').matched_by], [314272, 'import']);
+  assert.equal(meta('No Id Game'), null);
+  assert.equal(meta('Bad Id Game'), null);
+  // a title match on a game the import itself brought gives way to the id picked in GameTrack...
+  db.prepare("UPDATE game_meta SET igdb_id = 521, matched_by = 'title', name = 'Fable', fetched_at = ? WHERE game_id = ?").run(NOW, gameId('Fable'));
+  // ...but not on a game an account tracks (GameTrack matched those by title too)
+  db.prepare("UPDATE game_meta SET igdb_id = 5, matched_by = 'title', name = 'Halo Infinite', fetched_at = ? WHERE game_id = ?").run(NOW, gameId('Halo Infinite'));
+  const again = importGameTrack(db, tables, { settings, now: NOW });
+  assert.equal(again.matches, 1);
+  assert.equal(meta('Fable').igdb_id, 92550);
+  assert.equal(meta('Halo Infinite').igdb_id, 5);
+  // a third import has nothing left to change
+  assert.equal(importGameTrack(db, tables, { settings, now: NOW }).matches, 0);
+});

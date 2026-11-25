@@ -316,7 +316,7 @@ export function lifetime(db) {
     const tot = db.prepare(`SELECT
         COALESCE(SUM(CASE WHEN excluded = 0 THEN playtime_min END), 0) total,
         COUNT(DISTINCT game_id) games,
-        COUNT(DISTINCT CASE WHEN playtime_min > 0 AND excluded = 0 THEN game_id END) played
+        COUNT(DISTINCT CASE WHEN excluded = 0 AND (playtime_min > 0 OR last_played_at IS NOT NULL) THEN game_id END) played
       FROM entries`).get();
     const kinds = db.prepare('SELECT s.kind, COALESCE(SUM(s.minutes),0) m, COUNT(*) n FROM sessions s JOIN entries e ON e.id = s.entry_id WHERE e.excluded = 0 GROUP BY s.kind').all();
     const k = Object.fromEntries(kinds.map((x) => [x.kind, x]));

@@ -3,6 +3,12 @@ import { esc, fmtMin, plat, platDot, cover, icon, api, toast, undoToast, fail, c
 // =====================================================================
 // Duplicates
 // =====================================================================
+// the long lists open short (a big library has hundreds of rows); what you opened stays open while you work down it
+const FIRST = 20;
+const shown = { merge: false, cross: false };
+const capped = (rows, key, what) => (shown[key] || rows.length <= FIRST + 5 ? rows.join('')
+  : `${rows.slice(0, FIRST).join('')}<div class="item" style="justify-content:center"><button class="btn sm ghost" data-open="${key}">Show all ${rows.length.toLocaleString()} ${what}</button></div>`);
+
 export async function duplicates(view, stale) {
   const d = await api('/duplicates');
   if (stale()) return;
@@ -21,20 +27,22 @@ export async function duplicates(view, stale) {
       </div>
       <div class="card"><div class="card-h"><h2>Merge suggestions <span class="badge ${d.counts.suggestions ? 'accent' : ''}">${d.counts.suggestions.toLocaleString()}</span></h2>${d.suggestions.length > 1 ? '<button class="btn sm" id="merge-all">Merge all ≥ 95%</button>' : ''}</div>
         <p class="small muted" style="margin-top:-6px">Similar titles that weren’t grouped automatically (editions, subtitles, platform tags).${d.counts.suggestions > d.suggestions.length ? ` Showing the ${d.suggestions.length} strongest — resolve some and more appear.` : ''}</p>
-        <div class="list">${d.suggestions.map((x) => `<div class="item" style="flex-wrap:wrap;gap:14px">
+        <div class="list">${capped(d.suggestions.map((x) => `<div class="item" style="flex-wrap:wrap;gap:14px">
           ${gameCard(x.games[0])}<span class="badge">${Math.round(x.score * 100)}%</span>${gameCard(x.games[1])}
-          <div class="row"><button class="btn sm primary" data-merge="${x.games[0].id}:${x.games[1].id}">${icon('merge')}Merge</button><button class="btn sm ghost" data-dismiss="${esc(x.key)}">Not the same</button></div></div>`).join('') || '<p class="muted">No suggestions.</p>'}</div>
+          <div class="row"><button class="btn sm primary" data-merge="${x.games[0].id}:${x.games[1].id}">${icon('merge')}Merge</button><button class="btn sm ghost" data-dismiss="${esc(x.key)}">Not the same</button></div></div>`), 'merge', 'suggestions') || '<p class="muted">No suggestions.</p>'}</div>
       </div>
       <div class="card"><div class="card-h"><h2>Owned on multiple platforms <span class="badge">${d.counts.cross_platform.toLocaleString()}</span></h2></div>
         ${d.counts.cross_platform > d.cross_platform.length ? `<p class="small muted" style="margin-top:-6px">Showing the first ${d.cross_platform.length}.</p>` : ''}
-        <div class="list">${d.cross_platform.map((x) => `<a class="item" href="/game/${x.game.id}" data-link>${cover(x.game)}<div class="grow"><div class="ttl ellipsis">${esc(x.game.title)}</div><div class="sub">${x.entries.map((e) => `<span style="${e.excluded ? 'text-decoration:line-through;opacity:.6' : ''}">${platDot(e.platform)} ${esc(e.account_name || plat(e.platform).label)} ${fmtMin(e.playtime_min)}</span>`).join(' &nbsp;')}</div></div></a>`).join('') || '<p class="muted">No games are grouped across platforms yet.</p>'}</div>
+        <div class="list">${capped(d.cross_platform.map((x) => `<a class="item" href="/game/${x.game.id}" data-link>${cover(x.game)}<div class="grow"><div class="ttl ellipsis">${esc(x.game.title)}</div><div class="sub">${x.entries.map((e) => `<span style="${e.excluded ? 'text-decoration:line-through;opacity:.6' : ''}">${platDot(e.platform)} ${esc(e.account_name || plat(e.platform).label)} ${fmtMin(e.playtime_min)}</span>`).join(' &nbsp;')}</div></div></a>`), 'cross', 'games') || '<p class="muted">No games are grouped across platforms yet.</p>'}</div>
       </div>
     </div>`;
   view.addEventListener('click', async (e) => {
-    const b = e.target.closest('[data-merge],[data-dismiss],[data-exclude],#merge-all');
+    const b = e.target.closest('[data-merge],[data-dismiss],[data-exclude],[data-open],#merge-all');
     if (!b) return;
     try {
-      if (b.dataset.merge) {
+      if (b.dataset.open) {
+        shown[b.dataset.open] = true;
+      } else if (b.dataset.merge) {
         const [a, c] = b.dataset.merge.split(':').map(Number);
         const ga = d.suggestions.flatMap((x) => x.games).find((g) => g.id === a);
         const gc = d.suggestions.flatMap((x) => x.games).find((g) => g.id === c);
