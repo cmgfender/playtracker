@@ -175,6 +175,7 @@ const P = {
   offline: '<path d="M2 2l20 20M8.5 16.4a5 5 0 0 1 7 0M5 12.9a10 10 0 0 1 4.2-2.4M19 12.9a10 10 0 0 0-2.3-1.6M1.4 9a15 15 0 0 1 4.5-2.9M22.6 9A15 15 0 0 0 10.7 5.1M12 20h.01"/>',
   // Insights: a trend over an axis (Stats is plain bars)
   insights: '<path d="M3 3v18h18"/><path d="m7 15 4-4 3 3 5-6"/>',
+  book: '<path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H20v15H6.5A2.5 2.5 0 0 0 4 20.5z"/><path d="M4 20.5A2.5 2.5 0 0 0 6.5 23H20v-5"/><path d="M9 8h6"/>',
   trophy: '<path d="M8 21h8M12 17v4M7 4h10v5a5 5 0 0 1-10 0z"/><path d="M17 5h3a3 3 0 0 1-3 4M7 5H4a3 3 0 0 0 3 4"/>',
   lock: '<rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/>',
   keyboard: '<rect x="2" y="6" width="20" height="12" rx="2"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M7 14h10"/>',
@@ -417,7 +418,7 @@ const NAV = [
   { path: '/insights', label: 'Insights', icon: 'insights', group: 'Track' },
   { path: '/wrapped', href: () => `/wrapped/${state.latestYear}`, label: 'Year in review', icon: 'trail', group: 'Track' },
   { path: '/milestones', label: 'Milestones', icon: 'trophy', group: 'Track' },
-  { path: '/franchises', label: 'Franchises', icon: 'grid', group: 'Track' },
+  { path: '/legends', label: 'Legends', icon: 'book', group: 'Track' },
   { path: '/duplicates', label: 'Duplicates', icon: 'dupes', group: 'Tidy up', badge: 'dupes' },
   { path: '/history', label: 'Improve history', icon: 'history', group: 'Tidy up' },
   { path: '/accounts', label: 'Accounts', icon: 'accounts', group: 'Setup' },
@@ -442,7 +443,7 @@ function current() {
   return location.pathname.replace(/\/+$/, '') || '/';
 }
 
-const navActive = (p, path) => (path === '/' ? p === '/' : path === '/more' ? !NAV.filter((n) => n.tab).some((n) => navActive(p, n.path)) : p.startsWith(path) || (path === '/library' && p.startsWith('/game')));
+const navActive = (p, path) => (path === '/' ? p === '/' : path === '/more' ? !NAV.filter((n) => n.tab).some((n) => navActive(p, n.path)) : p.startsWith(path) || (path === '/library' && p.startsWith('/game')) || (path === '/legends' && (p.startsWith('/legend/') || p.startsWith('/franchise'))));
 
 /** Move the highlight in the sidebar and tab bar (the shell stays: rebuilding it would drop focus and the leaving view). */
 function markNav(p) {
@@ -502,7 +503,7 @@ function syncShell() {
 
 // tab titles; game and wrapped pages set their own once they know the title / year
 const PAGE_TITLES = {
-  dashboard: '', library: 'Library', game: '', sessions: 'Sessions', stats: 'Stats', insights: 'Insights', milestones: 'Milestones', franchises: 'Franchises', franchise: '', duplicates: 'Duplicates', history: 'Improve history',
+  dashboard: '', library: 'Library', game: '', sessions: 'Sessions', stats: 'Stats', insights: 'Insights', milestones: 'Milestones', legends: 'Legends', legend: '', franchises: 'Series', franchise: '', duplicates: 'Duplicates', history: 'Improve history',
   accounts: 'Accounts', settings: 'Settings', apidocs: 'API', system: 'System', more: 'More',
 };
 
@@ -515,7 +516,10 @@ const ROUTES = [
   [/^\/insights$/, 'insights'],
   [/^\/wrapped\/(\d{4})$/, 'wrapped'],
   [/^\/milestones$/, 'milestones'],
-  [/^\/franchises$/, 'franchises'],
+  [/^\/legends$/, 'legends'],
+  [/^\/legend\/([a-z]+)\/([^/]+)$/, 'legend'],
+  [/^\/legends\/series$/, 'franchises'],
+  [/^\/franchises$/, 'franchises'], // (before Legends: the list of series, and a series)
   [/^\/franchise\/([^/]+)$/, 'franchise'],
   [/^\/duplicates$/, 'duplicates'],
   [/^\/accounts$/, 'accounts'],
@@ -952,7 +956,7 @@ export function palette() {
         const gameItem = (g) => ({ game: g, label: g.title, sub: `${g.platforms.map(platDot).join('')}${g.minutes ? fmtMin(g.minutes, { short: g.minutes >= 600 }) : 'Unplayed'}${g.status !== 'unset' ? ` · ${esc(STATUSES[g.status]?.label || '')}` : ''}` });
         // the series of your games that match by name (Halo, Final Fantasy): their franchise pages
         const series = q.length >= 2 ? api(`/franchises?${new URLSearchParams({ q, limit: '3' })}`).then((r) => r.items).catch(() => []) : Promise.resolve([]);
-        const seriesItem = (f) => ({ label: f.name, icon: 'grid', href: `/franchise/${encodeURIComponent(f.id)}`, sub: `Series · ${plural(f.games, 'game')} of yours${f.minutes ? ` · ${fmtMin(f.minutes, { short: f.minutes >= 600 })}` : ''}` });
+        const seriesItem = (f) => ({ label: f.name, icon: 'grid', href: `/legend/series/${encodeURIComponent(f.id)}`, sub: `Series · ${plural(f.games, 'game')} of yours${f.minutes ? ` · ${fmtMin(f.minutes, { short: f.minutes >= 600 })}` : ''}` });
         pending = Promise.all([api(`/games?${new URLSearchParams({ ...(q ? { q } : {}), limit: '6', hidden: 'all', sort: 'recent' })}`), series]).then(([r, fr]) => {
           if (my !== seq || !el.isConnected) return;
           draw([{ id: 'games', title: q ? 'Games' : 'Recently played', items: r.items.map(gameItem) }, { id: 'series', title: 'Series', items: fr.map(seriesItem) }, { id: 'pages', title: 'Pages', items: pagesHit }, { id: 'actions', title: 'Actions', items: actionsHit }]);
