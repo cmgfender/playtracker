@@ -13,6 +13,7 @@ import { importRows, exportChunks, parseCsv } from '../services/importer.js';
 import { manualEntry, mergeGames, pruneEmptyGames, splitEntry, findOrCreateGame, cleanTitle } from '../services/library.js';
 import { normalizeTitle } from '../services/titles.js';
 import { reinferMany, reinferPending, relearnStyle, styleOf, INFER_VERSION } from '../services/inference.js';
+import { historyContext, periodStart } from '../services/histcontext.js';
 import { flushRollups } from '../services/rollup.js';
 import { applyLicenses } from '../services/licenses.js';
 import { readZip, isZip } from '../services/zip.js';
@@ -312,17 +313,44 @@ export function registerRoutes(r, app) {
     const title = typeof c.body.title === 'string' ? c.body.title.trim() : '';
     if (!title) throw new HttpError(400, 'title is required');
     const coverUrl = textField(c.body, 'cover_url');
+    // where it was played (a console without an account here: "Nintendo 64")
+    const playedOn = textField(c.body, 'played_on')?.trim().slice(0, 60) || null;
+    // the hours played before it was added, and roughly when: dated like a platform's history
+    let past = null;
+    if (c.body.history != null) {
+      const x = c.body.history;
+      if (typeof x !== 'object' || Array.isArray(x)) throw new HttpError(400, 'history must be { minutes, first_played_at?, last_played_at?, coarse? }');
+      const minutes = Number(x.minutes);
+      if (!Number.isInteger(minutes) || minutes < 0 || minutes > 10_000_000) throw new HttpError(400, 'history.minutes must be a whole number of minutes, 0 or more');
+      const start = timeField(x, 'first_played_at');
+      const end = timeField(x, 'last_played_at');
+      if (start && end && end < start) throw new HttpError(400, 'history.last_played_at must be after history.first_played_at');
+      if (minutes > 0) past = { minutes, start, end, coarse: x.coarse === true };
+    }
     const now = Date.now();
     const id = tx(db, () => {
       const gid = c.body.merge === false
         ? Number(db.prepare('INSERT INTO games(title, norm_title, cover_url, created_at, updated_at) VALUES (?, ?, ?, ?, ?)').run(cleanTitle(title), normalizeTitle(title), coverUrl, now, now).lastInsertRowid)
         : findOrCreateGame(db, { title, coverUrl }, { autoMerge: true, now });
-      manualEntry(db, gid, now);
+      const e = manualEntry(db, gid, now);
+      if (playedOn) db.prepare("UPDATE entries SET meta = json_set(COALESCE(NULLIF(meta, ''), '{}'), '$.played_on', ?) WHERE id = ?").run(playedOn, e.id);
+      if (past) {
+        const h = JSON.parse(e.hist || '{}');
+        h.tracking_start ??= e.first_seen_at;
+        if (past.start || past.end) h.manual = { start: past.start || undefined, end: past.end || undefined, ...(past.coarse ? { coarse: true } : {}) };
+        db.prepare('UPDATE entries SET hist = ?, baseline_min = baseline_min + ?, playtime_min = playtime_min + ? WHERE id = ?').run(JSON.stringify(h), past.minutes, past.minutes, e.id);
+        flushRollups(db);
+        reinferMany(db, [e.id], { settings: settings.all() });
+        flushRollups(db);
+      }
       if (c.body.status && STATUSES.includes(c.body.status)) db.prepare('UPDATE games SET status = ? WHERE id = ?').run(c.body.status, gid);
       return gid;
     });
     return getGame(id);
-  }, { summary: 'Add a game manually (Switch, retro, …)', body: '{ title, cover_url?, status?, merge? }' });
+  }, {
+    summary: 'Add a game manually (Switch, retro, …)',
+    body: '{ title, cover_url?, status?, merge?, played_on? (where: "Nintendo 64"), history?: { minutes (played before adding it), first_played_at?, last_played_at?, coarse? (a period: spread evenly) } }',
+  });
 
   function getGame(id) {
     const base = db.prepare('SELECT * FROM games WHERE id = ?').get(id);
@@ -340,6 +368,8 @@ export function registerRoutes(r, app) {
     const entries = rows
       .map((e) => {
         const h = JSON.parse(e.hist || '{}');
+        // the dates it can be told from, and where your dates disagree with them
+        const ctx = e.baseline_min > 0 ? historyContext(db, e.id) : null;
         return {
           id: e.id, account_id: e.account_id, account_name: e.account_name, platform: e.platform, ext_id: e.ext_id, title: e.title, icon_url: e.icon_url, cover_url: e.cover_url,
           playtime_min: e.playtime_min, last_played_at: e.last_played_at, first_played_at: e.first_played_at, play_count: e.play_count,
@@ -351,6 +381,8 @@ export function registerRoutes(r, app) {
             evidence: { first_played_at: h.first_played_at || null, last_played_at: h.last_played_at || null, play_count: h.play_count || null, recent_min: h.recent_min || null, date_added: h.date_added || null, release_at: h.release_at || null, anchors: (h.anchors || []).length },
             manual: h.manual || null, mode: h.mode || 'auto', enriched: !!e.enriched_at,
             ...(h.inference || {}),
+            marks: ctx.marks, unlocks_before: ctx.unlocks.before_tracking, conflicts: ctx.conflicts, acknowledged: !!ctx.manual?.acknowledged,
+            coarse: !!ctx.manual?.coarse, enrich_pending: ctx.enrich_pending,
           } : null,
           achievements: ach.get(e.id) ?? null,
         };
@@ -949,7 +981,7 @@ export function registerRoutes(r, app) {
     const q = String(c.query.q || '').trim();
     if (!q) throw new HttpError(400, 'q is required');
     return igdbCall(() => igdb().lookup(q));
-  }, { summary: 'Search IGDB by title (to pick a match by hand)', query: { q: 'title' }, returns: '[{ id, name, year, main, url }]' });
+  }, { summary: 'Search IGDB by title (to pick a match by hand, or a game to add)', query: { q: 'title' }, returns: '[{ id, name, year, release_date (ms), platforms (short names), cover_url, thumb_url, main, url }]' });
   r.put('/api/v1/games/:id/meta', (c) => {
     const id = toInt(c.params.id);
     if (!db.prepare('SELECT 1 FROM games WHERE id = ?').get(id)) throw new HttpError(404, 'Game not found');
@@ -1369,8 +1401,17 @@ export function registerRoutes(r, app) {
     const id = toInt(c.params.id);
     const e = db.prepare('SELECT * FROM entries WHERE id = ?').get(id);
     if (!e) throw new HttpError(404, 'Entry not found');
-    if (!e.baseline_min) throw new HttpError(400, 'This entry has no pre-tracking history');
     const b = c.body;
+    // a game you added by hand: the hours you played before adding it are its history (set, or
+    // changed, here); platforms report theirs
+    const byHand = e.account_id == null && e.platform === 'manual';
+    let minutes = null;
+    if ('minutes' in b) {
+      if (!byHand) throw new HttpError(400, 'Only a game added by hand takes hours played before it was added: platforms report their own');
+      minutes = Number(b.minutes);
+      if (!Number.isInteger(minutes) || minutes < 0 || minutes > 10_000_000) throw new HttpError(400, 'minutes must be a whole number of minutes, 0 or more');
+    }
+    if (!e.baseline_min && !(minutes > 0)) throw new HttpError(400, 'This entry has no pre-tracking history');
     const h = JSON.parse(e.hist || '{}');
     if ('mode' in b) { if (!['auto', 'undated'].includes(b.mode)) throw new HttpError(400, 'mode must be auto or undated'); h.mode = b.mode; }
     if ('first_played_at' in b || 'last_played_at' in b) {
@@ -1378,9 +1419,21 @@ export function registerRoutes(r, app) {
       const start = timeField(b, 'first_played_at');
       const end = timeField(b, 'last_played_at');
       if (start && end && end < start) throw new HttpError(400, 'last_played_at must be after first_played_at');
-      h.manual = start || end ? { start: start || undefined, end: end || undefined } : null;
+      // coarse: answered as a period ("mostly 2018"), spread evenly over it - from the release
+      // on, when the period began before the game came out
+      const from = b.coarse === true ? periodStart(db, e, h, start, end) : start;
+      h.manual = from || end ? { start: from || undefined, end: end || undefined, ...(b.coarse === true ? { coarse: true } : {}) } : null;
     }
     if (b.reset) { delete h.manual; h.mode = 'auto'; }
+    if (b.acknowledge) {
+      // "keep my dates": the evidence that disagrees with them is no longer pointed out
+      if (!h.manual) throw new HttpError(400, 'There are no dates of yours to keep');
+      h.manual.ack = true;
+      db.prepare('UPDATE entries SET hist = ? WHERE id = ?').run(JSON.stringify(h), id);
+      return getGame(e.game_id);
+    }
+    // history ends where tracking of the game began: when it was added
+    if (minutes != null && !h.tracking_start) h.tracking_start = e.first_seen_at;
     if (b.confirm) {
       // "looks right": keep the current estimate exactly as it is, and pin its window so
       // later re-dating (new evidence, algorithm updates) never moves it
@@ -1399,12 +1452,37 @@ export function registerRoutes(r, app) {
     }
     tx(db, () => {
       db.prepare('UPDATE entries SET hist = ? WHERE id = ?').run(JSON.stringify(h), id);
+      if (minutes != null) db.prepare('UPDATE entries SET baseline_min = ?, playtime_min = MAX(0, playtime_min + ?) WHERE id = ?').run(minutes, minutes - e.baseline_min, id);
       flushRollups(db);
       reinferMany(db, [id], { settings: settings.all() });
       flushRollups(db);
     });
     return getGame(e.game_id);
-  }, { summary: 'Adjust how pre-tracking history is dated: manual first/last played window, or mode=undated to keep it out of charts', body: '{ first_played_at?, last_played_at?, mode?: "auto"|"undated", reset?: boolean, confirm?: boolean (keep the current estimate) }' });
+  }, {
+    summary: 'Adjust how pre-tracking history is dated: manual first/last played window, or mode=undated to keep it out of charts',
+    body: '{ first_played_at?, last_played_at?, coarse?: boolean (the window was answered as a period - "mostly 2018" - and is spread evenly over it), mode?: "auto"|"undated", reset?: boolean, '
+      + 'confirm?: boolean (keep the current estimate), acknowledge?: boolean (keep your dates although evidence disagrees: it is no longer pointed out), '
+      + 'minutes?: number (games added by hand only: the minutes played before the game was added) }',
+  });
+
+  r.get('/api/v1/entries/:id/history/context', (c) => {
+    const id = toInt(c.params.id);
+    if (!db.prepare('SELECT 1 FROM entries WHERE id = ?').get(id)) throw new HttpError(404, 'Entry not found');
+    const q = c.query;
+    const start = timeField(q, 'start');
+    const end = timeField(q, 'end');
+    if (start && end && end < start) throw new HttpError(400, 'end must be after start');
+    const ctx = historyContext(db, id, { window: start || end ? [start, end] : null });
+    if (!ctx) throw new HttpError(400, 'This entry has no pre-tracking history');
+    return ctx;
+  }, {
+    summary: 'What is known about when an entry\'s pre-tracking history was played, and where a window disagrees with it',
+    query: { start: 'a window to check (time)', end: '' },
+    returns: '{ entry_id, game_id, platform, account_name, minutes, tracking_start, mode, confidence, window, reasons, manual: { start, end, confirmed, coarse, acknowledged } | null, enrich_pending, '
+      + 'marks: [{ key: release|release_igdb|account|added|first_played|first_unlock|last_unlock|last_played|first_tracked|tracking, label, at, source?, detail? (achievement name), use: start|end }] (oldest first), '
+      + 'unlocks: { total, unlocked, before_tracking, times (unlocks before tracking, max 500), by_month: [{ key: YYYY-MM, n }] }, tracked_sessions, others: [{ entry_id, platform, account_name, minutes, window, manual }] (the game\'s other history), '
+      + 'conflicts: [{ kind: unlocks_before|unlocks_after|first_played_before|last_played_after|before_release, at, n?, text }] (of the window given, else of your dates) }',
+  });
 
   r.post('/api/v1/history/reinfer', () => {
     db.prepare('UPDATE entries SET inferred_v = 0 WHERE baseline_min > 0').run();
@@ -1435,21 +1513,40 @@ export function registerRoutes(r, app) {
       for (const r of db.prepare(`SELECT CASE WHEN json_extract(e.hist, '$.manual') IS NOT NULL THEN 'manual' WHEN s.kind = 'baseline' THEN 'undated' ELSE s.confidence END k, SUM(s.minutes) m
           FROM sessions s JOIN entries e ON e.id = s.entry_id WHERE s.source = 'inferred' AND e.excluded = 0 GROUP BY k`).all()) meter[r.k || 'low'] = (meter[r.k || 'low'] || 0) + r.m;
       const style = styleOf(db);
+      // dates of yours (or estimates you confirmed) that the evidence disagrees with, and you have
+      // not said to keep: worth a second look (on the first page only)
+      const check = offset ? [] : db.prepare(`SELECT e.id, e.game_id, e.platform, g.title, g.cover_url FROM entries e JOIN games g ON g.id = e.game_id
+          WHERE e.baseline_min > 0 AND e.excluded = 0 AND json_extract(e.hist, '$.manual') IS NOT NULL AND json_extract(e.hist, '$.manual.ack') IS NOT 1
+            AND COALESCE(json_extract(e.hist, '$.mode'), 'auto') = 'auto' ${platform ? 'AND e.platform = ?' : ''} ORDER BY e.baseline_min DESC`).all(...args)
+        .map((r) => ({ r, ctx: historyContext(db, r.id) })).filter((x) => x.ctx?.conflicts.length)
+        .map(({ r, ctx }) => ({
+          entry_id: r.id, game_id: r.game_id, title: r.title, cover_url: r.cover_url, platform: r.platform, account_name: ctx.account_name, minutes: ctx.minutes,
+          manual: ctx.manual, window: ctx.window, conflicts: ctx.conflicts, marks: ctx.marks, unlocks: { before_tracking: ctx.unlocks.before_tracking, by_month: ctx.unlocks.by_month },
+        }));
       return {
         total: total.n, uncertain_minutes: Math.round(total.m), meter,
         style: style ? { games: style.games, learned_at: style.learned_at } : null,
+        check,
         items: rows.map((r) => {
           const h = JSON.parse(r.hist || '{}');
+          const ctx = historyContext(db, r.id);
           return {
             entry_id: r.id, game_id: r.game_id, title: r.title, cover_url: r.cover_url, platform: r.platform, account_name: r.account_name,
             minutes: r.baseline_min, uncertain_minutes: Math.round(r.unc), confidence: h.inference?.confidence || null, window: h.inference?.window || null,
             undated: h.inference?.undated || 0, reasons: h.inference?.reasons || [],
             evidence: { first_played_at: h.first_played_at || null, last_played_at: h.last_played_at || null, date_added: h.date_added || null, release_at: h.release_at || null, tracking_start: h.tracking_start || null },
+            // every date it can be told from, oldest first, and the unlocks by month
+            marks: ctx.marks, unlocks: { before_tracking: ctx.unlocks.before_tracking, by_month: ctx.unlocks.by_month }, enrich_pending: ctx.enrich_pending,
           };
         }),
       };
     });
-  }, { summary: 'Games whose pre-tracking history dating is least certain (for quick manual answers)', query: { limit: 'max 200', offset: '', platform: '' } });
+  }, {
+    summary: 'Games whose pre-tracking history dating is least certain (for quick manual answers), and dates of yours the evidence disagrees with',
+    query: { limit: 'max 200', offset: '', platform: '' },
+    returns: '{ total, uncertain_minutes, meter, style, check: [{ entry_id, game_id, title, cover_url, platform, account_name, minutes, manual, window, conflicts, marks, unlocks }] (first page only: your dates that evidence disagrees with, '
+      + 'not yet kept with acknowledge), items: [{ entry_id, game_id, title, …, window, confidence, reasons, evidence, marks, unlocks: { before_tracking, by_month }, enrich_pending }] (see GET /entries/{id}/history/context) }',
+  });
 
   r.get('/api/v1/history/summary', () => memo(db, 'hist-summary', () => {
     const rows = db.prepare(`SELECT s.kind, s.confidence, COUNT(DISTINCT s.entry_id) entries, SUM(s.minutes) minutes FROM sessions s JOIN entries e ON e.id = s.entry_id

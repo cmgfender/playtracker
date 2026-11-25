@@ -1,4 +1,11 @@
 import { $, $$, esc, ago, fmtDate, fmtTime, platDot, icon, api, toast, fail, confirmBox, rerender } from '../app.js';
+
+/** A message as text: an error that quoted a server's HTML page ("<HTML><HEAD>… &#58;&#47;…") without its tags and entities. */
+function plainText(m) {
+  const s = String(m ?? '');
+  if (!/<[a-z!/][^>]*>|&#?\w+;/i.test(s)) return s;
+  return new DOMParser().parseFromString(s.replace(/<(?:script|style)[\s\S]*?<\/(?:script|style)>/gi, ' '), 'text/html').body.textContent.replace(/\s+/g, ' ').trim();
+}
 import { arrow, kpi } from './shared.js';
 
 // =====================================================================
@@ -48,7 +55,7 @@ export async function system(view, stale) {
   const up = (sec) => (sec > 86400 ? `${Math.floor(sec / 86400)}d ${Math.floor((sec % 86400) / 3600)}h` : sec > 3600 ? `${Math.floor(sec / 3600)}h ${Math.floor((sec % 3600) / 60)}m` : `${Math.floor(sec / 60)}m`);
   const health = sys.errors_24h ? ['bad', `${sys.errors_24h} error${sys.errors_24h > 1 ? 's' : ''} in 24h`] : sys.warnings_24h ? ['warn', `${sys.warnings_24h} warning${sys.warnings_24h > 1 ? 's' : ''} in 24h`] : ['good', 'Healthy'];
   view.innerHTML = `
-    <div class="page-h"><div><h1>System</h1><p>Vestigo ${esc(sys.version)} · Node ${esc(sys.node)} · up ${up(sys.uptime_s)} · TZ ${esc(sys.tz)}${sys.tz_env ? '' : ' <span style="color:var(--warn)">(TZ not set)</span>'}</p></div>
+    <div class="page-h"><div><h1>System</h1><p>Vestigo ${esc(sys.version)} · Node ${esc(sys.node)} · up ${up(sys.uptime_s)} · TZ ${esc(sys.tz)}${sys.tz_env ? '' : ' <span style="color:var(--warn)" title="Set the TZ environment variable to choose the time zone days and hours are counted in">(the system\'s: TZ is not set)</span>'}</p></div>
       <div class="row"><span class="badge ${health[0]}" style="height:30px;padding:0 12px">${health[1]}</span><button class="btn" id="sys-dl">${icon('download')}Diagnostics</button></div></div>
     <div class="kpis">
       ${kpi('Errors (24h)', sys.errors_24h, `${sys.warnings_24h} warnings`)}
@@ -71,9 +78,9 @@ export async function system(view, stale) {
         <td class="nowrap small">${a.presence ? (a.presence.enabled ? (a.presence.error ? `<span style="color:var(--warn)">${esc(a.presence.error)}</span>` : a.presence.last_poll ? `ok · ${ago(a.presence.last_poll)}` : 'waiting') : 'off') : '—'}</td>
         <td class="small">${!a.can_enrich ? '<span class="muted">from platform dates</span>' : a.enrichment_pending ? `${a.enrichment_pending} titles queued` : 'up to date'}</td></tr>`).join('') || '<tr><td colspan="8" class="muted">No accounts.</td></tr>'}
       </tbody></table></div>
-      <div class="row wrap" style="margin-top:12px"><button class="btn sm" id="sys-reinfer">Re-date all history</button><a class="btn sm ghost" href="/history" data-link>Improve history${icon('arrowR')}</a>${sys.accounts.filter((a) => a.enrichment_pending && a.can_enrich).map((a) => `<button class="btn sm ghost" data-enrich="${a.id}">Fetch history dates for ${esc(a.name)}</button>`).join('')}</div>
+      <div class="row wrap" style="margin-top:12px"><button class="btn sm" id="sys-reinfer">Re-date all history</button><a class="btn sm ghost" href="/history" data-link>Improve history${icon('arrowR')}</a>${sys.accounts.filter((a) => a.enrichment_pending && a.can_enrich).map((a) => `<button class="btn sm ghost" data-enrich="${a.id}" style="white-space:normal;text-align:left">Fetch history dates for ${esc(a.name)}</button>`).join('')}</div>
     </div>
-    <div class="card" style="margin-top:16px"><div class="card-h"><h2>Error log</h2><div class="row wrap">
+    <div class="card" style="margin-top:16px"><div class="card-h"><h2>Error log</h2><div class="row wrap" style="min-width:0;max-width:100%">
         <div class="seg" id="log-lvl" aria-label="Show"><button data-l="error,warn" class="on">Errors &amp; warnings</button><button data-l="error">Errors</button><button data-l="warn">Warnings</button></div>
         <button class="btn sm ghost" id="log-clear">${icon('trash')}Clear</button></div></div>
       <div class="search" style="margin-bottom:10px">${icon('search')}<input class="input" id="log-q" aria-label="Filter log" placeholder="Filter messages (account, game, error…)"></div>
@@ -87,7 +94,7 @@ export async function system(view, stale) {
     </div>`;
   let level = 'error,warn'; let q = '';
   const drawLogs = (items) => {
-    $('#log-list').innerHTML = items.length ? items.map((l) => `<details class="log-row"><summary><span class="lvl lvl-${l.level}">${l.level}</span><span class="tiny muted nowrap">${fmtDate(l.time)} ${fmtTime(l.time)}</span><span class="tiny dim nowrap">${esc(l.source)}</span><span class="grow small" style="word-break:break-word">${esc(l.message)}</span></summary>
+    $('#log-list').innerHTML = items.length ? items.map((l) => `<details class="log-row"><summary><span class="lvl lvl-${l.level}">${l.level}</span><span class="tiny muted nowrap">${fmtDate(l.time)} ${fmtTime(l.time)}</span><span class="tiny dim nowrap">${esc(l.source)}</span><span class="grow small" style="word-break:break-word">${esc(plainText(l.message))}</span></summary>
       ${l.context ? `<pre class="code">${esc(JSON.stringify(l.context, null, 2))}</pre>` : ''}${l.stack ? `<pre class="code">${esc(l.stack)}</pre>` : ''}</details>`).join('')
       : `<div class="empty" style="padding:24px"><div class="em-ic">${icon('check')}</div><h2>All clear</h2><p>No ${level === 'warn' ? 'warnings' : 'errors'} logged.</p></div>`;
   };

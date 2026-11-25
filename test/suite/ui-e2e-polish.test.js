@@ -305,6 +305,29 @@ describe('Vestigo web UI, polish on a one-game library', UI, () => {
     } finally { await h.close(); }
   });
 
+  test('Add a game with past hours: the year is asked for, never assumed to be this one', async () => {
+    const h = await visit(T, '/library');
+    const { page } = h;
+    try {
+      await page.locator('#lib-add').click();
+      await modalReady(page);
+      await page.locator('.modal [name=title]').fill('An Old One');
+      await page.locator('.modal [name=hours]').fill('30');
+      assert.equal(await page.locator('.modal #ag-when [name=y]').inputValue(), '', 'no year picked for you');
+      await page.locator('#ag-save').click();
+      await toast(page, 'Pick the year you played it');
+      assert.equal(await page.locator('.modal').count(), 1, 'the dialog is still open');
+      await page.locator('.modal #ag-when [name=y]').selectOption('2004');
+      await page.locator('#ag-save').click();
+      await page.waitForURL(/\/game\/\d+$/);
+      await h.settle();
+      const g = T.db.prepare("SELECT id FROM games WHERE title = 'An Old One'").get();
+      const last = T.db.prepare('SELECT MAX(COALESCE(s.ended_at, s.window_end)) t FROM sessions s JOIN entries e ON e.id = s.entry_id WHERE e.game_id = ?').get(g.id).t;
+      assert.equal(new Date(last).getFullYear(), 2004, 'its 30 hours are dated in 2004, not this year');
+      clean(h);
+    } finally { await h.close(); }
+  });
+
   test('Sessions: Done in the selection bar gives keyboard focus back to Select', async () => {
     const h = await visit(T, '/sessions');
     const { page } = h;

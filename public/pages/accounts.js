@@ -1,6 +1,6 @@
 import {
   $, esc, fmtMin, fmtHours, ago, fmtDate, fmtTime, plat, platDot, platIcon, icon, api, toast, undoToast, fail, modal, confirmBox,
-  rerender, state, watchSync, syncStarted,
+  rerender, state, watchSync, syncStarted, plural,
 } from '../app.js';
 import { WD, emptyState } from './shared.js';
 
@@ -145,7 +145,7 @@ export async function accounts(view, stale) {
       ${syncs.map((s) => `<tr><td class="nowrap">${fmtDate(s.started_at)} ${fmtTime(s.started_at)}<div class="tiny dim">${esc(s.trigger)}${s.initial ? ' · initial import' : ''}</div></td>
         <td class="nowrap">${platDot(s.platform || 'custom')} ${esc(s.account_name || '—')}</td>
         <td>${s.status === 'ok' ? '<span class="badge good">ok</span>' : s.status === 'running' ? '<span class="badge accent pulse">running</span>' : `<span class="badge ${s.status === 'warning' ? 'warn' : 'bad'}">${esc(s.status)}</span>`}${s.error ? `<div class="tiny muted" style="max-width:260px">${esc(s.error)}</div>` : ''}</td>
-        <td>${s.games_seen}${s.games_new ? ` <span class="tiny muted">(+${s.games_new})</span>` : ''}${s.details?.api ? `<div class="tiny dim">${s.details.api.calls} calls${s.details.api.rate_limited ? ` · ${s.details.api.rate_limited} rate-limited` : ''} · ${((s.duration_ms || 0) / 1000).toFixed(1)}s</div>` : ''}</td><td>${s.sessions_created ? `<a href="/sessions" data-link class="link">${s.sessions_created}</a>` : 0}</td><td>${fmtMin(s.minutes_added)}</td><td class="muted">${s.baseline_minutes ? fmtMin(s.baseline_minutes, { short: true }) : '—'}</td></tr>`).join('') || '<tr><td colspan="7" class="muted">No syncs yet.</td></tr>'}
+        <td>${s.games_seen}${s.games_new ? ` <span class="tiny muted">(+${s.games_new})</span>` : ''}${s.details?.api ? `<div class="tiny dim">${plural(s.details.api.calls, 'call')}${s.details.api.rate_limited ? ` · ${s.details.api.rate_limited} rate-limited` : ''} · ${((s.duration_ms || 0) / 1000).toFixed(1)}s</div>` : ''}</td><td>${s.sessions_created ? `<a href="/sessions" data-link class="link">${s.sessions_created}</a>` : 0}</td><td>${fmtMin(s.minutes_added)}</td><td class="muted">${s.baseline_minutes ? fmtMin(s.baseline_minutes, { short: true }) : '—'}</td></tr>`).join('') || '<tr><td colspan="7" class="muted">No syncs yet.</td></tr>'}
       </tbody></table></div></div>`;
   $('#acc-add')?.addEventListener('click', () => accountModal(platforms));
   $('#acc-add2')?.addEventListener('click', () => accountModal(platforms));

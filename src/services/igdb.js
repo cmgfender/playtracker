@@ -36,7 +36,8 @@ const PLATFORM_IDS = { steam: [6, 14, 3], xbox: [49, 169, 12, 11], psn: [48, 167
 const COVER = (id) => `https://images.igdb.com/igdb/image/upload/t_cover_big/${id}.jpg`;
 
 const DETAIL_FIELDS = 'fields *, genres.name, themes.name, game_modes.name, player_perspectives.name, franchises.name, involved_companies.developer, involved_companies.publisher, involved_companies.company.name, game_engines.name, platforms.name, cover.image_id, alternative_names.name';
-const SEARCH_FIELDS = 'fields *, alternative_names.name';
+// (platform names and the cover: what the picker shows; matching reads the platform ids)
+const SEARCH_FIELDS = 'fields *, alternative_names.name, platforms.name, platforms.abbreviation, cover.image_id';
 
 // the title as searched: trademark signs and platform tags only confuse IGDB's search
 const searchText = (t) => String(t || '').replace(/[™®©℠]/g, '').replace(/\s*[([](?:pc|windows(?: 10)?|xbox(?: one| series x\|s)?|ps[45]|playstation [45])[)\]]\s*/gi, ' ').replace(/\s+/g, ' ').trim();
@@ -330,10 +331,19 @@ export class Igdb {
     return rec;
   }
 
-  /** Candidates for a title (the Wrong game? dialog): [{ id, name, year, platforms, cover_url, url }]. */
+  /** Candidates for a title (the Wrong game? and Add a game dialogs): [{ id, name, year, release_date, platforms, cover_url, thumb_url, main, url }]. */
   async lookup(title) {
     const found = (await this.search([{ key: 'x', title }])).get('x') || [];
-    return found.map((c) => ({ id: c.id, name: c.name, year: c.first_release_date ? new Date(c.first_release_date * 1000).getUTCFullYear() : null, main: isMain(c), url: c.url || null }));
+    return found.map((c) => {
+      const img = c.cover && typeof c.cover === 'object' ? c.cover.image_id : null;
+      return {
+        id: c.id, name: c.name, year: c.first_release_date ? new Date(c.first_release_date * 1000).getUTCFullYear() : null,
+        release_date: c.first_release_date ? c.first_release_date * 1000 : null,
+        platforms: (c.platforms || []).filter((p) => p && typeof p === 'object').map((p) => p.abbreviation || p.name).filter(Boolean),
+        cover_url: img ? COVER(img) : null, thumb_url: img ? `https://images.igdb.com/igdb/image/upload/t_thumb/${img}.jpg` : null,
+        main: isMain(c), url: c.url || null,
+      };
+    });
   }
 
   /** Background: a pass soon after start, then whenever there is something to do (checked hourly). */

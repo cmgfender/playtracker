@@ -1,5 +1,5 @@
 import { $, $$, esc, fmtMin, fmtDate, dayLabel, plat, platDot, icon, api, toast, undoToast, fail, confirmBox, state, plural } from '../app.js';
-import { sessionItem, groupByDay, emptyState, logSessionModal, restoreSession, bindSessionEdits, D, dayKey } from './shared.js';
+import { sessionItem, groupByDay, sessionStart, emptyState, logSessionModal, restoreSession, bindSessionEdits, D, dayKey } from './shared.js';
 
 // =====================================================================
 // Sessions
@@ -81,7 +81,7 @@ export async function sessions(view, stale) {
     }
     return out;
   };
-  const count = (items) => { for (const s of items) { const w = weekOf(s.ended_at || s.window_end || s.created_at); const x = weeks.get(w) || { minutes: 0, n: 0 }; x.minutes += s.minutes; x.n++; weeks.set(w, x); } };
+  const count = (items) => { for (const s of items) { const w = weekOf(sessionStart(s)); const x = weeks.get(w) || { minutes: 0, n: 0 }; x.minutes += s.minutes; x.n++; weeks.set(w, x); } };
   const draw = () => {
     const groups = groupByDay(all);
     dayMin.clear(); weeks.clear(); count(all);
@@ -96,7 +96,7 @@ export async function sessions(view, stale) {
   // the next page is appended, not redrawn: the cost stays flat at thousands of rows
   const drawMore = (items) => {
     count(items);
-    for (const w of new Set(items.map((s) => weekOf(s.ended_at || s.window_end || s.created_at)))) { const h = list.querySelector(`.week-h[data-week="${w}"]`); if (h) h.textContent = weekText(w); }
+    for (const w of new Set(items.map((s) => weekOf(sessionStart(s))))) { const h = list.querySelector(`.week-h[data-week="${w}"]`); if (h) h.textContent = weekText(w); }
     for (const grp of groupByDay(items)) {
       const head = dayMin.has(grp.day) && list.querySelector(`.day-h[data-day="${grp.day}"]`); // the last day continues
       dayMin.set(grp.day, (dayMin.get(grp.day) || 0) + grp.minutes);
