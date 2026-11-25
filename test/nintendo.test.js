@@ -94,7 +94,7 @@ test('a sync signs in once, then reads totals, first/last played and the last 7 
 test('sign-in problems say what to do', async () => {
   const stale = fakeNintendo();
   await assert.rejects(nintendo.fetchLibrary({ config: { sign_in_link: 'npf5c38e31cd085304b://auth#session_token_code=CODE&state=unknown' }, state: {} }, stale.ctx), (e) => e.auth && /earlier sign-in page/.test(e.message));
-  await assert.rejects(nintendo.fetchLibrary({ config: { sign_in_link: 'https://example.com' }, state: {} }, stale.ctx), (e) => e.auth && /Select this person/.test(e.message));
+  await assert.rejects(nintendo.fetchLibrary({ config: { sign_in_link: 'https://example.com' }, state: {} }, stale.ctx), (e) => e.auth && /Select this account/.test(e.message));
   const used = fakeNintendo({ sessionCode: 'OTHER' });
   await assert.rejects(nintendo.fetchLibrary({ config: { sign_in_link: linkFor(signInUrl().url) }, state: {} }, used.ctx), (e) => e.auth && /works once/.test(e.message));
   const revoked = fakeNintendo();

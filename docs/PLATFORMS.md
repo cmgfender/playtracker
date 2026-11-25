@@ -118,7 +118,7 @@ Nintendo has no public API. Vestigo reads the play history the Nintendo Store ap
 
 **Signing in:**
 1. In the account form, choose **Open Nintendo sign-in** and sign in to your Nintendo Account.
-2. On the "Select this person" page, don't click the button: right-click it (long-press on a phone) and copy the link. It starts with `npf5c38e31cd085304b://auth`. The link opens Nintendo's phone app, so clicking it in a browser does nothing (Chrome) or says the address is invalid (Safari). That is expected.
+2. On the "Select this account" page, don't click the button: right-click it (long-press on a phone) and copy the link. It starts with `npf5c38e31cd085304b://auth`. The link opens Nintendo's phone app, so clicking it in a browser does nothing (Chrome) or says the address is invalid (Safari). That is expected.
 3. Paste it into **Sign-in link** within an hour and save. Each link works once.
 
 Vestigo exchanges the link for a session token, which lasts about two years. The code verifier behind the link never leaves the server. If you already have a session token for the Nintendo Store app (My Nintendo) from another tool, you can paste it instead; one for the Nintendo Switch Online app does not work here.

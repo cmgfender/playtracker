@@ -53,7 +53,7 @@ async function sessionToken(account, ctx) {
   if (account.config.session_token) return { token: String(account.config.session_token).trim(), fresh: false };
   if (account.state?.session_token) return { token: account.state.session_token, fresh: false };
   const { code, state } = parseLink(account.config.sign_in_link);
-  if (!code) throw new ProviderError(`Paste the link of "Select this person" from the Nintendo sign-in page (it starts with ${REDIRECT})`, { auth: true });
+  if (!code) throw new ProviderError(`Paste the link of "Select this account" from the Nintendo sign-in page (it starts with ${REDIRECT})`, { auth: true });
   const p = pending.get(state);
   // (exchanged already, by a Test of the form before it was saved: a link works only once)
   if (p?.token) return { token: p.token, fresh: true };
@@ -142,10 +142,10 @@ export const nintendo = {
       // (the button's link opens Nintendo's phone app: followed in a browser it goes nowhere, so it is copied)
       steps: [
         'Open the Nintendo sign-in and sign in to your Nintendo Account.',
-        'On the page that follows, do not click "Select this person". Right-click it (on a phone, press and hold) and choose Copy Link Address.',
+        'On the page that follows, do not click "Select this account". Right-click it (on a phone, press and hold) and choose Copy Link Address.',
         'Paste the link below within an hour, then Connect.',
       ],
-      help: `Clicking "Select this person" does nothing in Chrome, and Safari says the address is invalid: the link opens Nintendo's phone app, which a browser cannot do. That is expected. The link you copy starts with ${REDIRECT} and works once.` },
+      help: `Clicking "Select this account" does nothing in Chrome, and Safari says the address is invalid: the link opens Nintendo's phone app, which a browser cannot do. That is expected. The link you copy starts with ${REDIRECT} and works once.` },
     { key: 'session_token', label: 'Session token', type: 'password', required: false, help: 'Instead of a sign-in link: a Nintendo Account session token for the Nintendo Store app (My Nintendo), from another tool. One for the Nintendo Switch Online app does not work here.' },
   ],
   notes: 'Your Nintendo Switch play history, as the Nintendo Store app shows it under Play Activity: total play time, first and last played per title, and the last 7 days day by day. One sign-in, kept for about two years.',
