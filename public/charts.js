@@ -721,8 +721,16 @@ registerChart('curve', ({ series }, opts, box) => {
     const tip = `${s.name}: ${s.minutes ? fmtMin(s.minutes) : 'no play'}${kinds ? ` (${kinds})` : ''} · ${s.sessions} session${s.sessions === 1 ? '' : 's'}${hasU ? ` · ${s.unlocked} unlocked` : ''} · ${fmtMin(totals[i])} in all`;
     hits += hit(x0, a.y, Math.min(a.x + a.w, X(i) + slot / 2) - x0, a.h + strips, tip, Y(totals[i]));
   });
+  // labels: every so many points; over years, the years (points marked `major`: a January), every so
+  // many of them - else a long span reads "Dec Dec Dec", every 24th month
   const every = everyFor(series, a.w);
-  const xl = xLabels(a, series.map((s, i) => ({ x: X(i), text: i % every === 0 ? s.label : '' })));
+  const majors = series.map((s, i) => (s.major ? i : -1)).filter((i) => i >= 0);
+  let shown = null;
+  if (majors.length >= 2) {
+    const step = everyFor(majors.map((i) => series[i]), a.w);
+    shown = new Set(majors.filter((_, k) => k % step === 0));
+  }
+  const xl = xLabels(a, series.map((s, i) => ({ x: X(i), text: (shown ? shown.has(i) : i % every === 0) ? s.label : '' })));
   const last = n ? series[n - 1] : null;
   const title = opts.title || 'Playtime over time';
   return {

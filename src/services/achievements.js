@@ -42,7 +42,9 @@ export function text(v, max = 2000) {
 export function percent(v) {
   if (v == null || v === '') return null;
   const n = Number(v);
-  return Number.isFinite(n) && n >= 0 && n <= 100 ? Math.round(n * 100) / 100 : null;
+  // 0 is "not known" (GameTrack writes it for a quarter of Xbox achievements, mostly Xbox 360 ones):
+  // as "0% of players have it" every one you unlocked would be the rarest there is
+  return Number.isFinite(n) && n > 0 && n <= 100 ? Math.round(n * 100) / 100 : null;
 }
 
 /** Epoch ms of an unlock (ISO text or epoch ms), or null for placeholders and impossible times. */

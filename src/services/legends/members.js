@@ -23,7 +23,8 @@ const STUDIO_MIN_GAMES = 3;
  */
 export function membership(db, { now = Date.now() } = {}) {
   return memo(db, `legends:members:${dayKey(now)}`, () => {
-    const games = new Map(libraryGames(db, now).map((g) => [g.id, { ...g, series: null, entry: null, gen: null, years: [], dated: 0 }]));
+    // (a game only on your wish list is no part of your career: it is left out)
+    const games = new Map(libraryGames(db, now).filter((g) => g.state !== 'wanted').map((g) => [g.id, { ...g, series: null, entry: null, gen: null, years: [], dated: 0 }]));
     // dated play, by game and year
     for (const r of db.prepare(`SELECT game_id, substr(day, 1, 4) y, SUM(minutes) m, SUM(minutes * estimated) e, MIN(day) f, MAX(day) l, COUNT(DISTINCT day) d
         FROM play_days WHERE excluded = 0 GROUP BY game_id, y ORDER BY game_id, y`).all()) {

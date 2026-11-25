@@ -42,6 +42,8 @@ function matchKey(key, g, igdbKey) {
   const d = y - best.e.year;
   if (Math.abs(d) <= 3) return { hit: best, how: 'title' };
   const named = igdbKey != null && best.e.keys.includes(igdbKey);
+  // a game not out yet that shares an entry's name is a new game (a reboot), not a later release of it
+  if (d > 3 && y > new Date().getFullYear()) return null;
   if (d > 3 && (igdbKey == null || named)) {
     // a later release under the entry's name that is one of its curated versions (Steam sells the
     // Resident Evil HD Remaster as "Resident Evil"): that version

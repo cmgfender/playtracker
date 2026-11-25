@@ -15,9 +15,11 @@ export function findDuplicates(db, { threshold = 0.8, limit = 300 } = {}) {
   return memo(db, `dupes:${threshold}:${limit}`, () => compute(db, threshold, limit));
 }
 
+const wished = (g) => g.status === 'wishlist' && !g.minutes;
+
 function compute(db, threshold, limit) {
   const dismissed = new Set(db.prepare('SELECT key FROM dismissed_duplicates').all().map((r) => r.key));
-  const games = db.prepare(`SELECT g.id, g.title, g.norm_title, g.cover_url,
+  const games = db.prepare(`SELECT g.id, g.title, g.norm_title, g.cover_url, g.status,
       COALESCE(SUM(CASE WHEN e.excluded = 0 THEN e.playtime_min END), 0) minutes,
       GROUP_CONCAT(DISTINCT e.platform) platforms, COUNT(e.id) entries
     FROM games g JOIN entries e ON e.game_id = g.id GROUP BY g.id`).all();
@@ -34,6 +36,10 @@ function compute(db, threshold, limit) {
     // compare is scored twice, which is cheaper than a key for every comparison)
     const score = matchScore(a.norm_title, b.norm_title);
     if (score < threshold) return;
+    // a game you only wish for, never played, is not a copy of another game you have: "Fable" (the new
+    // one) and Fable: The Lost Chapters, Call of Duty and Call of Duty: Vanguard, a DLC and its game.
+    // (the same title is merged as it is added; titles that differ say it is another game)
+    if ((wished(a) || wished(b)) && a.norm_title !== b.norm_title) return;
     const key = `merge:${Math.min(a.id, b.id)}:${Math.max(a.id, b.id)}`;
     if (seen.has(key) || dismissed.has(key)) return;
     seen.add(key);

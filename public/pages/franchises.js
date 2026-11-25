@@ -12,7 +12,7 @@ const ADDON = { test: 'Beta', bonus: 'Bonus content' };
 /** " (2019)" after a title, unless the title already ends with its year. */
 const yr = (x) => (x.year && !String(x.title).endsWith(`(${x.year})`) ? ` (${x.year})` : '');
 const STATE = {
-  finished: ['Finished', 'good'], playing: ['Playing', 'accent'], played: ['Played', ''], dropped: ['Dropped', 'bad'], owned: ['In your library', ''], missing: ['Not in your library', ''],
+  finished: ['Finished', 'good'], playing: ['Playing', 'accent'], played: ['Played', ''], dropped: ['Dropped', 'bad'], owned: ['In your library', ''], wanted: ['On your wish list', ''], missing: ['Not in your library', ''],
 };
 const MON = { year: 'numeric', month: 'short' };
 const years = (a, b) => (a && b && a !== b ? `${a}–${b}` : a || b || '');
