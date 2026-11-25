@@ -27,8 +27,13 @@ export function manualEntry(db, gameId, now = Date.now()) {
   let e = db.prepare("SELECT * FROM entries WHERE account_id IS NULL AND platform = 'manual' AND game_id = ? ORDER BY excluded, id LIMIT 1").get(gameId);
   if (e) return e;
   const g = db.prepare('SELECT title FROM games WHERE id = ?').get(gameId);
+  // (its id names the game and the moment: an earlier one made in the same millisecond and since moved
+  // to another game still holds that name - a script adding and merging in a burst - so the next free one is taken)
+  const taken = db.prepare("SELECT 1 FROM entries WHERE platform = 'manual' AND ext_id = ?");
+  let ext = `${extId}:${now}`;
+  for (let i = 2; taken.get(ext); i++) ext = `${extId}:${now}:${i}`;
   const r = db.prepare("INSERT INTO entries(account_id, game_id, platform, ext_id, title, first_seen_at) VALUES (NULL, ?, 'manual', ?, ?, ?)")
-    .run(gameId, `${extId}:${now}`, g?.title || 'Manual', now);
+    .run(gameId, ext, g?.title || 'Manual', now);
   return db.prepare('SELECT * FROM entries WHERE id = ?').get(r.lastInsertRowid);
 }
 
