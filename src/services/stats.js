@@ -188,8 +188,10 @@ export function computeStreaks(dayMinutes, now = Date.now()) {
   return { current, longest, longest_end: longestEnd };
 }
 
-export function firstPlayDay(db, estimates = 'include') {
-  return db.prepare(`SELECT MIN(day) d FROM play_days WHERE excluded = 0 AND estimated ${estimates === 'exclude' ? '= 0' : 'IN (0, 1)'}`).get().d;
+/** The first day with play that `opts` ({ gameId, platform, estimates }, as filter) counts, or null. */
+export function firstPlayDay(db, opts = {}) {
+  const f = filter('p', typeof opts === 'string' ? { estimates: opts } : opts);
+  return db.prepare(`SELECT MIN(p.day) d ${f.sql}`).get(...f.args).d;
 }
 
 export function computeStats(db, opts = {}) {
@@ -198,9 +200,9 @@ export function computeStats(db, opts = {}) {
   return memo(db, `stats:${range}:${group}:${gameId}:${platform}:${weekStartsOn}:${topLimit}:${estimates}:${opts.now ?? ''}`, () => {
     let { from, to, label } = resolveRange(range, now, weekStartsOn);
     if (from === 0) {
-      const first = gameId
-        ? db.prepare(`SELECT MIN(day) d FROM play_days WHERE game_id = ? AND estimated ${estimates === 'exclude' ? '= 0' : 'IN (0, 1)'}`).get(gameId).d
-        : firstPlayDay(db, estimates);
+      // all time starts with the first play the rows below count (this platform or game, never
+      // an excluded entry): an earlier start would add empty years to the buckets and the daily average
+      const first = firstPlayDay(db, { gameId, platform, estimates });
       from = first ? parseDay(first) - 12 * 3600_000 : startOfDay(now);
     }
     const span = Math.max(1, (to - from) / DAY);
@@ -423,6 +425,23 @@ function previousNumbers(db, opts) {
 }
 
 /**
+ * Games played for the first time ever between fromDay and toDay (on `platform` when given;
+ * estimated history counts as played, excluded entries do not), with that first day, oldest first
+ * or `newestFirst`; ties by game id. The games played in the range are read first and kept when
+ * they have no earlier day: a short range costs a few index seeks per game it has, not the first
+ * day of every game ever played.
+ */
+export function firstPlayedIn(db, { fromDay, toDay, platform = null, gameId = null, newestFirst = false }) {
+  const pf = (a) => (platform ? `AND ${a}.platform = ?` : '');
+  const pa = platform ? [platform] : [];
+  return db.prepare(`WITH pl AS (SELECT p.game_id, MIN(p.day) first FROM play_days p
+      WHERE p.excluded = 0 AND p.estimated IN (0, 1) AND p.day >= ? AND p.day <= ? ${pf('p')} ${gameId ? 'AND p.game_id = ?' : ''} GROUP BY p.game_id)
+    SELECT g.id game_id, g.title, g.cover_url, pl.first FROM pl JOIN games g ON g.id = pl.game_id
+    WHERE NOT EXISTS (SELECT 1 FROM play_days q WHERE q.game_id = pl.game_id AND q.excluded = 0 AND q.estimated IN (0, 1) AND q.day < ? ${pf('q')})
+    ORDER BY pl.first ${newestFirst ? 'DESC' : ''}, g.id`).all(fromDay, toDay, ...pa, ...(gameId ? [gameId] : []), fromDay, ...pa);
+}
+
+/**
  * What happened in a range besides playtime: games played for the first time ever (estimated
  * history counts as played, so a game tracked only lately is not "new"), achievements unlocked
  * (with the rarest) and the day with the most different games.
@@ -437,8 +456,7 @@ export function periodHighlights(db, { range = '30d', platform = null, gameId = 
     // the same values the SQL fragments below are added for (truthy ones)
     const pargs = [platform || null, gameId || null].filter(Boolean);
     // a game is new when its first play day anywhere falls in the range (on this platform, when filtered)
-    const fresh = db.prepare(`SELECT g.id game_id, g.title, g.cover_url, MIN(p.day) first FROM play_days p JOIN games g ON g.id = p.game_id
-      WHERE p.excluded = 0 ${platform ? 'AND p.platform = ?' : ''} ${gameId ? 'AND p.game_id = ?' : ''} GROUP BY p.game_id HAVING first >= ? AND first <= ? ORDER BY first DESC`).all(...pargs, fromDay, toDay);
+    const fresh = firstPlayedIn(db, { fromDay, toDay, platform, gameId, newestFirst: true });
     const ach = db.prepare(`SELECT COUNT(*) n, COALESCE(SUM(a.points), 0) points, COUNT(DISTINCT e.game_id) games FROM achievements a JOIN entries e ON e.id = a.entry_id
       WHERE a.unlocked = 1 AND a.unlocked_at >= ? AND a.unlocked_at <= ? AND e.excluded = 0 ${pf} ${gf}`).get(from, to, ...pargs);
     const rarest = ach.n ? db.prepare(`SELECT a.name, a.rarity, a.grade, a.unlocked_at, g.title, g.id game_id FROM achievements a JOIN entries e ON e.id = a.entry_id JOIN games g ON g.id = e.game_id
