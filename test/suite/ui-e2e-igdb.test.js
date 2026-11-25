@@ -1,5 +1,5 @@
 // Vestigo web UI, end to end: what IGDB metadata unlocks, on the demo library with metadata stored
-// directly (no network): Insights' Genres & series section, the Stats page's Genres card, the
+// directly (no network): Insights' Genres, makers & engines section, the Stats page's Genres card, the
 // library's Genre filter and Release date sort, the game page's About card (time to beat, links,
 // Wrong game?), and the Settings card. Nothing of it shows without metadata.
 // Run: node --disable-warning=ExperimentalWarning --test test/suite/ui-e2e-igdb.test.js
@@ -53,7 +53,7 @@ describe('IGDB metadata in the UI', UI, () => {
     assert.deepEqual(h.unexpectedConsole(allow), [], 'no unexpected console errors');
   };
 
-  test('Insights: Genres & series appears with genres, their trend, series, developers and your pace', async () => {
+  test('Insights: Genres, makers & engines appears with genres, their trend, engines, developers and your pace', async () => {
     const h = await visit('/insights?range=all');
     const { page } = h;
     try {
@@ -61,7 +61,7 @@ describe('IGDB metadata in the UI', UI, () => {
       await page.locator('[data-jump=genres]').click();
       const sec = page.locator('#ins-genres');
       await sec.locator('.card h3').first().waitFor();
-      assert.deepEqual(await sec.locator('.card h3').allInnerTexts(), ['Genres', 'Genres over time', 'Series', 'Developers', 'Your pace']);
+      assert.deepEqual(await sec.locator('.card h3').allInnerTexts(), ['Genres', 'Your pace', 'Genres over time', 'Engines', 'Developers']);
       const t = await S.ok('/stats/tags?kind=genre&range=all');
       assert.equal(await sec.locator('a.mrow.mlink .ml').first().innerText(), t.items[0].name);
       assert.equal(await sec.locator('a.mrow.mlink').first().getAttribute('href'), `/library?tag=${encodeURIComponent(`genre:${t.items[0].name}`)}`);

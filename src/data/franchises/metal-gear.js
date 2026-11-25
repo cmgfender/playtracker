@@ -1,0 +1,38 @@
+// Metal Gear. The format is described in ../franchises.js.
+export default {
+  id: 'metal-gear', name: 'Metal Gear', aliases: ['Metal Gear', 'Metal Gear Solid'], prefix: ['metal gear'],
+  eras: [
+    ['Metal Gear', 'The MSX originals', "Hideo Kojima's first stealth games"],
+    ['Metal Gear Solid', 'Metal Gear Solid', 'Solid Snake in 3D, from Shadow Moses to Guns of the Patriots, and Naked Snake in 1964'],
+    ['Metal Gear Solid: Peace Walker', 'Peace Walker to The Phantom Pain', 'Big Boss builds his army: the last Metal Gears Kojima made'],
+    ['Metal Gear Survive', 'After Kojima', 'Survive, the Master Collections and the Snake Eater remake'],
+  ],
+  entries: [
+    [1987, 'Metal Gear'],
+    [1990, 'Metal Gear 2: Solid Snake'],
+    [1998, 'Metal Gear Solid'],
+    [2001, 'Metal Gear Solid 2: Sons of Liberty'],
+    [2002, 'Metal Gear Solid 2: Substance', 'rerelease', { of: 'Metal Gear Solid 2: Sons of Liberty' }],
+    [2004, 'Metal Gear Solid: The Twin Snakes', 'remake', { of: 'Metal Gear Solid' }],
+    [2004, 'Metal Gear Solid 3: Snake Eater'],
+    [2004, 'Metal Gear Acid', 'spinoff'],
+    [2005, 'Metal Gear Solid 3: Subsistence', 'rerelease', { of: 'Metal Gear Solid 3: Snake Eater' }],
+    [2006, 'Metal Gear Solid: Portable Ops', 'spinoff'],
+    [2008, 'Metal Gear Solid 4: Guns of the Patriots'],
+    [2010, 'Metal Gear Solid: Peace Walker'],
+    [2011, 'Metal Gear Solid HD Collection', 'collection', { includes: ['Metal Gear', 'Metal Gear 2: Solid Snake', 'Metal Gear Solid 2: Sons of Liberty', 'Metal Gear Solid 3: Snake Eater', 'Metal Gear Solid: Peace Walker'], aka: ['Metal Gear Solid HD: 2 & 3', 'Metal Gear Solid HD Edition'] }],
+    [2013, 'Metal Gear Rising: Revengeance', 'spinoff'],
+    [2013, 'Metal Gear Solid: The Legacy Collection', 'collection', { includes: ['Metal Gear', 'Metal Gear 2: Solid Snake', 'Metal Gear Solid', 'Metal Gear Solid 2: Sons of Liberty', 'Metal Gear Solid 3: Snake Eater', 'Metal Gear Solid: Peace Walker', 'Metal Gear Solid 4: Guns of the Patriots'] }],
+    [2014, 'Metal Gear Solid V: Ground Zeroes'],
+    [2015, 'Metal Gear Solid V: The Phantom Pain'],
+    [2016, 'Metal Gear Solid V: The Definitive Experience', 'collection', { includes: ['Metal Gear Solid V: Ground Zeroes', 'Metal Gear Solid V: The Phantom Pain'] }],
+    [2018, 'Metal Gear Survive', 'spinoff'],
+    [2023, 'Metal Gear & Metal Gear 2: Solid Snake', 'rerelease', { of: ['Metal Gear', 'Metal Gear 2: Solid Snake'] }],
+    [2023, 'Metal Gear Solid: Master Collection Vol. 1', 'collection', { includes: ['Metal Gear', 'Metal Gear 2: Solid Snake', 'Metal Gear Solid', 'Metal Gear Solid 2: Sons of Liberty', 'Metal Gear Solid 3: Snake Eater'], aka: ['Metal Gear Solid Master Collection: Volume 1', 'Metal Gear Solid: Master Collection Volume 1'] }],
+    [2025, 'Metal Gear Solid Delta: Snake Eater', 'remake', { of: 'Metal Gear Solid 3: Snake Eater', aka: ['Metal Gear Solid Δ: Snake Eater'] }],
+    [2026, 'Metal Gear Solid: Master Collection Vol. 2', 'collection', { includes: ['Metal Gear Solid 4: Guns of the Patriots', 'Metal Gear Solid: Peace Walker'], aka: ['Metal Gear Solid Master Collection: Volume 2', 'Metal Gear Solid: Master Collection Volume 2'] }],
+  ],
+  // by when each is set: 1964, 1970, 1974, 1975, 1984, 1995, 1999, 2005, 2007-09, 2014, 2018
+  story: ['Metal Gear Solid 3: Snake Eater', 'Metal Gear Solid: Portable Ops', 'Metal Gear Solid: Peace Walker', 'Metal Gear Solid V: Ground Zeroes', 'Metal Gear Solid V: The Phantom Pain',
+    'Metal Gear', 'Metal Gear 2: Solid Snake', 'Metal Gear Solid', 'Metal Gear Solid 2: Sons of Liberty', 'Metal Gear Solid 4: Guns of the Patriots', 'Metal Gear Rising: Revengeance'],
+};

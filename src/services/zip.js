@@ -22,6 +22,7 @@ export function readZip(buf, { maxBytes = 512 * 1024 * 1024, maxFiles = 2000 } =
   let total = 0;
   for (let n = 0; n < count; n++) {
     if (p + 46 > buf.length || buf.readUInt32LE(p) !== 0x02014b50) throw new HttpError(400, 'Corrupt ZIP directory');
+    const flags = buf.readUInt16LE(p + 8);
     const method = buf.readUInt16LE(p + 10);
     const csize = buf.readUInt32LE(p + 20);
     const usize = buf.readUInt32LE(p + 24);
@@ -34,8 +35,13 @@ export function readZip(buf, { maxBytes = 512 * 1024 * 1024, maxFiles = 2000 } =
     if (name.endsWith('/') || name.startsWith('__MACOSX/') || /(^|\/)\._/.test(name)) continue;
     if (local + 30 > buf.length || buf.readUInt32LE(local) !== 0x04034b50) throw new HttpError(400, 'Corrupt ZIP entry');
     const start = local + 30 + buf.readUInt16LE(local + 26) + buf.readUInt16LE(local + 28);
+    // a file cut short (an interrupted download or upload) is refused, not read as far as it goes
+    if (start + csize > buf.length) throw new HttpError(400, `Corrupt ZIP entry: ${name} is cut short`);
+    // encrypted data would only fail to inflate (or, stored, be read as garbage): say what it is
+    if (flags & 1) throw new HttpError(400, `${name} is password-protected: export the ZIP without a password`);
     const data = buf.subarray(start, start + csize);
-    total += usize;
+    // a stored file is as large as its data, whatever size the directory declares
+    total += method === 0 ? data.length : usize;
     if (total > maxBytes) throw new HttpError(413, 'ZIP contents too large');
     let file;
     if (method === 0) file = data;

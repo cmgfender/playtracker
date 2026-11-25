@@ -61,6 +61,10 @@ test('comparePeriod and periodHighlights on a small library', () => {
     assert.equal(prev.sessions, 1);
     assert.equal(prev.games_played, 1);
     assert.equal(comparePeriod(db, { range: 'all', now: NOW }), null);
+    // tracking began Jan 10: the 30 days before began after it, the year before long before it
+    assert.equal(prev.before_tracking, false);
+    assert.equal(prev.tracking_since, '2026-01-10');
+    assert.equal(comparePeriod(db, { range: '365d', now: NOW }).before_tracking, true, 'nothing tracked to compare with');
 
     const h = periodHighlights(db, { range: '30d', now: NOW });
     assert.deepEqual(h.new_games.items.map((g) => g.title), ['Gamma']);

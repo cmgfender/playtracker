@@ -1,0 +1,32 @@
+// MLB The Show. The format is described in ../franchises.js.
+export default {
+  id: 'mlb-the-show', name: 'MLB The Show', aliases: ['MLB The Show', 'MLB: The Show'], prefix: ['mlb the show'],
+  eras: [
+    ['MLB 06: The Show', 'PS2, PS3 and portables', 'From PS2 and PSP to PS3 and Vita'],
+    ['MLB 14: The Show', 'PlayStation 4', 'PS4, with PS3 versions up to MLB The Show 16'],
+    ['MLB The Show 21', 'Beyond PlayStation', 'PS5 and Xbox from 21, Nintendo Switch from 22'],
+  ],
+  entries: [
+    [2006, 'MLB 06: The Show'],
+    [2007, 'MLB 07: The Show'],
+    [2008, 'MLB 08: The Show'],
+    [2009, 'MLB 09: The Show'],
+    [2010, 'MLB 10: The Show'],
+    [2011, 'MLB 11: The Show'],
+    [2012, 'MLB 12: The Show'],
+    [2013, 'MLB 13: The Show'],
+    [2014, 'MLB 14: The Show'],
+    [2015, 'MLB 15: The Show'],
+    [2016, 'MLB The Show 16'],
+    [2017, 'MLB The Show 17'],
+    [2018, 'MLB The Show 18'],
+    [2019, 'MLB The Show 19'],
+    [2020, 'MLB The Show 20'],
+    [2021, 'MLB The Show 21'],
+    [2022, 'MLB The Show 22'],
+    [2023, 'MLB The Show 23'],
+    [2024, 'MLB The Show 24'],
+    [2025, 'MLB The Show 25'],
+    [2026, 'MLB The Show 26'],
+  ],
+};

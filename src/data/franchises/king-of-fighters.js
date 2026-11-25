@@ -1,0 +1,33 @@
+// The King of Fighters. The format is described in ../franchises.js.
+export default {
+  id: 'king-of-fighters', name: 'The King of Fighters', aliases: ['The King of Fighters', 'KOF'], prefix: ['king of fighters', 'kof'],
+  eras: [
+    ["The King of Fighters '94", 'Orochi saga', "Kyo, Iori and the Orochi clan, from '94 to the dream match '98"],
+    ["The King of Fighters '99", 'NESTS saga', "K' and the NESTS cartel, ending with the dream match 2002"],
+    ['The King of Fighters 2003', 'Ash saga', 'Ash Crimson and Those from the Past, from 2003 to XIII, with Maximum Impact'],
+    ['The King of Fighters XIV', "Shun'ei saga", "Shun'ei leads a new story in 3D models: XIV and XV"],
+  ],
+  entries: [
+    [1994, "The King of Fighters '94"],
+    [1995, "The King of Fighters '95"],
+    [1996, "The King of Fighters '96"],
+    [1997, "The King of Fighters '97"],
+    [1998, "The King of Fighters '98", 'main', { aka: ["The King of Fighters '98: The Slugfest"] }],
+    [1999, "The King of Fighters '99", 'main', { aka: ["The King of Fighters '99: Millennium Battle"] }],
+    [2000, 'The King of Fighters 2000'],
+    [2001, 'The King of Fighters 2001'],
+    [2002, 'The King of Fighters 2002'],
+    [2003, 'The King of Fighters 2003'],
+    [2004, 'The King of Fighters: Maximum Impact', 'spinoff'],
+    [2005, 'The King of Fighters XI'],
+    [2006, 'The King of Fighters: Maximum Impact 2', 'spinoff', { aka: ['KOF: Maximum Impact 2', 'The King of Fighters 2006'] }],
+    [2008, "The King of Fighters '98 Ultimate Match", 'rerelease', { of: "The King of Fighters '98", era: 'Orochi saga' }],
+    [2009, 'The King of Fighters 2002: Unlimited Match', 'rerelease', { of: 'The King of Fighters 2002', era: 'NESTS saga' }],
+    [2009, 'The King of Fighters XII'],
+    [2010, 'The King of Fighters XIII'],
+    [2016, 'The King of Fighters XIV'],
+    [2018, "The King of Fighters '97 Global Match", 'rerelease', { of: "The King of Fighters '97", era: 'Orochi saga' }],
+    [2022, 'The King of Fighters XV'],
+    [2023, 'The King of Fighters XIII Global Match', 'rerelease', { of: 'The King of Fighters XIII', era: 'Ash saga' }],
+  ],
+};

@@ -413,7 +413,11 @@ function previousNumbers(db, opts) {
   const p = previousPeriod(range, now);
   if (!p) return null;
   const s = computeStats(db, { ...opts, range: p.range, now: p.now, topLimit: 1 });
+  // a previous period that began before tracking did holds less tracked play than it had: its
+  // sessions, games and daily average (tracked play) say nothing to compare with ("+993%")
+  const first = db.prepare('SELECT MIN(day) d FROM play_days WHERE estimated = 0 AND excluded = 0').get().d;
   return {
+    before_tracking: !!first && s.range.from < new Date(`${first}T00:00`).getTime(), tracking_since: first || null,
     range: s.range, total_minutes: s.total_minutes, tracked_minutes: s.tracked_minutes, estimated_minutes: s.estimated_minutes, sessions: s.sessions,
     games_played: s.games_played, days_played: s.days_played, avg_session_minutes: s.avg_session_minutes, avg_per_day_minutes: s.avg_per_day_minutes,
     longest_session_minutes: s.longest_session?.minutes || 0,

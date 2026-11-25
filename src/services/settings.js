@@ -45,10 +45,10 @@ export const DEFAULT_SETTINGS = {
   time_format: 'hm',          // 'hm' (1h 5m) | 'decimal' (1.1h)
   start_page: 'home',         // 'home' | 'library' | 'sessions' | 'stats'
   // home sections in order; a leading '-' hides one
-  dashboard_layout: 'kpis,live,jump,suggest,recap,chart,top,recent,accounts,-heatmap,-backlog',
+  dashboard_layout: 'kpis,live,facts,jump,suggest,recap,chart,top,recent,accounts,-heatmap,-backlog',
 };
 
-export const DASHBOARD_SECTIONS = ['kpis', 'live', 'jump', 'suggest', 'recap', 'chart', 'top', 'recent', 'accounts', 'heatmap', 'backlog'];
+export const DASHBOARD_SECTIONS = ['kpis', 'live', 'facts', 'jump', 'suggest', 'recap', 'chart', 'top', 'recent', 'accounts', 'heatmap', 'backlog'];
 const ENUMS = {
   theme: ['dark', 'black', 'light', 'auto'],
   ui_density: ['comfortable', 'compact'],
@@ -103,6 +103,8 @@ export class Settings {
     delete s.igdb_client_secret;
     delete s.igdb_token;
     delete s.igdb_match_v;
+    delete s.igdb_tags_v;
+    delete s.legend_eras; // your own eras: GET /legends, not a setting
     return s;
   }
 }

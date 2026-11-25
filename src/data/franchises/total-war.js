@@ -1,0 +1,32 @@
+// Total War. The format is described in ../franchises.js.
+export default {
+  id: 'total-war', name: 'Total War', aliases: ['Total War'],
+  prefix: ['total war', 'a total war saga', 'shogun: total war', 'medieval: total war', 'medieval ii: total war', 'rome: total war', 'empire: total war', 'napoleon: total war', 'spartan: total warrior'],
+  eras: [
+    ['Shogun: Total War', 'Sprite armies', 'Shogun and Medieval: 2D soldiers on 3D battlefields, a board-game campaign map'],
+    ['Rome: Total War', 'Rome engine', 'Fully 3D armies and a 3D campaign map: Rome and Medieval II'],
+    ['Empire: Total War', 'Warscape', 'A new engine from Empire on: gunpowder, sea battles, Shogun 2 to Attila'],
+    ['Total War: Warhammer', 'Warhammer and beyond', 'The Warhammer trilogy, the Sagas, Three Kingdoms and Pharaoh'],
+  ],
+  entries: [
+    [2000, 'Shogun: Total War'],
+    [2002, 'Medieval: Total War'],
+    [2004, 'Rome: Total War'],
+    [2005, 'Spartan: Total Warrior', 'spinoff'],
+    [2006, 'Medieval II: Total War', 'main', { aka: ['Total War: Medieval II – Definitive Edition'] }],
+    [2009, 'Empire: Total War', 'main', { aka: ['Total War: Empire – Definitive Edition'] }],
+    [2010, 'Napoleon: Total War', 'main', { aka: ['Total War: Napoleon – Definitive Edition'] }],
+    [2011, 'Total War: Shogun 2'],
+    [2012, 'Total War: Shogun 2 – Fall of the Samurai', 'spinoff'],
+    [2013, 'Total War: Rome II', 'main', { aka: ['Total War: Rome II – Emperor Edition'] }],
+    [2015, 'Total War: Attila'],
+    [2016, 'Total War: Warhammer'],
+    [2017, 'Total War: Warhammer II'],
+    [2018, 'Total War Saga: Thrones of Britannia', 'spinoff'],
+    [2019, 'Total War: Three Kingdoms'],
+    [2020, 'A Total War Saga: Troy', 'spinoff'],
+    [2021, 'Total War: Rome Remastered', 'remaster', { of: 'Rome: Total War', era: 'Rome engine' }],
+    [2022, 'Total War: Warhammer III'],
+    [2023, 'Total War: Pharaoh', 'main', { aka: ['Total War: Pharaoh Dynasties'] }],
+  ],
+};

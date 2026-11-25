@@ -4,6 +4,8 @@ import {
 } from '../app.js';
 import { barChart, heatmap, mountCharts, curveChart, BASIS_FILL } from '../charts.js';
 import { arrow, seriesLabel, seriesName, kpi, sessionItem, groupByDay, rarityText, achIcon, logSessionModal, bindSessionEdits, dayKey, BASIS } from './shared.js';
+import { whenDialog, conflictList } from './when.js';
+import { franchiseCard } from './franchises.js';
 
 // =====================================================================
 // Game detail
@@ -151,6 +153,9 @@ function bindAch(root, ach) {
 }
 
 export async function game(view, id, stale) {
+  // what is drawn below Notes is asked for with the page's own data, not after it is up
+  const below = Promise.all([api(`/stats/records?range=all&game_id=${id}`).catch(() => null), import('../insights.js'), api(`/games/${id}/forecast`).catch(() => null)]);
+  below.catch(() => {});
   const [g, ach, curve] = await Promise.all([
     api(`/games/${id}`),
     api(`/games/${id}/achievements`).catch(() => null),
@@ -187,7 +192,7 @@ export async function game(view, id, stale) {
           <div class="row wrap" style="margin-bottom:8px">${g.platforms.map(platTag).join('')}</div>
           <h1>${esc(g.title)}</h1>
           <div class="hero-life"><span class="big">${fmtMin(s.total_minutes, { short: s.total_minutes >= 600 })}</span><span class="muted">lifetime</span></div>
-          <div class="hero-line small muted">${plural(nSessions, 'session')} · ${g.last_played_at ? `played ${ago(g.last_played_at)}` : 'never played'}</div>
+          <div class="hero-line small muted">${plural(nSessions, 'session')} · ${g.last_played_at ? `played ${ago(g.last_played_at)}` : s.total_minutes ? 'no tracked play yet' : 'never played'}</div>
           ${s.total_minutes ? `<div class="hero-split">
             <div class="split-bar">${parts.map(([m, , st]) => `<i ${st ? `style="width:${pct(m)}%;${st}"` : `class="hatch-bg" style="width:${pct(m)}%"`}></i>`).join('')}</div>
             <div class="legend">${parts.length > 1 ? `<span><b>${fmtMin(s.total_minutes)}</b> =</span>` : ''}${parts.map(([m, l, st], i) => `<span>${i ? '+ ' : ''}<i class="dot${st ? '' : ' hatch-dot'}" ${st ? `style="${st}"` : ''}></i>${fmtMin(m)} ${l}</span>`).join('')}</div>
@@ -222,8 +227,10 @@ export async function game(view, id, stale) {
           ${curve.totals.baseline_minutes ? `<p class="tiny muted" style="margin:8px 0 0">${fmtMin(curve.totals.baseline_minutes)} has no date: it counts toward lifetime, not on the curve.</p>` : ''}</div>` : '';
     const heatCard = years.length ? `<div class="card"><div class="card-h"><h2>Activity</h2>${years.length > 1 ? `<div class="seg" id="g-hm-year" aria-label="Activity year">${years.map((y, i) => `<button data-y="${y}" class="${i ? '' : 'on'}">${y}</button>`).join('')}</div>` : `<span class="tiny muted">${years[0]}</span>`}</div><div id="g-heat"><div class="ins-ph short" aria-hidden="true"></div></div></div>` : '';
     const baselines = g.sessions.filter((x) => x.kind === 'baseline' && x.source !== 'inferred');
+    // a game added by hand with no hours from before it was added (an N64 game played in 1998)
+    const handNoPast = g.entries.find((e) => e.account_id == null && e.platform === 'manual' && !e.history);
     const sessCard = `<div class="card"><div class="card-h"><h2>Recent sessions</h2>${nSessions > recent.length ? `<a href="/sessions?game_id=${g.id}" data-link>All ${nSessions.toLocaleString()} sessions${arrow()}</a>` : ''}</div>
-          <div class="list dated" id="g-sessions">${recent.length ? groupByDay(recent).map((grp) => `<div class="day-h"><span>${dayLabel(grp.day)}</span><span>${fmtMin(grp.minutes)}</span></div>${grp.items.map((x) => sessionItem(x, { showGame: false, platLabel: g.entries.length > 1, dated: true })).join('')}`).join('') : '<p class="muted">No sessions yet — they appear after a sync spots new playtime, or log one yourself.</p>'}
+          <div class="list dated" id="g-sessions">${recent.length ? groupByDay(recent).map((grp) => `<div class="day-h"><span>${dayLabel(grp.day)}</span><span>${fmtMin(grp.minutes)}</span></div>${grp.items.map((x) => sessionItem(x, { showGame: false, platLabel: g.entries.length > 1, dated: true })).join('')}`).join('') : `<p class="muted">No sessions yet — they appear after a sync spots new playtime, or log one yourself.${handNoPast ? ` <button class="link linkbtn" data-hist-past="${handNoPast.id}">Played it before? Add those hours</button>` : ''}</p>`}
           ${baselines.map((x) => `<div class="item"><span class="dot" style="background:var(--line);width:10px;height:10px"></span><div class="grow"><div class="sub"><b style="color:var(--text)">${esc(plat(x.platform).label)}</b> ${esc(x.note || 'History')} · ${fmtDate(x.window_end)}</div></div><div class="amt muted">${fmtMin(x.minutes)}</div><button class="btn ghost sm icon" data-edit-session="${x.id}" aria-label="Edit history">${icon('edit')}</button></div>`).join('')}
           </div>
         </div>`;
@@ -231,8 +238,8 @@ export async function game(view, id, stale) {
           <div class="list">${g.entries.map((e) => `<div class="item" style="${e.excluded ? 'opacity:.55' : ''}">
               ${e.icon_url ? `<img src="${esc(e.icon_url)}" width="32" height="32" style="border-radius:8px" alt="" loading="lazy" onerror="this.style.visibility='hidden'">` : platIcon(e.platform, 32)}
               <div class="grow"><div class="ttl ellipsis">${esc(e.account_name || plat(e.platform).label)}</div>
-                <div class="sub">${platDot(e.platform)}${esc(e.title !== g.title ? e.title : plat(e.platform).label)}${e.excluded ? ' · <b>excluded</b>' : ''}</div>
-                <div class="sub">${e.last_played_at ? `Played ${ago(e.last_played_at)}` : ''}${e.meta?.devices?.deck ? ` · Deck ${fmtMin(e.meta.devices.deck)}` : ''}${e.play_count ? ` · ${e.play_count} launches` : ''}${e.achievements?.total ? ` · ${e.achievements.unlocked} of ${e.achievements.total} unlocked` : ''}${e.missing_since ? ` · <span style="color:var(--warn)">no longer in library since ${fmtDate(e.missing_since)}</span>` : ''}</div></div>
+                <div class="sub">${platDot(e.platform)}${esc(e.title !== g.title ? e.title : plat(e.platform).label)}${e.meta?.played_on ? ` · ${esc(e.meta.played_on)}` : ''}${e.excluded ? ' · <b>excluded</b>' : ''}</div>
+                <div class="sub">${e.last_played_at ? `Played ${ago(e.last_played_at)}` : ''}${e.meta?.devices?.deck ? ` · Deck ${fmtMin(e.meta.devices.deck)}` : ''}${e.play_count ? ` · ${e.play_count} launch${e.play_count === 1 ? '' : 'es'}` : ''}${e.achievements?.total ? ` · ${e.achievements.unlocked} of ${e.achievements.total} unlocked` : ''}${e.missing_since ? ` · <span style="color:var(--warn)">no longer in library since ${fmtDate(e.missing_since)}</span>` : ''}</div></div>
               <div class="amt">${fmtMin(e.playtime_min)}</div>
               <button class="btn ghost sm icon" data-entry-menu="${e.id}" aria-label="Entry options">${icon('more')}</button>
             </div>`).join('')}</div>
@@ -250,7 +257,10 @@ export async function game(view, id, stale) {
     let R = (hasAch ? 230 + shown * 64 + (shown ? 40 : 0) + (ach.items.some((x) => !x.unlocked) ? 50 : 0) : 0) + 100 + g.entries.length * 76 + 190;
     const about = aboutCard(g);
     if (about) R += 240;
-    const left = [curveCard]; const right = [about, hasAch ? achBlock(ach) : '', platCard];
+    // its franchise: where it stands, the entries either side
+    const seriesCard = franchiseCard(g.franchise);
+    if (seriesCard) R += 150;
+    const left = [curveCard]; const right = [seriesCard, about, hasAch ? achBlock(ach) : '', platCard];
     // Activity follows the curve, History sits above Notes, each in the shorter column
     for (const [card, h] of [[heatCard, 260], [histCard, 110 + hist.length * 230]]) {
       if (!card) continue;
@@ -288,8 +298,25 @@ export async function game(view, id, stale) {
   const fav = $('#g-fav'); // swapped in place: no re-render, keyboard focus stays on the button
   const showFav = (v) => { fav.innerHTML = icon(v ? 'heartFill' : 'heart'); fav.classList.toggle('fav-on', !!v); fav.setAttribute('aria-pressed', String(!!v)); };
   fav.addEventListener('click', () => undoable('favorite', !g.favorite, showFav, !g.favorite ? 'Added to favorites' : 'Removed from favorites'));
+  // Below Notes, drawn once the page is up so nothing above them moves: when the game will be finished
+  // at the pace it is played, and "How you play it" - the patterns of its tracked days (what
+  // Insights shows for a range; days with play out of all days since says little for one game).
+  below.then(([r, ins, fc]) => {
+    const lines = (r?.patterns || []).filter((h) => h.id !== 'days_played' && h.id !== 'trend').map(ins.pattern).filter(Boolean);
+    const notes = $('#g-notes')?.closest('.card');
+    if (stale() || !notes || $('#g-patterns') || $('#g-forecast')) return;
+    const cards = [];
+    if (fc?.available) cards.push(forecastCard(fc));
+    if (lines.length) cards.push(`<div class="card" id="g-patterns"><div class="card-h"><h2>How you play it</h2><span class="tiny muted">tracked play</span></div><ul class="hl">${lines.map((x) => `<li>${x}</li>`).join('')}</ul></div>`);
+    if (cards.length) notes.insertAdjacentHTML('afterend', cards.join(''));
+  }).catch(() => { /* the page stands without them */ });
   let nt;
-  $('#g-notes').addEventListener('input', (e) => { $('#g-notes-st').textContent = 'Saving…'; clearTimeout(nt); nt = setTimeout(async () => { await patch({ notes: e.target.value }); $('#g-notes-st').textContent = 'Saved'; }, 600); });
+  $('#g-notes').addEventListener('input', (e) => { $('#g-notes-st').textContent = 'Saving…'; clearTimeout(nt); nt = setTimeout(async () => {
+    // "Saved" only when it was: a failed save says so, and the next keystroke tries again
+    let ok = true;
+    try { await api(`/games/${id}`, { method: 'PATCH', body: { notes: e.target.value } }); } catch (err) { ok = false; fail(err); }
+    const st = $('#g-notes-st'); if (st) st.textContent = ok ? 'Saved' : 'Not saved';
+  }, 600); });
   $('#g-log').addEventListener('click', () => logSessionModal(g));
   // the ⋯ menu: edit, merge, hide, block auto-merge, delete (what the old Details card held)
   const toggleItem = (id, on, label, desc) => `<button class="mitem" id="${id}" role="menuitemcheckbox" aria-checked="${!!on}"><span class="mcheck" aria-hidden="true">${icon('check')}</span><span class="grow">${label}<span class="d">${desc}</span></span></button>`;
@@ -318,7 +345,13 @@ export async function game(view, id, stale) {
     foot: '<button class="btn" data-close>Cancel</button><button class="btn primary" id="ge-save">Save</button>',
     onMount(el, close) {
       el.querySelectorAll('[data-cov]').forEach((b) => b.addEventListener('click', () => { el.querySelector('[name=cover_url]').value = b.dataset.cov; }));
-      el.querySelector('#ge-save').addEventListener('click', async () => { const f = el.querySelector('#ge'); await patch({ title: f.title.value, cover_url: f.cover_url.value }, 'Saved'); close(); rerender(); });
+      el.querySelector('#ge-save').addEventListener('click', async () => {
+        const f = el.querySelector('#ge');
+        if (!f.title.value.trim()) return toast('Enter a title', { bad: true });
+        // a save that fails leaves the dialog open, with what was typed
+        try { await api(`/games/${id}`, { method: 'PATCH', body: { title: f.title.value, cover_url: f.cover_url.value } }); } catch (e) { return fail(e); }
+        toast('Saved'); close(); rerender();
+      });
     },
   });
   const deleteGame = async () => {
@@ -351,13 +384,17 @@ export async function game(view, id, stale) {
   }
   if (hasAch) bindAch(view, ach);
   view.addEventListener('click', async (ev) => {
+    const past = ev.target.closest('[data-hist-past]');
+    if (past) return whenDialog(Number(past.dataset.histPast), { entry: g.entries.find((x) => x.id === Number(past.dataset.histPast)), game: g, onDone: rerender });
     const ed = ev.target.closest('[data-hist-edit]');
-    if (ed) return historyModal(g.entries.find((x) => x.id === Number(ed.dataset.histEdit)), rerender);
+    if (ed) return whenDialog(Number(ed.dataset.histEdit), { entry: g.entries.find((x) => x.id === Number(ed.dataset.histEdit)), game: g, onDone: rerender });
     const md = ev.target.closest('[data-hist-mode]');
     const rs = ev.target.closest('[data-hist-reset]');
     const cf = ev.target.closest('[data-hist-confirm]');
+    const ak = ev.target.closest('[data-hist-ack]');
     try {
       if (cf) { await api(`/entries/${cf.dataset.histConfirm}/history`, { method: 'PATCH', body: { confirm: true } }); toast('Kept as guessed'); rerender(); }
+      if (ak) { await api(`/entries/${ak.dataset.histAck}/history`, { method: 'PATCH', body: { acknowledge: true } }); toast('Your dates are kept'); rerender(); }
       if (md) {
         const back = md.dataset.histMode === 'undated' ? 'auto' : 'undated';
         const set = (mode) => api(`/entries/${md.dataset.entry}/history`, { method: 'PATCH', body: { mode } });
@@ -376,6 +413,7 @@ export async function game(view, id, stale) {
       title: esc(en.account_name || plat(en.platform).label),
       body: `<div class="stack"><div class="small muted">${esc(en.title)} · ${esc(en.platform)} id <span class="mono">${esc(en.ext_id)}</span><br>First seen ${fmtDate(en.first_seen_at)} · last synced ${ago(en.last_synced_at)}</div>
         <div class="setting" style="border:0;padding:0"><div><div class="t">Exclude from totals</div><div class="d">Use when this entry duplicates playtime already counted on another platform.</div></div><label class="switch"><input type="checkbox" id="en-ex" ${en.excluded ? 'checked' : ''}><span></span></label></div>
+        ${en.account_id == null && en.platform === 'manual' ? `<button class="btn" id="en-past">${icon('history')}${en.history ? 'Hours played before you added it' : 'Add hours played before you added it'}</button>` : ''}
         ${g.entries.length > 1 ? `<button class="btn" id="en-split">${icon('split')}Split into its own game</button>` : ''}
         ${en.meta?.store ? `<a class="btn ghost" href="${esc(en.meta.store)}" target="_blank" rel="noopener">Open store page${icon('external')}</a>` : ''}</div>`,
       onMount(el, close) {
@@ -388,57 +426,64 @@ export async function game(view, id, stale) {
             rerender();
           } catch (err) { fail(err); }
         });
-        el.querySelector('#en-split')?.addEventListener('click', async () => { const ng = await api(`/entries/${en.id}/split`, { method: 'POST' }); close(); toast('Split into a separate game'); navigate(`/game/${ng.id}`); });
+        el.querySelector('#en-past')?.addEventListener('click', () => { close(); whenDialog(en.id, { entry: en, game: g, onDone: rerender }); });
+        el.querySelector('#en-split')?.addEventListener('click', async () => {
+          // a split that fails says why and leaves the dialog open
+          let ng;
+          try { ng = await api(`/entries/${en.id}/split`, { method: 'POST' }); } catch (e) { return fail(e); }
+          close(); toast('Split into a separate game'); navigate(`/game/${ng.id}`);
+        });
       },
     });
   });
+}
+
+/** GET /games/:id/forecast as a card: how long until the game is finished, and what that rests on. */
+function forecastCard(f) {
+  const span = f.text.match(/^(.*?) to finish/)?.[1];
+  const lead = f.state === 'playing' ? `<b>${esc(span)}</b> to finish at this pace, around ${fmtDate(new Date(`${f.finish_day}T12:00`).getTime(), { month: 'short', day: 'numeric' })}.`
+    : f.state === 'idle' ? `<b>${fmtMin(f.remaining_minutes)}</b> left. Not played in the last four weeks.`
+      : `<b>Past</b> the ${f.personal_pace ? 'length expected at your pace' : 'typical length'}.`;
+  const length = f.personal_pace ? `${fmtMin(f.expected_minutes)} at your pace (${f.pace_ratio}× the typical ${fmtMin(f.typical_minutes)})` : `the typical ${fmtMin(f.typical_minutes)}`;
+  return `<div class="card" id="g-forecast"><div class="card-h"><h2>Finish forecast</h2><span class="tiny muted">${f.basis === 'main' ? 'main story' : 'main + extras'}</span></div>
+    <p class="ins-lead">${lead}</p>
+    <div class="split-bar" role="img" aria-label="${f.percent}% of the expected length played"><i style="width:${f.percent}%;background:var(--accent-mark)"></i></div>
+    <p class="small muted" style="margin:8px 0 0">${fmtMin(f.played_minutes)} of ${length}${f.state === 'playing' ? ` · ${fmtMin(f.weekly_minutes)} a week lately` : ''}</p></div>`;
 }
 
 function historyBlock(e) {
   const h = e.history;
   const ev = h.evidence || {};
   const conf = h.confidence;
+  const D = { year: 'numeric', month: 'short', day: 'numeric' };
+  // every date it can be told from (release, added, first and last played, the first and last
+  // achievement, the first tracked session), then the counts
   const chips = [
-    ev.first_played_at && ['First played', fmtDate(ev.first_played_at, { year: 'numeric', month: 'short', day: 'numeric' })],
-    ev.last_played_at && ['Last played', fmtDate(ev.last_played_at, { year: 'numeric', month: 'short', day: 'numeric' })],
+    ...(h.marks || []).filter((m) => m.key !== 'tracking' && m.key !== 'account')
+      .map((m) => [m.key === 'last_unlock' ? 'Last achievement' : m.label, `${fmtDate(m.at, D)}${m.key === 'release_igdb' ? ' (IGDB)' : ''}`]),
     ev.play_count && ['Launches', ev.play_count],
     ev.recent_min && ['Last 2 weeks', fmtMin(ev.recent_min)],
-    ev.anchors && ['Achievement times', ev.anchors],
-    ev.date_added && ['Added', fmtDate(ev.date_added, { year: 'numeric', month: 'short', day: 'numeric' })],
-    ev.release_at && ['Released', fmtDate(ev.release_at, { year: 'numeric', month: 'short', day: 'numeric' })],
+    h.unlocks_before && ['Achievements before tracking', h.unlocks_before],
   ].filter(Boolean);
+  // your dates (or an estimate you confirmed) that the evidence disagrees with, until you keep them
+  const warn = h.conflicts?.length && !h.acknowledged && h.mode !== 'undated';
+  const byHand = e.account_id == null && e.platform === 'manual';
+  // the dates you set as you set them (the estimate's first and last stretch can fall inside them)
+  const mine = h.manual && !h.manual.confirmed ? h.manual : null;
+  const shown = h.window ? [mine?.start ?? h.window[0], mine?.end ?? h.window[1]] : null;
   return `<div class="stack" style="padding:12px 0;border-top:1px solid var(--line)" data-hist="${e.id}">
-    <div class="row between"><div class="row">${platDot(e.platform)}<b>${esc(e.account_name || plat(e.platform).label)}</b></div><b>${fmtMin(h.minutes, { short: h.minutes >= 600 })}</b></div>
+    <div class="row between"><div class="row">${platDot(e.platform)}<b>${esc(e.account_name || (byHand ? `${e.meta?.played_on || 'Added by hand'}` : plat(e.platform).label))}</b></div><b>${fmtMin(h.minutes, { short: h.minutes >= 600 })}</b></div>
     ${h.mode === 'undated' ? '<div class="small muted">Not charted — counts toward lifetime only.</div>'
-      : h.window ? `<div class="small">Estimated <b>${fmtDate(h.window[0], { year: 'numeric', month: 'short', day: 'numeric' })} – ${fmtDate(h.window[1], { year: 'numeric', month: 'short', day: 'numeric' })}</b> · <span class="conf-${conf}">${conf} confidence</span>${h.undated ? ` · ${fmtMin(h.undated)} undated` : ''}</div>`
-      : `<div class="small muted">No dates known — counts toward lifetime only.${e.platform === 'steam' && !h.enriched ? ' Looking up achievement times…' : ''}</div>`}
+      : h.window ? `<div class="small">${h.manual?.confirmed ? 'Confirmed' : h.manual ? 'Set to' : 'Estimated'} <b>${fmtDate(shown[0], D)} – ${fmtDate(shown[1], D)}</b> · <span class="conf-${conf}">${conf} confidence</span>${h.undated ? ` · ${fmtMin(h.undated)} undated` : ''}</div>`
+      : `<div class="small muted">No dates known — counts toward lifetime only.${h.enrich_pending ? ' Looking up achievement times…' : ''}</div>`}
     ${(h.reasons || []).length ? `<div class="tiny muted">${h.reasons.map(esc).join(' · ')}</div>` : ''}
     ${chips.length ? `<div class="evidence">${chips.map(([k, v]) => `<span class="badge">${k}: ${esc(v)}</span>`).join('')}</div>` : ''}
-    <div class="row wrap">${h.window && !h.manual && h.mode !== 'undated' && conf !== 'high' ? `<button class="btn sm" data-hist-confirm="${e.id}">${icon('check')}Looks right</button>` : ''}<button class="btn sm" data-hist-edit="${e.id}">${icon('edit')}Set dates</button>
+    ${warn ? conflictList(h.conflicts) : ''}
+    <div class="row wrap">${h.window && !h.manual && h.mode !== 'undated' && conf !== 'high' && !h.enrich_pending ? `<button class="btn sm" data-hist-confirm="${e.id}">${icon('check')}Looks right</button>` : ''}<button class="btn sm${warn ? ' primary' : ''}" data-hist-edit="${e.id}">${icon('edit')}${warn ? 'Check dates' : 'Set dates'}</button>
+      ${warn ? `<button class="btn sm ghost" data-hist-ack="${e.id}">Keep my dates</button>` : ''}
       ${h.mode === 'undated' ? `<button class="btn sm ghost" data-hist-mode="auto" data-entry="${e.id}">Chart it</button>` : `<button class="btn sm ghost" data-hist-mode="undated" data-entry="${e.id}">Don’t chart</button>`}
-      ${h.manual || h.mode === 'undated' ? `<button class="btn sm ghost" data-hist-reset="${e.id}">Reset to automatic</button>` : ''}</div>
+      ${(h.manual && !byHand) || h.mode === 'undated' ? `<button class="btn sm ghost" data-hist-reset="${e.id}">Reset to automatic</button>` : ''}</div>
   </div>`;
-}
-
-function historyModal(e, onDone) {
-  const h = e.history;
-  const d = (t) => (t ? new Date(t - new Date(t).getTimezoneOffset() * 60000).toISOString().slice(0, 10) : '');
-  modal({
-    title: 'When did you play this?',
-    body: `<p class="small muted" style="margin-top:0">${fmtMin(h.minutes)} on ${esc(plat(e.platform).label)} happened before tracking began. Set the period you played it and the hours are re-spread across it.</p>
-      <div class="grid grid-2"><div class="field"><label>Started playing</label><input class="input" type="date" name="s" value="${d(h.manual?.start || h.window?.[0])}"></div>
-      <div class="field"><label>Last played</label><input class="input" type="date" name="e" value="${d(h.manual?.end || h.window?.[1])}"></div></div>`,
-    foot: '<button class="btn" data-close>Cancel</button><button class="btn primary" id="h-save">Save</button>',
-    onMount(el, close) {
-      el.querySelector('#h-save').addEventListener('click', async () => {
-        const s = el.querySelector('[name=s]').value; const en = el.querySelector('[name=e]').value;
-        try {
-          await api(`/entries/${e.id}/history`, { method: 'PATCH', body: { first_played_at: s ? `${s}T12:00:00` : null, last_played_at: en ? `${en}T20:00:00` : null, mode: 'auto' } });
-          close(); toast('History re-dated'); onDone();
-        } catch (err) { fail(err); }
-      });
-    },
-  });
 }
 
 function mergeModal(g) {
@@ -478,7 +523,8 @@ function aboutCard(g) {
     m.developers.length && ['Developer', m.developers.slice(0, 2).map((n) => `<a class="link" href="${tagHref('developer', n)}" data-link>${esc(n)}</a>`).join(', ')],
     m.publishers.length && m.publishers.join() !== m.developers.join() && ['Publisher', m.publishers.slice(0, 2).map(esc).join(', ')],
     m.franchises.length && ['Series', m.franchises.slice(0, 2).map((n) => `<a class="link" href="${tagHref('franchise', n)}" data-link>${esc(n)}</a>`).join(', ')],
-    m.release_date && ['Released', fmtDate(m.release_date, { year: 'numeric', month: 'short', day: 'numeric' })],
+    // (IGDB's date is a calendar day at midnight UTC: shown as that day wherever you are)
+    m.release_date && ['Released', fmtDate(m.release_date, { year: 'numeric', month: 'short', day: 'numeric', timeZone: 'UTC' })],
     m.rating != null && ['IGDB rating', `${Math.round(m.rating)}<span class="tiny muted"> / 100${m.rating_count ? ` · ${m.rating_count.toLocaleString()} ratings` : ''}</span>`],
   ].filter(Boolean);
   const t = m.time_to_beat;
