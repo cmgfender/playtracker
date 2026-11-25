@@ -52,6 +52,7 @@ export async function accountModal(platforms, existing = null) {
         <p class="small muted" style="margin:0">${esc(info.notes)}</p>
         <div class="field"><label>Display name</label><input class="input" name="name" value="${esc(a.name)}"></div>
         ${info.fields.map((f) => `<div class="field"><label>${esc(f.label)}${f.required || f.sign_in ? '' : ' <span class="dim">(optional)</span>'}</label>
+          ${f.steps?.length ? `<ol class="acc-steps">${f.steps.map((t) => `<li>${esc(t)}</li>`).join('')}</ol>` : ''}
           ${f.sign_in ? `<button type="button" class="btn sm" data-sign-in style="justify-self:start">${icon('external')}Open ${esc(info.label)} sign-in</button>` : ''}
           ${f.type === 'select' ? `<select class="input" name="cfg_${f.key}">${f.options.map((o) => `<option value="${esc(o)}" ${(a.config[f.key] ?? f.options[0]) === o ? 'selected' : ''}>${esc(o)}</option>`).join('')}</select>`
             : `<input class="input" name="cfg_${f.key}" type="${f.type === 'password' ? 'password' : f.type === 'number' ? 'number' : 'text'}" value="${esc(a.config[f.key] ?? '')}" placeholder="${esc(f.placeholder || '')}" autocomplete="off" spellcheck="false">`}

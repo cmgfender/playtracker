@@ -1,16 +1,18 @@
 import crypto from 'node:crypto';
 import { ProviderError } from './http.js';
 
-// The Nintendo Switch Online app's public client: you sign in to your Nintendo Account once, and the
-// session token it gives (valid about two years) reads the app's play history - the same list the
-// app shows under "Play history" (Switch and Switch 2 titles).
-const CLIENT_ID = '71b963c1b7b6d119';
+// Play history is what Nintendo's store app shows under "Play Activity" (the Nintendo Store app,
+// called My Nintendo in Japan before 2025; Switch and Switch 2 titles). You sign in to your Nintendo
+// Account once as that app, and the session token it gives (valid about two years) reads the list.
+// It has to be that app, in the sign-in, the scope and the User-Agent: a token signed in as the
+// Nintendo Switch Online app (71b963c1b7b6d119) is turned away by the play history service with a 403.
+const CLIENT_ID = '5c38e31cd085304b';
 const REDIRECT = `npf${CLIENT_ID}://auth`;
-const SCOPE = 'openid user user.birthday user.mii user.screenName';
+const SCOPE = 'openid user user.mii user.email user.links[].id';
 const ACCOUNTS = 'https://accounts.nintendo.com/connect/1.0.0';
 const PLAY_HISTORY = 'https://news-api.entry.nintendo.co.jp/api/v1.1/users/me/play_histories';
 const ME = 'https://api.accounts.nintendo.com/2.0.0/users/me';
-const UA = 'com.nintendo.znca/2.10.0 (Android/14)';
+const UA = 'com.nintendo.znej/1.13.0 (Android/7.1.2)';
 
 // sign-in links handed out and not used yet: the code verifier stays here, never in the link
 const pending = new Map();
@@ -44,7 +46,7 @@ async function sessionToken(account, ctx) {
   if (account.config.session_token) return { token: String(account.config.session_token).trim(), fresh: false };
   if (account.state?.session_token) return { token: account.state.session_token, fresh: false };
   const { code, state } = parseLink(account.config.sign_in_link);
-  if (!code) throw new ProviderError('Paste the link of "Select this person" from the Nintendo sign-in page (it starts with npf71b963c1b7b6d119://auth)', { auth: true });
+  if (!code) throw new ProviderError(`Paste the link of "Select this person" from the Nintendo sign-in page (it starts with ${REDIRECT})`, { auth: true });
   const p = pending.get(state);
   // (exchanged already, by a Test of the form before it was saved: a link works only once)
   if (p?.token) return { token: p.token, fresh: true };
@@ -78,6 +80,13 @@ async function accessToken(account, ctx) {
 
 const time = (v) => { const t = Date.parse(v || ''); return Number.isFinite(t) && t > 0 ? t : null; };
 
+// The play history service answers what it does not take for its own app with a bare "403 Forbidden"
+// page. That reads like a block by a network that passes with time; it is not one, and waiting for
+// the next sync does not help.
+const refused = (err) => (err?.status === 403
+  ? new ProviderError('Nintendo\'s play history service refused this sign-in (403). Sign in again from the account\'s settings. If it is refused again, Nintendo has changed what its store app sends and Vestigo needs an update: export diagnostics from System', { auth: true, status: 403 })
+  : err);
+
 /** Library items from a play_histories reply: lifetime minutes, first/last played, the last 7 days. */
 export function parsePlayHistory(data) {
   const recent = new Map();
@@ -104,10 +113,17 @@ export const nintendo = {
   id: 'nintendo',
   label: 'Nintendo',
   fields: [
-    { key: 'sign_in_link', label: 'Sign-in link', type: 'password', required: false, sign_in: true, placeholder: 'npf71b963c1b7b6d119://auth#session_token_code=…', help: 'Open the Nintendo sign-in and sign in. Then right-click (on a phone, long-press) "Select this person", copy the link and paste it here, within an hour.' },
-    { key: 'session_token', label: 'Session token', type: 'password', required: false, help: 'Instead of a sign-in link: a Nintendo Account session token for the Nintendo Switch Online app, from another tool (nxapi).' },
+    { key: 'sign_in_link', label: 'Sign-in link', type: 'password', required: false, sign_in: true, placeholder: `${REDIRECT}#session_token_code=…`,
+      // (the button's link opens Nintendo's phone app: followed in a browser it goes nowhere, so it is copied)
+      steps: [
+        'Open the Nintendo sign-in and sign in to your Nintendo Account.',
+        'On the page that follows, do not click "Select this person". Right-click it (on a phone, press and hold) and choose Copy Link Address.',
+        'Paste the link below within an hour, then Connect.',
+      ],
+      help: `Clicking "Select this person" does nothing in Chrome, and Safari says the address is invalid: the link opens Nintendo's phone app, which a browser cannot do. That is expected. The link you copy starts with ${REDIRECT} and works once.` },
+    { key: 'session_token', label: 'Session token', type: 'password', required: false, help: 'Instead of a sign-in link: a Nintendo Account session token for the Nintendo Store app (My Nintendo), from another tool. One for the Nintendo Switch Online app does not work here.' },
   ],
-  notes: 'Your Nintendo Switch play history, as the Nintendo Switch Online app shows it: total play time, first and last played per title, and the last 7 days day by day. One sign-in, kept for about two years.',
+  notes: 'Your Nintendo Switch play history, as the Nintendo Store app shows it under Play Activity: total play time, first and last played per title, and the last 7 days day by day. One sign-in, kept for about two years.',
   profile: {
     history: {
       update: 'delayed',          // the console uploads play history now and then; hours can pass
@@ -130,7 +146,7 @@ export const nintendo = {
     history_anchors: 'first + last played, days played',
     rate_limit: 'Undocumented; a sync costs 3 requests.',
     limitations: [
-      'Uses the Nintendo Switch Online app\'s private API; no Nintendo Switch Online membership is needed.',
+      'Uses the private API of the Nintendo Store app (My Nintendo); no Nintendo Switch Online membership is needed.',
       'Play history reaches Nintendo when the console is online and uploads it, which can be hours after you play.',
       'No live "playing now", achievements or per-device minutes.',
       'Titles hidden from play history in the app are not listed.',
@@ -151,8 +167,8 @@ export const nintendo = {
       data = await get(PLAY_HISTORY, tok.access);
     } catch (err) {
       // the play history service has taken the ID token instead of the access token
-      if ((err.status === 401 || err.status === 403) && tok.id) data = await get(PLAY_HISTORY, tok.id);
-      else throw err;
+      if ((err.status === 401 || err.status === 403) && tok.id) data = await get(PLAY_HISTORY, tok.id).catch((again) => { throw refused(again); });
+      else throw refused(err);
     }
     if (!Array.isArray(data?.playHistories)) throw new ProviderError(`Nintendo's play history came back in an unexpected shape (keys: ${Object.keys(data || {}).join(', ') || 'none'})`);
     const state = { ...(tok.session ? { session_token: tok.session } : {}) };
