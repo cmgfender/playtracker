@@ -234,6 +234,8 @@ export function applyItems(db, account, items, { settings, now = Date.now(), syn
       if (windowEnd - windowStart >= (minutes - 1) * MIN) { started = windowStart; ended = windowEnd; confidence = 'pinned'; }
       else windowStart = windowEnd - (minutes + 10) * MIN;
     }
+    // (whatever said so, no session ends before it starts)
+    if (started != null && ended != null && ended < started) ended = started;
     const r = insSession.run(entry.id, syncId, source, 'play', minutes, Math.min(windowStart, started ?? windowStart), Math.max(windowEnd, ended ?? windowEnd), started, ended, confidence, device, note, now);
     const id = Number(r.lastInsertRowid);
     if (started && ended && claimSpans.run(id, account.id, entry.ext_id ?? String(curExt), ended - 5 * MIN, started + 5 * MIN).changes && confidence === 'pinned') {
@@ -1149,9 +1151,10 @@ export class SyncService {
     const rejoin = modelFor(providers[account.platform], account).countsInProgress() ? Math.max(REJOIN_MIN, 3 * intervalSec * 1000) : 0;
     tx(db, () => {
       for (const s of open) {
-        if (ids.has(s.ext_id) && !lapsed.has(s.id)) unmemoized(db, db.prepare('UPDATE presence SET last_seen_at = ? WHERE id = ?').run(now, s.id));
+        if (ids.has(s.ext_id) && !lapsed.has(s.id)) unmemoized(db, db.prepare('UPDATE presence SET last_seen_at = ? WHERE id = ?').run(Math.max(now, s.started_at), s.id));
         else {
-          db.prepare('UPDATE presence SET ended_at = ? WHERE id = ?').run(Math.min(now, s.last_seen_at + half), s.id);
+          // (never before it began: a clock set back - a server finding the right time after it started - would end it earlier)
+          db.prepare('UPDATE presence SET ended_at = ? WHERE id = ?').run(Math.max(s.started_at, Math.min(now, s.last_seen_at + half)), s.id);
           if (s.session_id !== 0) closed++; // (an echo ending is not play ending)
         }
       }

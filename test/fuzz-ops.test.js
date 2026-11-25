@@ -5,6 +5,9 @@
 // seed and the step, so it can be replayed (FUZZ_SEED=7 FUZZ_STEPS=400 node --test test/fuzz-ops.test.js).
 import { test, describe, before, after } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { clock, local, startApp, guardNetwork, restoreNetwork, totalsMismatch, rollupMismatch, DAY, HOUR, MIN } from './suite/helpers/sessions-stats-harness.js';
 
 const SEEDS = process.env.FUZZ_SEED ? [Number(process.env.FUZZ_SEED)] : [1, 2, 3, 4, 5, 6];
@@ -15,9 +18,10 @@ function rng(seed) { let s = seed * 2654435761 >>> 0; return () => { s ^= s << 1
 
 for (const seed of SEEDS) {
   describe(`a library's life, seed ${seed}`, () => {
-    let h;
-    before(async () => { guardNetwork(); clock.install(local(2025, 1, 6, 12)); h = await startApp(); });
-    after(async () => { await h?.close(); clock.uninstall(); restoreNetwork(); });
+    let h; let dir; let dbFile;
+    // (a database on disk, so the library can be closed and opened again mid-life)
+    before(async () => { guardNetwork(); clock.install(local(2025, 1, 6, 12)); dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vg-fuzz-')); dbFile = path.join(dir, 'vestigo.db'); h = await startApp({ dbFile }); });
+    after(async () => { await h?.close(); clock.uninstall(); restoreNetwork(); fs.rmSync(dir, { recursive: true, force: true }); });
 
     test(`${STEPS} random operations keep every total, rollup and page in agreement`, async () => {
       const r = rng(seed);
@@ -137,9 +141,56 @@ for (const seed of SEEDS) {
         async reinfer() { return `reinfer -> ${(await call('POST', '/history/reinfer', {})).status}`; },
         async era() { return `era -> ${(await call('POST', '/legends/eras', { name: `Era ${int(1, 99)}`, from: `${int(2019, 2025)}-0${int(1, 9)}`, to: r() < 0.5 ? '' : '2025-12' })).status}`; },
         async wait() { clock.advance(int(1, 72) * HOUR); return 'time passes'; },
+        // months pass (an account left alone), or the clock is set back an hour (a daylight-saving night, a corrected clock)
+        async longWait() { const d = r() < 0.85 ? int(20, 200) * DAY : -HOUR; clock.advance(d); return `clock ${d > 0 ? `+${d / DAY} days` : '-1 hour'}`; },
+        // presence: a game seen running, still running, or nothing running any more
+        async presence() {
+          if (!accounts.length) return 'skip';
+          const acc = pick(accounts); const known = [...reported.get(acc).entries()];
+          const playing = r() < 0.35 || !known.length ? [] : [pick(known)].map(([id, g]) => ({ id, title: g.title, ...(r() < 0.3 ? { device: 'Console' } : {}) }));
+          const res = await call('POST', `/accounts/${acc}/presence`, { playing, interval_sec: pick([60, 120, 300]) });
+          if (r() < 0.6) clock.advance(int(2, 40) * MIN);
+          return `presence ${acc} ${JSON.stringify(playing)} -> ${res.status}`;
+        },
+        // a file from elsewhere: rows with or without a platform, an account, hours, dates, sessions
+        async importRows() {
+          const rows = [];
+          for (let i = 0, n = int(1, 5); i < n; i++) {
+            const row = { title: pick(TITLES) };
+            if (r() < 0.7) row.platform = pick(['steam', 'custom', 'manual', 'switch', 'PC', 'xbox', '']);
+            if (r() < 0.3) row.account = pick(['acct 1', 'acct 2', 'Someone']);
+            if (r() < 0.8) row[pick(['playtime_minutes', 'playtime_hours'])] = int(0, 300);
+            if (r() < 0.4) row.last_played = new Date(clock.now - int(0, 900) * DAY).toISOString();
+            if (r() < 0.3) row.first_played = new Date(clock.now - int(300, 2000) * DAY).toISOString();
+            if (r() < 0.3) row.status = pick(['playing', 'completed', 'backlog', 'nonsense']);
+            if (r() < 0.2) row.excluded = r() < 0.5;
+            if (r() < 0.2) row.copy = int(1, 3);
+            if (r() < 0.35) row.sessions = Array.from({ length: int(1, 3) }, () => ({ started_at: new Date(clock.now - int(1, 600) * DAY - int(0, 23) * HOUR).toISOString(), minutes: int(1, 200) }));
+            if (r() < 0.2) row.history = pick([{ mode: 'undated' }, { mode: 'auto', start: new Date(clock.now - 900 * DAY).toISOString(), end: new Date(clock.now - 400 * DAY).toISOString() }]);
+            rows.push(row);
+          }
+          const dry = r() < 0.15;
+          const res = await call('POST', `/import${dry ? '?dry_run=true' : ''}`, r() < 0.5 ? { games: rows } : rows);
+          return `import${dry ? ' (dry run)' : ''} ${JSON.stringify(rows).slice(0, 400)} -> ${res.status}`;
+        },
+        // the server stopped and started again on the same database
+        async restart() { await h.close(); h = await startApp({ dbFile }); return 'restart'; },
+        async deleteAccount() {
+          if (accounts.length < 2 || r() < 0.5) return 'skip';
+          const acc = accounts.splice(Math.floor(r() * accounts.length), 1)[0];
+          reported.delete(acc);
+          return `delete account ${acc} -> ${(await call('DELETE', `/accounts/${acc}${r() < 0.5 ? '?keep=true' : ''}`)).status}`;
+        },
+        // two things at once (a sync finishing while a session is logged)
+        async parallel() {
+          const names = [pick(['report', 'session', 'presence', 'editSession', 'game', 'history', 'playtime']), pick(['report', 'session', 'presence', 'exclude', 'merge', 'move'])];
+          const out = await Promise.all(names.map((n) => ops[n]()));
+          return `at once: ${names.join(' + ')} :: ${out.join(' || ').slice(0, 500)}`;
+        },
       };
       const weighted = ['report', 'report', 'report', 'report', 'session', 'session', 'session', 'wait', 'wait', 'wait', 'add', 'editSession', 'editSession', 'deleteSession', 'bulk', 'merge', 'move', 'split', 'exclude', 'playtime',
-        'history', 'history', 'game', 'game', 'deleteGame', 'settings', 'reinfer', 'era', 'account'];
+        'history', 'history', 'game', 'game', 'deleteGame', 'settings', 'reinfer', 'era', 'account',
+        'presence', 'presence', 'presence', 'importRows', 'importRows', 'restart', 'longWait', 'deleteAccount', 'parallel', 'parallel'];
 
       const check = async (step) => {
         const where = `seed ${seed}, step ${step}:\n${log.slice(-8).join('\n')}\n`;
@@ -152,7 +203,15 @@ for (const seed of SEEDS) {
         assert.equal(one('SELECT COUNT(*) n FROM sessions s LEFT JOIN entries e ON e.id = s.entry_id WHERE e.id IS NULL').n, 0, `no session without its entry; ${where}`);
         assert.equal(one('SELECT COUNT(*) n FROM games g WHERE NOT EXISTS (SELECT 1 FROM entries e WHERE e.game_id = g.id)').n, 0, `no game without an entry; ${where}`);
         assert.equal(one('SELECT COUNT(*) n FROM play_days WHERE minutes < 0 OR minutes > 1440.5').n, 0, `no day of more than 24 hours for one session; ${where}`);
-        assert.equal(one("SELECT COUNT(*) n FROM sessions WHERE kind = 'play' AND source != 'inferred' AND started_at IS NOT NULL AND ended_at IS NOT NULL AND ended_at < started_at").n, 0, `no session ending before it starts; ${where}`);
+        const backwards = h.db.prepare("SELECT id, entry_id, source, minutes, started_at, ended_at, window_start, window_end, confidence, note FROM sessions WHERE kind = 'play' AND source != 'inferred' AND started_at IS NOT NULL AND ended_at IS NOT NULL AND ended_at < started_at").all();
+        if (backwards.length && process.env.FUZZ_DEBUG) {
+          const e = h.db.prepare('SELECT id, account_id, ext_id, playtime_min, last_played_at FROM entries WHERE id = ?').get(backwards[0].entry_id);
+          console.log('ENTRY', JSON.stringify(e));
+          console.log('PRESENCE', JSON.stringify(h.db.prepare('SELECT * FROM presence WHERE account_id = ? AND ext_id = ? ORDER BY id').all(e.account_id, e.ext_id)));
+          console.log('SESSIONS', JSON.stringify(h.db.prepare("SELECT id, kind, source, minutes, started_at, ended_at, window_start, window_end, confidence, created_at FROM sessions WHERE entry_id = ? AND source != 'inferred' ORDER BY id").all(e.id)));
+          console.log('LOG', log.filter((l) => /presence|report|longWait|restart|wait/.test(l)).slice(-14).join('\n'));
+        }
+        assert.deepEqual(backwards.map((x) => ({ ...x })), [], `no session ending before it starts (now ${clock.now}); ${where}`);
         if (step % 10 && step !== STEPS) return;
         // the pages agree with the database and with each other
         const sum = one('SELECT COALESCE(SUM(playtime_min), 0) m FROM entries WHERE excluded = 0').m;
