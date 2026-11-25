@@ -1,6 +1,6 @@
 import {
   $, $$, esc, fmtMin, ago, fmtDate, fmtTime, dayLabel, plat, platDot, platTag, platIcon, STATUSES, cover, icon, api, toast,
-  undoToast, fail, modal, confirmBox, navigate, rerender, state, plural, setTitle, coverHue, tagHref,
+  undoToast, fail, modal, confirmBox, navigate, rerender, state, plural, setTitle, coverHue, tagHref, sized, imgSrc,
 } from '../app.js';
 import { barChart, heatmap, mountCharts, curveChart, BASIS_FILL } from '../charts.js';
 import { arrow, seriesLabel, seriesName, kpi, sessionItem, groupByDay, rarityText, achIcon, logSessionModal, bindSessionEdits, dayKey, BASIS, prose } from './shared.js';
@@ -225,7 +225,7 @@ export async function game(view, id, stale) {
   view.innerHTML = `
     <a href="/library" data-link class="btn ghost sm" style="margin:-4px 0 10px -6px" onclick="if(history.length>1){event.preventDefault();event.stopPropagation();history.back()}">${icon('back')}Back</a>
     <div class="hero fade-in${g.cover_url ? '' : ' hero-ph'}" style="--ph-h:${coverHue(g.title)}">
-      ${g.cover_url ? `<div class="bgclip"><div class="bg" style="background-image:url('${esc(cssUrl(g.cover_url))}')"></div></div>` : ''}
+      ${g.cover_url ? `<div class="bgclip"><div class="bg" style="background-image:url('${esc(cssUrl(sized(g.cover_url)))}')"></div></div>` : ''}
       <div class="in">
         ${cover(g)}
         <div class="grow">
@@ -599,7 +599,7 @@ function sourceRow(e, g) {
   const what = hoursLine(e, g);
   const dated = datedLine(e);
   return `<div class="item src" style="${e.excluded ? 'opacity:.55' : ''}" data-src="${e.id}">
-      ${isAssumed(e) ? '<span class="src-ic basis-assumed" aria-hidden="true"></span>' : e.icon_url ? `<img src="${esc(e.icon_url)}" width="32" height="32" style="border-radius:8px" alt="" loading="lazy" onerror="this.style.visibility='hidden'">` : platIcon(e.platform, 32)}
+      ${isAssumed(e) ? '<span class="src-ic basis-assumed" aria-hidden="true"></span>' : e.icon_url ? `<img ${imgSrc(e.icon_url, 128)} width="32" height="32" style="border-radius:8px" alt="" loading="lazy" onerror="this.style.visibility='hidden'">` : platIcon(e.platform, 32)}
       <div class="grow"><div class="ttl ellipsis">${esc(entryName(e))}</div>
         <div class="sub">${platDot(e.platform)}${esc(e.title !== g.title ? e.title : plat(e.platform).label)}${e.meta?.played_on && !byHandEntry(e) ? ` · ${esc(e.meta.played_on)}` : ''}${e.excluded ? ' · <b>excluded from totals</b>' : ''}</div>
         ${what ? `<div class="sub src-line src-what">${what}</div>` : ''}

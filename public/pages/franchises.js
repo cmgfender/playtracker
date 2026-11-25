@@ -4,7 +4,7 @@
 // you don't own too) grouped into the series' eras, the remakes, remasters and re-releases linked to
 // the games they are versions of, what to play next, the order you played them in, and - where the
 // story is told out of order - the story order.
-import { esc, fmtMin, fmtDate, platDot, icon, api, plural, coverHue, monogram } from '../app.js';
+import { esc, fmtMin, fmtDate, platDot, icon, api, plural, coverHue, monogram, imgSrc } from '../app.js';
 import { emptyState } from './shared.js';
 
 const KIND = { spinoff: 'Spin-off', remake: 'Remake', remaster: 'Remaster', rerelease: 'Re-release', collection: 'Collection', hub: 'App', other: 'Also in the series' };
@@ -22,7 +22,7 @@ const played = (f) => years(f.first_day?.slice(0, 4), f.last_day?.slice(0, 4));
 function covers(f) {
   const c = f.covers.slice(0, 4);
   if (!c.length) return `<div class="fr-covers ph" style="--ph-h:${coverHue(f.name)}"><span>${esc(monogram(f.name))}</span></div>`;
-  return `<div class="fr-covers n${c.length}">${c.map((u) => `<img src="${esc(u)}" alt="" loading="lazy" onerror="this.style.visibility='hidden'">`).join('')}</div>`;
+  return `<div class="fr-covers n${c.length}">${c.map((u) => `<img ${imgSrc(u)} alt="" loading="lazy" onerror="this.style.visibility='hidden'">`).join('')}</div>`;
 }
 
 function card(f) {
@@ -103,7 +103,7 @@ function versionsLine(it) {
 function item(it, i, { showYear = true } = {}) {
   const g = it.game;
   const [label, cls] = it.via ? [viaLabel(it), (STATE[it.state] || STATE.missing)[1]] : STATE[it.state] || STATE.missing;
-  const thumb = g?.cover_url ? `<img class="fr-thumb" src="${esc(g.cover_url)}" alt="" loading="lazy" onerror="this.style.visibility='hidden'">`
+  const thumb = g?.cover_url ? `<img class="fr-thumb" ${imgSrc(g.cover_url)} alt="" loading="lazy" onerror="this.style.visibility='hidden'">`
     : `<span class="fr-thumb ph" style="--ph-h:${coverHue(it.title)}">${esc(monogram(it.title))}</span>`;
   const href = g ? `/game/${g.id}` : it.via?.game_id ? `/game/${it.via.game_id}` : null;
   const title = href ? `<a class="ttl link-plain" href="${href}" data-link>${esc(it.title)}</a>` : `<span class="ttl">${esc(it.title)}</span>`;
