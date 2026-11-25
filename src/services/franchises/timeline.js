@@ -4,7 +4,9 @@
 
 const PLAYED = new Set(['played', 'playing', 'finished', 'dropped']);
 // which state speaks for an entry when several versions of it are yours
-const RANK = { finished: 5, playing: 4, played: 3, dropped: 2, owned: 1, missing: 0 };
+const RANK = { finished: 5, playing: 4, played: 3, dropped: 2, owned: 1, wanted: 0.5, missing: 0 };
+// yours: anything but missing, or only on your wish list
+const HAVE = (s) => s !== 'missing' && s !== 'wanted';
 // (a game told in parts - see parts.js - is in it once for each: `uid` tells them apart, `id` is the game's)
 const pub = (g) => g && ({ id: g.id, uid: g.uid || String(g.id), title: g.title, cover_url: g.cover_url, minutes: g.minutes, status: g.status, state: g.state, platforms: g.platforms, first_day: g.first_day, last_day: g.last_day, complete: g.complete,
   ...(g.part ? { part: g.part } : {}) });
@@ -81,8 +83,8 @@ export function build(r, now) {
       let best = null;
       for (const v of it.versions) {
         // a collection holds its games: in your library through it, played or not (which of them you played it does not say)
-        const s = v.kind === 'collection' ? (v.own !== 'missing' ? 'owned' : 'missing') : v.own;
-        if (s !== 'missing' && (!best || RANK[s] > RANK[best.s])) best = { v, s };
+        const s = v.kind === 'collection' ? (HAVE(v.own) ? 'owned' : 'missing') : v.own;
+        if (HAVE(s) && (!best || RANK[s] > RANK[best.s])) best = { v, s };
       }
       if (best && RANK[best.s] > RANK[it.own]) {
         it.state = best.s;
@@ -126,7 +128,7 @@ export function build(r, now) {
     const m = its.filter((it) => it.kind === 'main');
     const fd = gs.map((g) => g.first_day).filter(Boolean).sort(); const ld = gs.map((g) => g.last_day).filter(Boolean).sort();
     return { index: j, name: x.name, note: x.note, from: ys.length ? Math.min(...ys) : x.from, to: ys.length ? Math.max(...ys) : x.from,
-      main: { total: m.length, owned: m.filter((it) => it.state !== 'missing').length, played: m.filter(isPlayed).length, finished: m.filter((it) => it.state === 'finished').length },
+      main: { total: m.length, owned: m.filter((it) => HAVE(it.state)).length, played: m.filter(isPlayed).length, finished: m.filter((it) => it.state === 'finished').length },
       games: gs.length, minutes: gs.reduce((a, g) => a + g.minutes, 0) + its.reduce((a, it) => a + it.addons.reduce((b, t) => b + t.minutes, 0), 0), first_day: fd[0] || null, last_day: ld.at(-1) || null };
   });
   const top = r.eras.reduce((a, x) => (x.minutes > (a?.minutes || 0) ? x : a), null);
@@ -137,16 +139,16 @@ export function build(r, now) {
     minutes: list.reduce((a, g) => a + g.minutes, 0) + addonMinutes, first_day: firsts[0] || null, last_day: lasts.at(-1) || null,
     released: items.length ? { from: items.find((it) => it.year)?.year ?? null, to: [...items].reverse().find((it) => it.year)?.year ?? null } : null,
   };
-  r.mainline = r.curated ? { total: main.length, owned: main.filter((it) => it.state !== 'missing').length, played: main.filter(isPlayed).length, finished: main.filter((it) => it.state === 'finished').length } : null;
+  r.mainline = r.curated ? { total: main.length, owned: main.filter((it) => HAVE(it.state)).length, played: main.filter(isPlayed).length, finished: main.filter((it) => it.state === 'finished').length } : null;
   // what to play it as: the copy you have, else the version you own, else its newest version
   const playAs = (it) => {
-    if (!it || it.own !== 'missing') return null;
+    if (!it || HAVE(it.own)) return null;
     if (it.via) return it.via;
     const v = it.versions.filter((x) => x.kind !== 'collection').sort((a, b) => (b.year ?? 0) - (a.year ?? 0))[0];
     return v ? { game_id: null, title: v.title, kind: v.kind, year: v.year, key: v.key } : null;
   };
   const pa = playAs(nextItem);
-  r.next = nextItem ? { title: nextItem.title, year: nextItem.year, kind: nextItem.kind, game_id: nextItem.game?.id ?? nextItem.via?.game_id ?? null, owned: nextItem.state !== 'missing',
+  r.next = nextItem ? { title: nextItem.title, year: nextItem.year, kind: nextItem.kind, game_id: nextItem.game?.id ?? nextItem.via?.game_id ?? null, owned: HAVE(nextItem.state),
     via: nextItem.via?.title || null, play_as: pa && !nextItem.via ? { title: pa.title, year: pa.year, kind: pa.kind } : null, earlier: !!before } : null;
   r.your_order = { games: yours.map((g) => ({ id: g.id, title: g.title, first_day: g.first_day, year: rel.get(g.uid) === 9999 ? null : rel.get(g.uid) })), in_release_order: yours.length > 1 ? inOrder : null, pairs: Math.max(0, yours.length - 1) };
   r.story = r.def?.story ? r.def.story.map((t) => r.items.find((it) => it.curated && it.title === t)).filter(Boolean).map((it) => it.key) : null;

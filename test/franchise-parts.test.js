@@ -115,3 +115,30 @@ test("a series' app (the Battlefield app on Xbox) is dated by the years it holds
     assert.deepEqual(ea.games.map((x) => x.id), [gid], "EA's, as the series is - not IGDB's 1997 developer's");
   } finally { close(); }
 });
+
+test('a game only on your wish list is wanted, not owned; an unreleased game sharing an old one\'s name is a new game', async () => {
+  const { app, server, close } = createApp({ dbFile: ':memory:', password: '', log: quiet, scheduler: false });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  const base = `http://127.0.0.1:${server.address().port}/api/v1`;
+  const get = async (p) => (await fetch(base + p)).json();
+  const post = async (p, body) => (await fetch(base + p, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })).json();
+  try {
+    const db = app.db;
+    const lost = await post('/games', { title: 'Fable: The Lost Chapters' });
+    const iii = await post('/games', { title: 'Fable III', status: 'wishlist' });
+    const reboot = await post('/games', { title: 'Fable', status: 'wishlist', merge: false });
+    // IGDB: the reboot comes out next year
+    db.prepare("INSERT INTO game_meta(game_id, igdb_id, matched_by, name, release_date, fetched_at) VALUES (?, 92550, 'title', 'Fable', ?, 0)").run(reboot.id, Date.UTC(new Date().getFullYear() + 1, 1, 23));
+    const f = await get('/franchises/fable');
+    const at = (t) => f.items.find((it) => it.title === t);
+    assert.equal(at('Fable III').state, 'wanted', 'on the wish list');
+    assert.equal(at('Fable: The Lost Chapters').game.id, lost.id);
+    assert.deepEqual([f.mainline.owned, f.mainline.played], [1, 0], 'Fable (through The Lost Chapters) is yours; Fable III only wanted');
+    assert.equal(at('Fable Anniversary').state, 'missing', 'the unreleased reboot is not the 2014 remaster');
+    const rb = f.items.find((it) => it.game?.id === reboot.id);
+    assert.deepEqual([rb.kind, rb.state], ['other', 'wanted'], 'a new game in the series, wanted');
+    // and no part of your career
+    const career = await get('/legends/career/all');
+    assert.ok(!career.games.some((x) => x.id === iii.id || x.id === reboot.id));
+  } finally { close(); }
+});

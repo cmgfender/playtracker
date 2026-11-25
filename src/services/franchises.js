@@ -66,7 +66,8 @@ export function franchiseIndex(db, { now = Date.now() } = {}) {
       const f = curatedOf(g);
       if (f) {
         // a game named only after the series (an app, a hub): IGDB's year for it is a guess
-        if (f.aliasKeys.has(normalizeTitle(yearless(g.title)))) record(out, f).hubs.push({ g, hub: null });
+        // (not a game that is not out yet: that is the series' next game, a reboot under its name)
+        if (f.aliasKeys.has(normalizeTitle(yearless(g.title))) && !(g.release_year > new Date().getFullYear())) record(out, f).hubs.push({ g, hub: null });
         else record(out, f).extras.push(g);
         placed.add(g.id);
       }

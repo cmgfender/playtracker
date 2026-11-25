@@ -1,5 +1,5 @@
 // The games of a library as the franchise pages see them: totals, state (finished, playing, played,
-// dropped, owned), first and last day played, release year (the store's, else IGDB's), IGDB's name
+// dropped, owned, wanted: on your wish list), first and last day played, release year (the store's, else IGDB's), IGDB's name
 // and franchises, and store ids; for a game of more than one entry, its entries too (see parts.js:
 // they can be different releases of one series entry).
 
@@ -49,7 +49,9 @@ export function libraryGames(db, now) {
     const complete = !!(set && ((set.total > 0 && set.unlocked === set.total) || set.plat));
     const lastDay = d?.last || (g.last_played > 31536000000 ? dayKey(g.last_played) : null);
     const state = FINISHED.has(g.status) || complete ? 'finished' : g.status === 'dropped' ? 'dropped'
-      : g.minutes > 0 && (g.status === 'playing' || (lastDay && lastDay >= recent)) ? 'playing' : g.minutes > 0 ? 'played' : 'owned';
+      : g.minutes > 0 && (g.status === 'playing' || (lastDay && lastDay >= recent)) ? 'playing' : g.minutes > 0 ? 'played'
+        // a game only on your wish list is not yours yet: wanted, not owned
+        : g.status === 'wishlist' ? 'wanted' : 'owned';
     return {
       id: g.id, title: g.title, cover_url: g.cover_url, status: g.status, minutes: g.minutes, platforms: (g.platforms || '').split(',').filter(Boolean),
       first_day: d?.first || null, last_day: lastDay, release_at: release || null, release_year: release ? new Date(release).getFullYear() : null,
