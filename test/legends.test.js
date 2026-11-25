@@ -7,7 +7,8 @@ import { FRANCHISES } from '../src/data/franchises.js';
 import { GENERATIONS } from '../src/data/legends/generations.js';
 import { MAKERS } from '../src/data/legends/makers.js';
 import { TRENDS } from '../src/data/legends/trends.js';
-import { generationOf, makersOf, trendsOf } from '../src/services/legends/catalog.js';
+import { GENRES } from '../src/data/legends/genres.js';
+import { generationOf, makersOf, trendsOf, genresOf } from '../src/services/legends/catalog.js';
 import { hrs } from '../src/services/legends/story.js';
 import { clock, local, startApp, guardNetwork, restoreNetwork, addGame, logSession } from './suite/helpers/sessions-stats-harness.js';
 
@@ -60,6 +61,15 @@ describe('the curated side of Legends', () => {
     assert.deepEqual(tr('A Game Of Its Own', null), []);
   });
 
+  test('genres and worlds: by the genres and themes IGDB files a game under, the broadest shelves left out', () => {
+    assert.equal(new Set(GENRES.map((g) => g.id)).size, GENRES.length);
+    for (const g of GENRES) assert.ok(g.id && g.name && g.tagline && (g.genres || []).length + (g.themes || []).length > 0, g.id);
+    assert.deepEqual(genresOf(['Role-playing (RPG)', 'Adventure', 'Indie'], ['Fantasy', 'Action']).map((g) => g.id), ['rpg', 'fantasy']);
+    assert.deepEqual(genresOf(['shooter'], ['science fiction', 'Horror']).map((g) => g.id), ['shooters', 'horror', 'sci-fi']);
+    assert.deepEqual(genresOf(['Adventure', 'Indie'], ['Action']), [], 'nearly every game is an adventure: no legend in that');
+    assert.deepEqual(genresOf(), []);
+  });
+
   test('hours in prose', () => {
     assert.deepEqual([hrs(35), hrs(60), hrs(270), hrs(74400)], ['35 minutes', '1 hour', '4.5 hours', '1,240 hours']);
   });
@@ -80,11 +90,11 @@ describe('legends in a library', () => {
       for (const [kind, names] of Object.entries(tags)) for (const name of names) tag.run(g, kind, name);
       return g;
     };
-    id.h3 = await add('Halo 3', [2007, 9], { developer: ['Bungie'], publisher: ['Microsoft Game Studios'], platform: ['Xbox 360'] });
-    id.gears = await add('Gears of War 2', [2008, 11], { platform: ['Xbox 360'] });
-    id.inf = await add('Halo Infinite', [2021, 12], { developer: ['343 Industries'], platform: ['Xbox Series X|S', 'Xbox One', 'PC (Microsoft Windows)'] });
+    id.h3 = await add('Halo 3', [2007, 9], { developer: ['Bungie'], publisher: ['Microsoft Game Studios'], platform: ['Xbox 360'], genre: ['Shooter'], theme: ['Science fiction', 'Action'] });
+    id.gears = await add('Gears of War 2', [2008, 11], { platform: ['Xbox 360'], genre: ['Shooter'] });
+    id.inf = await add('Halo Infinite', [2021, 12], { developer: ['343 Industries'], platform: ['Xbox Series X|S', 'Xbox One', 'PC (Microsoft Windows)'], genre: ['Shooter'], theme: ['Science fiction'] });
     id.botw = await add('The Legend of Zelda: Breath of the Wild', [2017, 3], { platform: ['Nintendo Switch', 'Wii U'] });
-    id.bastion = await add('Bastion', [2011, 7], { developer: ['Supergiant Games'] });
+    id.bastion = await add('Bastion', [2011, 7], { developer: ['Supergiant Games'], genre: ['Role-playing (RPG)', 'Indie'] });
     id.transistor = await add('Transistor', [2014, 5], { developer: ['Supergiant Games'] });
     id.hades = await add('Hades', [2020, 9], { developer: ['Supergiant Games'] });
     id.alone = await add('A Game Of Its Own', [2019, 1]);
@@ -162,7 +172,17 @@ describe('legends in a library', () => {
     const c = await h.get('/legends/career/all');
     assert.deepEqual([c.name, c.totals.games, c.totals.played, c.totals.finished, c.totals.minutes], ['Your career', 8, 7, 1, 3020]);
     assert.equal(chapter(c, 'reach'), '8 games in all, 7 played, 1 finished. They span 3 series, Halo (20 hours) and The Legend of Zelda (15 hours) most of all.');
-    for (const [path, status] of [['/legends/trend/nope', 404], ['/legends/maker/nope', 404], ['/legends/generation/gen1', 404], ['/legends/series/no-such', 404], ['/legends/era/9', 404], ['/legends/bogus/x', 400]]) assert.equal((await h.call('GET', path)).status, status, path);
+    // a genre: three games of it make a career; two (science fiction) do not
+    const l = await h.get('/legends');
+    assert.deepEqual(l.genres.map((x) => [x.kind, x.id, x.name, x.games, x.minutes]), [['genre', 'shooters', 'Shooters', 3, 1440]]);
+    const sh = await h.get('/legends/genre/shooters');
+    assert.deepEqual([sh.name, sh.tagline, sh.totals.games, chapter(sh, 'began')], ['Shooters', 'Down the sights, from corridors to open maps', 3, 'The first of them on record: Halo 3, on <2011-10-01:day>.']);
+    // where each stands: its place among its kind by hours, its share of all the time on record
+    assert.deepEqual(sh.standing, { share: 47.7, rank: 1, of: 1, achievements: 0, weekly: null });
+    assert.deepEqual([m.standing.rank, m.standing.of, m.standing.share], [4, l.makers.length, 22.5], 'Supergiant, behind Xbox, Bungie and Nintendo');
+    assert.deepEqual([(await h.get('/legends/maker/xbox')).standing.rank, (await h.get('/legends/series/halo')).standing.rank, (await h.get('/legends/series/zelda')).standing.rank], [1, 1, 2]);
+    assert.deepEqual([c.standing.share, c.standing.rank], [null, null], 'the career is all of it');
+    for (const [path, status] of [['/legends/genre/sci-fi', 404], ['/legends/genre/nope', 404], ['/legends/trend/nope', 404], ['/legends/maker/nope', 404], ['/legends/generation/gen1', 404], ['/legends/series/no-such', 404], ['/legends/era/9', 404], ['/legends/bogus/x', 400]]) assert.equal((await h.call('GET', path)).status, status, path);
   });
 
   test('findings for Insights: what stands out in a range, told in parts, the most telling first', async () => {
@@ -203,9 +223,16 @@ describe('legends in a library', () => {
     assert.equal(s.months, null, 'longer than three years: by year');
     assert.deepEqual(s.years.map((y) => [y.year, y.minutes]), [[2011, 600], [2012, 540], [2013, 120]]);
     assert.ok(Array.isArray(s.milestones), 'the badges earned in it');
+    // every era by the same measures, so one can be set against another; hours a week on the card too
+    assert.deepEqual(s.compare.eras.map((x) => [x.id, x.name, x.minutes, x.games, x.fresh, x.top]), [['1', 'College', 1260, 3, 3, 'Halo 3'], ['2', 'These days', 1660, 4, 4, 'The Legend of Zelda: Breath of the Wild']]);
+    assert.deepEqual([s.compare.eras[0].weekly, s.standing.weekly, l.eras[0].weekly, s.standing.rank], [0.1, 0.1, 0.1, null]);
+    assert.ok(s.compare.eras[1].weekly > s.compare.eras[0].weekly && s.compare.career.minutes === 3020 && s.compare.career.weekly > 0, JSON.stringify(s.compare));
+    assert.equal(chapter(s, 'pace'), null, 'an era that closed has no "lately"');
     // an era still going is told by the month, up to today
     const t = await h.get('/legends/era/2');
     assert.deepEqual([t.window.to, t.months.length, t.months[0].key, chapter(t, 'now')], ['2026-03-18', 15, '2025-01', 'It is still going: you last played Transistor on <2026-03-12:day>.']);
+    // and says how the last 30 days compare with the era so far (260 minutes in 30 days; 1,660 in 63 weeks)
+    assert.equal(chapter(t, 'pace'), 'The last 30 days: 1 hours a week, above the era\'s 0.4: it is picking up.');
     // changed
     assert.deepEqual(await h.patch('/legends/eras/1', { name: 'University', to: '2012' }), { id: 1, name: 'University', from: '2011-01-01', to: '2012-12-31', note: 'Dorm room, shared 360' });
     assert.equal((await h.get('/legends/era/1')).totals.minutes, 1140);
@@ -220,5 +247,44 @@ describe('legends in a library', () => {
     assert.equal((await h.call('DELETE', '/legends/eras/1')).status, 404);
     assert.equal((await h.get('/settings')).legend_eras, undefined);
     assert.equal((await h.get('/legends/career/all')).totals.minutes, 3020);
+  });
+});
+
+describe('eras found in the play', () => {
+  let h; const id = {};
+  before(async () => {
+    guardNetwork();
+    clock.install(NOW);
+    h = await startApp();
+    id.big = await addGame(h, 'Destiny 2');
+    id.side = await addGame(h, 'Stardew Valley');
+    id.short = await addGame(h, 'Firewatch');
+    // Destiny 2 leads January to September 2019 (a month off in May); Stardew leads four months of 2021: too short
+    for (const m of [1, 2, 3, 4, 6, 7, 8, 9]) { await logSession(h, id.big, local(2019, m, 5, 20), 600); await logSession(h, id.side, local(2019, m, 9, 20), 120); }
+    for (const m of [2, 3, 4, 5]) await logSession(h, id.side, local(2021, m, 5, 20), 600);
+    await logSession(h, id.short, local(2019, 3, 20, 20), 240);
+  });
+  after(async () => { await h?.close(); clock.uninstall(); restoreNetwork(); });
+
+  test('the months one game led are suggested as an era; adopted or set aside, they are not suggested again', async () => {
+    const l = await h.get('/legends');
+    assert.deepEqual(l.suggested.map((s) => [s.key, s.name, s.from, s.to, s.minutes, s.why, s.game.id]), [[`game:${id.big}:2019`, 'The Destiny 2 months', '2019-01-01', '2019-09-30', 4800, 'Your most played game for 9 months', id.big]]);
+    // set aside: gone, and the settings do not carry the list
+    assert.equal((await h.call('POST', '/legends/eras/suggestions/dismiss', { key: 'nonsense' })).status, 400);
+    assert.deepEqual(await h.post('/legends/eras/suggestions/dismiss', { key: l.suggested[0].key }), { ok: true });
+    assert.deepEqual((await h.get('/legends')).suggested, []);
+    assert.equal((await h.get('/settings')).legend_eras_dismissed, undefined);
+    h.inst.app.settings.set({ legend_eras_dismissed: [] });
+    assert.equal((await h.get('/legends')).suggested.length, 1, 'back once it is no longer set aside');
+    // adopted as it is: an era like any other, and no longer a suggestion
+    const s = l.suggested[0];
+    const era = await h.post('/legends/eras', { name: s.name, from: s.from, to: s.to });
+    assert.deepEqual([era.name, era.from, era.to], ['The Destiny 2 months', '2019-01-01', '2019-09-30']);
+    const after_ = await h.get('/legends');
+    assert.deepEqual([after_.suggested, after_.eras.map((e) => [e.name, e.minutes, e.games])], [[], [['The Destiny 2 months', 6000, 3]]]);
+    // an era of yours that only brushes it (one month of nine) does not hide it
+    await h.del(`/legends/eras/${era.id}`);
+    await h.post('/legends/eras', { name: 'A winter', from: '2018-11', to: '2019-01' });
+    assert.equal((await h.get('/legends')).suggested.length, 1);
   });
 });

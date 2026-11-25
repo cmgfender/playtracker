@@ -31,7 +31,7 @@ import { facts, withFacts } from '../services/facts.js';
 import { finishForecast, backlogReality } from '../services/forecast.js';
 import { milestones, MARKS, CATEGORIES } from '../services/milestones.js';
 import { franchiseList, franchiseDetail, gameFranchise } from '../services/franchises.js';
-import { legends, legend, addEra, updateEra, removeEra, LEGEND_KINDS } from '../services/legends.js';
+import { legends, legend, addEra, updateEra, removeEra, dismissEra, LEGEND_KINDS } from '../services/legends.js';
 import { findings } from '../services/findings.js';
 import fsp from 'node:fs';
 import { httpJson, ProviderError } from '../providers/http.js';
@@ -938,11 +938,12 @@ export function registerRoutes(r, app) {
     returns: '{ range: { from, to, label }, findings: [{ id, title, score, parts: [text | { g: game id, t: title } | { d: YYYY-MM-DD, p: day|month|year } | { b: a figure } | { l: href, t: text }] }] } the most telling first',
   });
   r.get('/api/v1/legends', () => legends(db, settings), {
-    summary: 'Legends: the stories in your career - eras of your own, then the series, makers, console generations, trends and platforms found in your library, the most played first',
+    summary: 'Legends: the stories in your career - eras of your own (and eras found in your play, to adopt), then the series, makers, console generations, trends, genres and platforms found in your library, the most played first',
     tag: 'stats',
-    returns: '{ career, eras: [...], series: [...] (the top 8; series_total in all, the rest under GET /franchises), makers, generations (oldest first), trends, platforms }, each a card: '
-      + '{ kind: series|maker|generation|trend|platform|era|career, id, name, tagline?, games, played, minutes (history included), from, to (the years you played it), top (its most played game), covers: [url], '
-      + 'from_day?, to_day? (an era, a generation), note?, unlocks?, unlock_games? (an era: achievements unlocked in it and the games they are in), peak?: { from, to } (the years a trend was at its height) }',
+    returns: '{ career, eras: [...], suggested: [{ key, name, from, to (null: still going), minutes, why, game?: { id, title, cover_url } }] (stretches that stand out: the months one game led, the years one platform held; POST them to /legends/eras to adopt), '
+      + 'series: [...] (the top 8; series_total in all, the rest under GET /franchises), makers, generations (oldest first), trends, genres, platforms }, each a card: '
+      + '{ kind: series|maker|generation|trend|genre|platform|era|career, id, name, tagline?, games, played, minutes (history included), from, to (the years you played it), top (its most played game), covers: [url], '
+      + 'from_day?, to_day? (an era, a generation), note?, unlocks?, unlock_games?, weekly? (an era: achievements unlocked in it, the games they are in, and its hours a week), peak?: { from, to } (the years a trend was at its height) }',
   });
   r.get('/api/v1/legends/:kind/:id', (c) => {
     const l = legend(db, settings, c.params.kind, c.params.id);
@@ -951,11 +952,12 @@ export function registerRoutes(r, app) {
   }, {
     summary: `One legend's story (kind: ${LEGEND_KINDS.join(', ')}; the career's id is "all"): its numbers and the chapters that tell it`,
     tag: 'stats',
-    returns: '{ kind, id, name, tagline, window: { from, to } | null (an era: only what was played in it), totals: { games, played, finished, minutes, dated, undated, first_day, last_day, active_years, series }, '
+    returns: '{ kind, id, name, tagline, window: { from, to } | null (an era: only what was played in it), standing: { share (% of all the time on record), rank, of (its place among its kind, by hours), achievements, weekly (an era: hours a week) }, totals: { games, played, finished, minutes, dated, undated, first_day, last_day, active_years, series }, '
       + 'chapters: [{ id, title, parts: [text | { g: game id, t: title } | { d: YYYY-MM-DD, p: day|month|year } | { b: a figure }] }], '
       + 'years: [{ year, minutes, estimated, top: { id, title, minutes } | null }] (every year from the first to the last), months (an era of three years or less, likewise), '
       + 'games: [{ id, title, cover_url, minutes, first_day, last_day, state, platforms, release_year, series }] most played first, series: [{ id, name, minutes, games }], platforms: [{ platform, minutes, games }], '
-      + 'series_detail (a series: as GET /franchises/:key), generation: { short, from_day, to_day }, peak: { from, to } (a trend), era and milestones (an era of your own: the badges earned in it) }',
+      + 'series_detail (a series: as GET /franchises/:key), generation: { short, from_day, to_day }, peak: { from, to } (a trend), era, milestones (an era of your own: the badges earned in it) '
+      + 'and compare: { eras: [{ id, name, from, to, minutes, weekly, games, fresh (games first played in it), achievements, top }], career: { minutes, weekly } } (every era of yours by the same measures) }',
   });
   r.post('/api/v1/legends/eras', (c) => addEra(settings, c.body), {
     summary: 'Add an era of your own (college, a job, a city): a legend of what you played between two dates',
@@ -963,6 +965,7 @@ export function registerRoutes(r, app) {
     body: '{ name (up to 60 characters), from (2012, 2012-09 or 2012-09-01), to? (likewise, the end of the period; empty: still going), note? (up to 200 characters) }',
     returns: '{ id, name, from, to, note }',
   });
+  r.post('/api/v1/legends/eras/suggestions/dismiss', (c) => dismissEra(settings, c.body?.key), { summary: 'Set a suggested era aside (its key, from GET /legends): it is not suggested again', tag: 'stats', body: '{ key }', returns: '{ ok }' });
   r.patch('/api/v1/legends/eras/:id', (c) => updateEra(settings, toInt(c.params.id), c.body), { summary: 'Change an era of your own (any of name, from, to, note)', tag: 'stats', returns: '{ id, name, from, to, note }' });
   r.delete('/api/v1/legends/eras/:id', (c) => removeEra(settings, toInt(c.params.id)), { summary: 'Remove an era of your own (your play is untouched)', tag: 'stats', returns: '{ ok }' });
   r.get('/api/v1/games/:id/forecast', (c) => {

@@ -106,6 +106,7 @@ export class Settings {
     delete s.igdb_match_v;
     delete s.igdb_tags_v;
     delete s.legend_eras; // your own eras: GET /legends, not a setting
+    delete s.legend_eras_dismissed;
     return s;
   }
 }

@@ -3,6 +3,8 @@
 //               hands as [id, { from?, until? }]: only its games of those years (Baldur's Gate to 2004)
 //   igdb        how IGDB names them as developer or publisher: a company whose name starts with one of
 //               these is theirs (so "Nintendo" also takes "Nintendo EPD")
+//   studio      true for a house known for the games it makes: one it only put its name on as publisher
+//               (Klei on The Stanley Parable) is not part of its legend
 // A studio you played three or more games of that is not listed here still gets a legend of its own,
 // from IGDB's developers.
 export const MAKERS = [
@@ -53,4 +55,32 @@ export const MAKERS = [
   { id: 'spike-chunsoft', name: 'Spike Chunsoft', igdb: ['Spike Chunsoft', 'Chunsoft', 'Spike'], franchises: ['danganronpa', 'zero-escape'] },
   { id: 'telltale', name: 'Telltale Games', igdb: ['Telltale'], franchises: ['the-walking-dead'] },
   { id: 'supermassive', name: 'Supermassive Games', igdb: ['Supermassive'], franchises: ['the-dark-pictures', 'until-dawn'] },
+  { id: 'devolver', name: 'Devolver Digital', igdb: ['Devolver'], franchises: ['hotline-miami', ['serious-sam', { from: 2009 }]] },
+  { id: 'annapurna', name: 'Annapurna Interactive', igdb: ['Annapurna'], franchises: [] },
+  { id: 'team17', name: 'Team17', igdb: ['Team17', 'Team 17'], franchises: [] },
+  { id: 'thq', name: 'THQ and THQ Nordic', igdb: ['THQ'], franchises: [['saints-row', { until: 2011 }], ['metro', { until: 2010 }]] },
+  { id: 'deep-silver', name: 'Deep Silver', igdb: ['Deep Silver', 'Koch Media', 'Plaion', 'PLAION'], franchises: [['saints-row', { from: 2013 }], ['metro', { from: 2013 }], 'dead-island', 'kingdom-come'] },
+  { id: 'focus', name: 'Focus Entertainment', igdb: ['Focus Entertainment', 'Focus Home Interactive'], franchises: [] },
+  { id: 'epic', name: 'Epic Games', igdb: ['Epic Games', 'Epic MegaGames', 'Psyonix', 'Mediatonic'], franchises: ['unreal', ['gears-of-war', { until: 2013 }]] },
+  { id: 'riot', name: 'Riot Games', igdb: ['Riot Games', 'Riot Forge'], franchises: [] },
+  { id: 'double-fine', name: 'Double Fine', igdb: ['Double Fine'], franchises: [] },
+  { id: 'klei', name: 'Klei Entertainment', igdb: ['Klei'], studio: true, franchises: [] },
+  { id: 'platinum', name: 'PlatinumGames', igdb: ['PlatinumGames', 'Platinum Games'], franchises: ['bayonetta'] },
+  { id: 'kojima-productions', name: 'Kojima Productions', igdb: ['Kojima Productions'], franchises: [['metal-gear', { from: 2005, until: 2015 }]] },
+  { id: 'eidos', name: 'Eidos', igdb: ['Eidos', 'Crystal Dynamics', 'Core Design'], franchises: ['tomb-raider', 'deus-ex', 'thief'] },
+  { id: 'lucasarts', name: 'LucasArts', igdb: ['LucasArts', 'Lucasfilm Games'], franchises: [['monkey-island', { until: 2010 }], ['star-wars-battlefront', { until: 2012 }]] },
+  { id: 'sierra', name: 'Sierra', igdb: ['Sierra'], franchises: ['kings-quest'] },
+  { id: 'team-cherry', name: 'Team Cherry', igdb: ['Team Cherry'], franchises: ['hollow-knight'] },
+  { id: 'yacht-club', name: 'Yacht Club Games', igdb: ['Yacht Club Games'], franchises: ['shovel-knight'] },
+  { id: 'housemarque', name: 'Housemarque', igdb: ['Housemarque'], franchises: [] },
+  { id: 'vanillaware', name: 'Vanillaware', igdb: ['Vanillaware'], franchises: [] },
+  { id: 'grasshopper', name: 'Grasshopper Manufacture', igdb: ['Grasshopper Manufacture'], franchises: [] },
+  { id: 'techland', name: 'Techland', igdb: ['Techland'], franchises: ['dying-light', ['dead-island', { until: 2013 }]] },
+  { id: 'rebellion', name: 'Rebellion', igdb: ['Rebellion'], franchises: ['sniper-elite'] },
+  { id: 'inxile', name: 'inXile Entertainment', igdb: ['inXile'], franchises: [['wasteland', { from: 2014 }]] },
+  { id: 'dontnod', name: "Don't Nod", igdb: ['Dontnod', 'DONTNOD', "Don't Nod", "DON'T NOD"], franchises: [] },
+  { id: 'raw-fury', name: 'Raw Fury', igdb: ['Raw Fury'], franchises: [] },
+  { id: 'tinybuild', name: 'tinyBuild', igdb: ['tinyBuild'], franchises: [] },
+  { id: '505-games', name: '505 Games', igdb: ['505 Games'], franchises: [] },
+  { id: 'chucklefish', name: 'Chucklefish', igdb: ['Chucklefish'], franchises: [] },
 ];
