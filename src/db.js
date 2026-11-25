@@ -430,6 +430,14 @@ const MIGRATIONS = [
     AND id IN (SELECT game_id FROM entries WHERE account_id IS NOT NULL)
     AND updated_at IN (SELECT first_seen_at FROM entries WHERE account_id IS NULL AND ext_id LIKE 'import:gametrack:%');
   `,
+  // 14: IGDB's times to beat that cannot be right are dropped (igdb.js saneTimes: the same rules, in the
+  //     same order): a main story over 200 hours or 1.5 times the "with extras" time, then a completion
+  //     time over ten times the longer of the two that are left (over 1,000 hours with neither)
+  `
+  UPDATE game_meta SET ttb_main = NULL WHERE ttb_main > 12000 OR (ttb_extra > 0 AND ttb_main > ttb_extra * 1.5);
+  UPDATE game_meta SET ttb_complete = NULL WHERE ttb_complete > 0 AND CASE WHEN MAX(COALESCE(ttb_main, 0), COALESCE(ttb_extra, 0)) > 0
+    THEN ttb_complete > MAX(COALESCE(ttb_main, 0), COALESCE(ttb_extra, 0)) * 10 ELSE ttb_complete > 60000 END;
+  `,
 ];
 
 /** The schema version this build migrates a database to. */

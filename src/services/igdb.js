@@ -90,6 +90,21 @@ export function tagsOf(g) {
   };
 }
 
+/**
+ * IGDB's times to beat are what players sent in, and a few are nonsense (Fortnite's main story: 3,839
+ * hours; Baldur's Gate 3 completed: 5,649). Minutes in, minutes out, the ones that cannot be right left
+ * out (null): a main story over 200 hours or well past the game's own "with extras" time, and a
+ * completion time over ten times the longer of the two (or over 1,000 hours with neither).
+ * The same rules as migration 14, which cleans what was stored before.
+ */
+export function saneTimes({ main = null, extra = null, complete = null } = {}) {
+  let m = main > 0 ? main : null; const e = extra > 0 ? extra : null; let c = complete > 0 ? complete : null;
+  if (m && (m > 200 * 60 || (e && m > e * 1.5))) m = null;
+  const base = Math.max(m || 0, e || 0);
+  if (c && (base ? c > base * 10 : c > 1000 * 60)) c = null;
+  return { main: m, extra: e, complete: c };
+}
+
 /** Is an IGDB candidate the main game (not a DLC, bundle, episode, mod...)? Field names changed over time. */
 const isMain = (c) => {
   const t = c.game_type ?? c.category;
@@ -266,6 +281,7 @@ export class Igdb {
     // merged or deleted while the pass waited on IGDB: nothing to store
     if (!db.prepare('SELECT 1 FROM games WHERE id = ?').get(gameId)) return;
     const min = (s) => (Number(s) > 0 ? Math.round(Number(s) / 60) : null);
+    const ttb = saneTimes({ main: min(rec?.ttb?.hastily), extra: min(rec?.ttb?.normally), complete: min(rec?.ttb?.completely) });
     tx(db, () => {
       if (!rec) {
         db.prepare(`INSERT INTO game_meta(game_id, igdb_id, matched_by, locked, fetched_at, tries) VALUES (?, NULL, ?, ?, ?, 1)
@@ -284,7 +300,7 @@ export class Igdb {
           ttb_extra = excluded.ttb_extra, ttb_complete = excluded.ttb_complete, cover_image = excluded.cover_image, tries = 0, fetched_at = excluded.fetched_at`)
         .run(gameId, rec.id, matchedBy, locked ? 1 : 0, rec.name ?? null, rec.slug ?? null, rec.url ?? null, typeof rec.summary === 'string' ? rec.summary.slice(0, 4000) : null,
           Number(rec.first_release_date) > 0 ? Number(rec.first_release_date) * 1000 : null, rating != null ? Math.round(rating * 10) / 10 : null,
-          rec.total_rating_count ?? rec.rating_count ?? null, min(rec.ttb?.hastily), min(rec.ttb?.normally), min(rec.ttb?.completely), cover, now);
+          rec.total_rating_count ?? rec.rating_count ?? null, ttb.main, ttb.extra, ttb.complete, cover, now);
       db.prepare('DELETE FROM game_tags WHERE game_id = ?').run(gameId);
       const ins = db.prepare('INSERT OR IGNORE INTO game_tags(game_id, kind, name) VALUES (?, ?, ?)');
       for (const [kind, list] of Object.entries(tagsOf(rec))) for (const n of list) ins.run(gameId, kind, n.slice(0, 120));

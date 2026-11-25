@@ -425,3 +425,48 @@ describe('pickMatch and tagsOf', () => {
     assert.deepEqual(tagsOf({ id: 2, game_engines: [{ id: 6, name: 'Unreal Engine 4' }], platforms: [{ id: 48, name: 'PlayStation 4' }, 49] }), { genre: [], theme: [], mode: [], perspective: [], franchise: [], developer: [], publisher: [], engine: ['Unreal Engine 4'], platform: ['PlayStation 4'] });
   });
 });
+
+describe('times to beat that cannot be right', () => {
+  test('a main story over 200 hours or past the time with extras, and a runaway completion time, are left out', async () => {
+    const { saneTimes } = await import('../src/services/igdb.js');
+    const h = (x) => x * 60;
+    // Fortnite: main 3,839h against 298h with extras, 12,524h completed
+    assert.deepEqual(saneTimes({ main: h(3839), extra: h(298), complete: h(12524) }), { main: null, extra: h(298), complete: null });
+    // Baldur's Gate 3: only the completion time is wrong
+    assert.deepEqual(saneTimes({ main: h(128), extra: h(132), complete: h(5649) }), { main: h(128), extra: h(132), complete: null });
+    // an ordinary long game is kept whole, ten times its longer time included
+    assert.deepEqual(saneTimes({ main: h(60), extra: h(100), complete: h(1000) }), { main: h(60), extra: h(100), complete: h(1000) });
+    assert.deepEqual(saneTimes({ main: h(11), extra: h(53), complete: h(511) }), { main: h(11), extra: h(53), complete: h(511) });
+    // a main story a little past the time with extras is players disagreeing, not nonsense
+    assert.deepEqual(saneTimes({ main: h(20), extra: h(15), complete: null }), { main: h(20), extra: h(15), complete: null });
+    assert.deepEqual(saneTimes({ main: h(201) }), { main: null, extra: null, complete: null });
+    assert.deepEqual(saneTimes({ complete: h(900) }), { main: null, extra: null, complete: h(900) });
+    assert.deepEqual(saneTimes({ complete: h(1001) }), { main: null, extra: null, complete: null });
+    assert.deepEqual(saneTimes({ main: 0, extra: undefined, complete: -5 }), { main: null, extra: null, complete: null });
+    assert.deepEqual(saneTimes(), { main: null, extra: null, complete: null });
+  });
+
+  test('migration 14 cleans what was stored by the same rules', async () => {
+    const { openDb, SCHEMA_VERSION } = await import('../src/db.js');
+    const { saneTimes } = await import('../src/services/igdb.js');
+    const os = await import('node:os'); const path = await import('node:path'); const fs = await import('node:fs');
+    const { DatabaseSync } = await import('node:sqlite');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vg-ttb-'));
+    const file = path.join(dir, 'v.db');
+    try {
+      openDb(file).close();
+      const raw = new DatabaseSync(file);
+      const rows = [[230340, 17880, 751440], [7680, 7920, 338940], [3600, 6000, 60000], [1200, 900, null], [12060, null, null], [null, null, 54000], [null, null, 60060], [1200, 540, 119160], [null, 600, 6001]];
+      raw.exec('PRAGMA user_version = 13');
+      const g = raw.prepare("INSERT INTO games(title, norm_title, created_at, updated_at) VALUES (?, ?, 0, 0)");
+      const m = raw.prepare("INSERT INTO game_meta(game_id, matched_by, ttb_main, ttb_extra, ttb_complete, fetched_at) VALUES (?, 'title', ?, ?, ?, 0)");
+      rows.forEach((r, i) => { const id = Number(g.run(`G${i}`, `g${i}`).lastInsertRowid); m.run(id, ...r); });
+      raw.close();
+      const db = openDb(file);
+      assert.equal(db.prepare('PRAGMA user_version').get().user_version, SCHEMA_VERSION);
+      const got = db.prepare('SELECT ttb_main main, ttb_extra extra, ttb_complete complete FROM game_meta ORDER BY game_id').all().map((r) => ({ ...r }));
+      assert.deepEqual(got, rows.map(([main, extra, complete]) => saneTimes({ main, extra, complete })));
+      db.close();
+    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  });
+});
