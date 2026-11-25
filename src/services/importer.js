@@ -88,7 +88,8 @@ export function importRows(db, rows, { settings, now = Date.now() } = {}) {
     overlapping: db.prepare("SELECT COALESCE(started_at, window_start) s, COALESCE(ended_at, window_end) e FROM sessions WHERE entry_id = ? AND kind = 'play' AND COALESCE(started_at, window_start) < ? AND COALESCE(ended_at, window_end) > ?"),
     insPlay: db.prepare("INSERT INTO sessions(entry_id, source, kind, minutes, window_start, window_end, started_at, ended_at, note, created_at) VALUES (?, 'import', 'play', ?, ?, ?, ?, ?, ?, ?)"),
     addHistory: db.prepare('UPDATE entries SET baseline_min = baseline_min + ? WHERE id = ?'),
-    updEntry: db.prepare('UPDATE entries SET playtime_min = ?, last_played_at = MAX(COALESCE(last_played_at, 0), COALESCE(?, 0)) WHERE id = ?'),
+    // (no last-played date stays none: a 0 would read as "played, in 1970" and count an untouched game as played)
+    updEntry: db.prepare('UPDATE entries SET playtime_min = ?, last_played_at = NULLIF(MAX(COALESCE(last_played_at, 0), COALESCE(?, 0)), 0) WHERE id = ?'),
     exclude: db.prepare('UPDATE entries SET excluded = 1 WHERE id = ?'),
     setHist: db.prepare('UPDATE entries SET hist = ? WHERE id = ?'),
     hasEntries: db.prepare('SELECT 1 FROM entries WHERE game_id = ? LIMIT 1'),
@@ -255,7 +256,10 @@ export function importRows(db, rows, { settings, now = Date.now() } = {}) {
       if (!title) { res.skipped++; continue; }
       const platform = String(row.platform || row.source || 'import').toLowerCase().replace(/[^a-z0-9_-]+/g, '-').slice(0, 32) || 'import';
       const norm = normalizeTitle(title);
-      const acc = str(row.account).trim().toLowerCase();
+      // (an export numbers the second and later entries that share a title, platform and account - two
+      // copies the library kept apart - so they arrive as the entries they were, not folded into one)
+      const copy = Number.isInteger(Number(row.copy)) && Number(row.copy) >= 2 && Number(row.copy) <= 99 ? Number(row.copy) : 0;
+      const acc = `${str(row.account).trim().toLowerCase()}${copy ? ` (copy ${copy})` : ''}`.trim();
       const reported = minutesOf(row);
       // never in the future (a date-only "today" is noon; a later date is no evidence)
       const lp = toTime(row.last_played || row.last_played_at);
@@ -444,9 +448,15 @@ export function* exportChunks(db, format = 'json') {
   yield `{"format":"playtracker-export","version":1,"app":"Vestigo","exported_at":"${new Date().toISOString()}","games":[`;
   let first = true;
   let buf = '';
+  // entries that share a title, platform and account (two copies kept apart): the second is copy 2, and
+  // an import keeps them apart again. Without it a restore folded them into one and lost the smaller total.
+  const seen = new Map();
   for (const r of rows.iterate()) {
+    const key = `${r.platform}|${(r.account_name || '').toLowerCase()}|${normalizeTitle(r.title)}`;
+    const copy = (seen.get(key) || 0) + 1;
+    seen.set(key, copy);
     const rec = {
-      title: r.title, platform: r.platform, account: r.account_name || null, playtime_minutes: r.playtime_min, last_played: iso(r.last_played_at),
+      title: r.title, platform: r.platform, account: r.account_name || null, ...(copy > 1 ? { copy } : {}), playtime_minutes: r.playtime_min, last_played: iso(r.last_played_at),
       status: r.status, rating: r.rating, notes: r.notes, favorite: !!r.favorite, hidden: !!r.hidden, merge_locked: !!r.merge_locked,
       excluded: !!r.excluded, cover_url: r.cover_url, ...historyOf(r),
       sessions: sessions.all(r.id).map((s) => ({

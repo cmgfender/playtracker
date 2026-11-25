@@ -438,6 +438,11 @@ const MIGRATIONS = [
   UPDATE game_meta SET ttb_complete = NULL WHERE ttb_complete > 0 AND CASE WHEN MAX(COALESCE(ttb_main, 0), COALESCE(ttb_extra, 0)) > 0
     THEN ttb_complete > MAX(COALESCE(ttb_main, 0), COALESCE(ttb_extra, 0)) * 10 ELSE ttb_complete > 60000 END;
   `,
+  // 15: an import wrote 0 for "no last-played date" on entries it updated: read as played (in 1970), an
+  //     untouched game counted among the games played
+  `
+  UPDATE entries SET last_played_at = NULL WHERE last_played_at IS NOT NULL AND last_played_at <= 0;
+  `,
 ];
 
 /** The schema version this build migrates a database to. */
