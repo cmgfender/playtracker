@@ -231,6 +231,7 @@ label.btn:has(input:focus-visible) { outline: 2px solid var(--accent-ink); outli
 .btn:hover { border-color: color-mix(in srgb, var(--text) 25%, var(--line)); }
 .btn:active { transform: scale(.97); }
 .btn svg { width: 17px; height: 17px; }
+#import > label.btn { white-space: normal; text-align: center; padding-block: 8px; } /* a long label wraps on a narrow phone */
 .btn.primary { background: var(--accent); border-color: transparent; color: var(--on-accent); box-shadow: 0 8px 20px -10px var(--accent); }
 /* hover moves the fill away from its ink, so the contrast only grows */
 .btn.primary:hover { filter: brightness(.92); }
@@ -1121,5 +1122,3 @@ a.mrow.mlink:hover .ml, a.mrow.mlink:focus-visible .ml { color: var(--accent-ink
 .basis-estimated { background: repeating-linear-gradient(45deg, color-mix(in srgb, var(--accent-mark) 75%, transparent) 0 2px, color-mix(in srgb, var(--accent-mark) 20%, transparent) 2px 5px); }
 .badge.basis-b { gap: 5px; }
 .badge.basis-b .dot { width: 9px; height: 9px; border-radius: 2px; }
-/* Settings: the import button's long label wraps on a narrow phone */
-#import > label.btn { white-space: normal; text-align: center; padding-block: 8px; }
