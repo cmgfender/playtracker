@@ -31,6 +31,7 @@ import { facts, withFacts } from '../services/facts.js';
 import { finishForecast, backlogReality } from '../services/forecast.js';
 import { milestones, MARKS, CATEGORIES } from '../services/milestones.js';
 import { franchiseList, franchiseDetail, gameFranchise } from '../services/franchises.js';
+import { gameStory } from '../services/gamestory.js';
 import { legends, legend, addEra, updateEra, removeEra, dismissEra, LEGEND_KINDS } from '../services/legends.js';
 import { findings } from '../services/findings.js';
 import fsp from 'node:fs';
@@ -439,10 +440,10 @@ export function registerRoutes(r, app) {
     const game = getGame(toInt(c.params.id));
     const sessions = db.prepare(`${SESSION_SELECT} WHERE s.entry_id IN (SELECT id FROM entries WHERE game_id = ?) AND s.kind IN ('play', 'baseline') ORDER BY s.sort_time DESC, s.id DESC LIMIT 300`).all(game.id).map(sessionRow);
     const stats = computeStats(db, { range: 'all', gameId: game.id, group: 'month', weekStartsOn: settings.get('week_starts_on'), topLimit: 1 });
-    return { ...game, sessions, sessions_truncated: game.summary && game.summary.sessions > 300, series: stats.series, weekday: stats.weekday };
+    return { ...game, sessions, sessions_truncated: game.summary && game.summary.sessions > 300, series: stats.series, weekday: stats.weekday, story: gameStory(db, game.id) };
   }, {
     summary: 'Game detail with entries, latest 300 sessions, monthly history, achievement summaries',
-    returns: `The game (as in GET /games) plus entries[] (each with history and achievements), achievements (the game's counted entries together: counts add up, completed when any entry is), summary, sessions, series, weekday. achievements: ${ACH_SUMMARY_DOC}. The full list: GET /games/{id}/achievements.`,
+    returns: `The game (as in GET /games) plus entries[] (each with history and achievements), achievements (the game's counted entries together: counts add up, completed when any entry is), summary, sessions, series, weekday. story: { standing: { rank, of (its place among the games you played, by hours), share (% of all your time), years: [{ year, rank, of, minutes }] (the years it was among your ten most played), platform: { id, rank, of } | null, series: { id, name, rank, of, share } | null }, span: { first_day, last_day, first_estimated, days, months, years, busiest: { key, minutes } | null }, chapters: [{ id, title, parts }] (told like a legend's) } | null (a game only on the wish list). achievements: ${ACH_SUMMARY_DOC}. The full list: GET /games/{id}/achievements.`,
   });
 
   r.get('/api/v1/games/:id/achievements', (c) => {
