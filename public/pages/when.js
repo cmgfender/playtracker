@@ -22,9 +22,9 @@ const apiTime = (v, end) => (v ? `${v}T${end ? '20' : '12'}:00:00` : null);
 export const PERIODS = [['year', 'Whole year', 0, 11], ['q1', 'Jan – Mar', 0, 2], ['q2', 'Apr – Jun', 3, 5], ['q3', 'Jul – Sep', 6, 8], ['q4', 'Oct – Dec', 9, 11],
   ...['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'].map((m, i) => [`m${i}`, m, i, i])];
 
-/** The years to offer: from the oldest evidence (or `back` years) to `hi`, newest first. */
+/** The years to offer: from the oldest evidence (or `back` years) to `hi`, newest first; with no guess, "Year…" first, to be picked. */
 export function yearOptions(hi, lo, guess) {
-  const out = [];
+  const out = guess == null ? ['<option value="" selected>Year…</option>'] : [];
   for (let y = hi; y >= lo; y--) out.push(`<option value="${y}" ${y === guess ? 'selected' : ''}>${y}</option>`);
   return out.join('');
 }
@@ -42,11 +42,12 @@ export function periodChange(e) {
   if (e.target.name === 'span') e.target.closest('[data-period]')?.querySelector('[name=y2]')?.classList.toggle('hide', !e.target.checked);
 }
 
-/** The picked period as [start, end] times: the 1st at noon to the last day at 8 pm (never after now). */
+/** The picked period as [start, end] times: the 1st at noon to the last day at 8 pm (never after now); null with no year picked. */
 export function readPeriod(root) {
+  if (!root.querySelector('[name=y]').value) return null;
   const y = Number(root.querySelector('[name=y]').value);
   const [, , m0, m1] = PERIODS.find(([k]) => k === root.querySelector('[name=p]').value);
-  const y2 = root.querySelector('[name=span]').checked ? Math.max(y, Number(root.querySelector('[name=y2]').value)) : y;
+  const y2 = root.querySelector('[name=span]').checked && root.querySelector('[name=y2]').value ? Math.max(y, Number(root.querySelector('[name=y2]').value)) : y;
   const start = new Date(y, m0, 1, 12).getTime();
   const end = Math.min(Date.now(), new Date(y2, m1 + 1, 0, 20).getTime());
   return [start, Math.max(start, end)];
@@ -248,7 +249,7 @@ export async function addGameModal() {
       <div class="field"><label for="ag-hours">Hours played so far <span class="dim">(optional)</span></label>
         <input class="input" id="ag-hours" name="hours" type="number" min="0" step="0.5" inputmode="decimal" style="max-width:160px" placeholder="0">
         <p class="tiny muted" style="margin:6px 0 0">Play from before today. It is dated like history from a platform (hatched in charts) and never counts as today's play. Sessions from now on: log them on the game page.</p></div>
-      <div class="row wrap" id="ag-when" data-period style="gap:6px" hidden>${periodPicker({ hi: thisYear, lo: 1970, guess: thisYear, label: 'Played in' })}</div>
+      <div class="row wrap" id="ag-when" data-period style="gap:6px" hidden>${periodPicker({ hi: thisYear, lo: 1970, guess: null, label: 'Played in' })}</div>
       <details><summary class="small muted" style="cursor:pointer">Cover image</summary>
         <div class="field" style="margin-top:8px"><label for="ag-cover">Cover image URL <span class="dim">(optional)</span></label><input class="input" id="ag-cover" name="cover_url" placeholder="https://…"></div></details>
     </form>`,
@@ -257,11 +258,12 @@ export async function addGameModal() {
       const f = el.querySelector('#ag');
       const sugg = el.querySelector('#ag-sugg');
       const when = el.querySelector('#ag-when');
-      // the years to offer start at the release (or 1970), the year guessed is the release year
+      // the years to offer start at the release (or 1970); the year guessed is the release year - with
+      // none known, nothing is guessed: old hours dated to this year would land in this year's stats
       const setYears = (release) => {
         const ry = release ? new Date(release).getFullYear() : null;
         const lo = Math.min(ry ?? 1970, thisYear);
-        for (const n of ['y', 'y2']) when.querySelector(`[name=${n}]`).innerHTML = yearOptions(thisYear, Math.max(1970, ry ? lo : 1970), ry ?? thisYear);
+        for (const n of ['y', 'y2']) when.querySelector(`[name=${n}]`).innerHTML = yearOptions(thisYear, Math.max(1970, ry ? lo : 1970), ry);
       };
       f.hours.addEventListener('input', () => { when.hidden = !(Number(f.hours.value) > 0); });
       when.addEventListener('change', periodChange);
@@ -314,7 +316,9 @@ export async function addGameModal() {
         if (!(hours >= 0)) { toast('Enter the hours as a number', { bad: true }); f.hours.focus(); return; }
         const body = { title, cover_url: f.cover_url.value, status: f.status.value, played_on: f.played_on.value.trim() || undefined };
         if (hours > 0) {
-          let [s, e] = readPeriod(when);
+          const per = readPeriod(when);
+          if (!per) { toast('Pick the year you played it, roughly', { bad: true }); when.querySelector('[name=y]').focus(); return; }
+          let [s, e] = per;
           // not before it came out: "1996" for a game released in June 1996 starts in June
           if (picked?.release_date && s < picked.release_date && e > picked.release_date) s = picked.release_date;
           body.history = { minutes: Math.round(hours * 60), first_played_at: new Date(s).toISOString(), last_played_at: new Date(e).toISOString(), coarse: true };
