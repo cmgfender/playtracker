@@ -108,7 +108,8 @@ describe('Stats, Insights, Home recap, backups', UI, () => {
       await page.locator('[data-jump=style]').click();
       const sec = page.locator('#ins-style');
       await sec.locator('.card h3').first().waitFor();
-      assert.deepEqual(await sec.locator('.card h3').allInnerTexts(), ['Focus', 'Staying power', 'Games you started', 'Comebacks']);
+      // two columns that stack on their own: focus and the games started, staying power and comebacks
+      assert.deepEqual(await sec.locator('.card h3').allInnerTexts(), ['Focus', 'Games you started', 'Staying power', 'Comebacks']);
       const s = await S.ok('/stats/style?range=all');
       assert.match(await sec.locator('.ins-lead').first().innerText(), new RegExp(`^(Focused|Balanced|Varied): .*${s.focus.games_per_week} games a week`));
       clean(h);

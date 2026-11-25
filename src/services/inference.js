@@ -29,8 +29,13 @@ import { inTx } from '../db.js';
 import { flushRollups } from './rollup.js';
 import { spreadByDay } from './stats.js';
 
-export const INFER_VERSION = 6;
+export const INFER_VERSION = 7;
 const DAY = 86_400_000;
+// A platform time before this is a placeholder, not a date: Steam reports a last played time of
+// 1 Jan 1970 + one day for games last played before it kept the date
+const REAL_FROM = Date.UTC(1971, 0, 1);
+/** The time, or null for a placeholder (zero, 1970, not a number). */
+export const realTime = (t) => (Number.isFinite(t) && t >= REAL_FROM ? t : null);
 
 function startOfDay(t) { const d = new Date(t); d.setHours(0, 0, 0, 0); return d.getTime(); }
 function addDays(t, n) { const d = new Date(t); d.setDate(d.getDate() + n); return d.getTime(); }
@@ -172,7 +177,29 @@ const STYLE_PRIOR_GAMES = 5;
 const STYLE_MIN_GAMES_UNBOUNDED = 20; // games needed before learning also shapes start-less history // how many games' worth of evidence the default shape is worth
 const binOfBack = (d) => { for (let b = 0; b < BACK_BINS.length - 1; b++) if (d < BACK_BINS[b + 1]) return b; return BACK_BINS.length - 2; };
 
+/**
+ * A window answered by period ("mostly played in 2018", "Apr – Jun") rather than by day: it starts
+ * on the 1st of a month at noon and ends on the last day of a month at 8 pm, as the Improve history
+ * answers and the date fields save them. Its first day is no more the start of play than any other.
+ */
+export function looksCoarse(m) {
+  if (!m?.start || !m?.end || m.confirmed) return false;
+  const s = new Date(m.start); const en = new Date(m.end);
+  return s.getDate() === 1 && s.getHours() === 12 && s.getMinutes() === 0
+    && new Date(addDays(m.end, 1)).getDate() === 1 && en.getHours() === 20 && en.getMinutes() === 0
+    && m.end - m.start >= 27 * DAY;
+}
+
 export function inferHistory(e, { pacePerDay = 90, maxPerDay = 600, minDay = 15, dayRoom = null, shape = SHAPE, style = null } = {}) {
+  // placeholders (Steam's 1970 last played) are no evidence at all
+  const man = e.manual ? { ...e.manual, start: realTime(e.manual.start) ?? undefined, end: realTime(e.manual.end) ?? undefined } : null;
+  e = {
+    ...e, lastPlayedAt: realTime(e.lastPlayedAt), firstPlayedAt: realTime(e.firstPlayedAt), dateAdded: realTime(e.dateAdded),
+    releaseAt: realTime(e.releaseAt), accountCreatedAt: realTime(e.accountCreatedAt), anchors: (e.anchors || []).filter((a) => realTime(a) != null),
+    manual: man && (man.start != null || man.end != null) ? man : null,
+  };
+  // a period you answered is spread evenly over it: no burst after its first day
+  const coarse = !!(e.manual && (e.manual.coarse ?? looksCoarse(e.manual)));
   // learned player style (see learnStyle): blended with the default shape by evidence size
   const lambda = style?.samples?.length >= 3 ? style.games / (style.games + STYLE_PRIOR_GAMES) : 0;
   // a first played date (yours or the platform's) is a hard start: nothing is dated before it,
@@ -201,13 +228,17 @@ export function inferHistory(e, { pacePerDay = 90, maxPerDay = 600, minDay = 15,
   // the release and account dates bound the start, unless the game was last played before that
   // day (early access, a re-release's store date) or it is after tracking began: then they are
   // wrong for this play and bound nothing, instead of leaving no window at all
-  const earliest = Date.UTC(1995, 0, 1);
+  // (dates you set can go further back: a game from the 80s played on its own console)
+  const earliest = Math.min(Date.UTC(1995, 0, 1), ...[e.manual?.start, e.manual?.end].filter((t) => t != null).map(startOfDay));
   const bound = Math.max(e.releaseAt || 0, e.accountCreatedAt || 0, earliest);
   const lastKnown = e.manual?.end ?? lastPlayed;
-  const lower = startOfDay(bound) > (lastKnown ?? T) ? earliest : bound;
+  const lower0 = startOfDay(bound) > (lastKnown ?? T) ? earliest : bound;
   // unlock times from before the hard start are no evidence of play after it (as the last
   // activity they would end the window before it began, leaving everything undated)
-  const anchors = (e.anchors || []).filter((a) => a && a >= lower && a <= T && (hardStart == null || a >= hardStart)).sort((a, b) => a - b);
+  const anchors = (e.anchors || []).filter((a) => a >= earliest && a <= T && (hardStart == null || a >= hardStart)).sort((a, b) => a - b);
+  // an unlock is play: a release or account date after it bounds nothing before it (early
+  // access, a deluxe edition's head start, the store date of a re-release)
+  const lower = anchors.length && anchors[0] < lower0 ? anchors[0] : lower0;
   let remaining = total;
   const conf = [];
 
@@ -247,6 +278,11 @@ export function inferHistory(e, { pacePerDay = 90, maxPerDay = 600, minDay = 15,
     let end = e.manual?.end ?? (!yours && lastPlayed != null && lastPlayed <= upper ? lastPlayed : null);
     const anchorMax = anchors.filter((a) => a <= upper).at(-1);
     if (end == null && anchorMax) end = anchorMax;
+    // an unlock after the platform's last played date is play after it: that date is stale (another
+    // version of the title, a console that synced late), so the history runs to the last unlock
+    let stale = false;
+    const unlockLast = anchors.filter((a) => a <= latest).at(-1);
+    if (e.manual?.end == null && !yours && end != null && unlockLast > end) { stale = unlockLast - end > DAY; end = unlockLast; upper = Math.max(upper, end); }
     if (end == null && e.recent?.minutes > 0) end = upper; // known to be before the recent window
     if (end != null) end = Math.min(end, upper);
     // an end at exactly midnight (tracking began at 00:00) leaves no time on that day
@@ -257,6 +293,9 @@ export function inferHistory(e, { pacePerDay = 90, maxPerDay = 600, minDay = 15,
     // last days before the end
     const limit = end ?? upper;
     let start = hardStart ?? [anchors[0], e.dateAdded].find((t) => t != null && startOfDay(t) <= limit) ?? null;
+    // a stale last played date is still a day it was played: the history runs from it (or an
+    // earlier hint) to the last unlock, never packed into the days of the unlocks alone
+    if (stale && hardStart == null) start = Math.min(start ?? Infinity, lastPlayed);
     const knownStart = start != null;
     const knownEnd = end != null;
     const burstDays = Math.max(1, Math.ceil(remaining / pacePerDay), e.playCount ? Math.ceil(e.playCount * shape.countTau) : 0);
@@ -300,7 +339,7 @@ export function inferHistory(e, { pacePerDay = 90, maxPerDay = 600, minDay = 15,
       // by days before the last session
       let prof = null;
       if (back) prof = (i, off, endIdx) => { const b = binOfBack(endIdx - i); return back.avg[b] / (BACK_BINS[b + 1] - BACK_BINS[b]); };
-      else if (lambda && knownStart && knownEnd) {
+      else if (lambda && knownStart && knownEnd && !coarse) {
         const rel = neighbours(style, remaining, n, 'rel').avg;
         prof = (i, off, endIdx, span) => rel[Math.min(STYLE_BINS - 1, Math.floor((Math.max(0, i - off) / (span + 1)) * STYLE_BINS))];
       }
@@ -312,6 +351,7 @@ export function inferHistory(e, { pacePerDay = 90, maxPerDay = 600, minDay = 15,
         const anchorIdx = anchors.filter((a) => a >= dStart && a <= end).map((a) => daysBetween(dStart, a));
         const span = Math.max(1, endIdx - off);
         const raw = Array.from({ length: len }, (_, i) => {
+          if (coarse) return 1;
           let w = (knownStart ? 1 : 0.6) * Math.exp(-Math.max(0, i - off) / tau) + tailW;
           if (knownEnd) w += shape.endBump * Math.exp(-(endIdx - i) / tauEnd);
           return w;
@@ -348,12 +388,16 @@ export function inferHistory(e, { pacePerDay = 90, maxPerDay = 600, minDay = 15,
       if (remaining - placed > 0.5) result.undated += Math.round(remaining - placed);
       let c;
       const inWindow = anchors.filter((a) => a <= end).length; // unlocks after the end date nothing here
-      if (e.manual?.start || e.manual?.end) { c = 'high'; result.reasons.push(e.manual.confirmed ? 'You confirmed this estimate' : 'Window set manually'); }
+      if (e.manual?.start || e.manual?.end) {
+        c = 'high';
+        result.reasons.push(e.manual.confirmed ? 'You confirmed this estimate' : coarse ? 'Spread evenly over the period you set' : 'Window set manually');
+      }
       else if (e.firstPlayedAt && knownEnd) { c = 'high'; result.reasons.push('Platform reports first and last played dates'); }
       else if (inWindow >= 3) { c = 'medium'; result.reasons.push(`${inWindow} achievement/trophy unlock times`); }
       else if (knownStart && knownEnd) { c = 'medium'; result.reasons.push('Bounded by date added/first activity and last played'); }
       else { c = 'low'; result.reasons.push(knownEnd ? 'Only the last played date is known' : 'Only a start date is known'); }
       if (e.playCount) result.reasons.push(`${e.playCount} launches reported`);
+      if (stale) result.reasons.push('Achievements unlocked after the platform\'s last played date - dated up to the last unlock');
       if (floor !== bound) result.reasons.push(`Played before the ${bound === e.releaseAt ? 'release' : 'account creation'} date - not bounded by it`);
       else if (e.releaseAt && start <= e.releaseAt + DAY) result.reasons.push('Clamped to release date');
       conf.push(c);

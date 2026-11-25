@@ -13,7 +13,8 @@ import { settings } from './pages/settings.js';
 import { apidocs, system } from './pages/system.js';
 import { historyPage } from './pages/history.js';
 import { more } from './pages/more.js';
+import { milestonesPage } from './pages/milestones.js';
 
 export { hourLabel, seriesLabel, seriesName, kpi, emptyState, RARE, fmtRarity, rarityText, achIcon, logSessionModal } from './pages/shared.js';
 export { layoutModal } from './pages/dashboard.js';
-export const pages = { dashboard, library, game, sessions, stats, insights, wrapped, duplicates, accounts, settings, apidocs, more, system, history: historyPage };
+export const pages = { dashboard, library, game, sessions, stats, insights, wrapped, duplicates, accounts, settings, apidocs, more, system, history: historyPage, milestones: milestonesPage };
