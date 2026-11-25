@@ -221,10 +221,50 @@ export async function game(view, id, stale) {
     </div>
     <div class="grid grid-main game-cols">${columns()}</div>
     ${fixPanel(g)}`;
+  /** The two columns and where each one's last card ends; null where they are stacked (a narrow screen). */
+  function columnEnds() {
+    const [L, R] = $$('.game-cols > .stack', view);
+    if (!L || !R || !L.offsetWidth || L.getBoundingClientRect().top !== R.getBoundingClientRect().top) return null;
+    const end = (col) => (col.lastElementChild ? col.lastElementChild.getBoundingClientRect().bottom - col.getBoundingClientRect().top : 0);
+    return { L, R, end };
+  }
+  /**
+   * Evens the columns once they are drawn: a long About or achievement list left the narrow column
+   * 600px longer than the wide one on most games. A card that can sit in either column (About,
+   * where the time comes from, Notes) moves under the shorter one while that brings the two
+   * ends closer; the curve, activity, sessions and achievements stay where they are looked for.
+   */
+  function balance() {
+    // a page is drawn hidden and shown when it is ready: measured as it is shown, before it is painted
+    if (view.hidden) {
+      const shown = new MutationObserver(() => { if (!view.hidden) { shown.disconnect(); balance(); } });
+      shown.observe(view, { attributes: true, attributeFilter: ['hidden'] });
+      return;
+    }
+    const cols = columnEnds();
+    if (!cols) return;
+    const { L, R, end } = cols;
+    const gap = () => end(R) - end(L);
+    for (let i = 0; i < 4; i++) {
+      const g0 = gap();
+      if (Math.abs(g0) < 160) return;
+      const [from, to] = g0 > 0 ? [R, L] : [L, R];
+      let best = null;
+      for (const card of [...from.children].filter((c) => c.matches('#g-about, #g-sources, [data-either]'))) {
+        const next = card.nextSibling;
+        to.append(card);
+        const g1 = Math.abs(gap());
+        from.insertBefore(card, next);
+        if (g1 < Math.abs(g0) - 60 && (!best || g1 < best.g1)) best = { card, g1 };
+      }
+      if (!best) return;
+      to.append(best.card);
+    }
+  }
   /**
    * The two columns: play on the left (curve, sessions), the game's facts on the right
    * (achievements, platforms, notes). Activity and history before tracking go where the columns
-   * end closest together, from the cards' expected heights (the page is laid out once, hidden).
+   * end closest together, from the cards' expected heights; balance() then measures what was drawn.
    */
   function columns() {
     const curveCard = series.length ? `<div class="card"><div class="card-h"><h2>Playtime over time</h2><div class="seg" id="g-curve-mode" aria-label="Show"><button data-cm="total" class="on">Running total</button><button data-cm="month">By month</button></div></div>
@@ -241,7 +281,7 @@ export async function game(view, id, stale) {
           </div>
         </div>`;
     const platCard = sourcesCard(g);
-    const notesCard = `<div class="card"><div class="card-h"><h2 id="g-notes-h">Notes</h2><span class="tiny muted" id="g-notes-st" aria-live="polite"></span></div>
+    const notesCard = `<div class="card" data-either><div class="card-h"><h2 id="g-notes-h">Notes</h2><span class="tiny muted" id="g-notes-st" aria-live="polite"></span></div>
           <textarea class="input" id="g-notes" aria-labelledby="g-notes-h" placeholder="Thoughts, progress, where you left off…">${esc(g.notes || '')}</textarea></div>`;
     // expected heights (px at 1400 wide), enough to choose a column
     const shown = hasAch ? Math.min(ACH_SHOWN, ach.summary.unlocked) : 0;
@@ -264,6 +304,7 @@ export async function game(view, id, stale) {
     return `<div class="stack">${left.join('')}</div><div class="stack">${right.join('')}</div>`;
   }
   mountCharts(view);
+  balance();
   bindSessionEdits(view);
   $('#g-meta-fix')?.addEventListener('click', () => metaModal(g));
   const patch = async (body, msg) => { try { await api(`/games/${id}`, { method: 'PATCH', body }); if (msg) toast(msg); } catch (e) { fail(e); } };
@@ -291,7 +332,7 @@ export async function game(view, id, stale) {
   const fav = $('#g-fav'); // swapped in place: no re-render, keyboard focus stays on the button
   const showFav = (v) => { fav.innerHTML = icon(v ? 'heartFill' : 'heart'); fav.classList.toggle('fav-on', !!v); fav.setAttribute('aria-pressed', String(!!v)); };
   fav.addEventListener('click', () => undoable('favorite', !g.favorite, showFav, !g.favorite ? 'Added to favorites' : 'Removed from favorites'));
-  // Below Notes, drawn once the page is up so nothing above them moves: when the game will be finished
+  // Below Notes (whichever column balance() left it in), drawn once the page is up so nothing above them moves: when the game will be finished
   // at the pace it is played, and "How you play it" - the patterns of its tracked days (what
   // Insights shows for a range; days with play out of all days since says little for one game).
   below.then(([r, ins, fc]) => {
