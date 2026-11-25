@@ -3,7 +3,7 @@ import {
   esc, fmtMin, fmtHours, fmtDate, fmtTime, dayLabel, plat, platDot, platTag, cover, icon, api, toast, undoToast, fail, modal,
   confirmBox, rerender, state, applyTheme, plural, imgSrc,
 } from '../app.js';
-import { BASIS_FILL } from '../charts.js';
+import { BASIS_FILL, historyFill } from '../charts.js';
 
 export const arrow = () => icon('arrowR', 'ic-inline'); // trailing "go there" arrow on links
 
@@ -54,6 +54,8 @@ export function stackedSeries(stats) {
   const imp = stats.series_imported_by_platform || {};
   const by = stats.series_by_basis;
   const est = stats.series_estimated || [];
+  // history in the colour of the platform it was played on (a month of Nintendo history is red, not the accent)
+  const hist = stats.series_history_by_platform || null;
   return stats.series.map((s, i) => {
     const parts = by ? BASIS.map(([k, label]) => [k, label, by[k]?.[i] || 0]).filter(([, , v]) => v > 0) : (est[i] ? [['estimated', 'estimated from history', est[i]]] : []);
     const extra = parts.map(([, label, v]) => `${fmtMin(v)} ${label.toLowerCase()}`).join(', ');
@@ -64,7 +66,11 @@ export function stackedSeries(stats) {
       tip: seriesTip(s.key, stats.range.group, s.minutes) + (extra ? ` (${extra})` : ''),
       stack: [
         ...plats.map((p) => ({ key: p, value: Math.max(0, (stats.series_by_platform[p][i] || 0) - (imp[p]?.[i] || 0)), color: plat(p).color })),
-        ...parts.map(([k, , v]) => ({ key: k, value: v, color: BASIS_FILL[k] })),
+        ...parts.flatMap(([k, , v]) => {
+          const split = hist ? Object.entries(hist).map(([p, bases]) => ({ key: k, value: bases[k]?.[i] || 0, color: historyFill(k, p) })).filter((x) => x.value > 0) : [];
+          // (an answer without the split, or one that does not add up to the whole: one segment, in the accent)
+          return split.length && Math.abs(split.reduce((a, x) => a + x.value, 0) - v) <= split.length ? split : [{ key: k, value: v, color: BASIS_FILL[k] }];
+        }),
       ],
     };
   });

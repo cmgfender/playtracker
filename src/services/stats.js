@@ -223,6 +223,7 @@ export function computeStats(db, opts = {}) {
     const byBasis = BASES.map(() => new Map());
     const basisTotal = BASES.map(() => 0);
     const importedPlat = new Map();
+    const historyPlat = new Map(); // platform -> basis -> bucket -> minutes: what is not tracked, by where it was played
     for (const r of db.prepare(`SELECT p.day, p.platform, p.estimated, p.basis, SUM(p.minutes) m ${f.sql} GROUP BY p.day, p.platform, p.estimated, p.basis`).all(...f.args)) {
       const t = parseDay(r.day);
       const k = groupKey(t, g, weekStartsOn);
@@ -231,6 +232,12 @@ export function computeStats(db, opts = {}) {
       const b = BASES[r.basis] ? r.basis : r.estimated ? 4 : 0;
       byBasis[b].set(k, (byBasis[b].get(k) || 0) + r.m);
       basisTotal[b] += r.m;
+      if (b >= 1) {
+        if (!historyPlat.has(r.platform)) historyPlat.set(r.platform, new Map());
+        const hp = historyPlat.get(r.platform);
+        if (!hp.has(BASES[b])) hp.set(BASES[b], new Map());
+        hp.get(BASES[b]).set(k, (hp.get(BASES[b]).get(k) || 0) + r.m);
+      }
       if (b === 1) {
         if (!importedPlat.has(r.platform)) importedPlat.set(r.platform, new Map());
         importedPlat.get(r.platform).set(k, (importedPlat.get(r.platform).get(k) || 0) + r.m);
@@ -288,6 +295,8 @@ export function computeStats(db, opts = {}) {
       // imported sessions are also inside series_by_platform (they are play), listed apart here
       series_by_basis: Object.fromEntries(BASES.map((b, i) => [b, [...series.keys()].map((k) => r(byBasis[i].get(k) || 0))])),
       series_imported_by_platform: Object.fromEntries([...importedPlat.entries()].map(([p, m]) => [p, [...series.keys()].map((k) => r(m.get(k) || 0))])),
+      // every kind of history by the platform it was played on (a chart draws it in the platform's colour)
+      series_history_by_platform: Object.fromEntries([...historyPlat.entries()].map(([p, bases]) => [p, Object.fromEntries([...bases.entries()].map(([b, m]) => [b, [...series.keys()].map((k) => r(m.get(k) || 0))]))])),
       minutes_by_basis: Object.fromEntries(BASES.map((b, i) => [b, r(basisTotal[i])])),
       top_games: top.map((x) => ({ ...gameInfo.get(x.game_id), game_id: x.game_id, minutes: r(x.minutes), estimated_minutes: r(x.est || 0), sessions: x.sessions, platforms: String(x.platforms || '').split(','), last: parseDay(x.last_day) })),
       platforms: platforms.map((p) => ({ platform: p.platform, minutes: r(p.minutes) })),

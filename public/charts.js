@@ -264,16 +264,35 @@ export function summarize(title, items, fmt = (v) => fmtMin(v)) {
   return `${title}: ${fmt(total)} total, busiest ${top.name || top.label} with ${fmt(top.value)}`;
 }
 
-// Hatched fill used for estimated (inferred) history.
+// The patterns of history, one for each thing it rests on (see BASIS_FILL): estimates hatched, imported
+// sessions dotted on a near-solid fill, estimates you confirmed cross-hatched, estimates anchored by an
+// achievement unlock striped across, hours assumed for a game its platform reports no time for as open
+// dots on a pale fill (the lightest: the least certain). Each in any colour: the accent, or a platform's.
+const mix = (color, pct) => `color-mix(in srgb, ${color} ${pct}%, transparent)`;
+const PATTERN = {
+  estimated: (id, c) => `<pattern id="${id}" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="6" height="6" fill="${mix(c, 22)}"/><line x1="0" y1="0" x2="0" y2="6" stroke="${mix(c, 70)}" stroke-width="2.2"/></pattern>`,
+  imported: (id, c) => `<pattern id="${id}" width="6" height="6" patternUnits="userSpaceOnUse"><rect width="6" height="6" fill="${mix(c, 72)}"/><circle cx="3" cy="3" r="1.15" fill="var(--panel)" fill-opacity=".75"/></pattern>`,
+  confirmed: (id, c) => `<pattern id="${id}" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="6" height="6" fill="${mix(c, 26)}"/><line x1="0" y1="0" x2="0" y2="6" stroke="${mix(c, 78)}" stroke-width="1.6"/><line x1="0" y1="0" x2="6" y2="0" stroke="${mix(c, 78)}" stroke-width="1.6"/></pattern>`,
+  anchored: (id, c) => `<pattern id="${id}" width="6" height="5" patternUnits="userSpaceOnUse"><rect width="6" height="5" fill="${mix(c, 22)}"/><line x1="0" y1="1.2" x2="6" y2="1.2" stroke="${mix(c, 75)}" stroke-width="2"/></pattern>`,
+  assumed: (id, c) => `<pattern id="${id}" width="6" height="6" patternUnits="userSpaceOnUse"><rect width="6" height="6" fill="${mix(c, 14)}"/><circle cx="3" cy="3" r="1.5" fill="none" stroke="${mix(c, 80)}" stroke-width="1"/></pattern>`,
+};
+const ACCENT = 'var(--accent-mark)';
+// (pt-hatch is written out: the one id older pages and saved charts know the estimated fill by)
 export const HATCH = '<defs><pattern id="pt-hatch" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="6" height="6" fill="color-mix(in srgb, var(--accent-mark) 22%, transparent)"/><line x1="0" y1="0" x2="0" y2="6" stroke="color-mix(in srgb, var(--accent-mark) 70%, transparent)" stroke-width="2.2"/></pattern>'
   + '<pattern id="pt-hatch-ov" width="4" height="4" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><line x1="0" y1="0" x2="0" y2="4" stroke="var(--panel)" stroke-opacity=".55" stroke-width="1.6"/></pattern>'
-  // what history rests on (see BASIS_FILL): imported sessions dotted on a near-solid fill,
-  // estimates you confirmed cross-hatched, estimates anchored by an achievement unlock striped across
-  + '<pattern id="vg-imported" width="6" height="6" patternUnits="userSpaceOnUse"><rect width="6" height="6" fill="color-mix(in srgb, var(--accent-mark) 72%, transparent)"/><circle cx="3" cy="3" r="1.15" fill="var(--panel)" fill-opacity=".75"/></pattern>'
-  + '<pattern id="vg-confirmed" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="6" height="6" fill="color-mix(in srgb, var(--accent-mark) 26%, transparent)"/><line x1="0" y1="0" x2="0" y2="6" stroke="color-mix(in srgb, var(--accent-mark) 78%, transparent)" stroke-width="1.6"/><line x1="0" y1="0" x2="6" y2="0" stroke="color-mix(in srgb, var(--accent-mark) 78%, transparent)" stroke-width="1.6"/></pattern>'
-  + '<pattern id="vg-anchored" width="6" height="5" patternUnits="userSpaceOnUse"><rect width="6" height="5" fill="color-mix(in srgb, var(--accent-mark) 22%, transparent)"/><line x1="0" y1="1.2" x2="6" y2="1.2" stroke="color-mix(in srgb, var(--accent-mark) 75%, transparent)" stroke-width="2"/></pattern>'
-  // hours assumed for a game its platform reports no time for: open dots on a pale fill (the lightest: the least certain)
-  + '<pattern id="vg-assumed" width="6" height="6" patternUnits="userSpaceOnUse"><rect width="6" height="6" fill="color-mix(in srgb, var(--accent-mark) 14%, transparent)"/><circle cx="3" cy="3" r="1.5" fill="none" stroke="color-mix(in srgb, var(--accent-mark) 80%, transparent)" stroke-width="1"/></pattern></defs>';
+  + `${PATTERN.imported('vg-imported', ACCENT)}${PATTERN.confirmed('vg-confirmed', ACCENT)}${PATTERN.anchored('vg-anchored', ACCENT)}${PATTERN.assumed('vg-assumed', ACCENT)}</defs>`;
+// a kind of history in a platform's colour: the pattern is made when first asked for, and a chart
+// carries the ones its marks use
+const TINTED = new Map(); // id -> <pattern>
+/** The fill for `basis` (estimated, confirmed...) played on `platform`: its pattern, in the platform's colour. */
+export function historyFill(basis, platform) {
+  if (!PATTERN[basis]) return BASIS_FILL[basis] || 'url(#pt-hatch)';
+  const id = `vgp-${basis}-${String(platform).toLowerCase().replace(/[^a-z0-9]/g, '_')}`;
+  if (!TINTED.has(id)) TINTED.set(id, PATTERN[basis](id, plat(platform).color));
+  return `url(#${id})`;
+}
+/** HATCH plus the tinted patterns the marks of a chart refer to. */
+const defsFor = (marks) => { let extra = ''; for (const [id, def] of TINTED) if (marks.includes(`url(#${id})`)) extra += def; return extra ? HATCH.replace('</defs>', `${extra}</defs>`) : HATCH; };
 /** The kinds of history in words, for tooltips. */
 const HISTORY_KINDS = [['imported', 'imported'], ['confirmed', 'confirmed by you'], ['anchored', 'dated by unlocks'], ['estimated', 'estimated'], ['assumed', 'assumed from achievements']];
 /** The fill of each kind of history: imported sessions, estimates you confirmed, unlock-anchored, other estimates. */
@@ -325,7 +344,7 @@ registerChart('bar', (data, opts, box) => {
   const every = opts.labelEvery || Math.ceil(n / Math.max(1, Math.floor(a.w / lw)));
   const labels = xLabels(a, data.map((d, i) => ({ x: a.x + i * slot + slot / 2, text: i % every === 0 ? d.label : '' })));
   return {
-    defs: HATCH,
+    defs: defsFor(marks),
     svg: `<g class="axis">${yAxis(a, scale0, fmt)}${labels}</g>${marks}${hits}`,
     label: opts.summary ? opts.summary(data) : summarize(opts.title || 'Playtime', data),
   };
