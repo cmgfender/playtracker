@@ -148,6 +148,12 @@ export function rawRequest(port, rawPath, { method = 'GET', headers = {}, body }
 // ---------- in-process app ----------
 export async function startApp(createApp, opts = {}) {
   const app = createApp({ dbFile: ':memory:', password: '', log: quietLog, scheduler: false, ...opts });
+  // The tests run in the server's own process, and some block it for seconds between two requests
+  // (assertHealthy on the 20k-game database). A server that hangs up on idle connections after its
+  // 5 seconds then does so just as the next request goes out on one, and that request dies with
+  // "fetch failed" (ECONNRESET). So here the server never hangs up on an idle connection: the
+  // client drops the ones it no longer wants.
+  app.server.keepAliveTimeout = 0;
   await new Promise((r) => app.server.listen(0, '127.0.0.1', r));
   const base = `http://127.0.0.1:${app.server.address().port}`;
   return { ...app, db: app.app.db, base, api: (p, o) => api(base, p, o) };
