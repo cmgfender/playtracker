@@ -12,6 +12,37 @@ import { unmemoized } from './services/stats.js';
 const LEVELS = { debug: 10, info: 20, warn: 30, error: 40 };
 const COLORS = { debug: '\x1b[90m', info: '\x1b[36m', warn: '\x1b[33m', error: '\x1b[31m' };
 
+function serializeError(err) {
+  if (!(err instanceof Error)) return err;
+  return { name: err.name, message: err.message, stack: err.stack, status: err.status, code: err.code };
+}
+
+/**
+ * JSON for a log line, whatever the context holds: logging never throws. An Error anywhere inside
+ * keeps its name and message (JSON.stringify alone writes {}), a BigInt is written as its digits,
+ * and a value that contains itself is written once, then as "[Circular]".
+ */
+export function toJson(value) {
+  const plain = (k, v) => (v instanceof Error ? serializeError(v) : typeof v === 'bigint' ? String(v) : v);
+  try {
+    return JSON.stringify(value, plain);
+  } catch {
+    const above = []; // the objects the value being written is inside of
+    try {
+      return JSON.stringify(value, function (k, v) {
+        v = plain(k, v);
+        if (!v || typeof v !== 'object') return v;
+        while (above.length && above.at(-1) !== this) above.pop();
+        if (above.includes(v)) return '[Circular]';
+        above.push(v);
+        return v;
+      });
+    } catch (err) {
+      return JSON.stringify({ unserializable: String(err?.message || err) }); // a throwing toJSON or getter
+    }
+  }
+}
+
 export function createLogger({
   level = process.env.LOG_LEVEL || 'info',
   json = process.env.LOG_FORMAT === 'json',
@@ -39,13 +70,8 @@ export function createLogger({
 
   // the stored context must stay valid JSON: an oversized one is kept as a truncated preview
   function contextJson(ctx) {
-    const s = JSON.stringify(ctx);
+    const s = toJson(ctx);
     return s.length > 20000 ? JSON.stringify({ truncated: true, preview: s.slice(0, 10000) }) : s;
-  }
-
-  function serializeError(err) {
-    if (!(err instanceof Error)) return err;
-    return { name: err.name, message: err.message, stack: err.stack, status: err.status, code: err.code };
   }
 
   function log(lvl, source, message, details) {
@@ -58,9 +84,9 @@ export function createLogger({
     const ctx = details && typeof details === 'object' ? details : details !== undefined ? { value: details } : undefined;
     const entry = { time: time.toISOString(), level: lvl, source, message: String(message), ...(ctx ? { ctx } : {}), ...(err ? { error: serializeError(err) } : {}) };
     let line;
-    if (json) line = JSON.stringify(entry);
+    if (json) line = toJson(entry);
     else {
-      const extra = ctx ? ` ${JSON.stringify(ctx)}` : '';
+      const extra = ctx ? ` ${toJson(ctx)}` : '';
       const stack = err?.stack && lvl === 'error' ? `\n${err.stack}` : '';
       line = `${time.toISOString()} ${lvl.toUpperCase().padEnd(5)} [${source}] ${entry.message}${extra}${stack}`;
     }

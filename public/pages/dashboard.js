@@ -1,10 +1,10 @@
 import {
   $, esc, fmtMin, fmtHours, ago, fmtDate, fmtTime, plat, platDot, platIcon, STATUSES, cover, icon, api, toast, fail, modal,
-  rerender, state, plural, MARK, tagline,
+  rerender, state, plural, MARK, tagline, dayLabel,
 } from '../app.js';
 import { barChart, sparkline, heatmap, topList, platformLegend, mountCharts } from '../charts.js';
 import { mountSuggest } from '../suggest.js';
-import { arrow, stackedSeries, estimatedLegend, kpi, hoursVal, sessionItem, logSessionModal, bindSessionEdits, H, D, dayKey, saveSettings } from './shared.js';
+import { arrow, stackedSeries, estimatedLegend, kpi, hoursVal, sessionItem, groupByDay, logSessionModal, bindSessionEdits, H, D, dayKey, saveSettings } from './shared.js';
 import { accountModal } from './accounts.js';
 
 // =====================================================================
@@ -136,6 +136,21 @@ function weekLine(d) {
   return `${delta} · ${plural(wk.games_played, 'game')} · ${plural(wk.sessions, 'session')}`;
 }
 export async function dashboard(view, stale) {
+  const layout = parseLayout(state.settings?.dashboard_layout);
+  const on = new Set(layout.filter((x) => x.on).map((x) => x.key));
+  const year = new Date().getFullYear();
+  // What the sections need is asked for with the summary, not after it has answered. A device
+  // still showing the first-run checklist may have an empty library, which draws none of it:
+  // there it waits for the summary to say so.
+  const sections = () => Promise.all([
+    on.has('heatmap') ? api(`/stats/heatmap?year=${year}`).catch(() => null) : null,
+    on.has('backlog') ? api('/games?status=playing,backlog&sort=recent&limit=16').catch(() => null) : null,
+    api('/duplicates?summary=true').catch(() => null),
+    api('/history/summary').catch(() => null),
+    on.has('recap') ? api('/summary/week?weeks_ago=1').catch(() => null) : null,
+    on.has('facts') ? api('/stats/facts?limit=4').catch(() => null) : null,
+  ]);
+  const early = lsGet(FIRSTRUN) === '1' ? null : sections();
   const d = await api('/summary');
   if (stale()) return;
   const hasData = d.lifetime.games > 0;
@@ -163,16 +178,7 @@ export async function dashboard(view, stale) {
 
   const wk = d.week; const mo = d.month;
   const streak = mo.streaks.current;
-  const layout = parseLayout(state.settings?.dashboard_layout);
-  const on = new Set(layout.filter((x) => x.on).map((x) => x.key));
-  const year = new Date().getFullYear();
-  const [heat, upNext, dupes, hist, recap] = await Promise.all([
-    on.has('heatmap') ? api(`/stats/heatmap?year=${year}`).catch(() => null) : null,
-    on.has('backlog') ? api('/games?status=playing,backlog&sort=recent&limit=16').catch(() => null) : null,
-    api('/duplicates?summary=true').catch(() => null),
-    api('/history/summary').catch(() => null),
-    on.has('recap') ? api('/summary/week?weeks_ago=1').catch(() => null) : null,
-  ]);
+  const [heat, upNext, dupes, hist, recap, facts] = await (early || sections());
   // the first-run checklist stays on Home (on the device that saw it) until it is dismissed
   const ck = lsGet(FIRSTRUN) === '1' ? await checklistData(d.accounts, true, { dupes, hist }) : null;
   if (stale()) return;
@@ -188,22 +194,22 @@ export async function dashboard(view, stale) {
   const noTracked = !wk.sessions && !mo.tracked_minutes;
   const html = {
     kpis: () => `<div class="kpis fade-in">
-      ${kpi('This week', hoursVal(wk.total_minutes), noTracked ? 'Sessions appear after you play' : `${plural(wk.sessions, 'session')} · ${plural(wk.games_played, 'game')}`, sparkline(Array.from({ length: 7 }, (_, i) => wk.series[i]?.minutes ?? 0)), 'feature')}
+      ${kpi('This week', fmtMin(wk.total_minutes), noTracked ? 'Sessions appear after you play' : `${plural(wk.sessions, 'session')} · ${plural(wk.games_played, 'game')}`, sparkline(Array.from({ length: 7 }, (_, i) => wk.series[i]?.minutes ?? 0)), 'feature')}
       ${kpi('Today', fmtMin(d.today.total_minutes), d.today.top_games[0] ? esc(d.today.top_games[0].title) : 'Nothing yet')}
       ${kpi('Last 30 days', hoursVal(mo.tracked_minutes), `${fmtMin(mo.avg_per_day_minutes)}/day avg${mo.estimated_minutes ? ` · +${fmtHours(mo.estimated_minutes)}h est.` : ''}`)}
       ${kpi('Streak', `${streak}<small> day${streak === 1 ? '' : 's'}</small>`, `Best: ${plural(mo.streaks.longest, 'day')}`)}
-      ${kpi('Lifetime', `${fmtHours(d.lifetime.total_minutes)}<small>h</small>`, `${d.lifetime.games_played} of ${d.lifetime.games} games played`)}
+      ${kpi('Lifetime', `${fmtHours(d.lifetime.total_minutes)}<small>h</small>`, `${d.lifetime.games_played.toLocaleString()} of ${d.lifetime.games.toLocaleString()} games played`)}
     </div>`,
     live: () => (d.playing_now?.length ? `<div class="card live-card"><div class="row wrap">${d.playing_now.map((p) => `<a class="row" href="${p.game_id ? `/game/${p.game_id}` : '/accounts'}" data-link style="min-width:0;flex:1">${cover({ title: p.title, cover_url: p.cover_url }, '', 'width:44px;')}<div style="min-width:0"><div class="small" style="color:var(--good);font-weight:700"><span class="live-dot"></span>Playing now · ${esc(plat(p.platform).label)}</div><div class="ttl ellipsis" style="font-weight:700">${esc(p.title)}</div><div class="tiny muted">for ${fmtMin(Math.max(1, p.minutes))}</div></div></a>`).join('')}</div></div>` : ''),
     suggest: () => '<div class="card sg" id="dash-suggest" role="region" aria-labelledby="sg-h"></div>',
     jump: () => (d.now_playing.length ? `<div class="card"><div class="card-h"><h2>Jump back in</h2><a href="/library?sort=trending" data-link>See all</a></div>
-      <div class="carousel">${d.now_playing.map((g) => `<a class="tile" href="/game/${g.id}" data-link>${cover(g)}<div class="t">${esc(g.title)}</div><div class="m">${g.platforms.map(platDot).join('')} ${fmtMin(g.recent_minutes)} · 2 wks</div></a>`).join('')}</div></div>` : ''),
+      <div class="carousel">${d.now_playing.map((g) => `<a class="tile" href="/game/${g.id}" data-link>${cover(g)}<div class="t">${esc(g.title)}</div><div class="m">${g.platforms.map(platDot).join('')} ${fmtMin(g.recent_minutes)} in 2 wks</div></a>`).join('')}</div></div>` : ''),
     chart: () => `<div class="card"><div class="card-h"><h2>Last 30 days</h2><a href="/stats" data-link>Stats${arrow()}</a></div>
         ${barChart(stackedSeries(mo), { size: 'card', title: 'Playtime per day, last 30 days' })}${platformLegend(mo.platforms, estimatedLegend(mo))}</div>`,
     top: () => `<div class="card"><div class="card-h"><h2>Top this month</h2></div>
         ${mo.top_games.length ? topList(mo.top_games, { coverFn: (g) => cover(g), limit: 6 }) : '<p class="muted">No play in the last 30 days.</p>'}</div>`,
     recent: () => `<div class="card"><div class="card-h"><h2>Recent sessions</h2><a href="/sessions" data-link>All sessions${arrow()}</a></div>
-        <div class="list" id="dash-recent">${d.recent_sessions.length ? d.recent_sessions.map((s) => sessionItem(s)).join('') : '<p class="muted">No sessions yet — they appear after the next sync detects new playtime.</p>'}</div></div>`,
+        <div class="list dated" id="dash-recent">${d.recent_sessions.length ? groupByDay(d.recent_sessions).map((grp) => `<div class="day-h"><span>${dayLabel(grp.day)}</span><span>${fmtMin(grp.minutes)}</span></div>${grp.items.map((s) => sessionItem(s, { dated: true })).join('')}`).join('') : '<p class="muted">No sessions yet — they appear after the next sync detects new playtime.</p>'}</div></div>`,
     accounts: () => `<div class="card"><div class="card-h"><h2>Accounts</h2><a href="/accounts" data-link>Manage${arrow()}</a></div>
         <div class="list">${d.accounts.map((a) => `<div class="item">${platIcon(a.platform)}
           <div class="grow"><div class="ttl ellipsis">${esc(a.name)}</div><div class="sub">${a.syncing ? '<span class="pulse">Syncing…</span>' : a.last_status === 'error' ? `<span style="color:var(--bad)">Error · ${esc(a.last_error || '')}</span>`
@@ -213,17 +219,23 @@ export async function dashboard(view, stale) {
         <div class="row" style="margin-top:12px"><button class="btn sm" data-action="sync-all">${icon('sync')}<span class="lbl">Sync now</span></button><a class="btn sm ghost" href="/accounts?add=1" data-link>${icon('plus')}Add</a></div></div>`,
     heatmap: () => (heat ? `<div class="card"><div class="card-h"><h2>${year} at a glance</h2><a href="/stats" data-link>Stats${arrow()}</a></div>${heatmap(year, heat.days, { weekStartsOn: state.settings?.week_starts_on ?? 1, estimated: heat.estimated_days || {} })}</div>` : ''),
     recap: () => recapCard(recap),
+    // only while there is something to say: a day without facts shows no empty card
+    facts: () => (facts?.facts?.length ? `<div class="card" id="dash-facts"><div class="card-h"><h2>Did you know</h2><a href="/insights" data-link>Insights${arrow()}</a></div><ul class="hl">${facts.facts.map((f) => `<li>${factLine(f)}</li>`).join('')}</ul></div>` : ''),
     backlog: () => (upNext ? `<div class="card"><div class="card-h"><h2>Up next</h2><a href="/library?status=playing" data-link>Library${arrow()}</a></div>
       ${upNext.items.length ? `<div class="carousel">${upNext.items.map((g) => `<a class="tile" href="/game/${g.id}" data-link>${cover(g)}<div class="t">${esc(g.title)}</div><div class="m">${g.platforms.map(platDot).join('')} ${STATUSES[g.status]?.label || ''}</div></a>`).join('')}</div>`
         : '<p class="muted small" style="margin:0">Mark games as <b>Playing</b> or <b>Backlog</b> on their page and they show up here.</p>'}</div>` : ''),
   };
-  // half-width sections sit side by side with the next half-width one; alone they go full width
+  // a run of half-width sections: two columns, the first, third… on the left and the second,
+  // fourth… on the right, each column stacking on its own (a tall card no longer leaves a hole
+  // beside a short one); a half-width section alone goes full width
   const blocks = [];
   const shown = layout.filter((x) => x.on && html[x.key]).map((x) => ({ ...x, out: html[x.key]() })).filter((x) => x.out);
   for (let i = 0; i < shown.length; i++) {
-    const x = shown[i];
-    const nx = shown[i + 1];
-    if (DASH_SECTIONS[x.key].half && nx && DASH_SECTIONS[nx.key].half) { blocks.push(`<div class="grid grid-main">${x.out}${nx.out}</div>`); i++; } else blocks.push(x.out);
+    const run = [];
+    while (i < shown.length && DASH_SECTIONS[shown[i].key].half) run.push(shown[i++].out);
+    if (run.length > 1) blocks.push(`<div class="grid grid-main dash-cols"><div class="stack">${run.filter((_, k) => k % 2 === 0).join('')}</div><div class="stack">${run.filter((_, k) => k % 2 === 1).join('')}</div></div>`);
+    else if (run.length) blocks.push(run[0]);
+    if (i < shown.length) blocks.push(shown[i].out);
   }
   view.innerHTML = `
     <div class="page-h dash-h"><div><div class="eyebrow">${greeting}</div><h1>${fmtMin(wk.total_minutes)} this week</h1><p>${weekLine(d)}</p></div>
@@ -246,10 +258,29 @@ export async function dashboard(view, stale) {
   bindChecklist(view, true, false);
 }
 
+/** A fact of GET /stats/facts as a line: its number in bold, its game a link. */
+export function factLine(f) {
+  // the title is linked where the fact says it starts: searching for it finds the "You" of "You
+  // came back to You", and the number is looked for around the link, never in its markup
+  const at = !f.game_id || !f.title ? -1 : Number.isInteger(f.title_at) && f.text.startsWith(f.title, f.title_at) ? f.title_at : f.text.indexOf(f.title);
+  let bolded = false;
+  const part = (s) => {
+    const t = esc(s); const b = esc(f.bold || '');
+    const i = bolded || !b ? -1 : t.indexOf(b);
+    if (i < 0) return t;
+    bolded = true;
+    return `${t.slice(0, i)}<b>${b}</b>${t.slice(i + b.length)}`;
+  };
+  if (at < 0) return part(f.text);
+  const before = part(f.text.slice(0, at));
+  return `${before}<a class="link" href="/game/${f.game_id}" data-link>${esc(f.title)}</a>${part(f.text.slice(at + f.title.length))}`;
+}
+
 // ---------- home layout ----------
 const DASH_SECTIONS = {
   kpis: { label: 'Stat cards', desc: 'This week, today, 30 days, streak, lifetime' },
   live: { label: 'Playing now', desc: 'While presence sees a game running' },
+  facts: { label: 'Did you know', desc: 'On this day, round numbers passed, records and comebacks' },
   jump: { label: 'Jump back in', desc: 'Played in the last two weeks' },
   suggest: { label: 'What should I play?', desc: 'A pick for the time you have' },
   recap: { label: 'Last week', desc: 'Hours, top games, achievements and the change from the week before' },
@@ -260,7 +291,7 @@ const DASH_SECTIONS = {
   heatmap: { label: 'Year heatmap', desc: 'Every day of this year' },
   backlog: { label: 'Up next', desc: 'Games marked Playing or Backlog' },
 };
-const DEFAULT_LAYOUT = 'kpis,live,jump,suggest,recap,chart,top,recent,accounts,-heatmap,-backlog';
+const DEFAULT_LAYOUT = 'kpis,live,facts,jump,suggest,recap,chart,top,recent,accounts,-heatmap,-backlog';
 
 export function parseLayout(str) {
   const out = String(str || DEFAULT_LAYOUT).split(',').map((x) => x.trim()).filter(Boolean)
@@ -278,22 +309,28 @@ export function layoutEditor(host, layout, onChange) {
       <label class="switch"><input type="checkbox" data-on ${x.on ? 'checked' : ''} aria-label="Show ${esc(DASH_SECTIONS[x.key].label)}"><span></span></label>
       <div class="grow">${esc(DASH_SECTIONS[x.key].label)}${DASH_SECTIONS[x.key].desc ? ` <span class="d">· ${esc(DASH_SECTIONS[x.key].desc)}</span>` : ''}${DASH_SECTIONS[x.key].half ? ' <span class="d">· half width</span>' : ''}</div>
       <button class="btn icon ghost sm" data-up ${i === 0 ? 'disabled' : ''} aria-label="Move up">${icon('up')}</button><button class="btn icon ghost sm" data-down ${i === list.length - 1 ? 'disabled' : ''} aria-label="Move down">${icon('down')}</button></div>`).join('')}</div>
-      <p class="tiny muted" style="margin:8px 0 0">Two half-width sections next to each other share a row.</p>`;
+      <p class="tiny muted" style="margin:8px 0 0">Half-width sections next to each other share two columns.</p>`;
+  };
+  // the list is redrawn on every edit: focus goes back to the control used, in the row's new place
+  // (its other arrow when that one is disabled at the top or bottom), so the same key works again
+  const refocus = (i, sel) => {
+    const row = host.querySelector(`[data-i="${i}"]`);
+    (row?.querySelector(`${sel}:not([disabled])`) || row?.querySelector('[data-up]:not([disabled]), [data-down]:not([disabled])'))?.focus();
   };
   host.addEventListener('click', (e) => {
     const row = e.target.closest('[data-i]');
     if (!row) return;
     const i = Number(row.dataset.i);
-    if (e.target.closest('[data-up]') && i > 0) [list[i - 1], list[i]] = [list[i], list[i - 1]];
-    else if (e.target.closest('[data-down]') && i < list.length - 1) [list[i + 1], list[i]] = [list[i], list[i + 1]];
-    else return;
-    draw(); onChange(layoutString(list));
+    const to = e.target.closest('[data-up]') ? i - 1 : e.target.closest('[data-down]') ? i + 1 : -1;
+    if (to < 0 || to >= list.length) return;
+    [list[to], list[i]] = [list[i], list[to]];
+    draw(); refocus(to, to < i ? '[data-up]' : '[data-down]'); onChange(layoutString(list));
   });
   host.addEventListener('change', (e) => {
     const row = e.target.closest('[data-i]');
     if (!row || !e.target.matches('[data-on]')) return;
     list[Number(row.dataset.i)].on = e.target.checked;
-    draw(); onChange(layoutString(list));
+    draw(); refocus(row.dataset.i, '[data-on]'); onChange(layoutString(list));
   });
   draw();
 }

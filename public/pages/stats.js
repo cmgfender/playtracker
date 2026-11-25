@@ -61,7 +61,7 @@ export async function stats(view, stale) {
     return;
   }
   view.innerHTML = `
-    <div class="page-h"><div><h1>Stats</h1><p title="Tracked = observed between syncs. Estimated = playtime from before tracking, dated from first/last played, achievements and release dates. Undated = no dates available (lifetime only).">Lifetime ${fmtHours(lt.total_minutes)}h · ${fmtHours(lt.tracked_minutes)}h tracked · ${fmtHours(lt.estimated_minutes || 0)}h estimated history · ${fmtHours(lt.baseline_minutes)}h undated</p></div>
+    <div class="page-h"><div><h1>Stats</h1><p title="Tracked = observed between syncs. Estimated = playtime from before tracking, dated from first/last played, achievements and release dates. Undated = no dates available (lifetime only).">${[`Lifetime ${fmtHours(lt.total_minutes)}h`, `${fmtHours(lt.tracked_minutes)}h tracked`, lt.estimated_minutes ? `${fmtHours(lt.estimated_minutes)}h estimated history` : '', lt.baseline_minutes ? `${fmtHours(lt.baseline_minutes)}h undated` : ''].filter(Boolean).join(' · ')}</p></div>
       <div class="row wrap"><a class="btn" href="/insights" data-link>${icon('insights')}Insights</a><a class="btn" href="/wrapped/${years[0]}" data-link>${icon('trail')}${years[0]} in review</a></div></div>
     <div class="toolbar"><div class="row wrap">
       <div class="row wrap" style="gap:8px">
@@ -92,6 +92,9 @@ export async function stats(view, stale) {
     }
     if (my !== loadSeq || stale()) return;
     const pv = s.previous;
+    // the period before began before tracking: tracked-only numbers (sessions, the daily average; with
+    // estimated history off, all of them) have nothing to be compared with
+    const tracked = !!pv?.before_tracking;
     const hasHours = s.hours.some((h) => h > 0);
     if (!s.total_minutes) {
       body.innerHTML = `<div class="card">${emptyState('stats', 'Nothing played in this range', `${esc(s.range.label)}${platform ? ` on ${esc(plat(platform).label)}` : ''}${estimates === 'exclude' ? ', tracked play only' : ''}: no sessions and no dated history.`, `<button class="btn" data-r-all>Show all time</button><button class="btn" data-st-log>${icon('clock')}Log a session</button>`)}</div>`;
@@ -101,11 +104,11 @@ export async function stats(view, stale) {
     }
     body.innerHTML = `
       <div class="kpis fade-in">
-        ${kpi('Played', hoursVal(s.total_minutes), `${delta(s.total_minutes, pv?.total_minutes, range, fmtMin)} ${s.estimated_minutes ? `${fmtHours(s.tracked_minutes)}h tracked + ${fmtHours(s.estimated_minutes)}h estimated` : s.range.label}`, sparkline(s.series.map((x) => x.minutes)), 'feature')}
-        ${kpi('Sessions', s.sessions, `${delta(s.sessions, pv?.sessions, range)} avg ${fmtMin(s.avg_session_minutes)}`)}
-        ${kpi('Games', s.games_played, `${delta(s.games_played, pv?.games_played, range)} ${plural(s.days_played, 'day')} played`)}
-        ${kpi('Daily avg', fmtMin(s.avg_per_day_minutes), `${delta(s.avg_per_day_minutes, pv?.avg_per_day_minutes, range, fmtMin)} ${s.busiest_day ? `best ${fmtDate(new Date(`${s.busiest_day.day}T12:00`).getTime())} · ${fmtMin(s.busiest_day.minutes)}` : ''}`)}
-        ${kpi('Streak', `${s.streaks.current}<small>d</small>`, `longest ${s.streaks.longest} days`)}
+        ${kpi('Played', hoursVal(s.total_minutes), `${delta(s.total_minutes, tracked && estimates === 'exclude' ? null : pv?.total_minutes, range, fmtMin)} ${s.estimated_minutes ? `${fmtHours(s.tracked_minutes)}h tracked + ${fmtHours(s.estimated_minutes)}h estimated` : s.range.label}`, sparkline(s.series.map((x) => x.minutes)), 'feature')}
+        ${kpi('Sessions', s.sessions, `${delta(s.sessions, tracked ? null : pv?.sessions, range)} avg ${fmtMin(s.avg_session_minutes)}`)}
+        ${kpi('Games', s.games_played, `${delta(s.games_played, tracked && estimates === 'exclude' ? null : pv?.games_played, range)} ${plural(s.days_played, 'day')} played`)}
+        ${kpi('Daily avg', fmtMin(s.avg_per_day_minutes), `${delta(s.avg_per_day_minutes, tracked ? null : pv?.avg_per_day_minutes, range, fmtMin)} ${s.busiest_day ? `best ${fmtDate(new Date(`${s.busiest_day.day}T12:00`).getTime())} · ${fmtMin(s.busiest_day.minutes)}` : ''}`)}
+        ${kpi('Streak', `${s.streaks.current}<small>d</small>`, `longest ${plural(s.streaks.longest, 'day')}`)}
       </div>
       <div class="card" style="margin-top:16px"><div class="card-h"><h2>Playtime per ${s.range.group}</h2></div>${barChart(stackedSeries(s).map((x, i) => { const [a, b] = bucketDays(s.series[i].key, s.range.group); return { ...x, href: `/sessions?from=${a}&to=${b}${platform ? `&platform=${encodeURIComponent(platform)}` : ''}` }; }), { size: 'page', title: `Playtime per ${s.range.group}, ${s.range.label.toLowerCase()}`, hrefHint: 'see sessions', keys: `Playtime per ${s.range.group}; arrow keys read each bar, Enter opens its sessions` })}${platformLegend(s.platforms, estimatedLegend(s))}</div>
       ${highlightsCard(s)}
@@ -113,7 +116,7 @@ export async function stats(view, stale) {
         <div class="card"><div class="card-h"><h2>Top games</h2></div>${s.top_games.length ? topList(s.top_games, { coverFn: (g) => cover(g), limit: 10 }) : '<p class="muted">No play in this range.</p>'}</div>
         <div class="stack"><div class="card"><div class="card-h"><h2>Platforms</h2></div>
           ${s.platforms.length ? `<div class="donut-wrap">${donut(s.platforms.map((p) => ({ label: plat(p.platform).label, value: p.minutes, color: plat(p.platform).color })), { label: `${fmtHours(s.total_minutes)}h`, sub: 'played', title: 'Playtime by platform' })}
-          <div class="col" style="gap:4px;min-width:0">${s.platforms.map((p) => `<button type="button" class="row small st-plat${platform === p.platform ? ' on' : ''}" data-st-plat="${platform === p.platform ? '' : esc(p.platform)}" aria-pressed="${platform === p.platform}" title="${platform === p.platform ? 'Show all platforms' : `Only ${esc(plat(p.platform).label)}`}"><span class="dot" style="background:${plat(p.platform).color}"></span><span class="grow ellipsis">${esc(plat(p.platform).label)}</span><b>${Math.round((p.minutes / Math.max(1, s.total_minutes)) * 100)}%</b></button>`).join('')}</div></div>` : '<p class="muted">—</p>'}
+          <div class="col" style="gap:4px;min-width:0">${s.platforms.map((p) => `<button type="button" class="row small st-plat${platform === p.platform ? ' on' : ''}" data-st-plat="${platform === p.platform ? '' : esc(p.platform)}" aria-pressed="${platform === p.platform}" title="${platform === p.platform ? 'Show all platforms' : `Only ${esc(plat(p.platform).label)}`}"><span class="dot" style="background:${plat(p.platform).color}"></span><span class="grow">${esc(plat(p.platform).label)}</span><b>${Math.round((p.minutes / Math.max(1, s.total_minutes)) * 100)}%</b></button>`).join('')}</div></div>` : '<p class="muted">—</p>'}
           ${s.longest_session ? `<div style="margin-top:18px" class="small muted">Longest session</div><a href="/game/${s.longest_session.game_id}" data-link><b>${fmtMin(s.longest_session.minutes)}</b> · ${esc(s.longest_session.title)}</a>` : ''}
         </div>${genreCard(tags)}</div>
         <div class="card"><div class="card-h"><h2>By weekday</h2><div class="seg compact" id="st-wd" aria-label="Weekday values"><button data-wd="avg" class="${weekdayMode === 'avg' ? 'on' : ''}" title="Average per day: a weekday's play divided by how many of that weekday the range has">Avg</button><button data-wd="total" class="${weekdayMode === 'total' ? 'on' : ''}">Total</button></div></div>

@@ -115,7 +115,7 @@ export async function settings(view, stale) {
       </div>
       <div class="stack">
         <div class="card" id="import"><div class="card-h"><h2>Import</h2></div>
-          <p class="small muted" style="margin-top:-6px">Bring history from spreadsheets, other trackers, Switch, etc. CSV columns: <code>title</code>, <code>platform</code>, <code>playtime_hours</code> or <code>playtime_minutes</code>, <code>last_played</code>, <code>status</code>, <code>rating</code>, <code>notes</code>. JSON may include per-game <code>sessions</code>. Totals without sessions become <b>history</b> — counted in lifetime, never as a burst in your charts.</p>
+          <p class="small muted" style="margin-top:-6px">Bring history from spreadsheets, other trackers, Switch, etc. CSV columns: <code>title</code>, <code>platform</code>, <code>playtime_hours</code> or <code>playtime_minutes</code>, <code>last_played</code>, <code>status</code>, <code>rating</code>, <code>notes</code>, and to date the hours <code>first_played</code>, <code>date_added</code> and <code>play_count</code>. JSON may include per-game <code>sessions</code>. Totals without sessions become <b>history</b> — counted in lifetime, never as a burst in your charts.</p>
           <label class="btn" style="cursor:pointer">${icon('upload')}Choose CSV / JSON / GameTrack .zip<input type="file" id="imp-file" class="vh" accept=".csv,.json,.txt,.zip,text/csv,application/json,application/zip"></label>
           <p class="tiny muted" style="margin:8px 0 0">GameTrack: in GameTrack choose Settings › Export, then pick the .zip here. Unlock times date your synced games' history; hours no account here tracks are added as history; nothing is counted twice.</p>
           <details style="margin-top:12px"><summary class="small muted" style="cursor:pointer">…or paste</summary><textarea class="input mono" id="imp-text" aria-label="CSV or JSON to import" placeholder="title,platform,playtime_hours,status&#10;Hades,switch,42,completed" style="margin-top:8px"></textarea><button class="btn sm" id="imp-go" style="margin-top:8px">Import pasted data</button></details>
@@ -200,10 +200,10 @@ export async function settings(view, stale) {
       ${li(r.merged_synced, `${r.merged_synced} game${r.merged_synced === 1 ? '' : 's'} your synced accounts already track: their totals stay${r.synced_updated ? `, the file adds dates and details${r.sessions_restored ? ` and ${r.sessions_restored} exact past sessions (replacing estimates)` : ''}` : ''}`)}
       ${li(r.entries_created, `${r.entries_created} new game${r.entries_created === 1 ? '' : 's'} / entries`)}
       ${li(r.entries_updated, `${r.entries_updated} existing manual or imported entr${r.entries_updated === 1 ? 'y' : 'ies'} joined (totals only grow, never shrink)`)}
-      ${li(r.sessions, `${r.sessions} sessions (${fmtMin(r.tracked_minutes)})`)}
+      ${li(r.sessions, `${r.sessions} session${r.sessions === 1 ? '' : 's'} (${fmtMin(r.tracked_minutes)})`)}
       ${li(r.baseline_minutes, `${fmtHours(r.baseline_minutes)}h added as history, dated from the file`)}
-      ${li(r.details_filled, `${r.details_filled} games get a status, rating or notes they did not have (yours are never replaced)`)}
-      ${li(r.skipped, `<span class="muted">${r.skipped} rows skipped (no title or unreadable)</span>`)}
+      ${li(r.details_filled, `${r.details_filled} game${r.details_filled === 1 ? ' gets' : 's get'} a status, rating or notes ${r.details_filled === 1 ? 'it' : 'they'} did not have (yours are never replaced)`)}
+      ${li(r.skipped, `<span class="muted">${r.skipped} row${r.skipped === 1 ? '' : 's'} skipped (no title or unreadable)</span>`)}
       ${r.unchanged && !r.entries_created && !r.entries_updated && !r.synced_updated ? '<li>Nothing new — everything in this file is already here.</li>' : ''}
     </ul>`;
   const gameTrackSummary = (r) => {
