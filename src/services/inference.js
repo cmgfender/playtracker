@@ -582,9 +582,12 @@ export function reinferEntry(db, entryId, { account = null, load = null, setting
   } else res = inferHistory(ev, { dayRoom: shared ? (t) => shared.room(t) : null, maxPerDay: Number(settings?.history_max_game_day_minutes) || 600, style });
   shared?.add(res.chunks);
   const now = Date.now();
+  // hours assumed for a game its platform reports no time for (services/assumed.js): the dates may
+  // be good, the hours are a guess, and every chart says so
+  const assumed = entry.account_id == null && String(entry.ext_id).startsWith('assumed:');
   const ins = db.prepare(`INSERT INTO sessions(entry_id, source, kind, minutes, window_start, window_end, confidence, note, basis, created_at)
     VALUES (?, 'inferred', ?, ?, ?, ?, ?, ?, ?, ?)`);
-  for (const c of res.chunks) ins.run(entryId, 'estimate', c.minutes, c.start, c.end, c.confidence, c.why === 'recent' ? 'Recent play before tracking' : 'Estimated from history', c.basis ?? null, now);
+  for (const c of res.chunks) ins.run(entryId, 'estimate', c.minutes, c.start, c.end, c.confidence, assumed ? 'Hours assumed from achievements' : c.why === 'recent' ? 'Recent play before tracking' : 'Estimated from history', assumed ? 'assumed' : c.basis ?? null, now);
   if (res.undated > 0) ins.run(entryId, 'baseline', res.undated, null, ev.trackingStart, null, 'Undated history', null, now);
   h.inference = { confidence: res.confidence, window: res.window, reasons: res.reasons, undated: res.undated, estimated: res.chunks.reduce((a, c) => a + c.minutes, 0), at: now };
   db.prepare('UPDATE entries SET hist = ?, inferred_v = ? WHERE id = ?').run(JSON.stringify(h), INFER_VERSION, entryId);

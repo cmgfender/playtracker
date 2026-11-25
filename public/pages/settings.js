@@ -1,5 +1,5 @@
 import {
-  $, $$, esc, fmtMin, fmtHours, ago, fmtDate, icon, api, toast, fail, modal, confirmBox, rerender, state, applyTheme, paintAccent,
+  $, $$, esc, fmtMin, fmtHours, ago, fmtDate, icon, api, toast, fail, modal, confirmBox, rerender, state, applyTheme, paintAccent, plat, plural,
   accentOf, scrollMotion,
 } from '../app.js';
 import { parseLayout, layoutEditor } from './dashboard.js';
@@ -8,6 +8,21 @@ import { scheduleFields, bindScheduleFields, readSchedule } from './accounts.js'
 // =====================================================================
 // Settings
 // =====================================================================
+/** Assumed hours (GET /history/assumed) in words: what the switch adds, or would add. */
+function assumedInfo(a, ig) {
+  if (!a) return '';
+  const h = (m) => `${fmtHours(m)}h`;
+  const where = a.by_platform.map((p) => `${esc(plat(p.platform).label)} ${h(p.minutes)}`).join(' · ');
+  const top = a.top.slice(0, 3).map((g) => `<a href="/game/${g.game_id}" data-link class="link">${esc(g.title)}</a> (${h(g.minutes)})`).join(', ');
+  const none = a.no_typical ? ` ${plural(a.no_typical, 'more game')} ${a.no_typical === 1 ? 'has' : 'have'} no typical time on IGDB and ${a.no_typical === 1 ? 'stays' : 'stay'} at 0h.` : '';
+  if (!a.games) {
+    return `<p class="small muted" style="margin:10px 0 0">${a.no_typical ? `${plural(a.no_typical, 'game')} could use it, but ${ig?.configured ? 'IGDB has no typical time for them' : 'typical times come from IGDB: set up Game metadata below first'}.` : 'No game in your library needs it right now: every game with achievements has playtime too.'}</p>`;
+  }
+  return a.enabled
+    ? `<p class="small" style="margin:10px 0 0"><span class="badge good">On</span> <b>${h(a.counted_minutes)}</b> across <b>${plural(a.counted_games, 'game')}</b> are in your totals as <i class="dot basis-assumed" style="display:inline-block;width:9px;height:9px;border-radius:2px"></i> Assumed hours${where ? ` (${where})` : ''}.${none}</p>`
+    : `<p class="small" style="margin:10px 0 0"><span class="badge">Off</span> These games count 0 hours. Turning it on would add about <b>${h(a.minutes)}</b> across <b>${plural(a.games, 'game')}</b>${where ? ` (${where})` : ''}${top ? `, the most for ${top}` : ''}.${none}</p>`;
+}
+
 const WEEKDAY = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 const mb = (b) => `${(b / 1048576).toFixed(b >= 1e8 ? 0 : 1)} MB`;
 
@@ -76,6 +91,8 @@ function savedTick(at, what) {
 export async function settings(view, stale) {
   const [s, tokens, auth, bk, ig] = await Promise.all([api('/settings'), api('/tokens'), api('/auth/status'), api('/backups').catch(() => null), api('/igdb/status').catch(() => null)]);
   if (stale()) return;
+  const assumed = await api('/history/assumed').catch(() => null);
+  if (stale()) return;
   const sw = (key, title, desc) => `<div class="setting"><div><div class="t">${title}</div><div class="d">${desc}</div></div><label class="switch"><input type="checkbox" data-set="${key}" ${s[key] ? 'checked' : ''} aria-label="${esc(title)}"><span></span></label></div>`;
   const accent = accentOf(s);
   view.innerHTML = `
@@ -103,6 +120,18 @@ export async function settings(view, stale) {
           <p class="small muted" style="margin-top:-6px">How often Vestigo snapshots your playtime. Shorter intervals = more precise sessions; the difference between two snapshots becomes a session. Accounts can override this.</p>
           <form class="stack" id="sched-f">${scheduleFields(s)}</form>
           <div class="row" style="margin-top:14px"><button class="btn primary" id="sched-save">Save schedule</button></div>
+        </div>
+        <div class="card" id="assumed"><div class="card-h"><h2>Games with no playtime</h2></div>
+          <p class="small muted" style="margin-top:-6px">Xbox 360, PS3 and PS Vita games report your achievements and when you last played, but no hours. They sit at 0h in every total and chart.</p>
+          <div class="setting"><div><div class="t">Assume their hours</div><div class="d">Estimate each game’s hours from its typical length and how many of its achievements you unlocked. Off by default: with it off, your totals hold only hours a platform reported or you entered.</div></div><label class="switch"><input type="checkbox" id="as-on" ${s.assumed_hours ? 'checked' : ''} aria-label="Assume hours for games with no playtime"><span></span></label></div>
+          <div id="as-info">${assumedInfo(assumed, ig)}</div>
+          <details style="margin-top:12px"><summary class="small" style="cursor:pointer">How the estimate works</summary>
+            <ul class="small muted" style="margin:8px 0 0;padding-left:18px">
+              <li><b>The hours are a guess:</b> IGDB’s typical time for the game × the share of its achievements you unlocked. 36 of 65 on a 60-hour game is 33h. A game you marked beaten or completed counts at least its main story. No game is assumed longer than 200h.</li>
+              <li><b>The dates are not:</b> they come from your unlock times and the last-played date, so the hours land in the weeks you played.</li>
+              <li><b>Always told apart:</b> assumed hours have their own pattern and name in every chart and on the game’s page. They never count toward streaks, sessions, today or this week.</li>
+              <li><b>Nothing reported is changed:</b> with this off, no assumed hour is left anywhere. One game drops its own when its platform reports time or you add its hours by hand; to leave one game out, use “Fix this game” on its page.</li>
+            </ul></details>
         </div>
         <div class="card" id="detection"><div class="card-h"><h2>Session detection</h2></div>
           <div class="setting"><div><div class="t">Minimum session</div><div class="d">Smaller deltas accumulate until they reach this many minutes</div></div><input class="input" type="number" min="0" max="120" data-num="min_session_minutes" value="${s.min_session_minutes}" style="width:90px"></div>
@@ -174,6 +203,16 @@ export async function settings(view, stale) {
   };
   $('#sched-save').addEventListener('click', (e) => save(readSchedule(view), e.currentTarget, 'Sync schedule'));
   $$('[data-set]', view).forEach((el) => el.addEventListener('change', () => save({ [el.dataset.set]: el.checked }, el)));
+  // assumed hours: the line under the switch says what it just did
+  $('#as-on').addEventListener('change', async (e) => {
+    const el = e.currentTarget;
+    el.disabled = true;
+    const r = await save({ assumed_hours: el.checked }, el, 'Assumed hours');
+    el.disabled = false;
+    if (!r) { el.checked = !el.checked; return; }
+    const a = await api('/history/assumed').catch(() => null);
+    if (a && $('#as-info')) $('#as-info').innerHTML = assumedInfo(a, ig);
+  });
   $$('[data-num]', view).forEach((el) => el.addEventListener('change', () => save({ [el.dataset.num]: Number(el.value) }, el)));
   $$('[data-str]', view).forEach((el) => el.addEventListener('change', () => save({ [el.dataset.str]: el.value }, el)));
   $$('[data-seg]', view).forEach((g) => g.addEventListener('click', async (e) => {

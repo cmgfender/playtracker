@@ -1171,6 +1171,7 @@ a.mrow.mlink:hover .ml, a.mrow.mlink:focus-visible .ml { color: var(--accent-ink
 .basis-confirmed { background: repeating-linear-gradient(45deg, color-mix(in srgb, var(--accent-mark) 78%, transparent) 0 1.4px, transparent 1.4px 4.5px), repeating-linear-gradient(-45deg, color-mix(in srgb, var(--accent-mark) 78%, transparent) 0 1.4px, transparent 1.4px 4.5px), color-mix(in srgb, var(--accent-mark) 26%, transparent); }
 .basis-anchored { background: repeating-linear-gradient(0deg, color-mix(in srgb, var(--accent-mark) 75%, transparent) 0 2px, color-mix(in srgb, var(--accent-mark) 22%, transparent) 2px 5px); }
 .basis-estimated { background: repeating-linear-gradient(45deg, color-mix(in srgb, var(--accent-mark) 75%, transparent) 0 2px, color-mix(in srgb, var(--accent-mark) 20%, transparent) 2px 5px); }
+.basis-assumed { background: radial-gradient(circle, transparent 0 1px, color-mix(in srgb, var(--accent-mark) 80%, transparent) 1.1px 1.9px, transparent 2px) 0 0 / 5px 5px, color-mix(in srgb, var(--accent-mark) 14%, transparent); }
 .badge.basis-b { gap: 5px; }
 .badge.basis-b .dot { width: 9px; height: 9px; border-radius: 2px; }
 
@@ -1286,3 +1287,23 @@ a.mrow.mlink:hover .ml, a.mrow.mlink:focus-visible .ml { color: var(--accent-ink
   .fr-right { flex-direction: row; flex-wrap: wrap; align-items: center; gap: 8px; max-width: calc(100% - 96px); margin-left: 96px; }
   .fr-right .badge { text-align: left; }
 }
+
+/* Game page: what Vestigo knows (Where your time comes from) and where it is corrected (Fix this game) */
+.hero-rel { margin: -2px 0 8px; color: var(--muted); }
+.item.src { align-items: flex-start; content-visibility: visible; }
+.item.src .src-line { display: block; }
+.item.src .src-line .dot { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
+.src-what { color: var(--text); }
+.src-ic { width: 32px; height: 32px; border-radius: 8px; flex: none; border: 1px solid var(--line); }
+.src-rel { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; flex-wrap: wrap; padding: 12px 0 2px; border-top: 1px solid var(--line); }
+.src-rel:first-child { border-top: 0; padding-top: 2px; }
+.src-ev { margin-top: 4px; }
+.src-ev summary { cursor: pointer; }
+.src-ev .evidence { margin-top: 6px; }
+.fix-card { margin-top: 18px; border-style: dashed; background: color-mix(in srgb, var(--panel) 60%, transparent); }
+.fix-card .card-h h2 { display: flex; align-items: center; gap: 8px; }
+.fix-row { display: flex; gap: 14px; align-items: flex-start; flex-wrap: wrap; padding: 12px 0; border-top: 1px solid var(--line); }
+.fix-row .grow { min-width: min(100%, 260px); flex: 1 1 260px; }
+.fix-row .t { font-weight: 600; }
+.fix-row .d { color: var(--muted); font-size: 13px; margin-top: 2px; }
+.fix-btns { gap: 8px; }

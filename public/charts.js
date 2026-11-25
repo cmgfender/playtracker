@@ -271,17 +271,19 @@ export const HATCH = '<defs><pattern id="pt-hatch" width="6" height="6" patternU
   // estimates you confirmed cross-hatched, estimates anchored by an achievement unlock striped across
   + '<pattern id="vg-imported" width="6" height="6" patternUnits="userSpaceOnUse"><rect width="6" height="6" fill="color-mix(in srgb, var(--accent-mark) 72%, transparent)"/><circle cx="3" cy="3" r="1.15" fill="var(--panel)" fill-opacity=".75"/></pattern>'
   + '<pattern id="vg-confirmed" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="6" height="6" fill="color-mix(in srgb, var(--accent-mark) 26%, transparent)"/><line x1="0" y1="0" x2="0" y2="6" stroke="color-mix(in srgb, var(--accent-mark) 78%, transparent)" stroke-width="1.6"/><line x1="0" y1="0" x2="6" y2="0" stroke="color-mix(in srgb, var(--accent-mark) 78%, transparent)" stroke-width="1.6"/></pattern>'
-  + '<pattern id="vg-anchored" width="6" height="5" patternUnits="userSpaceOnUse"><rect width="6" height="5" fill="color-mix(in srgb, var(--accent-mark) 22%, transparent)"/><line x1="0" y1="1.2" x2="6" y2="1.2" stroke="color-mix(in srgb, var(--accent-mark) 75%, transparent)" stroke-width="2"/></pattern></defs>';
+  + '<pattern id="vg-anchored" width="6" height="5" patternUnits="userSpaceOnUse"><rect width="6" height="5" fill="color-mix(in srgb, var(--accent-mark) 22%, transparent)"/><line x1="0" y1="1.2" x2="6" y2="1.2" stroke="color-mix(in srgb, var(--accent-mark) 75%, transparent)" stroke-width="2"/></pattern>'
+  // hours assumed for a game its platform reports no time for: open dots on a pale fill (the lightest: the least certain)
+  + '<pattern id="vg-assumed" width="6" height="6" patternUnits="userSpaceOnUse"><rect width="6" height="6" fill="color-mix(in srgb, var(--accent-mark) 14%, transparent)"/><circle cx="3" cy="3" r="1.5" fill="none" stroke="color-mix(in srgb, var(--accent-mark) 80%, transparent)" stroke-width="1"/></pattern></defs>';
 /** The kinds of history in words, for tooltips. */
-const HISTORY_KINDS = [['imported', 'imported'], ['confirmed', 'confirmed by you'], ['anchored', 'dated by unlocks'], ['estimated', 'estimated']];
+const HISTORY_KINDS = [['imported', 'imported'], ['confirmed', 'confirmed by you'], ['anchored', 'dated by unlocks'], ['estimated', 'estimated'], ['assumed', 'assumed from achievements']];
 /** The fill of each kind of history: imported sessions, estimates you confirmed, unlock-anchored, other estimates. */
-export const BASIS_FILL = { imported: 'url(#vg-imported)', confirmed: 'url(#vg-confirmed)', anchored: 'url(#vg-anchored)', estimated: 'url(#pt-hatch)' };
+export const BASIS_FILL = { imported: 'url(#vg-imported)', confirmed: 'url(#vg-confirmed)', anchored: 'url(#vg-anchored)', estimated: 'url(#pt-hatch)', assumed: 'url(#vg-assumed)' };
 
 // ---------- bar chart ----------
 // Stack order, bottom up: neighbours differ in lightness (Steam and PlayStation 2.7:1 apart in dark),
 // other keys follow in their own order, estimated history always on top.
 const STACK_ORDER = ['steam', 'psn', 'xbox', 'nintendo', 'custom', 'manual', 'import'];
-const HISTORY_ORDER = { imported: 60, confirmed: 70, anchored: 80, estimated: 99 };
+const HISTORY_ORDER = { imported: 60, confirmed: 70, anchored: 80, estimated: 98, assumed: 99 };
 const stackRank = (k) => HISTORY_ORDER[k] ?? (STACK_ORDER.includes(k) ? STACK_ORDER.indexOf(k) : 50);
 
 registerChart('bar', (data, opts, box) => {
@@ -685,7 +687,7 @@ registerChart('curve', ({ series }, opts, box) => {
     // bottom up: the kinds of history, imported sessions, then play tracked live
     const cb = (k, i) => (n === 1 ? series[0] : series[i]).cumulative_by_basis[k] || 0;
     let lo = xs.map(() => 0);
-    for (const k of ['estimated', 'anchored', 'confirmed', 'imported', 'tracked']) {
+    for (const k of ['assumed', 'estimated', 'anchored', 'confirmed', 'imported', 'tracked']) {
       const hi = lo.map((y, i) => y + cb(k, i));
       if (hi.some((y, i) => y > lo[i])) marks += `<polygon class="mk" data-key="${k}" points="${band(lo, hi)}" fill="${k === 'tracked' ? 'color-mix(in srgb, var(--accent-mark) 55%, transparent)' : BASIS_FILL[k]}"/>`;
       lo = hi;

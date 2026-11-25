@@ -15,6 +15,7 @@ import { normalizeTitle } from '../services/titles.js';
 import { reinferMany, reinferPending, relearnStyle, styleOf, INFER_VERSION } from '../services/inference.js';
 import { historyContext, periodStart } from '../services/histcontext.js';
 import { flushRollups } from '../services/rollup.js';
+import { reconcileAssumed, assumedSummary } from '../services/assumed.js';
 import { applyLicenses } from '../services/licenses.js';
 import { readZip, isZip } from '../services/zip.js';
 import { gameTrackTables, importGameTrack } from '../services/gametrack.js';
@@ -1288,9 +1289,17 @@ export function registerRoutes(r, app) {
       reinferPending(db, { settings: settings.all() });
       flushRollups(db);
     }
+    // hours for games a platform reports no time for: added, or taken away again, at once
+    if ('assumed_hours' in v.values && v.values.assumed_hours !== prev.assumed_hours) reconcileAssumed(db, settings, { log: app.log });
     const s = settings.public();
     return { ...s, schedule_label: describeSchedule(s) };
   }, { summary: 'Update settings (partial)', body: 'Any subset of the settings object' });
+  r.get('/api/v1/history/assumed', () => memo(db, `assumed:${settings.get('assumed_hours')}`, () => assumedSummary(db, settings)), {
+    summary: 'Assumed hours (setting assumed_hours): what they add, or would add, for games a platform reports achievements for and no playtime (Xbox 360, PS3)',
+    returns: '{ enabled, games, minutes (what the library calls for), no_typical (games IGDB has no typical time for), counted_games, counted_minutes (in your totals now), '
+      + 'by_platform: [{ platform, games, minutes }], top: [{ game_id, title, minutes }] }. Each is IGDB\'s typical time for the game x the share of its achievements you unlocked, '
+      + 'dated by the unlocks; it is an entry of its own (ext_id assumed:<entry id>, meta.assumed says how it was worked out) and history of basis "assumed".',
+  });
 
   r.get('/api/v1/tokens', () => db.prepare('SELECT id, name, prefix, created_at, last_used_at FROM api_tokens ORDER BY id').all(), { summary: 'List API tokens' });
   r.post('/api/v1/tokens', (c) => auth.createToken(c.body.name), { summary: 'Create an API token (shown once)', body: '{ name }' });
@@ -1462,7 +1471,7 @@ export function registerRoutes(r, app) {
       h.inference = { ...h.inference, confidence: 'high', reasons: ['You confirmed this estimate', ...(h.inference.reasons || []).filter((r) => r !== 'You confirmed this estimate')] };
       tx(db, () => {
         db.prepare('UPDATE entries SET hist = ? WHERE id = ?').run(JSON.stringify(h), id);
-        db.prepare("UPDATE sessions SET confidence = 'high', basis = 'confirmed' WHERE entry_id = ? AND source = 'inferred' AND kind = 'estimate'").run(id);
+        db.prepare("UPDATE sessions SET confidence = 'high', basis = CASE WHEN basis = 'assumed' THEN 'assumed' ELSE 'confirmed' END WHERE entry_id = ? AND source = 'inferred' AND kind = 'estimate'").run(id);
         db.prepare("INSERT OR IGNORE INTO rollup_queue(session_id) SELECT id FROM sessions WHERE entry_id = ? AND source = 'inferred' AND kind = 'estimate'").run(id);
         flushRollups(db);
       });

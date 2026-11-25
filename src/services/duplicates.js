@@ -55,7 +55,7 @@ function compute(db, threshold, limit) {
   suggestions.sort((x, y) => y.score - x.score);
 
   const entries = db.prepare(`WITH multi AS (SELECT game_id FROM entries GROUP BY game_id HAVING COUNT(*) > 1)
-    SELECT e.id, e.game_id, e.account_id, e.platform, e.title, e.playtime_min, e.excluded, e.last_played_at,
+    SELECT e.id, e.game_id, e.account_id, e.platform, e.ext_id, e.title, e.playtime_min, e.excluded, e.last_played_at,
       a.name account_name, g.title game_title, g.cover_url
     FROM multi m JOIN entries e ON e.game_id = m.game_id JOIN games g ON g.id = e.game_id LEFT JOIN accounts a ON a.id = e.account_id
     ORDER BY e.game_id, e.id`).all();
@@ -68,7 +68,8 @@ function compute(db, threshold, limit) {
   const doubleCounted = [];
   const crossPlatform = [];
   for (const [gameId, list] of byGame) {
-    const counted = list.filter((e) => !e.excluded && e.platform !== 'manual');
+    // hours assumed for a copy its platform reports no time for are no second report of the same play
+    const counted = list.filter((e) => !e.excluded && e.platform !== 'manual' && !(e.account_id == null && String(e.ext_id).startsWith('assumed:')));
     const g = { id: gameId, title: list[0].game_title, cover_url: list[0].cover_url };
     crossPlatform.push({ game: g, entries: list.map(slimEntry), platforms: [...new Set(list.map((e) => e.platform))] });
     for (let i = 0; i < counted.length; i++) {

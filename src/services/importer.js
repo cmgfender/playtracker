@@ -405,6 +405,7 @@ export function* exportChunks(db, format = 'json') {
   const rows = db.prepare(`SELECT e.id, e.platform, e.playtime_min, e.last_played_at, e.excluded, e.hist, a.name account_name,
       g.title, g.status, g.rating, g.notes, g.favorite, g.hidden, g.merge_locked, g.cover_url
     FROM entries e JOIN games g ON g.id = e.game_id LEFT JOIN accounts a ON a.id = e.account_id
+    WHERE NOT (e.account_id IS NULL AND e.ext_id LIKE 'assumed:%')
     ORDER BY g.title COLLATE NOCASE, e.id`);
   const sessions = db.prepare("SELECT started_at, ended_at, window_start, window_end, minutes, source, note FROM sessions WHERE entry_id = ? AND kind = 'play' ORDER BY sort_time");
   const count = db.prepare("SELECT COUNT(*) n FROM sessions WHERE entry_id = ? AND kind = 'play'");

@@ -18,7 +18,7 @@ import { memo, resolveRange, groupFor, groupKey, emptySeries, filter, dayKey, pa
 const DAY = 86_400_000;
 const r = (x) => Math.round(x);
 // play_days.basis, by index (see migration 10)
-const BASES = ['tracked', 'imported', 'anchored', 'confirmed', 'estimated'];
+const BASES = ['tracked', 'imported', 'anchored', 'confirmed', 'estimated', 'assumed'];
 const zeros = (n) => Array(n).fill(0);
 
 export const STATUSES = ['unset', 'backlog', 'playing', 'paused', 'completed', 'beaten', 'dropped', 'wishlist'];

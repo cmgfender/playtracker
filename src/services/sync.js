@@ -10,6 +10,7 @@ import { flushRollups } from './rollup.js';
 import { unmemoized } from './stats.js';
 import { allocate } from './inference.js';
 import { reinferMany, mergeEvidence, reinferPending, relearnStyle } from './inference.js';
+import { reconcileAssumed } from './assumed.js';
 import { asLogger } from '../logger.js';
 import { modelFor, deviceDelta, intSplit } from './model.js';
 import { ACH_VERSION, storeAchievements, knownAchievements, TtlCache, PLAYED_SQL, HISTORY_PENDING_SQL, PLAYED_SINCE_SQL } from './achievements.js';
@@ -886,6 +887,7 @@ export class SyncService {
       const doubled = dropDoubledPresence(db);
       if (doubled) this.log.info(`Removed ${doubled} presence session${doubled > 1 ? 's' : ''} another account already counts`);
       this.relearn();
+      this.assume();
       const result = { sync_id: syncId, account_id: account.id, initial, ...stats, api_calls: counters.calls, duration_ms: Date.now() - startedAt };
       this.log.info(`${label}: ${stats.games_seen} games, ${stats.sessions_created} sessions (+${stats.minutes_added}m)${stats.history_minutes ? `, ${Math.round(stats.history_minutes / 60)}h history dated (${Math.round(stats.estimated_minutes / 60)}h charted)` : ''}${initial ? ' [initial import]' : ''} in ${result.duration_ms}ms, ${counters.calls} API calls`);
       this.notify(account, result, null);
@@ -1069,6 +1071,7 @@ export class SyncService {
       if (pace.hourlyShare && tried) this.achHour.set(account.id, { hour, calls: (this.achHour.get(account.id)?.hour === hour ? this.achHour.get(account.id).calls : 0) + tried });
     }
     const left = todo.get(ACH_VERSION, account.id);
+    if (read) this.assume();
     if (read) this.log.info(`Read achievements of ${read} ${account.platform} titles (${backfilled} back-filled, ${left.pending} to go) in ${Math.round((Date.now() - t0) / 1000)}s, ${counters.calls} API calls`);
     // more to do: Steam / PSN go on at enrichment's pace while what is left shrinks; Xbox goes on
     // in the next clock hour while it shrinks or its budget / hourly share is what held it back
@@ -1391,6 +1394,11 @@ export class SyncService {
     try { relearnStyle(this.db, { settings: this.settings.all(), log: this.log }); } catch (e) { this.log.error('Learning play style failed', e); }
   }
 
+  /** Hours assumed for games a platform reports no time for, kept in step with the library (services/assumed.js). */
+  assume() {
+    try { return reconcileAssumed(this.db, this.settings, { log: this.log }); } catch (e) { this.log.error('Assuming hours failed', e); return null; }
+  }
+
   start() {
     // syncs cut off by a restart (a container update mid-sync) would otherwise show as running forever
     try {
@@ -1407,6 +1415,7 @@ export class SyncService {
       if (!relearnStyle(this.db, { settings: this.settings.all(), log: this.log })) reinferPending(this.db, { log: this.log, settings: this.settings.all() });
       flushRollups(this.db);
     } catch (e) { this.log.error('History inference failed', e); }
+    this.assume();
     const tick = async () => {
       const rows = this.db.prepare('SELECT * FROM accounts WHERE enabled = 1').all().map(parseAccount);
       const now = Date.now();

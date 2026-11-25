@@ -16,6 +16,7 @@ export const DEFAULT_SETTINGS = {
   history_max_day_minutes: 720,      // inferred history: max minutes per day across all games
   history_max_game_day_minutes: 600, // inferred history: max minutes per day for one game
   history_learn: true,               // learn this player's play pattern from fully tracked games to date history
+  assumed_hours: false,              // estimate hours for games a platform reports no playtime for (Xbox 360, PS3): services/assumed.js
 
   // Notifications
   webhook_url: '',
