@@ -46,7 +46,7 @@ describe('a game\'s story', () => {
     assert.deepEqual(s.chapters.map((c) => c.id), ['began', 'stands', 'played', 'now']);
     assert.equal(chapter(s, 'began'), 'You first played it on <2024-02-03:day>, 16 years after it came out.');
     assert.equal(chapter(s, 'stands'), 'It is your most played game of 4: 59.7% of all your time on record. In the Halo series it is the one you played most, 91% of your time with it.');
-    assert.equal(chapter(s, 'played'), '3 sessions on record, 6.7 hours at a time across 5 days. The longest: 10 hours on <2024-02-03:day>.');
+    assert.equal(chapter(s, 'played'), '3 sessions on record, 6.7 hours at a time. The longest: 10 hours on <2024-02-03:day>.');
     assert.equal(chapter(s, 'now'), 'You finished it. It has been quiet since <2024-03-02:month>: 2 years.');
   });
 

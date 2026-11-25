@@ -102,7 +102,10 @@ export function gameStory(db, id, { now = Date.now() } = {}) {
     // (the last of a series you played little of says nothing: only a place worth naming is named)
     const inSeries = !series ? '' : series.rank === 1 ? [` In ${theSeries(series.name)}`, link, ` series it is the one you played most, ${series.share}% of your time with it.`]
       : series.rank <= 3 && series.rank < series.of ? [` In ${theSeries(series.name)}`, link, ` series it is your ${ordinal(series.rank)} most played of ${series.of}.`] : '';
-    chapter('stands', 'Where it stands', head, sh, onPlat, inSeries);
+    // ("1 minute puts it 979th": a place far down the list is told only for a game with real time in it)
+    const worth = rank <= Math.max(10, Math.round(P.of * 0.25)) || g.minutes >= 600;
+    if (worth) chapter('stands', 'Where it stands', head, sh, onPlat, inSeries);
+    else if (inSeries) chapter('stands', 'Where it stands', inSeries.map((x, i) => (i === 0 && typeof x === 'string' ? x.trimStart() : x)));
   }
 
   // its years: the ones it led, the ones it was near the top of, its busiest month
@@ -122,9 +125,10 @@ export function gameStory(db, id, { now = Date.now() } = {}) {
   if (ses.c >= 2) {
     const big = db.prepare(`SELECT s.minutes, COALESCE(s.started_at, s.ended_at, s.window_end) t FROM sessions s JOIN entries e ON e.id = s.entry_id WHERE e.game_id = ? AND e.excluded = 0 AND s.kind = 'play' AND s.source != 'inferred'
       ORDER BY s.minutes DESC, s.id LIMIT 1`).get(id);
-    chapter('played', 'How you play it', B(count(ses.c, 'session')), ` on record, ${hrs(ses.m / ses.c)} at a time`, span.days > 1 ? ` across ${count(span.days, 'day')}` : '', '.',
+    chapter('played', 'How you play it', B(count(ses.c, 'session')), ` on record, ${hrs(ses.m / ses.c)} at a time.`,
       big && big.minutes >= 60 ? [' The longest: ', B(hrs(big.minutes)), big.t ? [' on ', { d: dayKey(big.t), p: 'day' }] : '', '.'] : '');
-  } else if (g.dated >= 600 && span.months >= 2) {
+  } else if (g.dated >= 600 && span.months >= 2 && g.dated / span.months >= 120) {
+    // (history an estimate spread thin over many years - 36 hours in 55 months - has no monthly pace worth telling)
     const per = g.dated / span.months;
     chapter('played', 'How you played it', B(hrs(g.dated)), ` over ${count(span.months, 'month')} with play`, span.years > 1 ? `, in ${count(span.years, 'year')}` : '', `: about ${hrs(per)} a month.`,
       estimated >= g.dated * 0.5 ? ' The hours are the platform\'s; when they fell is estimated.' : '');

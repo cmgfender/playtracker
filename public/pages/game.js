@@ -264,7 +264,7 @@ export async function game(view, id, stale) {
   /**
    * Evens the columns once they are drawn: a long About or achievement list left the narrow column
    * 600px longer than the wide one on most games. A card that can sit in either column (About,
-   * where the time comes from, Notes) moves under the shorter one while that brings the two
+   * where the time comes from, Notes, Activity) moves under the shorter one while that brings the two
    * ends closer; the curve, activity, sessions and achievements stay where they are looked for.
    */
   function balance() {
@@ -304,7 +304,7 @@ export async function game(view, id, stale) {
           <div id="g-curve">${gameCurve(series, 'total', g)}</div>
           <div class="legend"><span><i class="dot" style="background:var(--accent-mark)"></i>Tracked</span>${curveKinds(series)}${series.some((x) => x.sessions) ? '<span><i class="dot" style="background:var(--accent2)"></i>Sessions</span>' : ''}${series.some((x) => x.unlocked) ? '<span><i class="dot" style="background:var(--star)"></i>Unlocks</span>' : ''}</div>
           ${curve.totals.baseline_minutes ? `<p class="tiny muted" style="margin:8px 0 0">${fmtMin(curve.totals.baseline_minutes)} has no date: it counts toward lifetime, not on the curve.</p>` : ''}</div>` : '';
-    const heatCard = years.length ? `<div class="card"><div class="card-h"><h2>Activity</h2>${years.length > 1 ? `<div class="seg" id="g-hm-year" aria-label="Activity year">${years.map((y, i) => `<button data-y="${y}" class="${i ? '' : 'on'}">${y}</button>`).join('')}</div>` : `<span class="tiny muted">${years[0]}</span>`}</div><div id="g-heat"><div class="ins-ph short" aria-hidden="true"></div></div></div>` : '';
+    const heatCard = years.length ? `<div class="card" data-either><div class="card-h"><h2>Activity</h2>${years.length > 1 ? `<div class="seg" id="g-hm-year" aria-label="Activity year">${years.map((y, i) => `<button data-y="${y}" class="${i ? '' : 'on'}">${y}</button>`).join('')}</div>` : `<span class="tiny muted">${years[0]}</span>`}</div><div id="g-heat"><div class="ins-ph short" aria-hidden="true"></div></div></div>` : '';
     const baselines = g.sessions.filter((x) => x.kind === 'baseline' && x.source !== 'inferred');
     // a game added by hand with no hours from before it was added (an N64 game played in 1998)
     const handNoPast = g.entries.find((e) => e.account_id == null && e.platform === 'manual' && !e.history);
@@ -330,7 +330,8 @@ export async function game(view, id, stale) {
     // its franchise: where it stands, the entries either side
     const seriesCard = franchiseCard(g.franchise);
     if (seriesCard) R += 150;
-    // the story leads; Activity follows the curve in the wide column (a year of days needs the width)
+    // the story leads; Activity follows the curve in the wide column (a year of days reads best at that width:
+    // balance() moves it to the narrow one only when the wide column would run far past it)
     const left = [storyCard, curveCard, heatCard]; const right = [seriesCard, about, hasAch ? achBlock(ach) : ''];
     for (const [card, h] of [[platCard, srcH]]) {
       if (!card) continue;
