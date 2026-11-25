@@ -29,8 +29,9 @@ const REFRESH_AFTER = 30 * DAY;     // details of a matched game
 const RETRY_NONE_AFTER = 14 * DAY;  // a game nothing matched
 const MAX_TRIES = 6;                // ... at most this many times
 const SEARCH_BATCH = 50;            // titles searched between progress updates
-const MATCH_VERSION = 3;            // 2: searches one title per request (games nothing matched before are looked up again)
+const MATCH_VERSION = 4;            // 2: searches one title per request (games nothing matched before are looked up again)
                                     // 3: a title match must be a game its platform can hold (stored title matches are checked once)
+                                    // 4: a store's own words are left out of the search ("for Xbox Series X|S", "(Game Preview)"): unmatched games are looked up again
 const TAGS_VERSION = 2;             // 2: engines and release platforms are kept too (matched games are refreshed to get them)
 const IDS_PER_REQUEST = 200;
 // IGDB platform ids of the platforms tracked here (a candidate on one of them is preferred)
@@ -43,6 +44,36 @@ const SEARCH_FIELDS = 'fields *, alternative_names.name, platforms.name, platfor
 
 // the title as searched: trademark signs and platform tags only confuse IGDB's search
 const searchText = (t) => String(t || '').replace(/[™®©℠]/g, '').replace(/\s*[([](?:pc|windows(?: 10)?|xbox(?: one| series x\|s)?|ps[45]|playstation [45])[)\]]\s*/gi, ' ').replace(/\s+/g, ' ').trim();
+/**
+ * A store's title without what only the store adds: the console it is sold for, "(Game Preview)",
+ * a standard-edition or base-game tag, the year in brackets. { title, year (the bracketed year, or null) }:
+ * what IGDB calls the game. Only for looking a game up: stored titles and merging keep the store's words.
+ */
+const STORE_ONLY = [
+  /\s*\((?:game preview|windows pc|pc|windows(?: 10)?)\)\s*$/i,
+  /\s*[-–—:]?\s*(?:for\s+)?(?:xbox series x\s*\|\s*s|xbox one|xbox 360|nintendo switch(?: 2)?|playstation\s*[45]|ps[45])(?:\s+(?:edition|version))?\s*$/i,
+  /\s*[-–—:]\s*(?:windows(?: 10)?|pc)\s+(?:edition|version)\s*$/i,
+  /\s*[-–—:]?\s*(?:standard edition|base game)\s*$/i,
+  /\s*[-–—:]\s*(?:19|20)\d{2}\s+edition\s*$/i,
+  /^full game\s*[-–—:]\s*/i,
+  /\s+full game$/i,
+  /\s+PC$/,
+];
+export function storeTitle(title) {
+  let t = String(title || '').replace(/[™®©℠]/g, '').replace(/\s+/g, ' ').trim();
+  let year = null;
+  for (let i = 0; i < 4; i++) {
+    const before = t;
+    const y = t.match(/\s*\(((?:19|20)\d{2})\)\s*$/);
+    if (y) { year = Number(y[1]); t = t.slice(0, y.index).trim(); }
+    for (const re of STORE_ONLY) t = t.replace(re, '').trim();
+    if (t === before) break;
+  }
+  // a title the rules would leave nothing of is its own name
+  return t ? { title: t, year } : { title: String(title || '').trim(), year: null };
+}
+/** What is searched for a title: without the store's own words, and "Borderlands4" as "Borderlands 4". */
+export const searchFor = (title) => searchText(storeTitle(title).title).replace(/([a-z]{4})(\d)/gi, '$1 $2');
 const quote = (s) => `"${String(s).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
 const chunks = (list, n) => { const out = []; for (let i = 0; i < list.length; i += n) out.push(list.slice(i, i + n)); return out; };
 const names = (list) => [...new Set((list || []).map((x) => (typeof x === 'object' ? x?.name : null)).filter((x) => typeof x === 'string' && x.trim()).map((x) => x.trim()))];
@@ -102,9 +133,10 @@ export function fits(c, platforms = []) {
 // among candidates that are the same title once normalized, the one named exactly like it wins
 const light = (s) => String(s || '').toLowerCase().replace(/[™®©℠]/g, '').normalize('NFKD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, ' ').trim();
 
-export function pickMatch(title, candidates, platforms = []) {
+export function pickMatch(title, candidates, platforms = [], { year = null } = {}) {
   const want = normalizeTitle(title);
   if (!want) return null;
+  const yearOf = (c) => (c.first_release_date > 0 ? new Date(c.first_release_date * 1000).getUTCFullYear() : null);
   const exactName = light(title);
   const wantedPlatforms = new Set(platforms.flatMap((p) => PLATFORM_IDS[p] || []));
   let best = null;
@@ -116,10 +148,21 @@ export function pickMatch(title, candidates, platforms = []) {
     if (!fits(c, platforms)) continue;
     const plats = (c.platforms || []).map((p) => (typeof p === 'object' ? p.id : p));
     const named = light(c.name) === exactName || (c.alternative_names || []).some((a) => light(a?.name) === exactName);
-    const score = (exact ? 4 : 2) + (named ? 3 : 0) + (isMain(c) ? 3 : 0) + (plats.some((p) => wantedPlatforms.has(p)) ? 2 : 0) + Math.min(1, Math.log10(1 + (c.total_rating_count || c.rating_count || 0)) / 3);
+    // a year in the store's title ("Resident Evil 4 (2005)") says which of two games of one name it is
+    const score = (year != null && yearOf(c) === year ? 6 : 0) + (exact ? 4 : 2) + (named ? 3 : 0) + (isMain(c) ? 3 : 0) + (plats.some((p) => wantedPlatforms.has(p)) ? 2 : 0) + Math.min(1, Math.log10(1 + (c.total_rating_count || c.rating_count || 0)) / 3);
     if (!best || score > best.score) best = { c, score };
   }
   return best ? best.c : null;
+}
+
+/** The match for a store's title: by the title as it is, else without the store's own words (and "Borderlands4" as "Borderlands 4"). */
+export function matchTitle(title, candidates, platforms = []) {
+  const direct = pickMatch(title, candidates, platforms);
+  if (direct) return direct;
+  const st = storeTitle(title);
+  const spaced = st.title.replace(/([a-z]{4})(\d)/gi, '$1 $2');
+  if (st.title === String(title || '').trim() && spaced === st.title) return null;
+  return pickMatch(st.title, candidates, platforms, { year: st.year }) || (spaced !== st.title ? pickMatch(spaced, candidates, platforms, { year: st.year }) : null);
 }
 
 export class Igdb {
@@ -180,7 +223,7 @@ export class Igdb {
   async search(items) {
     const out = new Map();
     for (const x of items) {
-      const q = searchText(x.title);
+      const q = searchFor(x.title);
       out.set(x.key, q ? (await this.query('games', `${SEARCH_FIELDS}; search ${quote(q)}; limit 10;`)) || [] : []);
     }
     return out;
@@ -284,10 +327,11 @@ export class Igdb {
   async run({ limit = 300, now = Date.now() } = {}) {
     if (!this.configured() || this.state.running) return null;
     // a better matcher looks again at the games the last one found nothing for
-    if ((this.settings.get('igdb_match_v') || 1) < MATCH_VERSION) {
+    const matchV = this.settings.get('igdb_match_v') || 1;
+    if (matchV < MATCH_VERSION) {
       this.db.prepare("DELETE FROM game_meta WHERE igdb_id IS NULL AND matched_by = 'none' AND locked = 0").run();
-      // matches made by title alone are read again, and dropped where the game cannot be that copy
-      this.db.prepare("UPDATE game_meta SET fetched_at = 0 WHERE igdb_id IS NOT NULL AND matched_by = 'title' AND locked = 0").run();
+      // (3) matches made by title alone are read again, and dropped where the game cannot be that copy
+      if (matchV < 3) this.db.prepare("UPDATE game_meta SET fetched_at = 0 WHERE igdb_id IS NOT NULL AND matched_by = 'title' AND locked = 0").run();
       this.settings.set({ igdb_match_v: MATCH_VERSION });
     }
     // more is kept of each game than before: the matched ones are due a refresh (the passes get to them in turn)
@@ -318,9 +362,9 @@ export class Igdb {
         for (const g of part) {
           const cands = found.get(g.id) || [];
           if (cands.length) answered++;
-          const m = pickMatch(g.title, cands, String(g.platforms || '').split(','));
+          const m = matchTitle(g.title, cands, String(g.platforms || '').split(','));
           // what came back for the last few titles, for diagnostics
-          this.state.samples = [{ title: g.title, searched: searchText(g.title), candidates: cands.slice(0, 5).map((c) => c.name), matched: m ? m.name : null }, ...(this.state.samples || [])].slice(0, 8);
+          this.state.samples = [{ title: g.title, searched: searchFor(g.title), candidates: cands.slice(0, 5).map((c) => c.name), matched: m ? m.name : null }, ...(this.state.samples || [])].slice(0, 8);
           if (m) ids.set(g.id, [m.id, 'title']); else this.store(g.id, null, 'none');
           if (!m) counts.none++;
         }

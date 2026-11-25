@@ -95,6 +95,48 @@ function fakeIgdb() {
   return { server, calls, expire: (n = 1) => { reject = n; }, lifetime: (s) => { lifetime = s; } };
 }
 
+import { storeTitle, searchFor, matchTitle } from '../src/services/igdb.js';
+
+describe('a store\'s title, as IGDB would call the game', () => {
+  test('the console it is sold for, a preview or edition tag and a bracketed year are the store\'s words', () => {
+    const t = (x) => storeTitle(x).title;
+    assert.equal(t("Marvel's Midnight Suns for Xbox Series X|S"), "Marvel's Midnight Suns");
+    assert.equal(t('MLB The Show 21 Xbox Series X | S'), 'MLB The Show 21');
+    assert.equal(t('Call of Duty: Black Ops Cold War - Xbox Series X|S'), 'Call of Duty: Black Ops Cold War');
+    assert.equal(t('Mafia: Definitive Edition for XBOX One'), 'Mafia: Definitive Edition');
+    assert.equal(t('Grounded 2 (Game Preview)'), 'Grounded 2');
+    assert.equal(t('Cities: Skylines - Windows 10 Edition'), 'Cities: Skylines');
+    assert.equal(t('S.T.A.L.K.E.R. 2: Heart of Chornobyl - Windows Edition'), 'S.T.A.L.K.E.R. 2: Heart of Chornobyl');
+    assert.equal(t('Sid Meier’s Civilization VI (Windows PC)'), 'Sid Meier’s Civilization VI');
+    assert.equal(t('Metroid Prime 4: Beyond – Nintendo Switch 2 Edition'), 'Metroid Prime 4: Beyond');
+    assert.equal(t('Remnant II - Standard Edition'), 'Remnant II');
+    assert.equal(t('Gears Tactics - Base Game'), 'Gears Tactics');
+    assert.equal(t('Sea of Thieves: 2026 Edition'), 'Sea of Thieves');
+    assert.equal(t('Full Game - Psychonauts'), 'Psychonauts');
+    assert.deepEqual(storeTitle('Microsoft Flight Simulator (2020)'), { title: 'Microsoft Flight Simulator', year: 2020 });
+    // a game's own name stays: an edition that is a release of its own, a number, a subtitle
+    for (const own of ['Mass Effect Legendary Edition', 'Halo 5: Guardians', 'Xbox Live Arcade Unplugged', 'PC Building Simulator', 'Forza Horizon 4', 'Persona 5 Royal', '2048']) assert.equal(t(own), own);
+    assert.deepEqual(storeTitle('Xbox One'), { title: 'Xbox One', year: null }, 'nothing left: its own name');
+  });
+  test('what is searched: a number set apart from a long word, short codes left alone', () => {
+    assert.equal(searchFor('Borderlands4'), 'Borderlands 4');
+    assert.equal(searchFor("D4: Dark Dreams Don't Die"), "D4: Dark Dreams Don't Die");
+    assert.equal(searchFor('DR2: CASE ZERO'), 'DR2: CASE ZERO');
+    assert.equal(searchFor('The Quarry for Xbox Series X|S'), 'The Quarry');
+  });
+  test('the match: the title as it is first, else without the store\'s words; a bracketed year picks between two games of one name', () => {
+    const re4 = [{ id: 1, name: 'Resident Evil 4', category: 0, first_release_date: Date.UTC(2005, 0, 11) / 1000, total_rating_count: 900 }, { id: 2, name: 'Resident Evil 4', category: 0, first_release_date: Date.UTC(2023, 2, 24) / 1000, total_rating_count: 2000 }];
+    assert.equal(matchTitle('Resident Evil 4 (2005)', re4).id, 1);
+    assert.equal(matchTitle('Resident Evil 4 (2023)', re4).id, 2);
+    assert.equal(matchTitle('The Quarry for Xbox Series X|S', [{ id: 5, name: 'The Quarry', category: 0 }]).id, 5);
+    assert.equal(matchTitle('Borderlands4', [{ id: 6, name: 'Borderlands 4', category: 0 }]).id, 6);
+    assert.equal(matchTitle('Grounded 2 (Game Preview)', [{ id: 7, name: 'Grounded', category: 0 }, { id: 8, name: 'Grounded 2', category: 0 }]).id, 8);
+    // an edition IGDB lists by its own name is that edition
+    assert.equal(matchTitle('Minecraft: Xbox 360 Edition', [{ id: 9, name: 'Minecraft: Xbox 360 Edition', category: 0 }, { id: 10, name: 'Minecraft', category: 0 }]).id, 9);
+    assert.equal(matchTitle('Halo Wars', [{ id: 11, name: 'Halo Wars 2', category: 0 }]), null);
+  });
+});
+
 describe('IGDB metadata', () => {
   let fake; let base; let app; let close; let igdb; let srv; let api;
   const ids = {};
@@ -181,7 +223,7 @@ describe('IGDB metadata', () => {
     const c = await igdb.run();
     assert.equal(c.matched, 1);
     assert.equal(app.db.prepare('SELECT igdb_id FROM game_meta WHERE game_id = ?').get(ids.wolf).igdb_id, 25076);
-    assert.equal(app.settings.get('igdb_match_v'), 3);
+    assert.equal(app.settings.get('igdb_match_v'), 4);
     assert.equal(app.db.prepare("SELECT matched_by FROM game_meta WHERE game_id = ?").get(ids.home).matched_by, 'none', 'nothing to find there');
   });
 

@@ -592,9 +592,14 @@ export function eraStrip(tl, { through } = {}) {
   ].filter(Boolean);
   const games = eras.filter((e) => e.kind === 'game');
   const returns = games.filter((e) => e.ordinal > 1).length;
+  // a long range (all time: twenty years of reigns, a 12,000px card) opens on its last three years
+  const all = [...years];
+  const recent = all.length > 4 ? all.slice(-3) : all;
+  const earlier = all.slice(0, all.length - recent.length);
+  const yearSection = ([y, list]) => `<section class="era-year">${years.size > 1 ? `<h4 class="era-yh">${y}</h4>` : ''}<ol class="era-list">${list.map(eraRow).join('')}</ol></section>`;
   return `${chart('erastrip', { eras, from: range.from, to: range.to, through: through && through > range.to ? through : null }, { keys: 'Reigns on a timeline; arrow keys read each one' })}
     ${legend.length ? `<div class="legend era-legend">${legend.join('')}</div>` : ''}
-    <div class="era-years">${[...years].map(([y, list]) => `<section class="era-year">${years.size > 1 ? `<h4 class="era-yh">${y}</h4>` : ''}<ol class="era-list">${list.map(eraRow).join('')}</ol></section>`).join('')}</div>
+    <div class="era-years">${earlier.length ? `<details class="era-earlier"><summary class="small">${earlier[0][0]}–${earlier.at(-1)[0]}: ${plural(earlier.reduce((n, [, list]) => n + list.length, 0), 'earlier reign')}</summary>${earlier.map(yearSection).join('')}</details>` : ''}${recent.map(yearSection).join('')}</div>
     ${note(`${plural(games.length, 'reign')} of ${plural(new Set(games.map((e) => e.game_id)).size, 'game')}${returns ? `, ${plural(returns, 'return')}` : ''}. A reign is a run of months one game led; a narrow one-month detour does not split it.`)}`;
 }
 

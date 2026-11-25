@@ -20,6 +20,7 @@ const r = (x) => Math.round(x);
 // play_days.basis, by index (see migration 10)
 const BASES = ['tracked', 'imported', 'anchored', 'confirmed', 'estimated', 'assumed'];
 const zeros = (n) => Array(n).fill(0);
+const PLAYED_STATUS = new Set(['beaten', 'completed', 'playing', 'dropped']);
 
 export const STATUSES = ['unset', 'backlog', 'playing', 'paused', 'completed', 'beaten', 'dropped', 'wishlist'];
 // a tracked session with real start and end times (not a sync window)
@@ -602,7 +603,8 @@ export function libraryOverview(db, { hidden = false, points = 500, dustyLimit =
       const st = status[g.status] || (status[g.status] = { status: g.status, games: 0, played: 0, minutes: 0, tracked_minutes: 0, history_minutes: 0 });
       st.games++; st.minutes += g.minutes; st.tracked_minutes += g.tracked; st.history_minutes += hist;
       minutes += g.minutes; tracked += g.tracked;
-      if (g.played) { played++; st.played++; }
+      // (a game you marked beaten, completed, playing or dropped was played, whatever a platform knows of it)
+      if (g.played || PLAYED_STATUS.has(g.status)) { played++; st.played++; }
       const hb = hours.find((b) => (b.max === 0 ? g.minutes <= 0 : g.minutes >= b.min && (b.max == null || g.minutes < b.max)));
       hb.games++; hb.minutes += g.minutes;
       // first played: platform-reported first play or the first day with play (tracked or history)

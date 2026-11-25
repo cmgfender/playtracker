@@ -5,7 +5,11 @@ import { memo, dayKey } from '../stats.js';
 import { franchiseIndex } from '../franchises.js';
 import { libraryGames } from '../franchises/library.js';
 import { slug } from '../franchises/catalog.js';
-import { generationOf, makersOf, trendsOf, isMakers, MAKER_LIST } from './catalog.js';
+import { generationOf, makersOf, trendsOf, isMakers, MAKER_LIST, MAKER_BY_ID } from './catalog.js';
+
+// Houses that sell other makers' games in Japan under their own name (not Sega or Bandai Namco: Atlus's
+// and FromSoftware's publishers abroad are part of those games' story)
+const JAPAN_PUBLISHERS = ['square-enix', 'capcom', 'konami', 'koei-tecmo', 'spike-chunsoft'];
 
 /** A studio IGDB names as developer gets a legend of its own from this many games of yours. */
 const STUDIO_MIN_GAMES = 3;
@@ -116,7 +120,11 @@ export function membership(db, { now = Date.now() } = {}) {
         if (gen) { g.gen = gen.id; put('generation', gen.id, g.id); }
       }
       // (IGDB's companies of what it matched a series' app to are not the app's: the series decides)
-      const makers = makersOf(g.series, g.hubYear ? [] : [...t.developer, ...t.publisher], g.hubYear ?? g.entry?.year ?? g.release_year);
+      // a game its own maker publishes, with a Japanese house among IGDB's publishers: that one sold it
+      // in Japan (Square Enix for Overwatch and Call of Duty) and made no part of it
+      const own = MAKER_LIST.filter((m) => t.developer.some((c) => isMakers(m, c)) && t.publisher.some((c) => isMakers(m, c)));
+      const publishers = own.length ? t.publisher.filter((c) => !JAPAN_PUBLISHERS.some((id) => !own.some((m) => m.id === id) && isMakers(MAKER_BY_ID.get(id), c))) : t.publisher;
+      const makers = makersOf(g.series, g.hubYear ? [] : [...t.developer, ...publishers], g.hubYear ?? g.entry?.year ?? g.release_year);
       for (const m of makers) put('maker', m.id, g.id);
       for (const d of t.developer) {
         if (MAKER_LIST.some((m) => isMakers(m, d))) continue;

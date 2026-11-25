@@ -206,7 +206,9 @@ function career(db, now, today) {
     const played = [...first].sort((a, b) => a[1].t - b[1].t || a[0] - b[0]);
     // games played with no date for the first play (only undated history, or just a last played date): they count, without a day
     const lastOnly = new Set(db.prepare('SELECT DISTINCT game_id FROM entries WHERE excluded = 0 AND last_played_at IS NOT NULL').all().map((e) => e.game_id));
-    const undatedGames = [...lifeGame].filter(([id, m]) => (m > 0 || lastOnly.has(id)) && !first.has(id)).length;
+    // (a game you marked beaten, completed, playing or dropped was played, whatever a platform knows of it)
+    const marked = new Set(db.prepare("SELECT id FROM games WHERE status IN ('beaten', 'completed', 'playing', 'dropped')").all().map((g) => g.id));
+    const undatedGames = [...lifeGame].filter(([id, m]) => (m > 0 || lastOnly.has(id) || marked.has(id)) && !first.has(id)).length;
 
     // ---- playtime: in all, by year, by platform, in one game; and the decades with play
     let total = 0;
@@ -340,11 +342,17 @@ function career(db, now, today) {
       perDay = w.day === dayOf ? perDay + 1 : 1; dayOf = w.day;
       if (perDay > bestDay) { const m = topMark('ach_day', bestDay, perDay); if (m && perDay === m) hit('ach_day', m, w); bestDay = perDay; }
     });
-    ahead('achievements', unlocks.length);
-    if (unlocks.length) ahead('ach_games', achGames.size);
-    if (rare) ahead('rare', rare);
-    if (ultra) ahead('ultra_rare', ultra);
-    if (score) ahead('gamerscore', score);
+    // unlocks with no time (an Xbox 360 played offline, a Steam game from before unlock times): they
+    // count toward what is ahead, as the platform's own totals count them, and mark no day
+    const und = db.prepare(`SELECT a.rarity, a.points, e.game_id FROM achievements a JOIN entries e ON e.id = a.entry_id
+      WHERE a.unlocked = 1 AND e.excluded = 0 AND (a.unlocked_at IS NULL OR a.unlocked_at < ? OR a.unlocked_at > ?)`).all(Date.UTC(1971, 0, 1), now).filter((u) => titles.has(u.game_id));
+    const undGames = new Set(und.map((u) => u.game_id).filter((g) => !achGames.has(g)));
+    const undOf = (f) => und.reduce((a, u) => a + f(u), 0);
+    ahead('achievements', unlocks.length + und.length);
+    if (unlocks.length + und.length) ahead('ach_games', achGames.size + undGames.size);
+    if (rare) ahead('rare', rare + undOf((u) => (u.rarity != null && u.rarity <= RARE_PERCENT ? 1 : 0)));
+    if (ultra) ahead('ultra_rare', ultra + undOf((u) => (u.rarity != null && u.rarity <= ULTRA_PERCENT ? 1 : 0)));
+    if (score) ahead('gamerscore', score + undOf((u) => u.points || 0));
     // completions (every achievement, or the platinum) and platinums, once per game, by their day
     const sets = db.prepare(`SELECT e.game_id, COUNT(*) total, SUM(a.unlocked) unlocked, MAX(a.unlocked_at) last,
         SUM(CASE WHEN a.unlocked = 1 AND a.unlocked_at IS NULL THEN 1 ELSE 0 END) undated,

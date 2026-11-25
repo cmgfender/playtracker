@@ -1307,3 +1307,6 @@ a.mrow.mlink:hover .ml, a.mrow.mlink:focus-visible .ml { color: var(--accent-ink
 .fix-row .t { font-weight: 600; }
 .fix-row .d { color: var(--muted); font-size: 13px; margin-top: 2px; }
 .fix-btns { gap: 8px; }
+
+.era-earlier { margin-bottom: 8px; }
+.era-earlier > summary { cursor: pointer; color: var(--muted); padding: 6px 0; }

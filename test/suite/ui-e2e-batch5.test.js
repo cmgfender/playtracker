@@ -542,6 +542,8 @@ describe('Vestigo web UI, batch 5: Insights and Year in review on the demo libra
         await page.keyboard.press('End');
         assert.equal(await strip.locator('.chart-live').innerText(), g.blocks.at(-1).tip);
         // the list: a head per year, a row per era in the strip's order
+        // (a long range opens on its last three years: the earlier ones are one click away)
+        await card.locator('details.era-earlier').evaluateAll((els) => els.forEach((d) => { d.open = true; }));
         assert.deepEqual(await card.locator('.era-yh').allInnerTexts(), [...new Set(tl.eras.map((e) => e.from.slice(0, 4)))]);
         const rows = card.locator('.era-row');
         assert.equal(await rows.count(), tl.eras.length);
