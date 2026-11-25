@@ -551,7 +551,7 @@ describe('Vestigo web UI, batch 5: Insights and Year in review on the demo libra
             assert.ok(text.includes(`${Math.round(e.share * 100)}% of your play`), `${where} row ${i}: ${text}`);
             if (e.alongside.length) assert.ok(text.includes(`alongside ${e.alongside[0].title}`), `${where} row ${i}: ${text}`);
             assert.equal(await row.locator('.era-tag').count(), e.ordinal > 1 ? 1 : 0, `${where} row ${i}: a return is marked`);
-            if (e.ordinal === 2) assert.match(text, /2nd era/);
+            if (e.ordinal === 2) assert.match(text, /2nd reign/);
             assert.equal(await row.locator('.cover').count(), 1, 'a cover (or its monogram)');
           } else if (e.kind === 'variety') {
             assert.ok(text.startsWith('A mix of games') && text.includes(`mostly ${e.games[0].title}`), `${where} row ${i}: ${text}`);
@@ -656,7 +656,7 @@ describe('Vestigo web UI, batch 5: eras with one month, a break, and none', UI, 
       assert.equal(tl.eras.length, 1);
       assert.equal(await card.locator('.erastrip .era-b').count(), 1);
       const n = tl.era_range.months;
-      assert.match(await card.locator('.erastrip svg').getAttribute('aria-label'), new RegExp(`^1 era in ${n} months?: Solo Quest led `));
+      assert.match(await card.locator('.erastrip svg').getAttribute('aria-label'), new RegExp(`^1 reign in ${n} months?: Solo Quest led `));
       assert.match((await card.locator('.era-row').innerText()).replace(/\s+/g, ' '), /Solo Quest .*1 month 100% of your play · 1h 30m/);
       assert.equal(await card.locator('.era-yh').count(), 0);
       // a game played 70 days ago: a month or two without play between them

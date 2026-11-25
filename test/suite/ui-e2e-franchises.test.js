@@ -82,7 +82,8 @@ describe('Vestigo web UI: legends and series', UI, () => {
       await page.locator('#lg-series .fr-card', { hasText: 'Halo' }).click();
       await page.waitForURL(/\/legend\/series\/halo$/);
       await waitView(page);
-      assert.deepEqual(await page.locator('.lg-ch h3').allInnerTexts(), ['Where it began', 'The peak', 'What defined it', 'How far it went', 'Where you stand', 'Where it stands']);
+      // (the chapter heads are set in small capitals: read the text, not how it is drawn)
+      assert.deepEqual(await page.locator('.lg-ch h3').allTextContents(), ['Where it began', 'The peak', 'What defined it', 'How far it went', 'Where you stand', 'Where it stands']);
       assert.match(await page.locator('.lg-ch[data-ch="began"] p').innerText(), /^The series began in 2001\. You arrived on .+ with Halo 3, \d+ years in\.$/);
       assert.equal(await page.locator('.lg-ch[data-ch="defined"] a').first().getAttribute('href'), `/game/${id.h3}`);
       assert.equal(await page.locator('#lg-series #fr-items .fr-item').count() > 10, true, 'the series, game by game, under its story');

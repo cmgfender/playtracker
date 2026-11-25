@@ -468,7 +468,7 @@ function eraTip(e) {
   const span = `${eraSpan(e)} (${plural(e.months, 'month')})`;
   if (e.kind === 'break') return `Break · ${eraSpan(e)} · ${plural(e.months, 'month')}, no play`;
   if (e.kind === 'variety') return `A mix of games · ${span} · ${e.games.map((g) => g.title).join(', ')} · ${fmtMin(e.minutes)}${mostlyEst(e) ? ' · mostly estimated' : ''}`;
-  return `${e.title} · ${span} · ${pct(e.share)} of play · ${fmtMin(e.minutes)}${e.ordinal > 1 ? ` · ${nth(e.ordinal)} era` : ''}${mostlyEst(e) ? ' · mostly estimated' : ''}`;
+  return `${e.title} · ${span} · ${pct(e.share)} of play · ${fmtMin(e.minutes)}${e.ordinal > 1 ? ` · ${nth(e.ordinal)} reign` : ''}${mostlyEst(e) ? ' · mostly estimated' : ''}`;
 }
 
 /** "3 reigns in 12 months: Baldur's Gate 3 led Jul – Oct 2026, …" */
@@ -565,7 +565,7 @@ function eraRow(e) {
       <div class="era-sub era-meta"><span><b>${hrs(e.minutes)}</b> across games</span>${e.games.length ? `<span class="era-with">mostly ${esc(names(e.games.slice(0, 2)))}</span>` : ''}</div></div></li>`;
   }
   return `<li class="era-row${mostlyEst(e) ? ' est' : ''}" style="--era-c:${eraColor(e)}"><span class="era-sw" aria-hidden="true"></span>${cover(e)}
-    <div class="era-main"><div class="era-t"><a href="/game/${e.game_id}" data-link class="ellipsis">${esc(e.title)}</a>${e.ordinal > 1 ? `<span class="era-tag" title="${esc(e.title)} led an earlier era too">${nth(e.ordinal)} era</span>` : ''}</div>
+    <div class="era-main"><div class="era-t"><a href="/game/${e.game_id}" data-link class="ellipsis">${esc(e.title)}</a>${e.ordinal > 1 ? `<span class="era-tag" title="${esc(e.title)} led an earlier reign too">${nth(e.ordinal)} reign</span>` : ''}</div>
       ${when}
       <div class="era-sub era-meta"><span><b>${pct(e.share)}</b> of your play · <b>${hrs(e.minutes)}</b></span>${e.alongside.length ? `<span class="era-with">alongside ${esc(names(e.alongside.slice(0, 2)))}</span>` : ''}</div></div></li>`;
 }
@@ -592,7 +592,7 @@ export function eraStrip(tl, { through } = {}) {
   ].filter(Boolean);
   const games = eras.filter((e) => e.kind === 'game');
   const returns = games.filter((e) => e.ordinal > 1).length;
-  return `${chart('erastrip', { eras, from: range.from, to: range.to, through: through && through > range.to ? through : null }, { keys: 'Eras on a timeline; arrow keys read each era' })}
+  return `${chart('erastrip', { eras, from: range.from, to: range.to, through: through && through > range.to ? through : null }, { keys: 'Reigns on a timeline; arrow keys read each one' })}
     ${legend.length ? `<div class="legend era-legend">${legend.join('')}</div>` : ''}
     <div class="era-years">${[...years].map(([y, list]) => `<section class="era-year">${years.size > 1 ? `<h4 class="era-yh">${y}</h4>` : ''}<ol class="era-list">${list.map(eraRow).join('')}</ol></section>`).join('')}</div>
     ${note(`${plural(games.length, 'reign')} of ${plural(new Set(games.map((e) => e.game_id)).size, 'game')}${returns ? `, ${plural(returns, 'return')}` : ''}. A reign is a run of months one game led; a narrow one-month detour does not split it.`)}`;
