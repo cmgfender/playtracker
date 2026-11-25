@@ -16,6 +16,10 @@ const STUDIO_MIN_GAMES = 3;
  * A game: the library's (id, title, cover_url, minutes, state, platforms, first_day, last_day, release_at,
  * release_year) plus series (id | null), gen (id | null), years: [{ year, minutes, estimated, first, last, days }]
  * (dated play), dated (minutes with a date), plat (Map platform -> lifetime minutes), unlocked (achievements).
+ * units: Map uid -> a game's part, for a game holding two releases of a series entry (an original and
+ * its remake, see franchises/parts.js): the same shape, with only its entries' play and its own release.
+ * A console generation counts each part in its own generation (the N64 original in one, the Switch 2
+ * remake in another); everything else counts the game as a whole.
  */
 export function membership(db, { now = Date.now() } = {}) {
   return memo(db, `legends:members:${dayKey(now)}`, () => {
@@ -41,9 +45,14 @@ export function membership(db, { now = Date.now() } = {}) {
     const put = (kind, id, gameId) => { const m = sets[kind]; if (!m.has(id)) m.set(id, []); m.get(id).push(gameId); };
     // series: the franchise pages' own placing (entries, versions, betas, launchers, the rest of the series)
     const seriesNames = new Map();
+    const partsOf = new Map(); // game id -> [{ uid, entries, year, title, main }]
     for (const r of franchiseIndex(db, { now }).values()) {
       seriesNames.set(r.id, r.name);
       for (const it of r.items) {
+        if (it.game?.part) {
+          if (!partsOf.has(it.game.id)) partsOf.set(it.game.id, []);
+          partsOf.get(it.game.id).push({ uid: it.game.uid, entries: it.game.part.entries, year: it.year, title: it.title, main: it.game.part.main });
+        }
         for (const id of [it.game?.id, ...(it.others || []).map((o) => o.id), ...(it.addons || []).map((a) => a.id)].filter(Boolean)) {
           const g = games.get(id);
           if (!g || g.series) continue; // (a game in two inferred series: the first)
@@ -53,13 +62,55 @@ export function membership(db, { now = Date.now() } = {}) {
         }
       }
     }
+    // a game's parts: each with only its entries' play, dated and by platform, and its achievements
+    const units = new Map();
+    const unitEntries = [...partsOf.values()].flat().flatMap((p) => p.entries);
+    if (unitEntries.length) {
+      const list = JSON.stringify(unitEntries);
+      const byEntry = (sql) => { const m = new Map(); for (const r of db.prepare(sql).all(list)) { if (!m.has(r.entry_id)) m.set(r.entry_id, []); m.get(r.entry_id).push(r); } return m; };
+      const days = byEntry(`SELECT entry_id, substr(day, 1, 4) y, SUM(minutes) m, SUM(minutes * estimated) e, MIN(day) f, MAX(day) l, COUNT(DISTINCT day) d
+        FROM play_days WHERE excluded = 0 AND entry_id IN (SELECT value FROM json_each(?)) GROUP BY entry_id, y ORDER BY y`);
+      const ents = byEntry('SELECT id entry_id, platform, playtime_min m FROM entries WHERE excluded = 0 AND id IN (SELECT value FROM json_each(?))');
+      const unl = byEntry('SELECT entry_id, SUM(unlocked) u FROM achievements WHERE entry_id IN (SELECT value FROM json_each(?)) GROUP BY entry_id');
+      for (const [gid, ps] of partsOf) {
+        const g = games.get(gid);
+        if (!g || ps.length < 2) continue;
+        for (const p of ps) {
+          const years = new Map(); const plat = new Map(); let minutes = 0; let unlocked = 0;
+          for (const id of p.entries) {
+            for (const r of days.get(id) || []) {
+              const y = years.get(r.y) || { year: Number(r.y), minutes: 0, estimated: 0, first: r.f, last: r.l, days: 0 };
+              y.minutes += r.m; y.estimated += r.e; y.days += r.d; if (r.f < y.first) y.first = r.f; if (r.l > y.last) y.last = r.l;
+              years.set(r.y, y);
+            }
+            for (const r of ents.get(id) || []) { minutes += r.m; plat.set(r.platform, (plat.get(r.platform) || 0) + r.m); }
+            for (const r of unl.get(id) || []) unlocked += r.u || 0;
+          }
+          const ys = [...years.values()].sort((a, b) => a.year - b.year);
+          units.set(p.uid, { ...g, uid: p.uid, minutes, years: ys, dated: ys.reduce((a, y) => a + y.minutes, 0), plat, unlocked, platforms: [...plat.keys()],
+            release_at: null, release_year: p.year, entry: { title: p.title, year: p.year }, part: { entries: p.entries, main: p.main } });
+        }
+      }
+    }
+    const unitsOf = new Map();
+    for (const u of units.values()) { if (!unitsOf.has(u.id)) unitsOf.set(u.id, []); unitsOf.get(u.id).push(u); }
     const studioGames = new Map(); // IGDB developer -> [game ids] of developers no curated maker claims
     for (const g of games.values()) {
       const t = tags.get(g.id) || { developer: [], publisher: [], platform: [] };
       // a curated entry with no release date of its own: its year, mid-year
       const release = g.release_at ?? (g.entry?.year ? new Date(g.entry.year, 6, 1).getTime() : null);
-      const gen = generationOf(release, t.platform);
-      if (gen) { g.gen = gen.id; put('generation', gen.id, g.id); }
+      const parts = unitsOf.get(g.id) || [];
+      if (parts.length) {
+        // each release in its own generation (IGDB's platforms are the game's own release's: only for that one)
+        for (const u of parts) {
+          const gen = generationOf(new Date(u.release_year, 6, 1).getTime(), u.part.main ? t.platform : []);
+          if (gen) { u.gen = gen.id; put('generation', gen.id, u.uid); }
+        }
+        g.gen = parts.find((u) => u.part.main)?.gen ?? parts[0].gen ?? null;
+      } else {
+        const gen = generationOf(release, t.platform);
+        if (gen) { g.gen = gen.id; put('generation', gen.id, g.id); }
+      }
       const makers = makersOf(g.series, [...t.developer, ...t.publisher], g.entry?.year ?? g.release_year);
       for (const m of makers) put('maker', m.id, g.id);
       for (const d of t.developer) {
@@ -77,6 +128,6 @@ export function membership(db, { now = Date.now() } = {}) {
       studios.set(id, name);
       sets.maker.set(id, ids);
     }
-    return { games, sets, studios, seriesNames };
+    return { games, units, sets, studios, seriesNames };
   });
 }

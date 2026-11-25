@@ -34,18 +34,23 @@ export function findings(db, { range = '365d', platform = null, estimates = 'inc
     let fromDay = dayKey(r.from);
     if (r.from === 0) fromDay = db.prepare(`SELECT MIN(p.day) d FROM play_days p WHERE ${W}`).get(...args).d || toDay;
     const whole = r.from === 0;
-    const { games, seriesNames } = membership(db, { now });
+    const { games, units, seriesNames } = membership(db, { now });
+    // a game holding two releases (an original and its remake): each entry's play goes with its own release
+    const unitOfEntry = new Map();
+    for (const u of units?.values() || []) for (const id of u.part.entries) unitOfEntry.set(id, u);
     const out = [];
     const add = (id, title, score, ...parts) => out.push({ id, title, score: Math.round(score), parts: parts.flat(Infinity).filter((x) => x !== '' && x != null && x !== false) });
 
     // what was played in the range, by game and year
     const per = new Map();
-    for (const row of db.prepare(`SELECT p.game_id, substr(p.day, 1, 4) y, SUM(p.minutes) m, MIN(p.day) f FROM play_days p WHERE ${W} AND p.day >= ? AND p.day <= ? GROUP BY p.game_id, y`).all(...args, fromDay, toDay)) {
+    for (const row of db.prepare(`SELECT p.game_id, p.entry_id, substr(p.day, 1, 4) y, SUM(p.minutes) m, MIN(p.day) f FROM play_days p WHERE ${W} AND p.day >= ? AND p.day <= ? GROUP BY p.game_id, p.entry_id, y`).all(...args, fromDay, toDay)) {
       const g = games.get(row.game_id);
       if (!g) continue;
-      if (!per.has(g.id)) per.set(g.id, { game: g, minutes: 0, years: [], first: row.f });
+      if (!per.has(g.id)) per.set(g.id, { game: g, minutes: 0, years: [], first: row.f, releases: [] });
       const x = per.get(g.id);
       x.minutes += row.m; x.years.push({ year: Number(row.y), minutes: row.m });
+      const u = unitOfEntry.get(row.entry_id);
+      if (u) x.releases.push({ year: Number(row.y), minutes: row.m, release: u.release_year });
       if (row.f < x.first) x.first = row.f;
     }
     const played = [...per.values()].sort((a, b) => b.minutes - a.minutes);
@@ -55,6 +60,13 @@ export function findings(db, { range = '365d', platform = null, estimates = 'inc
     // how long after release you get to games
     let lagSum = 0; let lagMin = 0; let oldest = null;
     for (const x of played) {
+      if (x.releases.length) {
+        // its releases, each against its own year: the 2026 remake is not 28 years late
+        for (const y of x.releases) { lagSum += Math.max(0, y.year - y.release) * y.minutes; lagMin += y.minutes; }
+        const old = x.releases.filter((y) => y.minutes >= 60).reduce((a, y) => (a == null || y.release < a ? y.release : a), null);
+        if (old != null && (!oldest || old < oldest.year)) oldest = { game: x.game, year: old };
+        continue;
+      }
       const ry = x.game.release_year ?? x.game.entry?.year;
       if (!ry) continue;
       for (const y of x.years) { lagSum += Math.max(0, y.year - ry) * y.minutes; lagMin += y.minutes; }

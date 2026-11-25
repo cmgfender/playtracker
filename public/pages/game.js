@@ -234,16 +234,20 @@ export async function game(view, id, stale) {
           ${baselines.map((x) => `<div class="item"><span class="dot" style="background:var(--line);width:10px;height:10px"></span><div class="grow"><div class="sub"><b style="color:var(--text)">${esc(plat(x.platform).label)}</b> ${esc(x.note || 'History')} · ${fmtDate(x.window_end)}</div></div><div class="amt muted">${fmtMin(x.minutes)}</div><button class="btn ghost sm icon" data-edit-session="${x.id}" aria-label="Edit history">${icon('edit')}</button></div>`).join('')}
           </div>
         </div>`;
+    // a game holding two releases of a series entry (an original and its remake): which one each entry is
+    const releaseOf = new Map((g.franchise?.parts || []).flatMap((p) => p.entries.map((id) => [id, p])));
+    const releaseName = (p) => `${p.kind === 'main' ? 'the original' : p.kind === 'remake' ? 'the remake' : p.kind === 'remaster' ? 'the remaster' : p.kind === 'rerelease' ? 'a re-release' : 'a version'}, ${p.year}`;
     const platCard = `<div class="card"><div class="card-h"><h2>Platforms & accounts</h2></div>
           <div class="list">${g.entries.map((e) => `<div class="item" style="${e.excluded ? 'opacity:.55' : ''}">
               ${e.icon_url ? `<img src="${esc(e.icon_url)}" width="32" height="32" style="border-radius:8px" alt="" loading="lazy" onerror="this.style.visibility='hidden'">` : platIcon(e.platform, 32)}
               <div class="grow"><div class="ttl ellipsis">${esc(e.account_name || plat(e.platform).label)}</div>
-                <div class="sub">${platDot(e.platform)}${esc(e.title !== g.title ? e.title : plat(e.platform).label)}${e.meta?.played_on ? ` · ${esc(e.meta.played_on)}` : ''}${e.excluded ? ' · <b>excluded</b>' : ''}</div>
+                <div class="sub">${platDot(e.platform)}${esc(e.title !== g.title ? e.title : plat(e.platform).label)}${e.meta?.played_on ? ` · ${esc(e.meta.played_on)}` : ''}${releaseOf.has(e.id) ? ` · <span class="g-release">${esc(releaseName(releaseOf.get(e.id)))}</span>` : ''}${e.excluded ? ' · <b>excluded</b>' : ''}</div>
                 <div class="sub">${e.last_played_at ? `Played ${ago(e.last_played_at)}` : ''}${e.meta?.devices?.deck ? ` · Deck ${fmtMin(e.meta.devices.deck)}` : ''}${e.play_count ? ` · ${e.play_count} launch${e.play_count === 1 ? '' : 'es'}` : ''}${e.achievements?.total ? ` · ${e.achievements.unlocked} of ${e.achievements.total} unlocked` : ''}${e.missing_since ? ` · <span style="color:var(--warn)">no longer in library since ${fmtDate(e.missing_since)}</span>` : ''}</div></div>
               <div class="amt">${fmtMin(e.playtime_min)}</div>
               <button class="btn ghost sm icon" data-entry-menu="${e.id}" aria-label="Entry options">${icon('more')}</button>
             </div>`).join('')}</div>
-          ${g.entries.length > 1 ? '<p class="small muted" style="margin:8px 0 0">Owned on several platforms — totals are summed. Exclude an entry if two platforms report the same playtime.</p>' : ''}
+          ${releaseOf.size ? `<p class="small muted" style="margin:8px 0 0">This game holds ${g.franchise.parts.length} releases: totals are summed, and the series counts each one played, with its own time.</p>`
+            : g.entries.length > 1 ? '<p class="small muted" style="margin:8px 0 0">Owned on several platforms — totals are summed. Exclude an entry if two platforms report the same playtime.</p>' : ''}
         </div>`;
     const hist = g.entries.filter((e) => e.history);
     const histCard = hist.length ? `<div class="card"><div class="card-h"><h2>History before tracking</h2></div>
@@ -528,7 +532,9 @@ function aboutCard(g) {
     m.rating != null && ['IGDB rating', `${Math.round(m.rating)}<span class="tiny muted"> / 100${m.rating_count ? ` · ${m.rating_count.toLocaleString()} ratings` : ''}</span>`],
   ].filter(Boolean);
   const t = m.time_to_beat;
-  const mine = g.summary?.total_minutes || g.minutes || 0;
+  // (a game holding two releases: IGDB's times are for the release the game is matched to, so against its time only)
+  const own = g.franchise?.parts?.find((p) => p.main);
+  const mine = own ? own.minutes : g.summary?.total_minutes || g.minutes || 0;
   let ttb = '';
   if (t) {
     const marks = [['Main story', t.main], ['Main + extras', t.extra], ['Everything', t.complete]].filter(([, v]) => v);
@@ -538,7 +544,7 @@ function aboutCard(g) {
     ttb = `<h3 class="ach-h">Time to beat</h3>
       <div class="ttb">${marks.map(([l, v]) => `<div class="mrow"><span class="ml">${l}</span><span class="mbar"><i style="width:${(v / max) * 100}%;background:var(--accent2)"></i></span><span class="mv">${hrs(v)}</span></div>`).join('')}
       ${mine ? `<div class="mrow"><span class="ml"><b>You</b></span><span class="mbar"><i style="width:${(mine / max) * 100}%;background:var(--accent-mark)"></i></span><span class="mv"><b>${hrs(mine)}</b></span></div>` : ''}</div>
-      ${say ? `<p class="tiny muted" style="margin:4px 0 0">You have played ${say}, by IGDB’s typical times.</p>` : ''}`;
+      ${say ? `<p class="tiny muted" style="margin:4px 0 0">You have played ${say}, by IGDB’s typical times${own ? ` (the ${own.year} release only)` : ''}.</p>` : ''}`;
   }
   const chips = [...m.genres.map((n) => tagLink('genre', n)), ...m.perspectives.map((n) => tagLink('perspective', n)), ...m.modes.map((n) => tagLink('mode', n))];
   return `<div class="card" id="g-about"><div class="card-h"><h2>About</h2>${m.url ? `<a href="${esc(m.url)}" target="_blank" rel="noopener">IGDB ${icon('external', 'ic-inline')}</a>` : ''}</div>

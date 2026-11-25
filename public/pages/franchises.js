@@ -211,11 +211,15 @@ export function franchiseCard(fr) {
   const kind = fr.addon ? `${ADDON[fr.addon] || 'Extra'} of ${fr.title}` : fr.position ? `${ordinal(fr.position)} of ${plural(fr.of, 'main game')}` : `${KIND[fr.kind] || 'part of the series'}`;
   const version = fr.version_of?.length ? `${KIND[fr.kind] || 'Version'} of ${fr.version_of.map((o) => `${esc(o.title)}${yr(o)}`).join(' and ')}`
     : fr.holds?.length ? `Holds ${plural(fr.holds.length, 'game')} of the series` : '';
-  const also = (fr.versions || []).filter((v) => v.kind !== 'collection' && v.game_id);
+  const also = (fr.versions || []).filter((v) => v.kind !== 'collection' && v.game_id && !(fr.parts || []).some((p) => p.title === v.title));
+  // one game, two releases (an original and its remake): both are in the series, each with its time
+  const parts = fr.parts?.length > 1 ? `<div class="fr-parts"><span class="tiny muted">Holds ${fr.parts.length} releases</span>${fr.parts.map((p) => `<div class="fr-part"><span>${esc(p.title)}${yr(p)}</span>
+      <span class="tiny muted">${esc(KIND[p.kind] || (p.kind === 'main' ? 'Original' : 'Version'))} · ${p.minutes ? fmtMin(p.minutes) : 'not played'}${p.state === 'finished' ? ' · finished' : p.state === 'playing' ? ' · playing' : ''}</span></div>`).join('')}</div>` : '';
   return `<div class="card" id="g-franchise"><div class="card-h"><h2>${esc(fr.name)}</h2><a class="small" href="/legend/series/${encodeURIComponent(fr.id)}" data-link>Its story${icon('arrowR', 'ic-inline')}</a></div>
     <p class="small" style="margin-top:-4px">${kind}${fr.year ? `, released ${fr.year}` : ''}${fr.mainline ? ` · you have played ${fr.mainline.played} of ${fr.mainline.total}` : ''}</p>
     ${version || fr.era && fr.eras > 1 ? `<p class="small muted" style="margin-top:-6px">${[version, fr.era && fr.eras > 1 ? `${esc(fr.era.name)}${/\bera$/i.test(fr.era.name) ? '' : ' era'} (${years(fr.era.from, fr.era.to)})` : ''].filter(Boolean).join(' · ')}</p>` : ''}
     ${also.length ? `<p class="small muted" style="margin-top:-6px">Also yours as ${also.map((v) => `<a class="link" href="/game/${v.game_id}" data-link>${esc(v.title)}</a>`).join(', ')}</p>` : ''}
+    ${parts}
     <div class="fr-nbs">${ref(fr.prev, 'Before it')}${ref(fr.next, 'After it')}</div></div>`;
 }
 const ordinal = (x) => { const t = x % 100; return `${x}${t >= 11 && t <= 13 ? 'th' : ['th', 'st', 'nd', 'rd'][x % 10] || 'th'}`; };

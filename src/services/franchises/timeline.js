@@ -5,7 +5,9 @@
 const PLAYED = new Set(['played', 'playing', 'finished', 'dropped']);
 // which state speaks for an entry when several versions of it are yours
 const RANK = { finished: 5, playing: 4, played: 3, dropped: 2, owned: 1, missing: 0 };
-const pub = (g) => g && ({ id: g.id, title: g.title, cover_url: g.cover_url, minutes: g.minutes, status: g.status, state: g.state, platforms: g.platforms, first_day: g.first_day, last_day: g.last_day, complete: g.complete });
+// (a game told in parts - see parts.js - is in it once for each: `uid` tells them apart, `id` is the game's)
+const pub = (g) => g && ({ id: g.id, uid: g.uid || String(g.id), title: g.title, cover_url: g.cover_url, minutes: g.minutes, status: g.status, state: g.state, platforms: g.platforms, first_day: g.first_day, last_day: g.last_day, complete: g.complete,
+  ...(g.part ? { part: g.part } : {}) });
 const ref = (it) => ({ key: it.key, title: it.title, year: it.year, kind: it.kind, state: it.state, game_id: it.game?.id ?? null });
 const firstYear = (g) => (g.first_day ? Number(g.first_day.slice(0, 4)) : g.last_day ? Number(g.last_day.slice(0, 4)) : null);
 
@@ -34,7 +36,7 @@ export function build(r, now) {
     // versions found in the library (a later release under the entry's name, a "Remastered")
     for (const { g, e } of r.versions) {
       const year = g.release_year ?? firstYear(g);
-      items.push({ key: `v${g.id}`, year, title: g.title, kind: 'rerelease', curated: false, era: eraOfYear(eras, year), game: pub(g), others: [], addons: [], state: g.state, own: g.state,
+      items.push({ key: `v${g.uid || g.id}`, year, title: g.title, kind: 'rerelease', curated: false, era: eraOfYear(eras, year), game: pub(g), others: [], addons: [], state: g.state, own: g.state,
         via: null, of: [], versions: [], partial: false, release_at: g.release_at, ofEntry: e.i });
     }
   }
@@ -91,7 +93,7 @@ export function build(r, now) {
   items.sort((a, b) => (a.year ?? 9999) - (b.year ?? 9999) || (a.curated && b.curated ? a.entry.i - b.entry.i : a.curated ? -1 : b.curated ? 1 : (a.release_at || 0) - (b.release_at || 0)));
   // the games of yours, each once (a beta or bonus content counts its time, not as a game)
   const games = new Map();
-  for (const it of items) if (it.game) games.set(it.game.id, it.game);
+  for (const it of items) if (it.game) games.set(it.game.uid, it.game);
   const list = [...games.values()];
   const addonMinutes = items.reduce((a, it) => a + it.addons.reduce((b, t) => b + t.minutes, 0), 0);
   const firsts = list.map((g) => g.first_day).filter(Boolean).sort();
@@ -112,15 +114,15 @@ export function build(r, now) {
   const nextItem = after || before || null;
   // the order you played it in: its games by first play, and how much of it followed the release order
   const yours = list.filter((g) => g.first_day).sort((a, b) => (a.first_day < b.first_day ? -1 : 1));
-  const rel = new Map(items.filter((it) => it.game).map((it) => [it.game.id, it.year ?? 9999]));
+  const rel = new Map(items.filter((it) => it.game).map((it) => [it.game.uid, it.year ?? 9999]));
   let inOrder = 0;
-  for (let i = 1; i < yours.length; i++) if (rel.get(yours[i].id) >= rel.get(yours[i - 1].id)) inOrder++;
+  for (let i = 1; i < yours.length; i++) if (rel.get(yours[i].uid) >= rel.get(yours[i - 1].uid)) inOrder++;
   // eras: their years, your games and play in each, how much of each one's main games you have played
   r.eras = eras.map((x, j) => {
     const its = items.filter((it) => it.era === j);
     // its years: of what came out in it (a remaster placed with the games it remasters came out later)
     const ys = (its.some((it) => !it.eraFixed) ? its.filter((it) => !it.eraFixed) : its).map((it) => it.year).filter((y) => y != null);
-    const gs = [...new Map(its.filter((it) => it.game).map((it) => [it.game.id, it.game])).values()];
+    const gs = [...new Map(its.filter((it) => it.game).map((it) => [it.game.uid, it.game])).values()];
     const m = its.filter((it) => it.kind === 'main');
     const fd = gs.map((g) => g.first_day).filter(Boolean).sort(); const ld = gs.map((g) => g.last_day).filter(Boolean).sort();
     return { index: j, name: x.name, note: x.note, from: ys.length ? Math.min(...ys) : x.from, to: ys.length ? Math.max(...ys) : x.from,
@@ -146,6 +148,6 @@ export function build(r, now) {
   const pa = playAs(nextItem);
   r.next = nextItem ? { title: nextItem.title, year: nextItem.year, kind: nextItem.kind, game_id: nextItem.game?.id ?? nextItem.via?.game_id ?? null, owned: nextItem.state !== 'missing',
     via: nextItem.via?.title || null, play_as: pa && !nextItem.via ? { title: pa.title, year: pa.year, kind: pa.kind } : null, earlier: !!before } : null;
-  r.your_order = { games: yours.map((g) => ({ id: g.id, title: g.title, first_day: g.first_day, year: rel.get(g.id) === 9999 ? null : rel.get(g.id) })), in_release_order: yours.length > 1 ? inOrder : null, pairs: Math.max(0, yours.length - 1) };
+  r.your_order = { games: yours.map((g) => ({ id: g.id, title: g.title, first_day: g.first_day, year: rel.get(g.uid) === 9999 ? null : rel.get(g.uid) })), in_release_order: yours.length > 1 ? inOrder : null, pairs: Math.max(0, yours.length - 1) };
   r.story = r.def?.story ? r.def.story.map((t) => r.items.find((it) => it.curated && it.title === t)).filter(Boolean).map((it) => it.key) : null;
 }
