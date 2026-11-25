@@ -213,7 +213,7 @@ export async function settings(view, stale) {
     const named = added.length ? `<details style="margin-top:4px"><summary class="tiny muted" style="cursor:pointer">Which games</summary><ul class="tiny" style="margin:4px 0 0;padding-left:18px">${added.slice(0, 60).map((a) => `<li>${esc(a.title)} <span class="muted">· ${fmtMin(a.minutes)}, ${esc(a.platform === 'switch' ? 'Switch' : a.platform === 'psn' ? 'PlayStation' : a.platform === 'xbox' ? 'Xbox' : a.platform === 'steam' ? 'Steam' : 'PC')}</span></li>`).join('')}${added.length > 60 ? `<li class="muted">and ${added.length - 60} more</li>` : ''}</ul></details>` : '';
     return `<ul class="small" style="margin:6px 0 0;padding-left:18px">
       ${li(true, `${r.gametrack_games.toLocaleString()} GameTrack games read`)}
-      ${li(r.skipped_synced, `${r.skipped_synced} games your accounts here already count: their hours are not added again`)}
+      ${li(r.skipped_synced, `${r.skipped_synced} game${r.skipped_synced === 1 ? '' : 's'} your accounts here already count: ${r.skipped_synced === 1 ? 'its hours are' : 'their hours are'} not added again`)}
       ${li(r.imported_titles, `${r.imported_titles} game${r.imported_titles === 1 ? '' : 's'} with playtime no account here tracks: ${fmtHours(i.baseline_minutes || 0)}h added as history${named}`)}
       ${li(r.already_imported, `${r.already_imported} game${r.already_imported === 1 ? '' : 's'} from an earlier GameTrack import: unchanged`)}
       ${li(r.anchors, `${r.anchors.toLocaleString()} achievement, trophy and diary times date history${r.anchored_entries ? ` of ${r.anchored_entries} games` : ''}`)}
