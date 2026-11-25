@@ -1,12 +1,35 @@
 import { matchScore, normalizeTitle, similarity } from './titles.js';
 import { RULES } from './franchises/match.js';
 
-// What may follow a game's title and still be that game: an edition, a platform's build, a remaster.
-// (Not a remake, a VR version or a mode: those are told apart by the series pages, and are other games here.)
-const REMASTER = /\s*(?:[-–—:|]\s*|\(\s*)?(?:(?:the )?(?:hd )?remaster(?:ed)?|hd remix|hd edition|hd|redux|reforged|resurrected|console(?: edition)?)\s*\)?\s*$/i;
-const strip = (t, re) => { let x = t; for (let i = 0; i < 3; i++) { const n = x.replace(re, '').trim(); if (n === x || !n) break; x = n; } return x; };
-/** A title without its editions, platform builds and remaster marks: what it is a copy of. */
-const core = (title) => { let t = String(title || ''); for (let i = 0; i < 3; i++) { const n = strip(strip(t, RULES.same), REMASTER); if (n === t) break; t = n; } return normalizeTitle(t); };
+// What may follow a game's title and still be that game: an edition (one that names itself in up to two
+// words: "Expanded Edition", "Game of the Year Edition" is already gone from the normalised title), a
+// platform's build or a mode of it, a remaster. (Not a remake or a VR version: other games here.)
+const tail = (words) => new RegExp(`\\s*(?:[-–—:|]\\s*|\\(\\s*|\\[\\s*)?(?:${words})\\s*[)\\]]?\\s*$`, 'i');
+const TAILS = [
+  tail('edition'), tail("[\\w'’]+ edition"), tail("[\\w'’]+ [\\w'’]+ edition"),
+  tail('battlemode|multiplayer|campaign|base game|full game|xbox series x ?\\| ?s|xbox series x|xbox one|xbox 360|windows 10|windows pc|windows|pc|ps4|ps5|console|for (?:xbox one|xbox series x ?\\| ?s|xbox 360|pc)'),
+  tail('(?:the )?(?:hd )?remaster(?:ed)?|hd remix|hd|redux|reforged|resurrected'),
+];
+/**
+ * Every title a title is an edition, build or remaster of, normalised: itself, and itself with up to
+ * three such tails taken off ("Cities: Skylines - Remastered" -> "cities skylines"). Each way of
+ * taking a tail off is kept: "Stardew Valley Expanded Edition" is an edition of Stardew Valley, and
+ * would be one of a game called Stardew, never of nothing at all.
+ */
+function cores(title) {
+  const out = new Set(); let level = [String(title || '').trim()];
+  for (let depth = 0; depth < 4 && level.length; depth++) {
+    const next = [];
+    for (const t of level) {
+      const n = normalizeTitle(t);
+      if (!n || out.has(n)) continue;
+      out.add(n);
+      for (const re of TAILS) { const cut = t.replace(re, '').trim(); if (cut && cut !== t) next.push(cut); }
+    }
+    level = next;
+  }
+  return out;
+}
 /** Not the game: a beta, a demo, bonus content, a soundtrack. */
 const notTheGame = (title) => RULES.test.test(title) || RULES.bonus.test(title);
 
@@ -26,8 +49,8 @@ export function sameGame(a, b) {
   if (notTheGame(a.title) !== notTheGame(b.title)) return 0;
   const score = matchScore(a.norm_title, b.norm_title);
   if (score <= 0.5) return 0; // (different numbers: a sequel)
-  const ca = core(a.title); const cb = core(b.title);
-  if (ca && ca === cb) return 0.9;
+  // one is the other in another edition, build or remaster
+  if (cores(a.title).has(b.norm_title) || cores(b.title).has(a.norm_title)) return 0.9;
   const [short, long] = a.norm_title.length <= b.norm_title.length ? [a.norm_title, b.norm_title] : [b.norm_title, a.norm_title];
   // (a name of two words or more: "Haven" is not Teddy's Haven)
   if (short.includes(' ') && long.endsWith(` ${short}`) && / s$/.test(long.slice(0, -short.length - 1))) return 0.85;
