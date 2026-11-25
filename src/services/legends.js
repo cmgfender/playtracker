@@ -158,7 +158,7 @@ export function legend(db, settings, kind, id, { now = Date.now() } = {}) {
         return { id: String(x.id), name: x.name, from: x.from, to: x.to, minutes: Math.round(minutes), weekly: round1(minutes / 60 / weeksOf(xw)), games: plays.filter((p) => p.minutes > 0).length,
           fresh: plays.filter((p) => L.allFirst.get(p.game.id) >= xw.from).length, achievements: xw.from <= today ? unlocks(xw) : 0, top: plays.sort((a, b) => b.minutes - a.minutes)[0]?.game.title || null };
       });
-      L.compare = { eras: measured, career: { minutes: Math.round(datedAll), weekly: round1(L.careerWeekly) } };
+      L.compare = { eras: measured, career: { minutes: Math.round(all.reduce((a, g) => a + g.minutes, 0)), weekly: round1(L.careerWeekly) } };
       // the badges earned in it (Milestones has them all)
       const ms = milestones(db, { now, all: true, limit: 5000 }).reached.filter((x) => x.day && x.precision !== 'year' && x.day >= w.from && x.day <= w.to);
       own = { era: e, milestones: [...ms.filter((x) => x.notable), ...ms.filter((x) => !x.notable)].slice(0, 12), compare: L.compare };
