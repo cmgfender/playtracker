@@ -328,6 +328,56 @@ describe('Vestigo web UI, polish on a one-game library', UI, () => {
     } finally { await h.close(); }
   });
 
+  test('Add a game: when you played it is asked from the start - a year or period, exact dates, or not sure', async () => {
+    const h = await visit(T, '/library');
+    const { page } = h;
+    const rows = (title) => T.db.prepare(`SELECT COUNT(*) n, MIN(COALESCE(s.started_at, s.window_start)) a, MAX(COALESCE(s.ended_at, s.window_end)) b, SUM(s.minutes) m, GROUP_CONCAT(DISTINCT s.kind) kinds
+      FROM sessions s JOIN entries e ON e.id = s.entry_id JOIN games g ON g.id = e.game_id WHERE g.title = ?`).get(title);
+    try {
+      await page.locator('#lib-add').click();
+      await modalReady(page);
+      // the choices are there before any hours are typed
+      assert.deepEqual(await page.locator('.modal #ag-mode button').allTextContents(), ['A year or period', 'Exact dates', 'Not sure']);
+      assert.equal(await page.locator('.modal #ag-when').isVisible(), true, 'the period, to begin with');
+      assert.equal(await page.locator('.modal #ag-dates').isVisible(), false);
+      await page.locator('.modal [name=title]').fill('Dated By Day');
+      // exact dates set, and no hours for them: asked for, nothing added
+      await page.locator('.modal [data-mode=dates]').click();
+      assert.equal(await page.locator('.modal #ag-when').isVisible(), false);
+      await page.locator('.modal [name=s]').fill('2010-03-01');
+      await page.locator('#ag-save').click();
+      await toast(page, 'Enter the hours you played');
+      assert.equal(await page.locator('.modal').count(), 1, 'the dialog is still open');
+      assert.equal(await page.evaluate(() => document.activeElement?.getAttribute('name')), 'hours', 'focus is in the hours');
+      await page.locator('.modal [name=hours]').fill('12');
+      await page.locator('.modal [name=e]').fill('2010-06-15');
+      assert.equal(await page.locator('.modal #ag-sum').textContent(), '12h between Mar 1, 2010 and Jun 15, 2010.');
+      await page.locator('#ag-save').click();
+      await page.waitForURL(/\/game\/\d+$/);
+      await h.settle();
+      const exact = rows('Dated By Day');
+      assert.equal(exact.m, 720);
+      assert.equal(exact.kinds, 'estimate', 'history, not play');
+      assert.ok(exact.a >= new Date(2010, 2, 1).getTime() && exact.b < new Date(2010, 5, 16).getTime(), `between the dates given: ${new Date(exact.a)} - ${new Date(exact.b)}`);
+      // not sure when: the hours count, dated nowhere
+      await page.goto(`${T.origin}/library`);
+      await waitView(page);
+      await page.locator('#lib-add').click();
+      await modalReady(page);
+      await page.locator('.modal [name=title]').fill('Sometime Long Ago');
+      await page.locator('.modal [name=hours]').fill('5');
+      await page.locator('.modal [data-mode=none]').click();
+      assert.equal(await page.locator('.modal #ag-sum').textContent(), '5h count in your totals, but in no year and on no chart until you date them.');
+      await page.locator('#ag-save').click();
+      await page.waitForURL(/\/game\/\d+$/);
+      await h.settle();
+      const unsure = rows('Sometime Long Ago');
+      assert.equal(unsure.m, 300);
+      assert.equal(unsure.kinds, 'baseline', 'kept undated');
+      clean(h);
+    } finally { await h.close(); }
+  });
+
   test('Sessions: Done in the selection bar gives keyboard focus back to Select', async () => {
     const h = await visit(T, '/sessions');
     const { page } = h;

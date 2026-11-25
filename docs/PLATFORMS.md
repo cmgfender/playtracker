@@ -112,16 +112,16 @@ Microsoft has no public consumer API, so Vestigo uses [OpenXBL](https://xbl.io).
 - **Missing playtime:** some titles (apps, some backward-compatible Xbox 360 games) have no `MinutesPlayed` stat.
 - **Lag:** the stat can trail the end of a session by several minutes, so the post-session sync runs after **10 minutes**.
 
-## Nintendo (Nintendo Switch Online app private API)
+## Nintendo (Nintendo Store app private API)
 
-Nintendo has no public API. Vestigo reads the play history the Nintendo Switch Online app shows, for the Nintendo Account you sign in with. A Nintendo Switch Online membership isn't needed.
+Nintendo has no public API. Vestigo reads the play history the Nintendo Store app shows under Play Activity (the app was called My Nintendo in Japan), for the Nintendo Account you sign in with. It signs in as that app: the Nintendo Switch Online app's sign-in is refused by the play history service. A Nintendo Switch Online membership isn't needed.
 
 **Signing in:**
 1. In the account form, choose **Open Nintendo sign-in** and sign in to your Nintendo Account.
-2. On the "Select this person" page, right-click the button (long-press on a phone) and copy the link. It starts with `npf71b963c1b7b6d119://auth`.
+2. On the "Select this person" page, don't click the button: right-click it (long-press on a phone) and copy the link. It starts with `npf5c38e31cd085304b://auth`. The link opens Nintendo's phone app, so clicking it in a browser does nothing (Chrome) or says the address is invalid (Safari). That is expected.
 3. Paste it into **Sign-in link** within an hour and save. Each link works once.
 
-Vestigo exchanges the link for a session token, which lasts about two years. The code verifier behind the link never leaves the server. If you already have a session token for the Nintendo Switch Online app (from nxapi, for example), you can paste it instead.
+Vestigo exchanges the link for a session token, which lasts about two years. The code verifier behind the link never leaves the server. If you already have a session token for the Nintendo Store app (My Nintendo) from another tool, you can paste it instead; one for the Nintendo Switch Online app does not work here.
 
 **Calls per sync:** 3 requests. One renews the access token, one reads the play history (`play_histories`), and one reads your nickname.
 

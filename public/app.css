@@ -582,6 +582,13 @@ pre.code { padding: 12px; overflow-x: auto; white-space: pre; display: block; }
 @media (hover: hover) { .ag-sugg > .item:hover { background: var(--panel2); } }
 .ag-pick { align-items: flex-start; padding: 10px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel2); }
 .ag-pick img { border-radius: 6px; flex: none; }
+/* Add a game: what was played before today - the hours and when (a period, exact dates, or not known) */
+.ag-hist { display: flex; flex-direction: column; gap: 12px; min-width: 0; margin: 0; padding: 12px 14px 14px; border: 1px solid var(--line); border-radius: 12px; }
+.ag-hist legend { padding: 0 6px; font-size: 13px; font-weight: 600; color: var(--muted); }
+.ag-hist .ag-l { font-size: 13px; font-weight: 600; color: var(--muted); }
+.ag-hist .seg { align-self: flex-start; flex-wrap: wrap; }
+/* Connect an account: the steps of a sign-in that cannot be a single click (Nintendo) */
+.acc-steps { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 4px; font-size: 13px; line-height: 1.45; }
 .log-row { border-top: 1px solid var(--line); padding: 10px 0; }
 .log-row:first-child { border-top: 0; }
 .log-row summary { cursor: pointer; list-style: none; display: flex; gap: 10px; align-items: baseline; }

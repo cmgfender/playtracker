@@ -1,4 +1,4 @@
-// Nintendo: the Nintendo Switch Online app's play history. A sign-in link (PKCE, its verifier kept on
+// Nintendo: the play history the Nintendo Store app shows. A sign-in link (PKCE, its verifier kept on
 // the server) becomes a session token; each sync turns it into an access token and reads total
 // minutes, first/last played and the last 7 days per title. Imported Switch rows join these games.
 import { test } from 'node:test';
@@ -23,7 +23,7 @@ const history = (minutes = { zelda: 3000, kirby: 45 }) => ({
 });
 
 /** A ctx whose http answers like Nintendo's accounts and play-history services. */
-function fakeNintendo({ reply = () => history(), sessionCode = 'CODE', playStatus = 200 } = {}) {
+function fakeNintendo({ reply = () => history(), sessionCode = 'CODE', playStatus = 200, refuseId = false } = {}) {
   const calls = [];
   const http = async (url, opts = {}) => {
     calls.push({ url, opts });
@@ -38,7 +38,7 @@ function fakeNintendo({ reply = () => history(), sessionCode = 'CODE', playStatu
       return { access_token: 'ACCESS', id_token: 'ID', expires_in: 900 };
     }
     if (url.includes('play_histories')) {
-      if (playStatus !== 200 && opts.headers.Authorization === 'Bearer ACCESS') throw fail(playStatus);
+      if (playStatus !== 200 && (refuseId || opts.headers.Authorization === 'Bearer ACCESS')) throw fail(playStatus);
       return reply();
     }
     if (url.includes('/users/me')) return { id: 'n1', nickname: 'Link', mii: { imageUriTemplate: 'https://mii/{}' } };
@@ -47,12 +47,15 @@ function fakeNintendo({ reply = () => history(), sessionCode = 'CODE', playStatu
   return { calls, ctx: { http, warn() {} } };
 }
 
-const linkFor = (url, code = 'CODE') => `npf71b963c1b7b6d119://auth#session_token_code=${code}&state=${new URL(url).searchParams.get('state')}&session_state=x`;
+const linkFor = (url, code = 'CODE') => `npf5c38e31cd085304b://auth#session_token_code=${code}&state=${new URL(url).searchParams.get('state')}&session_state=x`;
 
 test('the sign-in link carries a PKCE challenge, never the verifier; a pasted link gives back its code and state', () => {
   const { url } = signInUrl();
   const u = new URL(url);
-  assert.equal(u.searchParams.get('client_id'), '71b963c1b7b6d119');
+  // as the Nintendo Store app (My Nintendo), whose play history it is: the Switch Online app's sign-in is refused there
+  assert.equal(u.searchParams.get('client_id'), '5c38e31cd085304b');
+  assert.equal(u.searchParams.get('redirect_uri'), 'npf5c38e31cd085304b://auth');
+  assert.equal(u.searchParams.get('scope'), 'openid user user.mii user.email user.links[].id');
   assert.equal(u.searchParams.get('session_token_code_challenge_method'), 'S256');
   assert.match(u.searchParams.get('session_token_code_challenge'), /^[\w-]{43}$/);
   assert.ok(!u.searchParams.has('session_token_code_verifier'));
@@ -67,6 +70,8 @@ test('a sync signs in once, then reads totals, first/last played and the last 7 
   const r = await nintendo.fetchLibrary(account, ctx);
   assert.equal(r.state.session_token, 'SESSION');
   assert.equal(r.state.persona, 'Link');
+  for (const c of calls) assert.match(c.opts.headers['User-Agent'], /^com\.nintendo\.znej\//, `${c.url} is asked as the store app`);
+  assert.equal(JSON.parse(calls.find((c) => c.url.endsWith('/api/token')).opts.body).client_id, '5c38e31cd085304b');
   const kirby = r.items.find((i) => i.extId === '01004D300C5AE000');
   assert.equal(kirby.playtimeMin, 45);
   assert.equal(kirby.recentMin, 45, 'the days add up');
@@ -80,12 +85,21 @@ test('a sync signs in once, then reads totals, first/last played and the last 7 
 
 test('sign-in problems say what to do', async () => {
   const stale = fakeNintendo();
-  await assert.rejects(nintendo.fetchLibrary({ config: { sign_in_link: 'npf71b963c1b7b6d119://auth#session_token_code=CODE&state=unknown' }, state: {} }, stale.ctx), (e) => e.auth && /earlier sign-in page/.test(e.message));
+  await assert.rejects(nintendo.fetchLibrary({ config: { sign_in_link: 'npf5c38e31cd085304b://auth#session_token_code=CODE&state=unknown' }, state: {} }, stale.ctx), (e) => e.auth && /earlier sign-in page/.test(e.message));
   await assert.rejects(nintendo.fetchLibrary({ config: { sign_in_link: 'https://example.com' }, state: {} }, stale.ctx), (e) => e.auth && /Select this person/.test(e.message));
   const used = fakeNintendo({ sessionCode: 'OTHER' });
   await assert.rejects(nintendo.fetchLibrary({ config: { sign_in_link: linkFor(signInUrl().url) }, state: {} }, used.ctx), (e) => e.auth && /works once/.test(e.message));
   const revoked = fakeNintendo();
   await assert.rejects(nintendo.fetchLibrary({ config: { session_token: 'REVOKED' }, state: {} }, revoked.ctx), (e) => e.auth && /Sign in again/.test(e.message));
+  // refused as the wrong app (a bare 403 page, for the access token and the ID token alike): not "a temporary block"
+  const wrongApp = fakeNintendo({ playStatus: 403, refuseId: true });
+  await assert.rejects(nintendo.fetchLibrary({ config: { session_token: 'SESSION' }, state: {} }, wrongApp.ctx), (e) => e.auth && e.status === 403 && /refused this sign-in \(403\)\. Sign in again/.test(e.message));
+  assert.deepEqual(wrongApp.calls.filter((c) => c.url.includes('play_histories')).map((c) => `${new URL(c.url).hostname} ${c.opts.headers.Authorization}`),
+    ['news-api.entry.nintendo.co.jp Bearer ACCESS', 'news-api.entry.nintendo.co.jp Bearer ID', 'mypage-api.entry.nintendo.co.jp Bearer ACCESS'], 'the access token, the ID token, then the older address');
+  // something else than "no" (the service is down) is the error at once, not three tries
+  const down = fakeNintendo({ playStatus: 503, refuseId: true });
+  await assert.rejects(nintendo.fetchLibrary({ config: { session_token: 'SESSION' }, state: {} }, down.ctx), (e) => e.status === 503);
+  assert.equal(down.calls.filter((c) => c.url.includes('play_histories')).length, 1);
   const odd = fakeNintendo({ reply: () => ({ error: 'x' }) });
   await assert.rejects(nintendo.fetchLibrary({ config: { session_token: 'SESSION' }, state: {} }, odd.ctx), /unexpected shape \(keys: error\)/);
 });
