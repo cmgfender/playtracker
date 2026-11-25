@@ -192,9 +192,9 @@ export async function game(view, id, stale) {
   // where it stands, on the cover: its place among everything played, its share of all the time, the years it led
   const led = (st?.years || []).filter((y) => y.rank === 1).map((y) => y.year).sort();
   const bestYear = (st?.years || [])[0];
+  // (its rank is one of the four figures below; so is its share, for a game known from history: not said twice)
   const stand = [
-    st?.rank ? `<a class="badge" data-st="rank" href="/library?sort=playtime" data-link><b>#${st.rank.toLocaleString()}</b> of ${st.of.toLocaleString()} games by hours</a>` : '',
-    st?.share >= 0.5 ? `<span class="badge" data-st="share"><b>${st.share.toLocaleString(undefined, { maximumFractionDigits: 1 })}%</b> of all your time</span>` : '',
+    st?.share >= 0.5 && s.sessions > 0 ? `<span class="badge" data-st="share"><b>${st.share.toLocaleString(undefined, { maximumFractionDigits: 1 })}%</b> of all your time</span>` : '',
     led.length ? `<span class="badge" data-st="led"><b>Most played</b> of ${led.length > 3 ? `${led.length} years` : led.join(', ')}</span>`
       : bestYear && bestYear.rank <= 5 ? `<span class="badge" data-st="year"><b>#${bestYear.rank}</b> of ${bestYear.year}</span>` : '',
     st?.series?.rank === 1 ? `<a class="badge" data-st="series" href="/legend/series/${encodeURIComponent(st.series.id)}" data-link><b>${st.series.share}%</b> of your time with ${esc(st.series.name)}</a>` : '',
@@ -212,7 +212,7 @@ export async function game(view, id, stale) {
   }
   if (st?.rank) tiles.push(kpi('Rank', `#${st.rank.toLocaleString()}`, `of ${st.of.toLocaleString()} games you played`));
   if (!s.sessions && sp?.first_day) tiles.push(kpi('Played', yearsOf(sp.first_day, sp.last_day), `${plural(sp.months, 'month')} with play${sp.first_estimated ? ', estimated' : ''}`));
-  if (!s.sessions && st?.share >= 0.1) tiles.push(kpi('Of all your time', `${st.share.toLocaleString(undefined, { maximumFractionDigits: 1 })}%`, led.length ? `most played of ${led.length > 2 ? `${led.length} years` : led.join(' and ')}` : sp?.busiest ? `busiest: ${fmtDate(new Date(`${sp.busiest.key}-01T12:00`).getTime(), { month: 'short', year: 'numeric' })}` : ''));
+  if (!s.sessions && st?.share >= 0.1) tiles.push(kpi('Of all your time', `${st.share.toLocaleString(undefined, { maximumFractionDigits: 1 })}%`, sp?.busiest ? `busiest: ${fmtDate(new Date(`${sp.busiest.key}-01T12:00`).getTime(), { month: 'short', year: 'numeric' })}` : 'of everything on record'));
   // (no time on record: its achievements say when it was played)
   if (!s.sessions && !sp?.first_day && sp?.unlock_first_day) tiles.push(kpi('Played', yearsOf(sp.unlock_first_day, sp.unlock_last_day), 'by its achievements'));
   if (hasAch && tiles.length < 4) tiles.push(kpi('Achievements', `${ach.summary.unlocked.toLocaleString()}<span class="unit"> of ${ach.summary.total.toLocaleString()}</span>`, ach.summary.completed ? 'all of them' : `${Math.round(ach.summary.percent || 0)}% unlocked`));
@@ -309,7 +309,7 @@ export async function game(view, id, stale) {
     // a game added by hand with no hours from before it was added (an N64 game played in 1998)
     const handNoPast = g.entries.find((e) => e.account_id == null && e.platform === 'manual' && !e.history);
     const sessCard = `<div class="card"><div class="card-h"><h2>Recent sessions</h2>${nSessions > recent.length ? `<a href="/sessions?game_id=${g.id}" data-link>All ${nSessions.toLocaleString()} sessions${arrow()}</a>` : ''}</div>
-          <div class="list dated" id="g-sessions">${recent.length ? groupByDay(recent).map((grp) => `<div class="day-h"><span>${dayLabel(grp.day)}</span><span>${fmtMin(grp.minutes)}</span></div>${grp.items.map((x) => sessionItem(x, { showGame: false, platLabel: g.entries.length > 1, dated: true })).join('')}`).join('') : `<p class="muted">No sessions yet — they appear after a sync spots new playtime, or log one yourself.${handNoPast ? ` <button class="link linkbtn" data-hist-past="${handNoPast.id}">Played it before? Add those hours</button>` : ''}</p>`}
+          <div class="list dated" id="g-sessions">${!recent.length && s.total_minutes > 0 && !baselines.length ? `<p class="muted" id="g-no-sessions">None tracked: all ${fmtMin(s.total_minutes, { short: s.total_minutes >= 600 })} of it ${isAssumed(g.entries.find((e) => !e.excluded) || {}) ? 'is assumed from its achievements' : 'was played before Vestigo was watching'}. A session appears here the next time a sync sees new playtime, or when you log one.</p>` : recent.length ? groupByDay(recent).map((grp) => `<div class="day-h"><span>${dayLabel(grp.day)}</span><span>${fmtMin(grp.minutes)}</span></div>${grp.items.map((x) => sessionItem(x, { showGame: false, platLabel: g.entries.length > 1, dated: true })).join('')}`).join('') : `<p class="muted">No sessions yet — they appear after a sync spots new playtime, or log one yourself.${handNoPast ? ` <button class="link linkbtn" data-hist-past="${handNoPast.id}">Played it before? Add those hours</button>` : ''}</p>`}
           ${baselines.map((x) => `<div class="item"><span class="dot" style="background:var(--line);width:10px;height:10px"></span><div class="grow"><div class="sub"><b style="color:var(--text)">${esc(plat(x.platform).label)}</b> ${esc(x.note || 'History')} · ${fmtDate(x.window_end)}</div></div><div class="amt muted">${fmtMin(x.minutes)}</div><button class="btn ghost sm icon" data-edit-session="${x.id}" aria-label="Edit history">${icon('edit')}</button></div>`).join('')}
           </div>
         </div>`;
