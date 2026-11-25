@@ -354,3 +354,16 @@ test('a rarity of 0 is not known (GameTrack writes it for Xbox 360 achievements)
   assert.deepEqual(db.prepare('SELECT name, rarity FROM achievements WHERE entry_id = ? ORDER BY ach_id').all(entries.xbox).map((r) => [r.name, r.rarity]),
     [['Unknown Rarity', null], ['Truly Rare', 0.4]]);
 });
+
+test('GameTrack\'s "Wanted" on a game played since is no wish: the status is left as it was', () => {
+  const { db, settings, entries } = library();
+  const t = (rows) => parseCsv(csv(rows), { commaOnly: true });
+  importGameTrack(db, {
+    games: t([['uuid', 'title', 'status', 'hours_played', 'owned_platform'], ['P', 'Portal 2', 'Wanted', '15', 'PC'], ['W', 'Not Yet Bought', 'Wanted', '0', 'PC']]),
+    steam_games: t([['game_uuid', 'appid', 'name', 'playtime_forever'], ['P', '620', 'Portal 2', '900']]),
+  }, { settings, now: NOW });
+  const status = (title) => db.prepare('SELECT status FROM games WHERE title = ?').get(title)?.status;
+  assert.equal(status('Portal 2'), 'unset', '15 hours played: not on a wish list');
+  assert.equal(status('Not Yet Bought'), 'wishlist');
+  assert.ok(entries.steam);
+});

@@ -221,7 +221,8 @@ export function importGameTrack(db, tables, { settings = null, now = Date.now() 
     syncedByTitle.get(k).push(e);
   }
   const gameByTitle = new Map(db.prepare('SELECT id, norm_title FROM games').all().map((g) => [g.norm_title, g.id]));
-  const getGame = db.prepare('SELECT id, status, rating, cover_url FROM games WHERE id = ?');
+  const getGame = db.prepare(`SELECT g.id, g.status, g.rating, g.cover_url, (SELECT COALESCE(SUM(playtime_min), 0) FROM entries WHERE game_id = g.id AND excluded = 0) minutes
+    FROM games g WHERE g.id = ?`);
   const setStatus = db.prepare("UPDATE games SET status = ?, updated_at = ? WHERE id = ? AND status = 'unset'");
   const setRating = db.prepare('UPDATE games SET rating = ?, updated_at = ? WHERE id = ? AND rating IS NULL');
   const setCover = db.prepare('UPDATE games SET cover_url = ? WHERE id = ? AND cover_url IS NULL');
@@ -359,7 +360,8 @@ export function importGameTrack(db, tables, { settings = null, now = Date.now() 
       for (const id of gameIds) {
         const cur = getGame.get(id);
         if (!cur) continue;
-        if (status && cur.status === 'unset' && setStatus.run(status, now, id).changes) res.statuses++;
+        // (GameTrack keeps "Wanted" on games bought and played since: a game with time here is no wish)
+        if (status && cur.status === 'unset' && !(status === 'wishlist' && cur.minutes > 0) && setStatus.run(status, now, id).changes) res.statuses++;
         if (rating && cur.rating == null && setRating.run(rating, now, id).changes) res.ratings++;
         if (cover && !cur.cover_url && setCover.run(cover, id).changes) res.covers++;
       }
@@ -388,7 +390,7 @@ export function importGameTrack(db, tables, { settings = null, now = Date.now() 
       const id = db.prepare('SELECT game_id FROM entries WHERE account_id IS NULL AND ext_id = ?').get(`import:gametrack:${norm}`)?.game_id;
       if (!id) continue;
       const status = STATUS.find(([re]) => re.test(g.status || ''))?.[1];
-      if (status && setStatus.run(status, now, id).changes) res.statuses++;
+      if (status && status !== 'wishlist' && setStatus.run(status, now, id).changes) res.statuses++; // (imported with time: no wish)
       if (Number(g.user_rating) > 0 && setRating.run(Math.min(10, Number(g.user_rating)), now, id).changes) res.ratings++;
       if (/^https?:\/\//.test(g.poster_url || '') && setCover.run(g.poster_url, id).changes) res.covers++;
     }
