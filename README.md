@@ -157,6 +157,7 @@ With a free Twitch app, Vestigo adds IGDB's metadata to your games: genres, them
 - **Stats:** a Genres card.
 - **Library:** a Genre filter and a Release date sort.
 - **Game page:** an About card with links and the time to beat against yours.
+- **A game's story:** every game page leads with where the game stands in your career (its place among everything you played, its share of all your time, the years it was your most played, its place in its series) and tells it in a few sentences: how it began, where it stands, its years, how you played it, what it left, where it is now. The four figures under the cover are chosen from what is known of the game: tracked sessions when there are any, its place and years when its hours come from history, its achievements when its platform reported no time.
 - **What should I play?:** "Finish something" also uses how much of a main story is left.
 
 To set it up:

@@ -1247,6 +1247,16 @@ a.mrow.mlink:hover .ml, a.mrow.mlink:focus-visible .ml { color: var(--accent-ink
 .lg-bar { flex: 1; height: 6px; border-radius: 3px; background: var(--panel2); overflow: hidden; }
 .lg-bar i { display: block; height: 100%; border-radius: 3px; background: var(--accent-mark); }
 .lg-story { padding-bottom: 8px; }
+/* a game's standing, on its cover: the same badges a legend wears, on glass */
+.hero-stand { margin-top: 10px; }
+.hero-stand .badge { background: color-mix(in srgb, var(--panel) 62%, transparent); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); border-color: color-mix(in srgb, var(--line-strong) 45%, transparent); color: var(--muted); text-decoration: none; }
+@media (hover: hover) { a.badge:hover { border-color: var(--line-strong); color: var(--text); } }
+.kpi .value .unit { font-size: .55em; font-weight: 600; color: var(--muted); letter-spacing: 0; }
+#g-story .lg-ch { grid-template-columns: 150px 1fr; }
+#g-story .lg-ch p { font-size: 15.5px; }
+@media (max-width: 700px) { #g-story .lg-ch { grid-template-columns: 1fr; } #g-story .lg-ch p { font-size: 15px; } }
+#g-story-more { display: none; margin: 4px 0 6px -6px; }
+@media (max-width: 700px) { #g-story:not(.all) .lg-ch.later { display: none; } #g-story-more { display: inline-flex; } }
 .lg-ch { display: grid; grid-template-columns: 170px 1fr; gap: 4px 18px; padding: 12px 0; border-top: 1px solid var(--line); }
 .lg-ch:first-of-type { border-top: 0; padding-top: 2px; }
 .lg-ch h3 { margin: 0; font-size: 13px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); padding-top: 3px; }

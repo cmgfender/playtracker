@@ -3,7 +3,7 @@ import {
   undoToast, fail, modal, confirmBox, navigate, rerender, state, plural, setTitle, coverHue, tagHref,
 } from '../app.js';
 import { barChart, heatmap, mountCharts, curveChart, BASIS_FILL } from '../charts.js';
-import { arrow, seriesLabel, seriesName, kpi, sessionItem, groupByDay, rarityText, achIcon, logSessionModal, bindSessionEdits, dayKey, BASIS } from './shared.js';
+import { arrow, seriesLabel, seriesName, kpi, sessionItem, groupByDay, rarityText, achIcon, logSessionModal, bindSessionEdits, dayKey, BASIS, prose } from './shared.js';
 import { whenDialog, conflictList } from './when.js';
 import { franchiseCard } from './franchises.js';
 
@@ -186,6 +186,42 @@ export async function game(view, id, stale) {
   const series = (curve?.series || []).map((x) => ({ ...x, label: x.key.endsWith('-01') && curve.series.length > 12 ? x.key.slice(0, 4) : seriesLabel(x.key, 'month'), major: x.key.endsWith('-01') && curve.series.length > 36, name: seriesName(x.key, 'month') }));
   const years = [...new Set(series.filter((x) => x.minutes > 0).map((x) => Number(x.key.slice(0, 4))))].sort((a, b) => b - a).slice(0, 6);
   const hasAch = !!(ach?.summary && ach.total);
+  const story = g.story || null;
+  const st = story?.standing || null;
+  const sp = story?.span || null;
+  // where it stands, on the cover: its place among everything played, its share of all the time, the years it led
+  const led = (st?.years || []).filter((y) => y.rank === 1).map((y) => y.year).sort();
+  const bestYear = (st?.years || [])[0];
+  const stand = [
+    st?.rank ? `<a class="badge" data-st="rank" href="/library?sort=playtime" data-link><b>#${st.rank.toLocaleString()}</b> of ${st.of.toLocaleString()} games by hours</a>` : '',
+    st?.share >= 0.5 ? `<span class="badge" data-st="share"><b>${st.share.toLocaleString(undefined, { maximumFractionDigits: 1 })}%</b> of all your time</span>` : '',
+    led.length ? `<span class="badge" data-st="led"><b>Most played</b> of ${led.length > 3 ? `${led.length} years` : led.join(', ')}</span>`
+      : bestYear && bestYear.rank <= 5 ? `<span class="badge" data-st="year"><b>#${bestYear.rank}</b> of ${bestYear.year}</span>` : '',
+    st?.series?.rank === 1 ? `<a class="badge" data-st="series" href="/legend/series/${encodeURIComponent(st.series.id)}" data-link><b>${st.series.share}%</b> of your time with ${esc(st.series.name)}</a>` : '',
+  ].filter(Boolean).slice(0, 3);
+  // the four figures under the cover: what is known of this game, never a row of zeros. A game with
+  // tracked sessions leads with them; one known from history (most of a long career) with its place,
+  // its years and what it left; one not played yet with what to expect of it.
+  const yearsOf = (a, b) => (a && b && a.slice(0, 4) !== b.slice(0, 4) ? `${a.slice(0, 4)}–${b.slice(0, 4)}` : (a || b || '').slice(0, 4));
+  const ttb = g.meta?.time_to_beat || null;
+  const typical = ttb?.main || ttb?.extra || null;
+  const tiles = [];
+  if (s.sessions > 0) {
+    tiles.push(kpi('Tracked', fmtMin(s.tracked_minutes), 'since tracking began'), kpi('Avg session', fmtMin(s.avg_session_minutes), plural(s.sessions, 'session')),
+      kpi('Longest', fmtMin(s.longest_session_minutes), s.longest_session_minutes ? 'tracked' : ''));
+  }
+  if (st?.rank) tiles.push(kpi('Rank', `#${st.rank.toLocaleString()}`, `of ${st.of.toLocaleString()} games you played`));
+  if (!s.sessions && sp?.first_day) tiles.push(kpi('Played', yearsOf(sp.first_day, sp.last_day), `${plural(sp.months, 'month')} with play${sp.first_estimated ? ', estimated' : ''}`));
+  if (!s.sessions && st?.share >= 0.1) tiles.push(kpi('Of all your time', `${st.share.toLocaleString(undefined, { maximumFractionDigits: 1 })}%`, led.length ? `most played of ${led.length > 2 ? `${led.length} years` : led.join(' and ')}` : sp?.busiest ? `busiest: ${fmtDate(new Date(`${sp.busiest.key}-01T12:00`).getTime(), { month: 'short', year: 'numeric' })}` : ''));
+  // (no time on record: its achievements say when it was played)
+  if (!s.sessions && !sp?.first_day && sp?.unlock_first_day) tiles.push(kpi('Played', yearsOf(sp.unlock_first_day, sp.unlock_last_day), 'by its achievements'));
+  if (hasAch && tiles.length < 4) tiles.push(kpi('Achievements', `${ach.summary.unlocked.toLocaleString()}<span class="unit"> of ${ach.summary.total.toLocaleString()}</span>`, ach.summary.completed ? 'all of them' : `${Math.round(ach.summary.percent || 0)}% unlocked`));
+  if (typical && s.total_minutes > 0 && tiles.length < 4) tiles.push(kpi('Against typical', `${(Math.round((s.total_minutes / typical) * 10) / 10).toLocaleString()}×`, `the typical ${ttb.main ? 'main story' : 'playthrough'} (${fmtMin(typical, { short: true })})`));
+  if (typical && !s.total_minutes && tiles.length < 4) tiles.push(kpi('Typical length', fmtMin(typical, { short: true }), ttb.main ? 'main story' : 'with extras'));
+  if (s.sessions > 0 && tiles.length < 4) tiles.push(kpi('First tracked', s.first_tracked_at ? fmtDate(s.first_tracked_at) : '—', s.tracking_since ? `owned since ${fmtDate(s.tracking_since)}` : ''));
+  if (tiles.length < 4 && g.meta?.release_date) tiles.push(kpi('Released', String(new Date(g.meta.release_date).getFullYear()), g.meta.rating ? `IGDB ${Math.round(g.meta.rating)} / 100` : ''));
+  if (tiles.length < 4 && s.tracking_since) tiles.push(kpi('Tracked since', fmtDate(s.tracking_since, { month: 'short', year: 'numeric' }), 'when Vestigo first saw it'));
+  const strip = tiles.length >= 4 ? `<div class="kpis k4 strip" id="g-kpis">${tiles.slice(0, 4).join('')}</div>` : tiles.length >= 2 ? `<div class="kpis k2 strip" id="g-kpis">${tiles.slice(0, 2).join('')}</div>` : '';
   view.innerHTML = `
     <a href="/library" data-link class="btn ghost sm" style="margin:-4px 0 10px -6px" onclick="if(history.length>1){event.preventDefault();event.stopPropagation();history.back()}">${icon('back')}Back</a>
     <div class="hero fade-in${g.cover_url ? '' : ' hero-ph'}" style="--ph-h:${coverHue(g.title)}">
@@ -196,8 +232,10 @@ export async function game(view, id, stale) {
           <div class="row wrap" style="margin-bottom:8px">${g.platforms.map(platTag).join('')}</div>
           <h1>${esc(g.title)}</h1>
           ${relLine ? `<div class="hero-rel small" id="g-release">${relLine}</div>` : ''}
-          <div class="hero-life"><span class="big">${fmtMin(s.total_minutes, { short: s.total_minutes >= 600 })}</span><span class="muted">lifetime</span></div>
-          <div class="hero-line small muted">${plural(nSessions, 'session')} · ${g.last_played_at ? `played ${ago(g.last_played_at)}` : s.total_minutes ? 'no tracked play yet' : 'never played'}</div>
+          <div class="hero-life">${s.total_minutes || !(hasAch && ach.summary.unlocked) ? `<span class="big">${fmtMin(s.total_minutes, { short: s.total_minutes >= 600 })}</span><span class="muted">lifetime</span>`
+    : `<span class="big">${ach.summary.unlocked.toLocaleString()}</span><span class="muted">of ${ach.summary.total.toLocaleString()} achievements · its platform reported no playtime</span>`}</div>
+          <div class="hero-line small muted">${nSessions ? `${plural(nSessions, 'session')} · ` : ''}${g.last_played_at ? `played ${ago(g.last_played_at)}` : s.total_minutes ? 'no tracked play yet' : hasAch && ach.summary.unlocked ? 'played, with no time on record' : 'not played yet'}</div>
+          ${stand.length ? `<div class="lg-stand hero-stand" id="g-stand">${stand.join('')}</div>` : ''}
           ${s.total_minutes ? `<div class="hero-split">
             <div class="split-bar">${parts.map(([m, , st, cls]) => `<i ${st ? `style="width:${pct(m)}%;${st}"` : `class="${cls === 'hatch' ? 'hatch-bg' : cls}" style="width:${pct(m)}%"`}></i>`).join('')}</div>
             <div class="legend">${parts.length > 1 ? `<span><b>${fmtMin(s.total_minutes)}</b> =</span>` : ''}${parts.map(([m, l, st, cls], i) => `<span>${i ? '+ ' : ''}<i class="dot${st ? '' : cls === 'hatch' ? ' hatch-dot' : ` ${cls}`}" ${st ? `style="${st}"` : ''}></i>${fmtMin(m)} ${l}</span>`).join('')}</div>
@@ -213,12 +251,7 @@ export async function game(view, id, stale) {
         <button class="btn primary" id="g-log">${icon('plus')}Log session</button>
       </div>
     </div>
-    <div class="kpis k4 strip">
-      ${kpi('Tracked', fmtMin(s.tracked_minutes), 'since tracking began')}
-      ${kpi('Avg session', fmtMin(s.avg_session_minutes), plural(s.sessions, 'session'))}
-      ${kpi('Longest', fmtMin(s.longest_session_minutes), s.longest_session_minutes ? 'tracked' : '')}
-      ${kpi('First tracked', s.first_tracked_at ? fmtDate(s.first_tracked_at) : '—', s.tracking_since ? `owned since ${fmtDate(s.tracking_since)}` : '')}
-    </div>
+    ${strip}
     <div class="grid grid-main game-cols">${columns()}</div>
     ${fixPanel(g)}`;
   /** The two columns and where each one's last card ends; null where they are stacked (a narrow screen). */
@@ -281,11 +314,15 @@ export async function game(view, id, stale) {
           </div>
         </div>`;
     const platCard = sourcesCard(g);
+    // the story: what this game was to you, told from everything above (services/gamestory.js)
+    const storyCard = story?.chapters.length ? `<div class="card lg-story" id="g-story"><div class="card-h"><h2>Your story with it</h2></div>
+          ${story.chapters.map((c, i) => `<div class="lg-ch${i >= 3 ? ' later' : ''}" data-ch="${c.id}"><h3>${esc(c.title)}</h3><p>${prose(c.parts)}</p></div>`).join('')}
+          ${story.chapters.length > 3 ? `<button class="btn sm ghost" id="g-story-more" aria-expanded="false">The rest of the story${icon('arrowR', 'ic-inline')}</button>` : ''}</div>` : '';
     const notesCard = `<div class="card" data-either><div class="card-h"><h2 id="g-notes-h">Notes</h2><span class="tiny muted" id="g-notes-st" aria-live="polite"></span></div>
           <textarea class="input" id="g-notes" aria-labelledby="g-notes-h" placeholder="Thoughts, progress, where you left off…">${esc(g.notes || '')}</textarea></div>`;
     // expected heights (px at 1400 wide), enough to choose a column
     const shown = hasAch ? Math.min(ACH_SHOWN, ach.summary.unlocked) : 0;
-    let L = (curveCard ? 360 : 0) + 90 + Math.max(1, recent.length) * 66 + new Set(recent.map((x) => dayKey(x.ended_at || x.window_end || x.created_at))).size * 40 + baselines.length * 50;
+    let L = (storyCard ? 90 + story.chapters.length * 62 : 0) + (heatCard ? 260 : 0) + (curveCard ? 360 : 0) + 90 + Math.max(1, recent.length) * 66 + new Set(recent.map((x) => dayKey(x.ended_at || x.window_end || x.created_at))).size * 40 + baselines.length * 50;
     let R = (hasAch ? 230 + shown * 64 + (shown ? 40 : 0) + (ach.items.some((x) => !x.unlocked) ? 50 : 0) : 0) + 190;
     const srcH = 130 + g.entries.length * 92 + g.entries.filter((e) => e.history).length * 50;
     const about = aboutCard(g);
@@ -293,9 +330,9 @@ export async function game(view, id, stale) {
     // its franchise: where it stands, the entries either side
     const seriesCard = franchiseCard(g.franchise);
     if (seriesCard) R += 150;
-    const left = [curveCard]; const right = [seriesCard, about, hasAch ? achBlock(ach) : ''];
-    // Activity follows the curve, in the shorter column
-    for (const [card, h] of [[heatCard, 260], [platCard, srcH]]) {
+    // the story leads; Activity follows the curve in the wide column (a year of days needs the width)
+    const left = [storyCard, curveCard, heatCard]; const right = [seriesCard, about, hasAch ? achBlock(ach) : ''];
+    for (const [card, h] of [[platCard, srcH]]) {
       if (!card) continue;
       if (L <= R) { left.push(card); L += h; } else { right.push(card); R += h; }
     }
@@ -304,6 +341,8 @@ export async function game(view, id, stale) {
     return `<div class="stack">${left.join('')}</div><div class="stack">${right.join('')}</div>`;
   }
   mountCharts(view);
+  // (a phone opens on the story's first three chapters; the button is hidden where there is room for all)
+  $('#g-story-more')?.addEventListener('click', (e) => { $('#g-story').classList.add('all'); e.currentTarget.remove(); });
   balance();
   bindSessionEdits(view);
   $('#g-meta-fix')?.addEventListener('click', () => metaModal(g));
