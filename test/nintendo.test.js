@@ -94,7 +94,12 @@ test('sign-in problems say what to do', async () => {
   // refused as the wrong app (a bare 403 page, for the access token and the ID token alike): not "a temporary block"
   const wrongApp = fakeNintendo({ playStatus: 403, refuseId: true });
   await assert.rejects(nintendo.fetchLibrary({ config: { session_token: 'SESSION' }, state: {} }, wrongApp.ctx), (e) => e.auth && e.status === 403 && /refused this sign-in \(403\)\. Sign in again/.test(e.message));
-  assert.equal(wrongApp.calls.filter((c) => c.url.includes('play_histories')).length, 2, 'the access token, then the ID token');
+  assert.deepEqual(wrongApp.calls.filter((c) => c.url.includes('play_histories')).map((c) => `${new URL(c.url).hostname} ${c.opts.headers.Authorization}`),
+    ['news-api.entry.nintendo.co.jp Bearer ACCESS', 'news-api.entry.nintendo.co.jp Bearer ID', 'mypage-api.entry.nintendo.co.jp Bearer ACCESS'], 'the access token, the ID token, then the older address');
+  // something else than "no" (the service is down) is the error at once, not three tries
+  const down = fakeNintendo({ playStatus: 503, refuseId: true });
+  await assert.rejects(nintendo.fetchLibrary({ config: { session_token: 'SESSION' }, state: {} }, down.ctx), (e) => e.status === 503);
+  assert.equal(down.calls.filter((c) => c.url.includes('play_histories')).length, 1);
   const odd = fakeNintendo({ reply: () => ({ error: 'x' }) });
   await assert.rejects(nintendo.fetchLibrary({ config: { session_token: 'SESSION' }, state: {} }, odd.ctx), /unexpected shape \(keys: error\)/);
 });

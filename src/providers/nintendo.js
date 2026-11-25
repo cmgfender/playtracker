@@ -10,7 +10,8 @@ const CLIENT_ID = '5c38e31cd085304b';
 const REDIRECT = `npf${CLIENT_ID}://auth`;
 const SCOPE = 'openid user user.mii user.email user.links[].id';
 const ACCOUNTS = 'https://accounts.nintendo.com/connect/1.0.0';
-const PLAY_HISTORY = 'https://news-api.entry.nintendo.co.jp/api/v1.1/users/me/play_histories';
+// (the second address is the one the app used before: asked only when the first says no)
+const PLAY_HISTORY = ['https://news-api.entry.nintendo.co.jp/api/v1.1/users/me/play_histories', 'https://mypage-api.entry.nintendo.co.jp/api/v1/users/me/play_histories'];
 const ME = 'https://api.accounts.nintendo.com/2.0.0/users/me';
 const UA = 'com.nintendo.znej/1.13.0 (Android/7.1.2)';
 
@@ -162,14 +163,16 @@ export const nintendo = {
   async fetchLibrary(account, ctx) {
     const tok = await accessToken(account, ctx);
     const get = (url, bearer) => ctx.http(url, { headers: { Authorization: `Bearer ${bearer}`, Accept: 'application/json', 'User-Agent': UA } }, { retries: 1 });
-    let data;
-    try {
-      data = await get(PLAY_HISTORY, tok.access);
-    } catch (err) {
-      // the play history service has taken the ID token instead of the access token
-      if ((err.status === 401 || err.status === 403) && tok.id) data = await get(PLAY_HISTORY, tok.id).catch((again) => { throw refused(again); });
-      else throw refused(err);
+    // the access token; then the ID token, which the service has taken instead; then the older address.
+    // Only "not for you" and "not here" move on to the next: anything else is the error.
+    let data; let no;
+    for (const [url, bearer] of [[PLAY_HISTORY[0], tok.access], ...(tok.id ? [[PLAY_HISTORY[0], tok.id]] : []), [PLAY_HISTORY[1], tok.access]]) {
+      try { data = await get(url, bearer); break; } catch (err) {
+        if (![401, 403, 404].includes(err.status)) throw err;
+        no = err;
+      }
     }
+    if (!data) throw refused(no);
     if (!Array.isArray(data?.playHistories)) throw new ProviderError(`Nintendo's play history came back in an unexpected shape (keys: ${Object.keys(data || {}).join(', ') || 'none'})`);
     const state = { ...(tok.session ? { session_token: tok.session } : {}) };
     try {
