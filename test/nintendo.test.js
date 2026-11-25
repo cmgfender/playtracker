@@ -5,14 +5,15 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createApp } from '../src/server.js';
 import { nintendo, parseLink, parsePlayHistory, signInUrl } from '../src/providers/nintendo.js';
+import { httpJson } from '../src/providers/http.js';
 
 const quiet = { info() {}, warn() {}, error() {}, debug() {} };
 const DAY = 86_400_000;
 
 const history = (minutes = { zelda: 3000, kirby: 45 }) => ({
   playHistories: [
-    { titleId: '01007EF00011E000', titleName: 'The Legend of Zelda: Breath of the Wild', deviceType: 'HAC', imageUrl: 'https://img/zelda.jpg', firstPlayedAt: '2023-01-10T12:00:00+09:00', lastPlayedAt: new Date(Date.now() - 2 * DAY).toISOString(), totalPlayedDays: 80, totalPlayedMinutes: minutes.zelda },
-    { titleId: '01004D300C5AE000', titleName: 'Kirby and the Forgotten Land', deviceType: 'HAC', imageUrl: 'https://img/kirby.jpg', firstPlayedAt: new Date(Date.now() - 5 * DAY).toISOString(), lastPlayedAt: new Date(Date.now() - DAY).toISOString(), totalPlayedDays: 2, totalPlayedMinutes: minutes.kirby },
+    { titleId: '01007EF00011E000', titleName: 'The Legend of Zelda: Breath of the Wild', platform: 'HAC', imageUrl: 'https://img/zelda.jpg', firstPlayedAt: '2023-01-10T12:00:00+09:00', lastPlayedAt: new Date(Date.now() - 2 * DAY).toISOString(), totalPlayedDays: 80, totalPlayedMinutes: minutes.zelda },
+    { titleId: '01004D300C5AE000', titleName: 'Kirby and the Forgotten Land', platform: 'HAC', imageUrl: 'https://img/kirby.jpg', firstPlayedAt: new Date(Date.now() - 5 * DAY).toISOString(), lastPlayedAt: new Date(Date.now() - DAY).toISOString(), totalPlayedDays: 2, totalPlayedMinutes: minutes.kirby },
   ],
   recentPlayHistories: [
     { playedDate: '2026-11-20T00:00:00+09:00', dailyPlayHistories: [{ titleId: '01004D300C5AE000', titleName: 'Kirby', totalPlayedMinutes: 30 }] },
@@ -38,6 +39,9 @@ function fakeNintendo({ reply = () => history(), sessionCode = 'CODE', playStatu
       return { access_token: 'ACCESS', id_token: 'ID', expires_in: 900 };
     }
     if (url.includes('play_histories')) {
+      // where the service is now; the addresses it left answer a maintenance page (590) or nothing
+      if (!url.startsWith('https://app-api.znej.nintendo.com/api/v2.0/users/me/play_histories')) throw fail(590);
+      if (!opts.headers['gentry-locale']) throw fail(400);
       if (playStatus !== 200 && (refuseId || opts.headers.Authorization === 'Bearer ACCESS')) throw fail(playStatus);
       return reply();
     }
@@ -70,7 +74,11 @@ test('a sync signs in once, then reads totals, first/last played and the last 7 
   const r = await nintendo.fetchLibrary(account, ctx);
   assert.equal(r.state.session_token, 'SESSION');
   assert.equal(r.state.persona, 'Link');
-  for (const c of calls) assert.match(c.opts.headers['User-Agent'], /^com\.nintendo\.znej\//, `${c.url} is asked as the store app`);
+  // it says who it is: no app's User-Agent is borrowed
+  for (const c of calls) assert.equal(c.opts.headers['User-Agent'], 'Vestigo (self-hosted play tracker)', c.url);
+  const asked = calls.find((c) => c.url.includes('play_histories'));
+  assert.equal(asked.url, 'https://app-api.znej.nintendo.com/api/v2.0/users/me/play_histories');
+  assert.equal(asked.opts.headers['gentry-locale'], 'en-US', 'the service refuses a request without a locale; it also sets the titles\' language');
   assert.equal(JSON.parse(calls.find((c) => c.url.endsWith('/api/token')).opts.body).client_id, '5c38e31cd085304b');
   const kirby = r.items.find((i) => i.extId === '01004D300C5AE000');
   assert.equal(kirby.playtimeMin, 45);
@@ -94,12 +102,11 @@ test('sign-in problems say what to do', async () => {
   // refused as the wrong app (a bare 403 page, for the access token and the ID token alike): not "a temporary block"
   const wrongApp = fakeNintendo({ playStatus: 403, refuseId: true });
   await assert.rejects(nintendo.fetchLibrary({ config: { session_token: 'SESSION' }, state: {} }, wrongApp.ctx), (e) => e.auth && e.status === 403 && /refused this sign-in \(403\)\. Sign in again/.test(e.message));
-  assert.deepEqual(wrongApp.calls.filter((c) => c.url.includes('play_histories')).map((c) => `${new URL(c.url).hostname} ${c.opts.headers.Authorization}`),
-    ['news-api.entry.nintendo.co.jp Bearer ACCESS', 'news-api.entry.nintendo.co.jp Bearer ID', 'mypage-api.entry.nintendo.co.jp Bearer ACCESS'], 'the access token, the ID token, then the older address');
-  // something else than "no" (the service is down) is the error at once, not three tries
-  const down = fakeNintendo({ playStatus: 503, refuseId: true });
-  await assert.rejects(nintendo.fetchLibrary({ config: { session_token: 'SESSION' }, state: {} }, down.ctx), (e) => e.status === 503);
-  assert.equal(down.calls.filter((c) => c.url.includes('play_histories')).length, 1);
+  assert.deepEqual(wrongApp.calls.filter((c) => c.url.includes('play_histories')).map((c) => c.opts.headers.Authorization), ['Bearer ACCESS', 'Bearer ID'], 'the access token, then the ID token');
+  // its maintenance page (590): said as that, not a sign-in problem, and not asked again with another token
+  const closed = fakeNintendo({ playStatus: 590, refuseId: true });
+  await assert.rejects(nintendo.fetchLibrary({ config: { session_token: 'SESSION' }, state: {} }, closed.ctx), (e) => !e.auth && e.status === 590 && /down for maintenance \(590\)/.test(e.message));
+  assert.equal(closed.calls.filter((c) => c.url.includes('play_histories')).length, 1);
   const odd = fakeNintendo({ reply: () => ({ error: 'x' }) });
   await assert.rejects(nintendo.fetchLibrary({ config: { session_token: 'SESSION' }, state: {} }, odd.ctx), /unexpected shape \(keys: error\)/);
 });
@@ -119,6 +126,37 @@ test('play history refusing the access token is asked again with the ID token', 
   const r = await nintendo.fetchLibrary({ config: { session_token: 'SESSION' }, state: {} }, ctx);
   assert.equal(r.items.length, 2);
   assert.deepEqual(calls.filter((c) => c.url.includes('play_histories')).map((c) => c.opts.headers.Authorization), ['Bearer ACCESS', 'Bearer ID']);
+});
+
+test('a title played on two consoles is one game, its minutes added; titles hidden in the app stay out; the old field name still reads', () => {
+  const items = parsePlayHistory({
+    playHistories: [
+      { titleId: '0100f2c0115b6000', titleName: 'Tears of the Kingdom', platform: 'HAC', totalPlayedMinutes: 6000, totalPlayedDays: 90, firstPlayedAt: '2023-05-12T10:00:00+09:00', lastPlayedAt: '2025-05-30T10:00:00+09:00' },
+      { titleId: '0100F2C0115B6000', titleName: 'Tears of the Kingdom', platform: 'BEE', totalPlayedMinutes: 900, totalPlayedDays: 12, firstPlayedAt: '2025-06-05T10:00:00+09:00', lastPlayedAt: '2026-01-02T10:00:00+09:00' },
+      { titleId: '01006F8002326000', titleName: 'Animal Crossing', platform: 'HAC', totalPlayedMinutes: 100 },
+      { titleId: '0100152000022000', titleName: 'Mario Kart 8 Deluxe', deviceType: 'HAC', totalPlayedMinutes: 50 },
+      { titleId: '0100000000010000', titleName: 'Hidden One', platform: 'HAC', totalPlayedMinutes: 10 },
+    ],
+    hiddenTitleList: ['01006F8002326000', { titleId: '0100000000010000' }],
+    recentPlayHistories: [{ playedDate: '2026-01-02T00:00:00+09:00', dailyPlayHistories: [{ titleId: '0100F2C0115B6000', platform: 'BEE', totalPlayedMinutes: 40 }, { titleId: '0100f2c0115b6000', platform: 'HAC', totalPlayedMinutes: 5 }] }],
+  });
+  assert.deepEqual(items.map((i) => i.title), ['Tears of the Kingdom', 'Mario Kart 8 Deluxe']);
+  const totk = items[0];
+  assert.equal(totk.extId, '0100F2C0115B6000');
+  assert.equal(totk.playtimeMin, 6900, 'Switch and Switch 2 together');
+  assert.equal(totk.recentMin, 45);
+  assert.equal(totk.firstPlayedAt, Date.parse('2023-05-12T01:00:00Z'), 'the earliest');
+  assert.equal(totk.lastPlayedAt, Date.parse('2026-01-02T01:00:00Z'), 'the latest');
+  assert.deepEqual(totk.meta, { device: 'HAC+BEE', played_days: 102 });
+  assert.equal(items[1].meta.device, 'HAC');
+});
+
+test('a failing server\'s own words are in the error (a 590 that says "Maintenance" explains itself)', async () => {
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response('<html><head><title>Maintenance</title></head><body>Sorry</body></html>', { status: 590, headers: { 'content-type': 'text/html' } });
+  try {
+    await assert.rejects(httpJson('https://old.example.test/play_histories', {}, { retries: 0 }), (e) => e.status === 590 && e.message === 'old.example.test responded 590: Maintenance');
+  } finally { globalThis.fetch = realFetch; }
 });
 
 test('parsePlayHistory skips rows without a title id and odd numbers', () => {

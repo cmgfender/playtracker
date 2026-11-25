@@ -36,7 +36,9 @@ export async function httpJson(url, opts = {}, { retries = 2, timeoutMs = 30_000
       onResult?.({ url, host, status: res.status, ms: Date.now() - t0, ok: res.ok, rateLimited, rate });
       if (rateLimited || res.status >= 500) {
         const retryAfter = header || (rateLimited && rate.resetAt ? Math.ceil((rate.resetAt - Date.now()) / 1000) : 0) || 2 ** attempt * 2;
-        lastErr = new ProviderError(`${host} responded ${res.status}${rateLimited ? ' (rate limited)' : ''}`, { status: res.status, rateLimited, retryAfter, resetAt: rate.resetAt });
+        // what a failing server says for itself ("Maintenance", a gateway's page title) is the first thing worth knowing
+        const said = rateLimited ? '' : readableBody(text, res.headers.get('content-type'), 100);
+        lastErr = new ProviderError(`${host} responded ${res.status}${rateLimited ? ' (rate limited)' : ''}${said ? `: ${said}` : ''}`, { status: res.status, rateLimited, retryAfter, resetAt: rate.resetAt });
         // a 429 without a short Retry-After means a quota is used up: retrying now only burns more of it
         if (rateLimited && !header) { lastErr.final = true; throw lastErr; }
         if (attempt < retries && retryAfter <= maxRetryWaitS) { await sleep(retryAfter * 1000); continue; }

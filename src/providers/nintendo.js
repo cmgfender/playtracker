@@ -2,18 +2,24 @@ import crypto from 'node:crypto';
 import { ProviderError } from './http.js';
 
 // Play history is what Nintendo's store app shows under "Play Activity" (the Nintendo Store app,
-// called My Nintendo in Japan before 2025; Switch and Switch 2 titles). You sign in to your Nintendo
-// Account once as that app, and the session token it gives (valid about two years) reads the list.
-// It has to be that app, in the sign-in, the scope and the User-Agent: a token signed in as the
-// Nintendo Switch Online app (71b963c1b7b6d119) is turned away by the play history service with a 403.
+// called My Nintendo in Japan before 2025). You sign in to your Nintendo Account once as that app's
+// public client, and the session token it gives (valid about two years) reads the list.
+//  - It has to be that client and scope: a token signed in as the Nintendo Switch Online app
+//    (71b963c1b7b6d119) is turned away by the play history service with a 403.
+//  - The service moved with the app's 2025 relaunch: the addresses older tools use are gone
+//    (news-api.entry.nintendo.co.jp answers 590, a maintenance page; mypage-api.entry.nintendo.co.jp
+//    no longer resolves). The current one needs a `gentry-locale` header, which also decides the
+//    language of the titles, and names a title's console `platform` (HAC Switch, BEE Switch 2) where
+//    the old ones said `deviceType`.
+//  - It answers a client that says who it is, so Vestigo does: no app's User-Agent is borrowed.
 const CLIENT_ID = '5c38e31cd085304b';
 const REDIRECT = `npf${CLIENT_ID}://auth`;
 const SCOPE = 'openid user user.mii user.email user.links[].id';
 const ACCOUNTS = 'https://accounts.nintendo.com/connect/1.0.0';
-// (the second address is the one the app used before: asked only when the first says no)
-const PLAY_HISTORY = ['https://news-api.entry.nintendo.co.jp/api/v1.1/users/me/play_histories', 'https://mypage-api.entry.nintendo.co.jp/api/v1/users/me/play_histories'];
+const PLAY_HISTORY = 'https://app-api.znej.nintendo.com/api/v2.0/users/me/play_histories';
 const ME = 'https://api.accounts.nintendo.com/2.0.0/users/me';
-const UA = 'com.nintendo.znej/1.13.0 (Android/7.1.2)';
+const LOCALE = 'en-US';
+const UA = 'Vestigo (self-hosted play tracker)';
 
 // sign-in links handed out and not used yet: the code verifier stays here, never in the link
 const pending = new Map();
@@ -81,33 +87,51 @@ async function accessToken(account, ctx) {
 
 const time = (v) => { const t = Date.parse(v || ''); return Number.isFinite(t) && t > 0 ? t : null; };
 
-// The play history service answers what it does not take for its own app with a bare "403 Forbidden"
-// page. That reads like a block by a network that passes with time; it is not one, and waiting for
-// the next sync does not help.
-const refused = (err) => (err?.status === 403
-  ? new ProviderError('Nintendo\'s play history service refused this sign-in (403). Sign in again from the account\'s settings. If it is refused again, Nintendo has changed what its store app sends and Vestigo needs an update: export diagnostics from System', { auth: true, status: 403 })
-  : err);
+// What the play history service's refusals mean. A sign-in it does not take for its own app gets a
+// bare "403 Forbidden" page, which reads like a network block that passes with time: it is not one.
+// 590 is its maintenance page (and what a retired address answers for good).
+const refused = (err) => {
+  if (err?.status === 403) return new ProviderError('Nintendo\'s play history service refused this sign-in (403). Sign in again from the account\'s settings. If it is refused again, Nintendo has changed what its store app sends and Vestigo needs an update: export diagnostics from System', { auth: true, status: 403 });
+  if (err?.status === 590) return new ProviderError('Nintendo\'s play history service is down for maintenance (590). It is tried again on the next sync. If it stays this way for days, Nintendo has moved the service and Vestigo needs an update: export diagnostics from System', { status: 590 });
+  return err;
+};
 
-/** Library items from a play_histories reply: lifetime minutes, first/last played, the last 7 days. */
+/**
+ * Library items from a play_histories reply: lifetime minutes, first/last played, the last 7 days.
+ * A title played on two consoles has an entry for each (Switch and Switch 2): they are one game here,
+ * their minutes added. Titles you hid in the app (hiddenTitleList) stay out.
+ */
 export function parsePlayHistory(data) {
+  const key = (t) => String(t?.titleId || '').toUpperCase();
+  const hidden = new Set((data?.hiddenTitleList || []).map((h) => key(typeof h === 'string' ? { titleId: h } : h)).filter(Boolean));
   const recent = new Map();
   for (const day of data?.recentPlayHistories || []) {
     for (const t of day?.dailyPlayHistories || []) {
-      const id = String(t?.titleId || '');
+      const id = key(t);
       if (id) recent.set(id, (recent.get(id) || 0) + (Number(t.totalPlayedMinutes) || 0));
     }
   }
-  return (data?.playHistories || []).filter((t) => t?.titleId).map((t) => ({
-    extId: String(t.titleId),
-    title: t.titleName || String(t.titleId),
-    playtimeMin: Math.max(0, Math.floor(Number(t.totalPlayedMinutes) || 0)),
-    recentMin: recent.get(String(t.titleId)) || 0,
-    firstPlayedAt: time(t.firstPlayedAt),
-    lastPlayedAt: time(t.lastPlayedAt),
-    iconUrl: t.imageUrl || null,
-    coverUrl: t.imageUrl || null,
-    meta: { device: t.deviceType || null, played_days: Number.isFinite(t.totalPlayedDays) ? t.totalPlayedDays : null },
-  }));
+  const out = new Map();
+  for (const t of data?.playHistories || []) {
+    const id = key(t);
+    if (!id || hidden.has(id)) continue;
+    const minutes = Math.max(0, Math.floor(Number(t.totalPlayedMinutes) || 0));
+    const first = time(t.firstPlayedAt); const last = time(t.lastPlayedAt);
+    const device = t.platform || t.deviceType || null;
+    const days = Number.isFinite(t.totalPlayedDays) ? t.totalPlayedDays : null;
+    const it = out.get(id);
+    if (!it) {
+      out.set(id, { extId: id, title: t.titleName || id, playtimeMin: minutes, recentMin: recent.get(id) || 0, firstPlayedAt: first, lastPlayedAt: last,
+        iconUrl: t.imageUrl || null, coverUrl: t.imageUrl || null, meta: { device, played_days: days } });
+      continue;
+    }
+    it.playtimeMin += minutes;
+    if (first && (!it.firstPlayedAt || first < it.firstPlayedAt)) it.firstPlayedAt = first;
+    if (last && (!it.lastPlayedAt || last > it.lastPlayedAt)) it.lastPlayedAt = last;
+    if (device && !String(it.meta.device || '').split('+').includes(device)) it.meta.device = it.meta.device ? `${it.meta.device}+${device}` : device;
+    if (days != null) it.meta.played_days = (it.meta.played_days || 0) + days;
+  }
+  return [...out.values()];
 }
 
 export const nintendo = {
@@ -147,7 +171,7 @@ export const nintendo = {
     history_anchors: 'first + last played, days played',
     rate_limit: 'Undocumented; a sync costs 3 requests.',
     limitations: [
-      'Uses the private API of the Nintendo Store app (My Nintendo); no Nintendo Switch Online membership is needed.',
+      'Uses the private API of the Nintendo Store app (My Nintendo), as its public client; no Nintendo Switch Online membership is needed.',
       'Play history reaches Nintendo when the console is online and uploads it, which can be hours after you play.',
       'No live "playing now", achievements or per-device minutes.',
       'Titles hidden from play history in the app are not listed.',
@@ -162,17 +186,16 @@ export const nintendo = {
 
   async fetchLibrary(account, ctx) {
     const tok = await accessToken(account, ctx);
-    const get = (url, bearer) => ctx.http(url, { headers: { Authorization: `Bearer ${bearer}`, Accept: 'application/json', 'User-Agent': UA } }, { retries: 1 });
-    // the access token; then the ID token, which the service has taken instead; then the older address.
-    // Only "not for you" and "not here" move on to the next: anything else is the error.
-    let data; let no;
-    for (const [url, bearer] of [[PLAY_HISTORY[0], tok.access], ...(tok.id ? [[PLAY_HISTORY[0], tok.id]] : []), [PLAY_HISTORY[1], tok.access]]) {
-      try { data = await get(url, bearer); break; } catch (err) {
-        if (![401, 403, 404].includes(err.status)) throw err;
-        no = err;
-      }
+    const get = (url, bearer, more = {}) => ctx.http(url, { headers: { Authorization: `Bearer ${bearer}`, Accept: 'application/json', 'User-Agent': UA, ...more } }, { retries: 1 });
+    const history = (bearer) => get(PLAY_HISTORY, bearer, { 'gentry-locale': LOCALE });
+    let data;
+    try {
+      data = await history(tok.access);
+    } catch (err) {
+      // the play history service takes the ID token as well as the access token
+      if ((err.status === 401 || err.status === 403) && tok.id) data = await history(tok.id).catch((again) => { throw refused(again); });
+      else throw refused(err);
     }
-    if (!data) throw refused(no);
     if (!Array.isArray(data?.playHistories)) throw new ProviderError(`Nintendo's play history came back in an unexpected shape (keys: ${Object.keys(data || {}).join(', ') || 'none'})`);
     const state = { ...(tok.session ? { session_token: tok.session } : {}) };
     try {

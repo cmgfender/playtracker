@@ -114,7 +114,7 @@ Microsoft has no public consumer API, so Vestigo uses [OpenXBL](https://xbl.io).
 
 ## Nintendo (Nintendo Store app private API)
 
-Nintendo has no public API. Vestigo reads the play history the Nintendo Store app shows under Play Activity (the app was called My Nintendo in Japan), for the Nintendo Account you sign in with. It signs in as that app: the Nintendo Switch Online app's sign-in is refused by the play history service. A Nintendo Switch Online membership isn't needed.
+Nintendo has no public API. Vestigo reads the play history the Nintendo Store app shows under Play Activity (the app was called My Nintendo in Japan), for the Nintendo Account you sign in with. It signs in with that app's public client (the Nintendo Switch Online app's sign-in is refused by the play history service) and says it is Vestigo: no app's User-Agent is borrowed. A Nintendo Switch Online membership isn't needed.
 
 **Signing in:**
 1. In the account form, choose **Open Nintendo sign-in** and sign in to your Nintendo Account.
@@ -123,10 +123,10 @@ Nintendo has no public API. Vestigo reads the play history the Nintendo Store ap
 
 Vestigo exchanges the link for a session token, which lasts about two years. The code verifier behind the link never leaves the server. If you already have a session token for the Nintendo Store app (My Nintendo) from another tool, you can paste it instead; one for the Nintendo Switch Online app does not work here.
 
-**Calls per sync:** 3 requests. One renews the access token, one reads the play history (`play_histories`), and one reads your nickname.
+**Calls per sync:** 3 requests. One renews the access token, one reads the play history (`app-api.znej.nintendo.com`, `play_histories`), and one reads your nickname. The play history service moved in 2025: the addresses older tools use answer a maintenance page (590) or nothing.
 
 **What it gives:**
-- Total minutes, first played and last played for every Switch and Switch 2 title you've played.
+- Total minutes, first played and last played for every Switch and Switch 2 title you've played. A title played on both consoles is one game, its minutes added. Titles come in English.
 - Minutes per title per day for the last 7 days. These are used like Steam's two-week counter on the first import.
 - Days played per title (kept with the game).
 
