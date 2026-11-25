@@ -1086,7 +1086,7 @@ export function playStyle(db, { range = '365d', platform = null, weekStartsOn = 
 // =====================================================================================
 // tags (IGDB metadata): genres, themes, modes, perspectives, franchises, developers, publishers
 // =====================================================================================
-export const TAG_KIND_NAMES = ['genre', 'theme', 'mode', 'perspective', 'franchise', 'developer', 'publisher'];
+export const TAG_KIND_NAMES = ['genre', 'theme', 'mode', 'perspective', 'franchise', 'developer', 'publisher', 'engine', 'platform'];
 
 /**
  * Play by tag in a range: each tag's minutes (a game counts fully in every tag it has), games,

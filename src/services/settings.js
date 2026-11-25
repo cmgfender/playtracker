@@ -103,6 +103,8 @@ export class Settings {
     delete s.igdb_client_secret;
     delete s.igdb_token;
     delete s.igdb_match_v;
+    delete s.igdb_tags_v;
+    delete s.legend_eras; // your own eras: GET /legends, not a setting
     return s;
   }
 }
