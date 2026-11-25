@@ -1,7 +1,7 @@
 import { $, $$, esc, fmtMin, fmtHours, fmtDate, plat, platDot, cover, icon, api, state, plural, STATUSES, a11y, tagHref } from './app.js';
 import { mountCharts, punchcard, histogram, areaChart, swimlanes, scatterChart, lineChart, barChart, dayName, chart, registerChart, textWidth } from './charts.js';
 import { seriesLabel, seriesName, hourLabel, emptyState, kpi, rarityText, achIcon } from './pages.js';
-import { whenReached, CATS as MS_CATS } from './pages/milestones.js';
+import { prose } from './pages/shared.js';
 
 /*
  * Insights: when, what and how you play, from the insights API. Sections load as they come near
@@ -15,11 +15,11 @@ import { whenReached, CATS as MS_CATS } from './pages/milestones.js';
 const RANGES = [['7d', '7 days', '7d'], ['30d', '30 days', '30d'], ['90d', '90 days', '90d'], ['365d', '12 months', '12m']];
 const SECTIONS = [
   // [id, title, line, the height it usually takes (its placeholder's, so sections further down stay unloaded)]
+  ['findings', 'Findings', 'What stands out in this range, worked out from all of it', 300],
   ['when', 'When you play', 'Weekday, hour and session length · tracked play', 460],
-  ['what', 'What you played', 'Games over time, eras and platforms', 1500],
+  ['what', 'What you played', 'Games over time, reigns and platforms', 1500],
   ['style', 'How you play', 'Focus, the games you start, comebacks · tracked play', 900],
   ['records', 'Records & highlights', '', 720],
-  ['milestones', 'Milestones', 'The round numbers of your whole career, history before tracking included · whatever the range', 620],
   ['ach', 'Achievements', 'Unlocks, rarities and completion', 900],
   ['yoy', 'Year over year', 'Month by month, and the year so far', 700],
   ['library', 'Your library', 'Everything you own, whatever the range', 1500],
@@ -52,7 +52,7 @@ export async function insights(view, stale) {
   const [lt, years, ig] = await Promise.all([api('/stats/lifetime'), api('/stats/years'), api('/igdb/status').catch(() => null)]);
   if (stale()) return;
   // genres and the rest appear once IGDB has matched games (or while it is matching them)
-  const SECS = ig && (ig.coverage.matched || ig.running) ? [...SECTIONS.slice(0, 3), ['genres', 'Genres & series', 'From IGDB · a game counts in each of its genres', 900], ...SECTIONS.slice(3)] : SECTIONS;
+  const SECS = ig && (ig.coverage.matched || ig.running) ? [...SECTIONS.slice(0, 4), ['genres', 'Genres, makers & engines', 'From IGDB · a game counts in each of its genres', 900], ...SECTIONS.slice(4)] : SECTIONS;
   if (!f.years.length) f.years = years.slice(0, 2).reverse();
   const head = `<div class="page-h"><div><h1>Insights</h1><p>${lt.games ? `${lt.games.toLocaleString()} game${lt.games === 1 ? '' : 's'} · ${fmtHours(lt.total_minutes)}h lifetime · ${fmtHours(lt.tracked_minutes)}h tracked` : 'When, what and how you play'}</p></div>
     <a class="btn ghost desk-only" href="/stats" data-link>${icon('stats')}Stats</a></div>`;
@@ -104,7 +104,15 @@ export async function insights(view, stale) {
       body.innerHTML = none(`Could not load this section: ${esc(e.message)}`);
     } finally { if (my === seq[id]) body.removeAttribute('aria-busy'); }
   }
-  const RENDER = { when, what, style, genres, records, milestones, ach, yoy, library };
+  const RENDER = { findings, when, what, style, genres, records, ach, yoy, library };
+
+  // what stands out: told, not charted - the charts below are for looking further
+  async function findings() {
+    const r = await api(`/stats/findings?${params()}`);
+    if (!r.findings.length) return none('Nothing stands out yet in this range: findings need a few games and some weeks of play.');
+    return `<div class="ins-findings">${r.findings.map((x) => `<div class="card ins-finding" data-finding="${x.id}"><div class="eyebrow">${esc(x.title)}</div><p>${prose(x.parts)}</p></div>`).join('')}</div>
+      ${note(`From ${esc(r.range.label.toLowerCase())}. The stories of your series, makers and eras are in <a class="link" href="/legends" data-link>Legends</a>; the round numbers you passed, in <a class="link" href="/milestones" data-link>Milestones</a>.`)}`;
+  }
 
   async function when() {
     const [pc, sl] = await Promise.all([api(`/stats/punchcard?${params()}`), api(`/stats/session-lengths?${params()}`)]);
@@ -149,7 +157,7 @@ export async function insights(view, stale) {
       : none('Nothing played in this range.')}</div>`;
     // eras: the range on a time axis, in runs of months one game led
     return `<div class="card"><div class="card-h"><h3>Top games over time</h3><span class="tiny muted">${esc(tl.range.label)} · by ${g}</span></div>${lanes}</div>
-      <div class="card ins-eras" style="margin-top:16px"><div class="card-h"><h3>Eras</h3><span class="tiny muted">${esc(tl.range.label)} · who led each month</span></div>${eraStrip(tl)}</div>
+      <div class="card ins-eras" style="margin-top:16px"><div class="card-h"><h3>Reigns</h3><span class="tiny muted">${esc(tl.range.label)} · who led each month</span></div>${eraStrip(tl)}</div>
       <div style="margin-top:16px">${platCard}</div>`;
   }
 
@@ -198,7 +206,7 @@ export async function insights(view, stale) {
 
   async function genres() {
     const p = params({ kind: 'genre', limit: '10' });
-    const [g, fr, dev, pace, st] = await Promise.all([api(`/stats/tags?${p}`), api(`/stats/tags?${params({ kind: 'franchise', limit: '6' })}`), api(`/stats/tags?${params({ kind: 'developer', limit: '6' })}`), api('/stats/pace?limit=6'), api('/igdb/status').catch(() => null)]);
+    const [g, fr, dev, pace, st] = await Promise.all([api(`/stats/tags?${p}`), api(`/stats/tags?${params({ kind: 'engine', limit: '40' })}`), api(`/stats/tags?${params({ kind: 'developer', limit: '6' })}`), api('/stats/pace?limit=6'), api('/igdb/status').catch(() => null)]);
     // while IGDB is matching, the section fills in as it goes
     clearTimeout(genreTimer);
     // off screen when the timer fires: marked to load fresh when it comes back into view
@@ -214,8 +222,15 @@ export async function insights(view, stale) {
     const grp = g.range.group;
     const chart = top.length && g.keys.length > 2 ? `${lineChart({ labels: g.keys.map((k) => ({ label: seriesLabel(k, grp), name: grp === 'week' ? `Week of ${seriesName(k, 'day')}` : seriesName(k, grp) })), series: top.map((t, i) => ({ name: t.name, color: PALETTE(i), values: t.values })) }, { mode: 'lines', size: 'card', title: `Top genres per ${grp}`, keys: `Top genres per ${grp}; arrow keys read each period` })}
       <div class="legend">${top.map((t, i) => `<span><i class="dot" style="background:${PALETTE(i)}"></i>${esc(t.name)}</span>`).join('')}</div>` : '';
-    // a series opens its franchise page (release order, what to play next); a developer, the library
-    const list = (d, kind) => (d.items.length ? d.items.map((t) => meterRow(`<a class="link" href="${kind === 'franchise' ? `/franchise/${encodeURIComponent(t.name)}` : tagHref(kind, t.name)}" data-link>${esc(t.name)}</a>`, t.minutes, d.items[0].minutes, `${fmtMin(t.minutes, { short: t.minutes >= 600 })} · ${plural(t.games, 'game')}`, 'var(--accent2)')).join('') : none('Nothing yet.'));
+    const list = (d, kind) => (d.items.length ? d.items.map((t) => meterRow(`<a class="link" href="${tagHref(kind, t.name)}" data-link>${esc(t.name)}</a>`, t.minutes, d.items[0].minutes, `${fmtMin(t.minutes, { short: t.minutes >= 600 })} · ${plural(t.games, 'game')}`, 'var(--accent2)')).join('') : none('Nothing yet.'));
+    // engines by family: "Unreal Engine 4" and "Unreal Engine 5" are Unreal Engine, its versions named beneath
+    const family = (n) => n.replace(/(?:\s+(?:v?\d+(?:\.\d+)*|[ivx]{1,4}))+$/i, '').trim() || n;
+    const fams = new Map();
+    for (const t of fr.items) { const k = family(t.name); const x = fams.get(k) || { name: k, minutes: 0, games: 0, versions: [] }; x.minutes += t.minutes; x.games += t.games; if (t.name !== k) x.versions.push(t.name); fams.set(k, x); }
+    const famList = [...fams.values()].sort((a, b) => b.minutes - a.minutes).slice(0, 8);
+    const engines = famList.length ? `${famList.map((t) => meterRow(`${esc(t.name)}${t.versions.length > 1 ? `<span class="tiny muted"> · ${esc(t.versions.sort().map((v) => v.slice(t.name.length).trim()).join(', '))}</span>` : ''}`, t.minutes, famList[0].minutes, `${fmtMin(t.minutes, { short: t.minutes >= 600 })} · ${plural(t.games, 'game')}`, 'var(--accent2)')).join('')}
+      ${note('What your games run on, as far as IGDB names it. A game counts for each engine it names.')}`
+      : none('No engines known yet for the games in this range. They fill in as IGDB details refresh, a few hundred games an hour.');
     const paceCard = pace.games ? `<p class="ins-lead">You finish games in <b>${pace.median_ratio.toFixed(1)}×</b> the typical main story time${pace.median_ratio >= 1.3 ? ': you take your time' : pace.median_ratio <= 0.8 ? ': you move fast' : ''}.</p>
       <div class="list">${pace.items.map((x) => `<a class="item" href="/game/${x.game_id}" data-link>${cover(x)}<div class="grow"><div class="ttl ellipsis">${esc(x.title)}</div><div class="sub">${fmtMin(x.minutes, { short: x.minutes >= 600 })} against ${fmtMin(x.typical_minutes, { short: x.typical_minutes >= 600 })} typical${x.basis === 'extra' ? ' (main + extras)' : ''}</div></div><div class="amt">${x.ratio.toFixed(1)}×</div></a>`).join('')}</div>
       ${note(`From ${plural(pace.games, 'finished game')} with IGDB’s times to beat (all time).`)}` : none('Mark games Completed or Beaten and, where IGDB knows a time to beat, your pace shows here.');
@@ -224,7 +239,7 @@ export async function insights(view, stale) {
       `<div class="card"><div class="card-h"><h3>Your pace</h3><span class="tiny muted">against the typical time to beat</span></div>${paceCard}</div>`,
     ], [
       `<div class="card"><div class="card-h"><h3>Genres over time</h3><span class="tiny muted">top 5 · by ${grp}</span></div>${chart || none('A longer range shows how your genres change.')}</div>`,
-      `<div class="card"><div class="card-h"><h3>Series</h3><span class="tiny muted">${esc(fr.range.label)}</span></div>${list(fr, 'franchise')}</div>`,
+      `<div class="card" id="ins-engines"><div class="card-h"><h3>Engines</h3><span class="tiny muted">${esc(fr.range.label)}</span></div>${engines}</div>`,
       `<div class="card"><div class="card-h"><h3>Developers</h3><span class="tiny muted">${esc(dev.range.label)}</span></div>${list(dev, 'developer')}</div>`,
     ])}`;
   }
@@ -260,24 +275,6 @@ export async function insights(view, stale) {
 
   // Milestones: what is coming up with how far along it is, and the latest highlights of the career
   // (tracked and estimated history, dated as precisely as known); the whole career on its own page
-  async function milestones() {
-    const m = await api('/stats/milestones?limit=8');
-    if (!m.total && !m.coming.some((x) => x.current > 0)) return none('No milestones yet: they start with your first game, hour and achievement.');
-    const unit = (x) => (/hours$/.test(x.kind) ? 'h' : '');
-    const label = (x) => (x.game_id && x.title ? esc(x.text).replace(esc(x.title), () => `<a class="link" href="/game/${x.game_id}" data-link>${esc(x.title)}</a>`) : esc(x.text));
-    const coming = m.coming.filter((x) => x.current > 0).slice(0, 8);
-    const ahead = coming.length ? coming.map((x) => meterRow(label(x), x.current, x.target, `${Math.floor(x.current).toLocaleString()}${unit(x)} of ${x.target.toLocaleString()}${unit(x)}`)).join('')
-      : none('Nothing under way yet.');
-    const CAT = Object.fromEntries(MS_CATS.map(([k, l]) => [k, l]));
-    const row = (x) => `<div class="item"><div class="grow"><div class="ttl">${label(x)}</div><div class="sub">${esc(whenReached(x))}${x.basis === 'estimated' ? ' · estimated' : ''}</div></div><span class="badge">${CAT[x.category] || esc(x.category)}</span></div>`;
-    const reached = m.reached.length ? `<div class="list" id="ms-notable">${m.reached.map(row).join('')}</div>` : none('None reached yet.');
-    return `<div class="grid grid-2 ins-grid ms-latest">
-        <div class="card" id="ms-coming"><div class="card-h"><h3>Coming up</h3><span class="tiny muted">nearest first</span></div>${ahead}</div>
-        <div class="card" id="ms-reached"><div class="card-h"><h3>Latest</h3><span class="tiny muted">${m.total.toLocaleString()} in all</span></div>${reached}
-          <a class="btn sm" href="/milestones" data-link style="margin-top:12px">${icon('trophy')}Your whole career, year by year</a></div>
-      </div>`;
-  }
-
   async function ach() {
     const p = new URLSearchParams({ range: f.range, limit: '8' });
     if (f.platform) p.set('platform', f.platform);
@@ -474,14 +471,14 @@ function eraTip(e) {
   return `${e.title} · ${span} · ${pct(e.share)} of play · ${fmtMin(e.minutes)}${e.ordinal > 1 ? ` · ${nth(e.ordinal)} era` : ''}${mostlyEst(e) ? ' · mostly estimated' : ''}`;
 }
 
-/** "3 eras in 12 months: Baldur's Gate 3 led Jul – Oct 2026, …" */
+/** "3 reigns in 12 months: Baldur's Gate 3 led Jul – Oct 2026, …" */
 function eraSummary(eras, months) {
   const shown = eras.filter((e) => e.kind !== 'break');
   const parts = shown.slice(0, 6).map((e) => (e.kind === 'game' ? `${e.title} led ${eraSpan(e)}` : `a mix of games ${eraSpan(e)}`));
   if (shown.length > 6) parts.push(`${shown.length - 6} more`);
   const off = eras.filter((e) => e.kind === 'break').reduce((a, e) => a + e.months, 0);
   if (off) parts.push(`${plural(off, 'month')} without play`);
-  return `${plural(shown.length, 'era')} in ${plural(months, 'month')}: ${parts.join(', ') || 'no play'}`;
+  return `${plural(shown.length, 'reign')} in ${plural(months, 'month')}: ${parts.join(', ') || 'no play'}`;
 }
 
 /** The text, cut with an ellipsis to fit `room` px of 12px semibold (nothing when under 3 letters fit). */
@@ -598,7 +595,7 @@ export function eraStrip(tl, { through } = {}) {
   return `${chart('erastrip', { eras, from: range.from, to: range.to, through: through && through > range.to ? through : null }, { keys: 'Eras on a timeline; arrow keys read each era' })}
     ${legend.length ? `<div class="legend era-legend">${legend.join('')}</div>` : ''}
     <div class="era-years">${[...years].map(([y, list]) => `<section class="era-year">${years.size > 1 ? `<h4 class="era-yh">${y}</h4>` : ''}<ol class="era-list">${list.map(eraRow).join('')}</ol></section>`).join('')}</div>
-    ${note(`${plural(games.length, 'era')} of ${plural(new Set(games.map((e) => e.game_id)).size, 'game')}${returns ? `, ${plural(returns, 'return')}` : ''}. An era is a run of months one game led; a narrow one-month detour does not split it.`)}`;
+    ${note(`${plural(games.length, 'reign')} of ${plural(new Set(games.map((e) => e.game_id)).size, 'game')}${returns ? `, ${plural(returns, 'return')}` : ''}. A reign is a run of months one game led; a narrow one-month detour does not split it.`)}`;
 }
 
 /** A pattern of GET /stats/records as a line, the number first (its own text otherwise). Also used by the game page. */

@@ -30,6 +30,7 @@ import { finishForecast, backlogReality } from '../services/forecast.js';
 import { milestones, MARKS, CATEGORIES } from '../services/milestones.js';
 import { franchiseList, franchiseDetail, gameFranchise } from '../services/franchises.js';
 import { legends, legend, addEra, updateEra, removeEra, LEGEND_KINDS } from '../services/legends.js';
+import { findings } from '../services/findings.js';
 import fsp from 'node:fs';
 import { httpJson, ProviderError } from '../providers/http.js';
 import { HttpError, toInt, toTime } from '../util.js';
@@ -881,6 +882,13 @@ export function registerRoutes(r, app) {
       + 'via: { game_id, title, kind, year, key } | null (the version it stands through), addons: [{ id, title, minutes, kind: test|bonus }] (betas and bonus content of it), note (of an app), '
       + 'state: finished|playing|played|dropped|owned|missing }] (release order), '
       + 'your_order: { games: [{ id, title, first_day, year }], in_release_order, pairs }, story: [item keys] | null (the order of the story, where it differs)',
+  });
+  r.get('/api/v1/stats/findings', (c) => findings(db, { range: c.query.range || '365d', platform: c.query.platform || null, estimates: c.query.estimates === 'exclude' ? 'exclude' : 'include',
+    weekStartsOn: settings.get('week_starts_on'), limit: clamp(c.query.limit, 8, 1, 20) }), {
+    summary: 'Findings: what stands out in a range that you would not think to look for (how long after release you play games, how much one game or series takes, the day that carries your week, play after midnight, what you start and finish, rare unlocks, engines)',
+    tag: 'stats',
+    query: { range: '7d|30d|90d|365d|year:2026|all (default 365d)', platform: '', estimates: 'include|exclude', limit: 'findings returned (default 8)' },
+    returns: '{ range: { from, to, label }, findings: [{ id, title, score, parts: [text | { g: game id, t: title } | { d: YYYY-MM-DD, p: day|month|year } | { b: a figure } | { l: href, t: text }] }] } the most telling first',
   });
   r.get('/api/v1/legends', () => legends(db, settings), {
     summary: 'Legends: the stories in your career - eras of your own, then the series, makers, console generations, trends and platforms found in your library, the most played first',

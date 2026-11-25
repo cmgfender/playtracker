@@ -3,7 +3,7 @@
 // era of your own - from where it began to where it stands.
 import { esc, fmtMin, fmtDate, plat, platDot, icon, api, plural, setTitle, cover, coverHue, monogram, navigate, modal, toast, fail, confirmBox } from '../app.js';
 import { barChart, mountCharts, BASIS_FILL } from '../charts.js';
-import { emptyState } from './shared.js';
+import { emptyState, prose } from './shared.js';
 import { franchiseBody } from './franchises.js';
 
 const KIND = { series: 'Series', maker: 'Maker', generation: 'Console generation', trend: 'Trend', platform: 'Platform', era: 'Your era', career: 'Career' };
@@ -14,17 +14,6 @@ const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 
 const dayTime = (k) => new Date(`${k}T12:00`).getTime();
 const monthYear = (k) => fmtDate(dayTime(k), { month: 'long', year: 'numeric' });
 const platName = (c) => (c.kind === 'platform' ? plat(c.id).label : c.name);
-
-/** A chapter's parts as HTML: text, games (linked), dates (as exact as they are known) and figures. */
-function prose(parts) {
-  return parts.map((p) => {
-    if (typeof p === 'string') return esc(p);
-    if (p.g) return `<a class="link" href="/game/${p.g}" data-link>${esc(p.t)}</a>`;
-    if (p.d) return esc(p.p === 'day' ? fmtDate(dayTime(p.d), { year: 'numeric', month: 'long', day: 'numeric' }) : p.p === 'month' ? monthYear(p.d) : p.d.slice(0, 4));
-    if (p.b) return `<b>${esc(p.b)}</b>`;
-    return '';
-  }).join('');
-}
 
 /** A legend's card: up to three covers, its name, what it is, and how much of your time is in it. */
 function card(c) {

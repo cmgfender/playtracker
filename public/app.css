@@ -1154,6 +1154,11 @@ a.mrow.mlink:hover .ml, a.mrow.mlink:focus-visible .ml { color: var(--accent-ink
 
 /* ---------- franchises: series in release order (pages/franchises.js) ---------- */
 .fr-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 14px; }
+/* Insights' findings: told in a sentence or two each */
+.ins-findings { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; }
+.ins-finding { display: flex; flex-direction: column; gap: 6px; }
+.ins-finding p { margin: 0; font-size: 15.5px; line-height: 1.5; }
+.ins-finding p b { font-size: 1.08em; }
 /* ---------- legends: the stories in a career (pages/legends.js) ---------- */
 .lg-sec { margin-top: 28px; }
 .lg-h { gap: 10px; align-items: flex-end; margin-bottom: 12px; }

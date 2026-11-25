@@ -165,6 +165,25 @@ describe('legends in a library', () => {
     for (const [path, status] of [['/legends/trend/nope', 404], ['/legends/maker/nope', 404], ['/legends/generation/gen1', 404], ['/legends/series/no-such', 404], ['/legends/era/9', 404], ['/legends/bogus/x', 400]]) assert.equal((await h.call('GET', path)).status, status, path);
   });
 
+  test('findings for Insights: what stands out in a range, told in parts, the most telling first', async () => {
+    const f = await h.get('/stats/findings?range=all');
+    assert.deepEqual(f.range, { from: '2011-10-01', to: '2026-03-18', label: 'All time' });
+    const by = Object.fromEntries(f.findings.map((x) => [x.id, text(x.parts)]));
+    assert.equal(by.concentration, 'Halo 3 alone is 33% of it; your top three make 79%.');
+    assert.equal(by.series, 'Halo is 40% of it, across 2 games.');
+    assert.equal(by.finish, 'You started 7 games in all and finished 1: 1 in 7.');
+    assert.match(by.lag, /^On average you get to a game [\d.]+ years after it came out\. The oldest thing here: Halo 3 \(2007\)\.$/);
+    assert.deepEqual(f.findings.map((x) => x.score), [...f.findings.map((x) => x.score)].sort((a, b) => b - a), 'the most telling first');
+    const series = f.findings.find((x) => x.id === 'series').parts[0];
+    assert.deepEqual(series, { l: '/legend/series/halo', t: 'Halo' }, 'a series is a link to its legend');
+    for (const x of f.findings) { assert.ok(x.title && x.parts.length); for (const p of x.parts) assert.ok(typeof p === 'string' || (p.g && p.t) || (p.d && p.p) || p.b || (p.l && p.t), JSON.stringify(p)); }
+    // a range: what was new in it, what you already knew
+    const y = await h.get('/stats/findings?range=year:2025');
+    assert.equal(Object.fromEntries(y.findings.map((x) => [x.id, text(x.parts)])).known, undefined, 'two games: too few to say');
+    assert.deepEqual((await h.get('/stats/findings?range=year:2001')).findings, [], 'nothing played: nothing found');
+    assert.equal((await h.get('/stats/findings?range=all&limit=2')).findings.length, 2);
+  });
+
   test('eras of your own: added, told as what you played then, changed and removed', async () => {
     const e = await h.post('/legends/eras', { name: '  College ', from: '2011', to: '2014-05', note: 'Dorm room, shared 360' });
     assert.deepEqual(e, { id: 1, name: 'College', from: '2011-01-01', to: '2014-05-31', note: 'Dorm room, shared 360' });

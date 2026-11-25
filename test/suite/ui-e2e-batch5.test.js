@@ -526,8 +526,8 @@ describe('Vestigo web UI, batch 5: Insights and Year in review on the demo libra
         for (const [i, e] of tl.eras.entries()) {
           if (e.kind === 'game' && g.blocks[i].w >= 120) assert.ok(g.texts.some((t) => e.title.startsWith(t.s.replace(/…$/, ''))), `${where}: ${e.title} is named in its block`);
         }
-        // the summary: "8 eras in 30 months: Marvel's Spider-Man 2 led May – Aug 2024, …"
-        assert.match(g.label, new RegExp(`^\\d+ eras in ${tl.era_range.months} months: ${reEsc(first.title)} led `));
+        // the summary: "8 reigns in 30 months: Marvel's Spider-Man 2 led May – Aug 2024, …"
+        assert.match(g.label, new RegExp(`^\\d+ reigns in ${tl.era_range.months} months: ${reEsc(first.title)} led `));
         // hover and keyboard read the same tooltips
         await strip.locator('.era-b').first().hover();
         assert.equal(await strip.locator('.tip.on').innerText(), g.blocks[0].tip);
