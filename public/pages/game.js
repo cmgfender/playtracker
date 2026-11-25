@@ -512,7 +512,7 @@ function mergeModal(g) {
 }
 
 // ---------- IGDB metadata ----------
-const BY = { steam: 'its Steam id', title: 'its title', manual: 'you' };
+const BY = { steam: 'its Steam id', title: 'its title', manual: 'you', import: 'the app you imported it from' };
 const tagLink = (kind, name) => `<a class="chip" href="${tagHref(kind, name)}" data-link>${esc(name)}</a>`;
 const hrs = (m) => fmtMin(m, { short: m >= 600 });
 

@@ -28,7 +28,8 @@ const REFRESH_AFTER = 30 * DAY;     // details of a matched game
 const RETRY_NONE_AFTER = 14 * DAY;  // a game nothing matched
 const MAX_TRIES = 6;                // ... at most this many times
 const SEARCH_BATCH = 50;            // titles searched between progress updates
-const MATCH_VERSION = 2;            // 2: searches one title per request (games nothing matched before are looked up again)
+const MATCH_VERSION = 3;            // 2: searches one title per request (games nothing matched before are looked up again)
+                                    // 3: a title match must be a game its platform can hold (stored title matches are checked once)
 const TAGS_VERSION = 2;             // 2: engines and release platforms are kept too (matched games are refreshed to get them)
 const IDS_PER_REQUEST = 200;
 // IGDB platform ids of the platforms tracked here (a candidate on one of them is preferred)
@@ -63,6 +64,34 @@ const isMain = (c) => {
   return t == null || [0, 4, 8, 9, 10, 11].includes(typeof t === 'object' ? t.id : t); // main, standalone, remake, remaster, expanded, port
 };
 
+// A title alone names several games: "Whirligig" is a 2016 Steam app and a 1988 Amiga shooter,
+// "Battlefield" the Xbox hub of the series and a 1997 online tank game. A candidate must be a game
+// a copy owned here can be: released on that platform's own machines (HOME), or on what else its
+// library lists (ALSO, from the year it began to), and never from before the platform existed.
+const HOME = { steam: /windows|^pc\b|^mac$|linux|^dos$|steam|oculus|meta quest/i, xbox: /xbox/i, psn: /playstation/i, nintendo: /switch/i };
+const ALSO = { xbox: [/windows|^pc\b|android|^ios$/i, 2007] }; // Games for Windows Live, then PC and phone games with Xbox achievements
+const FIRST_YEAR = { xbox: 2001, psn: 1994, nintendo: 2017 };
+
+/**
+ * Can this IGDB game be the copy owned on these platforms (entry platforms: steam, xbox, psn,
+ * nintendo, manual...)? Unknown platforms on either side decide nothing: a game logged by hand can
+ * be on any machine, and a candidate that lists no platform is only held to the year.
+ */
+export function fits(c, platforms = []) {
+  const families = [...new Set(platforms)].filter(Boolean);
+  if (!families.length || families.some((f) => !HOME[f])) return true;
+  const names = (c.platforms || []).map((p) => (typeof p === 'object' ? p?.name || p?.abbreviation : typeof p === 'string' ? p : null)).filter(Boolean);
+  const listed = (c.platforms || []).length > 0;
+  if (listed && !names.length) return true; // only ids came back: nothing to read
+  const date = Number(c.first_release_date) > 0 ? Number(c.first_release_date) * 1000 : Number(c.release_date) > 0 ? Number(c.release_date) : null;
+  const year = date ? new Date(date).getUTCFullYear() : null;
+  return families.some((f) => {
+    if (names.some((n) => HOME[f].test(n))) return true;
+    if (ALSO[f] && names.some((n) => ALSO[f][0].test(n))) return year == null || year >= ALSO[f][1];
+    return !names.length && (year == null || year >= (FIRST_YEAR[f] || 0));
+  });
+}
+
 /**
  * The best IGDB candidate for a title, or null when none is safely the same game: the name (or
  * an alternative name) must equal the title once normalized. Ties prefer main games, the
@@ -83,6 +112,7 @@ export function pickMatch(title, candidates, platforms = []) {
     const exact = normalizeTitle(c.name) === want;
     const alt = !exact && (c.alternative_names || []).some((a) => normalizeTitle(a?.name) === want);
     if (!exact && !alt) continue;
+    if (!fits(c, platforms)) continue;
     const plats = (c.platforms || []).map((p) => (typeof p === 'object' ? p.id : p));
     const named = light(c.name) === exactName || (c.alternative_names || []).some((a) => light(a?.name) === exactName);
     const score = (exact ? 4 : 2) + (named ? 3 : 0) + (isMain(c) ? 3 : 0) + (plats.some((p) => wantedPlatforms.has(p)) ? 2 : 0) + Math.min(1, Math.log10(1 + (c.total_rating_count || c.rating_count || 0)) / 3);
@@ -235,9 +265,9 @@ export class Igdb {
   /** How far matching has got: { total, matched, unmatched, pending, by: { steam, title, manual } }. */
   coverage() {
     const r = this.db.prepare(`SELECT COUNT(*) total, COUNT(m.game_id) looked, SUM(m.igdb_id IS NOT NULL) matched,
-        SUM(m.matched_by = 'steam') steam, SUM(m.matched_by = 'title') title, SUM(m.matched_by = 'manual') manual
+        SUM(m.matched_by = 'steam') steam, SUM(m.matched_by = 'title') title, SUM(m.matched_by = 'manual') manual, SUM(m.matched_by = 'import') imported
       FROM games g LEFT JOIN game_meta m ON m.game_id = g.id`).get();
-    return { total: r.total, matched: r.matched || 0, unmatched: (r.looked || 0) - (r.matched || 0), pending: r.total - (r.looked || 0), by: { steam: r.steam || 0, title: r.title || 0, manual: r.manual || 0 } };
+    return { total: r.total, matched: r.matched || 0, unmatched: (r.looked || 0) - (r.matched || 0), pending: r.total - (r.looked || 0), by: { steam: r.steam || 0, title: r.title || 0, manual: r.manual || 0, import: r.imported || 0 } };
   }
 
   status() {
@@ -255,6 +285,8 @@ export class Igdb {
     // a better matcher looks again at the games the last one found nothing for
     if ((this.settings.get('igdb_match_v') || 1) < MATCH_VERSION) {
       this.db.prepare("DELETE FROM game_meta WHERE igdb_id IS NULL AND matched_by = 'none' AND locked = 0").run();
+      // matches made by title alone are read again, and dropped where the game cannot be that copy
+      this.db.prepare("UPDATE game_meta SET fetched_at = 0 WHERE igdb_id IS NOT NULL AND matched_by = 'title' AND locked = 0").run();
       this.settings.set({ igdb_match_v: MATCH_VERSION });
     }
     // more is kept of each game than before: the matched ones are due a refresh (the passes get to them in turn)
@@ -270,6 +302,7 @@ export class Igdb {
       const ids = new Map(); // game id -> [igdb id, how]
       const refresh = list.filter((g) => g.igdb_id != null);
       const refreshing = new Set(refresh.map((g) => g.id));
+      const ownedOn = new Map(list.map((g) => [g.id, String(g.platforms || '').split(',').filter(Boolean)]));
       for (const g of refresh) ids.set(g.id, [g.igdb_id, g.matched_by]);
       const fresh = list.filter((g) => g.igdb_id == null && !g.locked);
       const steam = fresh.filter((g) => g.steam_appid);
@@ -305,6 +338,17 @@ export class Igdb {
           continue;
         }
         if (!rec) { this.store(gameId, null, 'none'); counts.none++; continue; }
+        // a title match read again that cannot be this copy (a 1988 Amiga game for a Steam app): forgotten,
+        // so the next pass searches the title afresh and keeps a candidate that fits, or none
+        if ((how === 'title' || how === 'import') && refreshing.has(gameId) && !fits(rec, ownedOn.get(gameId))) {
+          tx(this.db, () => {
+            this.db.prepare('DELETE FROM game_meta WHERE game_id = ? AND locked = 0').run(gameId);
+            this.db.prepare('DELETE FROM game_tags WHERE game_id = ?').run(gameId);
+          });
+          counts.dropped = (counts.dropped || 0) + 1;
+          this.log?.info(`IGDB: "${rec.name}" (${rec.first_release_date ? new Date(rec.first_release_date * 1000).getUTCFullYear() : 'no date'}) is not the game owned here by that title: looked up again`);
+          continue;
+        }
         this.store(gameId, rec, how, { locked: how === 'manual' });
         if (refreshing.has(gameId)) counts.refreshed++;
         else { counts.matched++; counts[how === 'steam' ? 'by_steam' : 'by_title']++; }
@@ -369,7 +413,8 @@ export class Igdb {
 /** A game's metadata for the API: null when IGDB has not been asked (or is not set up). */
 export function gameMeta(db, gameId) {
   const m = db.prepare('SELECT * FROM game_meta WHERE game_id = ?').get(gameId);
-  if (!m) return null;
+  // (an id an import brought, its details not fetched yet: nothing to show)
+  if (!m || (m.igdb_id != null && !m.fetched_at && m.name == null)) return null;
   const tags = Object.fromEntries(TAG_KINDS.map((k) => [k, []]));
   for (const t of db.prepare('SELECT kind, name FROM game_tags WHERE game_id = ? ORDER BY kind, name').all(gameId)) tags[t.kind]?.push(t.name);
   return {

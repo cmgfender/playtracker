@@ -177,6 +177,8 @@ export function importGameTrack(db, tables, { settings = null, now = Date.now() 
     wishlist_added: 0, imported_titles: 0, skipped_synced: 0, skipped_no_playtime: 0, hidden: 0,
     // the games whose hours are added as history, for the preview to name (the part that adds time)
     hours_added: [], already_imported: 0,
+    // games given the IGDB entry GameTrack has for them (see takeMatch)
+    matches: 0,
     // achievements / trophies: new rows, rows the entry had already (by id or name), of those the
     // ones GameTrack added to (an unlock, a time, a missing detail), rows not stored (no entry
     // for the title, or one the platform has listed without them), entries they landed on
@@ -221,11 +223,33 @@ export function importGameTrack(db, tables, { settings = null, now = Date.now() 
     syncedByTitle.get(k).push(e);
   }
   const gameByTitle = new Map(db.prepare('SELECT id, norm_title FROM games').all().map((g) => [g.norm_title, g.id]));
-  const getGame = db.prepare(`SELECT g.id, g.status, g.rating, g.cover_url, (SELECT COALESCE(SUM(playtime_min), 0) FROM entries WHERE game_id = g.id AND excluded = 0) minutes
+  const getGame = db.prepare(`SELECT g.id, g.status, g.rating, g.cover_url, (SELECT COALESCE(SUM(playtime_min), 0) FROM entries WHERE game_id = g.id AND excluded = 0) minutes,
+      EXISTS (SELECT 1 FROM entries WHERE game_id = g.id AND account_id IS NOT NULL) held
     FROM games g WHERE g.id = ?`);
   const setStatus = db.prepare("UPDATE games SET status = ?, updated_at = ? WHERE id = ? AND status = 'unset'");
   const setRating = db.prepare('UPDATE games SET rating = ?, updated_at = ? WHERE id = ? AND rating IS NULL');
   const setCover = db.prepare('UPDATE games SET cover_url = ? WHERE id = ? AND cover_url IS NULL');
+  // GameTrack keeps each game's IGDB id. For a game this import brings it is the one you picked there
+  // (a wish-listed "Fable" is the 2027 one, not the 2004 game its title alone finds); for a game an
+  // account tracks it only fills in where IGDB found nothing by the title (GameTrack matched those
+  // by title too). The details are fetched on the next IGDB pass; a match you set by hand stays.
+  const metaOf = db.prepare(`SELECT m.igdb_id, m.matched_by, m.locked, EXISTS (SELECT 1 FROM entries WHERE game_id = ? AND account_id IS NOT NULL) held
+    FROM (SELECT 1) LEFT JOIN game_meta m ON m.game_id = ?`);
+  const setMeta = db.prepare(`INSERT INTO game_meta(game_id, igdb_id, matched_by, locked, fetched_at, tries) VALUES (?, ?, 'import', 0, 0, 0)
+    ON CONFLICT(game_id) DO UPDATE SET igdb_id = excluded.igdb_id, matched_by = 'import', fetched_at = 0, tries = 0, name = NULL, slug = NULL, url = NULL, summary = NULL,
+      release_date = NULL, rating = NULL, rating_count = NULL, ttb_main = NULL, ttb_extra = NULL, ttb_complete = NULL, cover_image = NULL`);
+  const dropTags = db.prepare('DELETE FROM game_tags WHERE game_id = ?');
+  const takeMatch = (gameId, igdbId) => {
+    const want = Number(igdbId);
+    if (!Number.isInteger(want) || want <= 0) return;
+    const m = metaOf.get(gameId, gameId);
+    if (m.locked || m.igdb_id === want) return;
+    const open = m.held ? m.matched_by === 'none' && m.igdb_id == null : m.matched_by == null || m.igdb_id == null || m.matched_by === 'title';
+    if (!open) return;
+    setMeta.run(gameId, want);
+    dropTags.run(gameId);
+    res.matches++;
+  };
   // a wish-listed game gets a 0-minute entry, so the library lists it and keeps it like any game
   const addWish = db.prepare(`INSERT INTO entries(account_id, game_id, platform, ext_id, title, playtime_min, first_seen_at, last_synced_at)
     SELECT NULL, ?, ?, ?, ?, 0, ?, ? WHERE NOT EXISTS (SELECT 1 FROM entries WHERE game_id = ?)`);
@@ -360,10 +384,12 @@ export function importGameTrack(db, tables, { settings = null, now = Date.now() 
       for (const id of gameIds) {
         const cur = getGame.get(id);
         if (!cur) continue;
-        // (GameTrack keeps "Wanted" on games bought and played since: a game with time here is no wish)
-        if (status && cur.status === 'unset' && !(status === 'wishlist' && cur.minutes > 0) && setStatus.run(status, now, id).changes) res.statuses++;
+        // (GameTrack keeps "Wanted" on games bought and played since: a game with time here, or one an
+        // account of yours already holds - owned on Steam, played on Xbox - is no wish)
+        if (status && cur.status === 'unset' && !(status === 'wishlist' && (cur.minutes > 0 || cur.held)) && setStatus.run(status, now, id).changes) res.statuses++;
         if (rating && cur.rating == null && setRating.run(rating, now, id).changes) res.ratings++;
         if (cover && !cur.cover_url && setCover.run(cover, id).changes) res.covers++;
+        takeMatch(id, g.igdb_id);
       }
     }
 
@@ -393,6 +419,7 @@ export function importGameTrack(db, tables, { settings = null, now = Date.now() 
       if (status && status !== 'wishlist' && setStatus.run(status, now, id).changes) res.statuses++; // (imported with time: no wish)
       if (Number(g.user_rating) > 0 && setRating.run(Math.min(10, Number(g.user_rating)), now, id).changes) res.ratings++;
       if (/^https?:\/\//.test(g.poster_url || '') && setCover.run(g.poster_url, id).changes) res.covers++;
+      takeMatch(id, g.igdb_id);
     }
     flushRollups(db);
     return res;

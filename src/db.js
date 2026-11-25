@@ -422,6 +422,14 @@ const MIGRATIONS = [
   UPDATE games SET status = 'unset' WHERE status = 'wishlist'
     AND id IN (SELECT game_id FROM entries WHERE excluded = 0 GROUP BY game_id HAVING SUM(playtime_min) > 0);
   `,
+  // 13: a GameTrack import took its "Wanted" for games one of your accounts already holds (owned on
+  //     Steam, played on Xbox): only the wishes that import itself set are taken back (they carry
+  //     its timestamp), never one you set here
+  `
+  UPDATE games SET status = 'unset' WHERE status = 'wishlist'
+    AND id IN (SELECT game_id FROM entries WHERE account_id IS NOT NULL)
+    AND updated_at IN (SELECT first_seen_at FROM entries WHERE account_id IS NULL AND ext_id LIKE 'import:gametrack:%');
+  `,
 ];
 
 /** The schema version this build migrates a database to. */

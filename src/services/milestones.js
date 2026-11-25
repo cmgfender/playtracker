@@ -94,7 +94,11 @@ const topMark = (kind, from, value) => MARKS[kind].filter((m) => m > from && val
 const nextMark = (marks, value) => marks.find((m) => m > value) ?? null;
 
 /** How each kind is said, for a mark `v` and its subject. */
-const TEXT = {
+// a series named "The Legend of Zelda" is not "the The Legend of Zelda series", and one named for
+// its owner ("Tom Clancy's", "Sid Meier's") reads as theirs: "5 Tom Clancy's games"
+const theSeries = (s) => (/^the\s/i.test(s) ? `${s} series` : `the ${s} series`);
+const OWNED_NAME = /['’]s$/i;
+export const TEXT = {
   hours: (v) => `${n(v)} hours of play`,
   year_hours: (v, s) => `${n(v)} hours in ${s}`,
   platform_hours: (v, s) => `${n(v)} hours on ${s}`,
@@ -108,8 +112,8 @@ const TEXT = {
   genre_hours: (v, s) => `${n(v)} hours of ${s}`,
   genre_games: (v, s) => `${n(v)} ${s} games`,
   series: (v, s) => (s ? `Your ${ordinal(v)} series: ${s}` : `${n(v)} series`),
-  series_hours: (v, s) => `${n(v)} hours in the ${s} series`,
-  series_games: (v, s) => `${n(v)} games of the ${s} series`,
+  series_hours: (v, s) => (OWNED_NAME.test(s) ? `${n(v)} hours of ${s} games` : `${n(v)} hours in ${theSeries(s)}`),
+  series_games: (v, s) => (OWNED_NAME.test(s) ? `${n(v)} ${s} games` : `${n(v)} games of ${theSeries(s)}`),
   series_years: (v, s) => `${n(v)} years of ${s}`,
   achievements: (v, s) => (v === 1 ? `Your first achievement${s ? `: ${s}` : ''}` : `${n(v)} achievements`),
   ach_games: (v) => `Achievements in ${n(v)} games`,

@@ -23,8 +23,8 @@ export const LEGEND_KINDS = ['series', 'maker', 'generation', 'trend', 'platform
 
 /** A trend shows up from this many of its games in a library. */
 const TREND_MIN_GAMES = 2;
-const PLATFORM_NAMES = { steam: 'Steam', xbox: 'Xbox', psn: 'PlayStation', nintendo: 'Nintendo Switch', manual: 'games added by hand' };
-const platformName = (p) => PLATFORM_NAMES[p] || p;
+const PLATFORM_NAMES = { steam: 'Steam', xbox: 'Xbox', psn: 'PlayStation', nintendo: 'Nintendo Switch', switch: 'Nintendo Switch (imported games)', manual: 'games added by hand' };
+const platformName = (p) => PLATFORM_NAMES[p] || (/^(?:pc|gog|ea|vr|n64|ps[1-5])$/.test(p) ? p.toUpperCase() : String(p).replace(/^\w/, (c) => c.toUpperCase()));
 
 // (a generation's members can be parts of a game: one release of the game each - see legends/members.js)
 const playsOf = (m, ids) => careerPlays((ids || []).map((id) => m.units?.get(id) ?? m.games.get(id)).filter(Boolean));
@@ -41,12 +41,19 @@ export function legends(db, settings, { now = Date.now() } = {}) {
   return memo(db, `legends:home:${today}:${JSON.stringify(eras)}`, () => {
     const m = membership(db, { now });
     const card = (kind, id, name, plays, extra = {}) => ({ kind, id, name, ...extra, ...brief(plays) });
+    const eraUnlocks = db.prepare(`SELECT COUNT(*) n, COUNT(DISTINCT e.game_id) games FROM achievements a JOIN entries e ON e.id = a.entry_id
+      WHERE e.excluded = 0 AND a.unlocked = 1 AND a.unlocked_at >= ? AND a.unlocked_at < ?`);
     const byMinutes = (a, b) => b.minutes - a.minutes || b.games - a.games || a.name.localeCompare(b.name);
     const fr = franchiseList(db, { now, limit: 8 });
     const all = careerPlays([...m.games.values()]);
     return {
       career: card('career', 'all', 'Your career', all),
-      eras: eras.map((e) => { const w = eraWindow(e, today); return card('era', String(e.id), e.name, windowPlays(db, m.games, w.from, w.to), { from_day: e.from, to_day: e.to, note: e.note }); }),
+      // an era also counts what was unlocked in it: consoles that report no playtime (the Xbox 360) leave only that
+      eras: eras.map((e) => {
+        const w = eraWindow(e, today);
+        const u = eraUnlocks.get(new Date(`${w.from}T00:00`).getTime(), new Date(`${w.to}T00:00`).getTime() + 86_400_000);
+        return card('era', String(e.id), e.name, windowPlays(db, m.games, w.from, w.to), { from_day: e.from, to_day: e.to, note: e.note, unlocks: u.n, unlock_games: u.games });
+      }),
       series: fr.items.map((f) => ({ kind: 'series', id: f.id, name: f.name, games: f.games, played: f.played, minutes: f.minutes, from: f.first_day ? Number(f.first_day.slice(0, 4)) : null, to: f.last_day ? Number(f.last_day.slice(0, 4)) : null,
         covers: f.covers.slice(0, 3), mainline: f.mainline, your_era: f.your_era?.name || null })),
       series_total: fr.total,
@@ -54,7 +61,7 @@ export function legends(db, settings, { now = Date.now() } = {}) {
       generations: GENS.filter((g) => m.sets.generation.has(g.id)).map((g) => card('generation', g.id, g.name, playsOf(m, m.sets.generation.get(g.id)), { tagline: g.short, from_day: g.fromDay, to_day: g.toDay })),
       trends: TREND_LIST.filter((t) => (m.sets.trend.get(t.id) || []).length >= TREND_MIN_GAMES).map((t) => card('trend', t.id, t.name, playsOf(m, m.sets.trend.get(t.id)), { tagline: t.tagline, peak: { from: t.from, to: t.to } }))
         .filter((c) => c.played > 0).sort(byMinutes),
-      platforms: [...m.sets.platform.keys()].map((id) => card('platform', id, platformName(id), platformPlays(db, m.games, id))).filter((c) => c.games > 0).sort(byMinutes),
+      platforms: [...m.sets.platform.keys()].map((id) => card('platform', id, platformName(id), platformPlays(db, m.games, id))).filter((c) => c.played > 0).sort(byMinutes),
     };
   });
 }

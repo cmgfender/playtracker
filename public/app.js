@@ -24,7 +24,7 @@ export function fmtMin(m, { short = false } = {}) {
 }
 
 /** "1 session", "3 sessions" (or a custom plural: plural(n, 'entry', 'entries')). */
-export const plural = (n, word, many = `${word}s`) => `${n} ${n === 1 ? word : many}`;
+export const plural = (n, word, many = `${word}s`) => `${typeof n === 'number' ? n.toLocaleString() : n} ${n === 1 ? word : many}`;
 
 export function fmtHours(m, digits = 1) {
   const h = (Number(m) || 0) / 60;
@@ -68,14 +68,19 @@ export const PLATFORMS = {
   xbox: { label: 'Xbox', color: 'var(--xbox)', short: 'X' },
   psn: { label: 'PlayStation', color: 'var(--psn)', short: 'P' },
   nintendo: { label: 'Nintendo', color: 'var(--nintendo)', short: 'N' },
+  // Switch games an import brought (a spreadsheet, GameTrack): no account syncs them
+  switch: { label: 'Switch (imported)', color: 'var(--nintendo)', short: 'N' },
   custom: { label: 'Custom', color: 'var(--custom)', short: 'C' },
   manual: { label: 'Manual', color: 'var(--manual)', short: 'M' },
   import: { label: 'Imported', color: 'var(--import)', short: 'I' },
 };
+// a platform an import named: initials keep their capitals ("PC", "GOG", "N64"), other names get one
+const INITIALS = /^(?:pc|gog|ea|vr|nes|snes|n64|gba|gbc|nds|3ds|psp|ps[1-5]|psvr2?|ios)$/;
 export function plat(p) {
   if (PLATFORMS[p]) return PLATFORMS[p];
   let h = 0; for (const c of String(p)) h = (h * 31 + c.charCodeAt(0)) % 360;
-  return { label: String(p).replace(/^\w/, (c) => c.toUpperCase()), color: `hsl(${h} 70% 60%)`, short: String(p)[0]?.toUpperCase() || '?' };
+  const label = INITIALS.test(p) ? String(p).toUpperCase() : String(p).replace(/^\w/, (c) => c.toUpperCase());
+  return { label, color: `hsl(${h} 70% 60%)`, short: String(p)[0]?.toUpperCase() || '?' };
 }
 export const platDot = (p) => `<span class="dot" style="background:${plat(p).color}" title="${esc(plat(p).label)}"></span>`;
 export const platTag = (p) => `<span class="plat">${platDot(p)}${esc(plat(p).label)}</span>`;

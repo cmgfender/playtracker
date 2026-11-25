@@ -7,7 +7,7 @@ import { test, describe, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import { createApp } from '../src/server.js';
-import { Igdb, pickMatch, tagsOf } from '../src/services/igdb.js';
+import { Igdb, pickMatch, tagsOf, fits } from '../src/services/igdb.js';
 import { flushRollups } from '../src/services/rollup.js';
 import { mergeGames } from '../src/services/library.js';
 
@@ -35,6 +35,8 @@ const CATALOG = [
     genres: [{ id: 5, name: 'Shooter' }], game_modes: [{ id: 1, name: 'Single player' }], player_perspectives: [{ id: 1, name: 'First person' }],
   },
   { id: 777, name: 'My Thing', category: 0 },
+  // a 1988 Amiga shooter that shares its name with a Steam app
+  { id: 12931, name: 'Whirligig', category: 0, platforms: [{ id: 16, name: 'Amiga' }, { id: 63, name: 'Atari ST/STE' }], first_release_date: 599529600 },
 ];
 const STEAM = { 292030: 1942 };
 const TTB = { 1942: { id: 1, game_id: 1942, hastily: 51 * 3600, normally: 104 * 3600, completely: 173 * 3600, count: 400 } };
@@ -179,7 +181,7 @@ describe('IGDB metadata', () => {
     const c = await igdb.run();
     assert.equal(c.matched, 1);
     assert.equal(app.db.prepare('SELECT igdb_id FROM game_meta WHERE game_id = ?').get(ids.wolf).igdb_id, 25076);
-    assert.equal(app.settings.get('igdb_match_v'), 2);
+    assert.equal(app.settings.get('igdb_match_v'), 3);
     assert.equal(app.db.prepare("SELECT matched_by FROM game_meta WHERE game_id = ?").get(ids.home).matched_by, 'none', 'nothing to find there');
   });
 
@@ -292,6 +294,65 @@ describe('IGDB metadata', () => {
     assert.equal(sys.igdb.configured, true);
     assert.equal(sys.igdb.coverage.matched, 4);
     assert.doesNotMatch(JSON.stringify(sys), /shh|tok-/);
+  });
+
+  test('a stored title match that cannot be the copy owned here is forgotten and looked up afresh (matcher 3)', async () => {
+    const db = app.db;
+    const id = Number(db.prepare("INSERT INTO games(title, norm_title, created_at, updated_at) VALUES ('Whirligig', 'whirligig', 0, 0)").run().lastInsertRowid);
+    db.prepare("INSERT INTO entries(account_id, game_id, platform, ext_id, title, playtime_min, first_seen_at, last_synced_at) VALUES (NULL, ?, 'steam', '451650', 'Whirligig', 5, 0, 0)").run(id);
+    db.prepare("INSERT INTO game_meta(game_id, igdb_id, matched_by, locked, name, release_date, fetched_at, tries) VALUES (?, 12931, 'title', 0, 'Whirligig', 599529600000, ?, 0)").run(id, Date.now());
+    db.prepare("INSERT INTO game_tags(game_id, kind, name) VALUES (?, 'platform', 'Amiga')").run(id);
+    const kept = db.prepare("SELECT COUNT(*) n FROM game_meta WHERE igdb_id IS NOT NULL AND game_id <> ?").get(id).n;
+    app.settings.set({ igdb_match_v: 2 });
+    const c = await igdb.run();
+    assert.equal(c.dropped, 1);
+    assert.equal(db.prepare('SELECT 1 FROM game_meta WHERE game_id = ?').get(id), undefined, 'forgotten');
+    assert.equal(db.prepare('SELECT COUNT(*) n FROM game_tags WHERE game_id = ?').get(id).n, 0);
+    assert.equal(db.prepare("SELECT COUNT(*) n FROM game_meta WHERE igdb_id IS NOT NULL AND game_id <> ?").get(id).n, kept, 'the matches that fit were read again and kept');
+    // the next pass searches the title afresh: the Amiga game is the only one by that name, so it has no match
+    await igdb.run();
+    assert.deepEqual({ ...db.prepare('SELECT igdb_id, matched_by FROM game_meta WHERE game_id = ?').get(id) }, { igdb_id: null, matched_by: 'none' });
+  });
+});
+
+describe('a title match must be a game the platform can hold', () => {
+  const at = (y) => Date.UTC(y, 5, 1) / 1000;
+  const amiga = { id: 1, name: 'Whirligig', platforms: [{ id: 16, name: 'Amiga' }, { id: 63, name: 'Atari ST/STE' }], first_release_date: at(1988) };
+  const pc = { id: 2, name: 'Whirligig', platforms: [{ id: 6, name: 'PC (Microsoft Windows)' }], first_release_date: at(2016) };
+
+  test('a 1988 Amiga game is not a Steam app of the same name; the PC one is', () => {
+    assert.equal(fits(amiga, ['steam']), false);
+    assert.equal(pickMatch('Whirligig', [amiga], ['steam']), null);
+    assert.equal(pickMatch('Whirligig', [amiga, pc], ['steam']).id, 2);
+    assert.equal(fits({ platforms: [{ name: 'DOS' }], first_release_date: at(1993) }, ['steam']), true, 'old PC games are sold on Steam');
+  });
+
+  test('a copy logged by hand, or on a platform not known here, can be any machine', () => {
+    assert.equal(fits(amiga, ['steam', 'manual']), true);
+    assert.equal(fits(amiga, ['import']), true);
+    assert.equal(fits(amiga, []), true);
+  });
+
+  test('Xbox: its own consoles, and PC or phone games from the years Xbox reached them', () => {
+    assert.equal(fits({ platforms: [{ name: 'Web browser' }], first_release_date: at(1997) }, ['xbox']), false, 'a 1997 browser game called Battlefield');
+    assert.equal(fits({ platforms: [{ name: 'PC (Microsoft Windows)' }], first_release_date: at(1999) }, ['xbox']), false);
+    assert.equal(fits({ platforms: [{ name: 'PC (Microsoft Windows)' }], first_release_date: at(2022) }, ['xbox']), true, 'PC Game Pass');
+    assert.equal(fits({ platforms: [{ name: 'Xbox 360' }, { name: 'Arcade' }], first_release_date: at(1982) }, ['xbox']), true, 'an arcade game re-released on Xbox');
+    assert.equal(fits({ platforms: [{ name: 'PlayStation 2' }], release_date: Date.UTC(2001, 0, 1) }, ['xbox']), false, 'a stored record (milliseconds)');
+    assert.equal(fits({ platforms: [{ name: 'Atari 2600' }], first_release_date: at(1983) }, ['xbox', 'steam']), false);
+  });
+
+  test('PlayStation and Switch', () => {
+    assert.equal(fits({ platforms: [{ name: 'PlayStation' }], first_release_date: at(1997) }, ['psn']), true, 'a PS1 classic');
+    assert.equal(fits({ platforms: [{ name: 'Wii U' }], first_release_date: at(2014) }, ['nintendo']), false);
+    assert.equal(fits({ platforms: [{ name: 'Wii U' }, { name: 'Nintendo Switch' }], first_release_date: at(2014) }, ['nintendo']), true);
+  });
+
+  test('a candidate that lists no platform is only held to the year; ids without names decide nothing', () => {
+    assert.equal(fits({ platforms: [], first_release_date: at(1983) }, ['xbox']), false);
+    assert.equal(fits({ first_release_date: at(2015) }, ['xbox']), true);
+    assert.equal(fits({}, ['xbox']), true);
+    assert.equal(fits({ platforms: [16, 63], first_release_date: at(1988) }, ['steam']), true);
   });
 });
 
