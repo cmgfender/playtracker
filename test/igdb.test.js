@@ -317,6 +317,8 @@ describe('pickMatch and tagsOf', () => {
     const t = tagsOf(CATALOG[0]);
     assert.deepEqual(t.developer, ['CD Projekt RED']);
     assert.deepEqual(t.perspective, ['Third person']);
-    assert.deepEqual(tagsOf({ id: 1 }), { genre: [], theme: [], mode: [], perspective: [], franchise: [], developer: [], publisher: [] });
+    assert.deepEqual(tagsOf({ id: 1 }), { genre: [], theme: [], mode: [], perspective: [], franchise: [], developer: [], publisher: [], engine: [], platform: [] });
+    // the engine and the platforms it was released on, by name
+    assert.deepEqual(tagsOf({ id: 2, game_engines: [{ id: 6, name: 'Unreal Engine 4' }], platforms: [{ id: 48, name: 'PlayStation 4' }, 49] }), { genre: [], theme: [], mode: [], perspective: [], franchise: [], developer: [], publisher: [], engine: ['Unreal Engine 4'], platform: ['PlayStation 4'] });
   });
 });

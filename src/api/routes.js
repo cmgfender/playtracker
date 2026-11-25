@@ -30,6 +30,8 @@ import { facts, withFacts } from '../services/facts.js';
 import { finishForecast, backlogReality } from '../services/forecast.js';
 import { milestones, MARKS, CATEGORIES } from '../services/milestones.js';
 import { franchiseList, franchiseDetail, gameFranchise } from '../services/franchises.js';
+import { legends, legend, addEra, updateEra, removeEra, LEGEND_KINDS } from '../services/legends.js';
+import { findings } from '../services/findings.js';
 import fsp from 'node:fs';
 import { httpJson, ProviderError } from '../providers/http.js';
 import { HttpError, toInt, toTime } from '../util.js';
@@ -913,6 +915,41 @@ export function registerRoutes(r, app) {
       + 'state: finished|playing|played|dropped|owned|missing }] (release order), '
       + 'your_order: { games: [{ id, title, first_day, year }], in_release_order, pairs }, story: [item keys] | null (the order of the story, where it differs)',
   });
+  r.get('/api/v1/stats/findings', (c) => findings(db, { range: c.query.range || '365d', platform: c.query.platform || null, estimates: c.query.estimates === 'exclude' ? 'exclude' : 'include',
+    weekStartsOn: settings.get('week_starts_on'), limit: clamp(c.query.limit, 8, 1, 20) }), {
+    summary: 'Findings: what stands out in a range that you would not think to look for (how long after release you play games, how much one game or series takes, the day that carries your week, play after midnight, what you start and finish, rare unlocks, engines)',
+    tag: 'stats',
+    query: { range: '7d|30d|90d|365d|year:2026|all (default 365d)', platform: '', estimates: 'include|exclude', limit: 'findings returned (default 8)' },
+    returns: '{ range: { from, to, label }, findings: [{ id, title, score, parts: [text | { g: game id, t: title } | { d: YYYY-MM-DD, p: day|month|year } | { b: a figure } | { l: href, t: text }] }] } the most telling first',
+  });
+  r.get('/api/v1/legends', () => legends(db, settings), {
+    summary: 'Legends: the stories in your career - eras of your own, then the series, makers, console generations, trends and platforms found in your library, the most played first',
+    tag: 'stats',
+    returns: '{ career, eras: [...], series: [...] (the top 8; series_total in all, the rest under GET /franchises), makers, generations (oldest first), trends, platforms }, each a card: '
+      + '{ kind: series|maker|generation|trend|platform|era|career, id, name, tagline?, games, played, minutes (history included), from, to (the years you played it), top (its most played game), covers: [url], '
+      + 'from_day?, to_day? (an era, a generation), note? (an era), peak?: { from, to } (the years a trend was at its height) }',
+  });
+  r.get('/api/v1/legends/:kind/:id', (c) => {
+    const l = legend(db, settings, c.params.kind, c.params.id);
+    if (!l) throw new HttpError(404, 'No such legend');
+    return l;
+  }, {
+    summary: `One legend's story (kind: ${LEGEND_KINDS.join(', ')}; the career's id is "all"): its numbers and the chapters that tell it`,
+    tag: 'stats',
+    returns: '{ kind, id, name, tagline, window: { from, to } | null (an era: only what was played in it), totals: { games, played, finished, minutes, dated, undated, first_day, last_day, active_years, series }, '
+      + 'chapters: [{ id, title, parts: [text | { g: game id, t: title } | { d: YYYY-MM-DD, p: day|month|year } | { b: a figure }] }], '
+      + 'years: [{ year, minutes, estimated, top: { id, title, minutes } | null }] (every year from the first to the last), months (an era of three years or less, likewise), '
+      + 'games: [{ id, title, cover_url, minutes, first_day, last_day, state, platforms, release_year, series }] most played first, series: [{ id, name, minutes, games }], platforms: [{ platform, minutes, games }], '
+      + 'series_detail (a series: as GET /franchises/:key), generation: { short, from_day, to_day }, peak: { from, to } (a trend), era and milestones (an era of your own: the badges earned in it) }',
+  });
+  r.post('/api/v1/legends/eras', (c) => addEra(settings, c.body), {
+    summary: 'Add an era of your own (college, a job, a city): a legend of what you played between two dates',
+    tag: 'stats',
+    body: '{ name (up to 60 characters), from (2012, 2012-09 or 2012-09-01), to? (likewise, the end of the period; empty: still going), note? (up to 200 characters) }',
+    returns: '{ id, name, from, to, note }',
+  });
+  r.patch('/api/v1/legends/eras/:id', (c) => updateEra(settings, toInt(c.params.id), c.body), { summary: 'Change an era of your own (any of name, from, to, note)', tag: 'stats', returns: '{ id, name, from, to, note }' });
+  r.delete('/api/v1/legends/eras/:id', (c) => removeEra(settings, toInt(c.params.id)), { summary: 'Remove an era of your own (your play is untouched)', tag: 'stats', returns: '{ ok }' });
   r.get('/api/v1/games/:id/forecast', (c) => {
     const f = finishForecast(db, toInt(c.params.id));
     if (!f) throw new HttpError(404, 'Game not found');

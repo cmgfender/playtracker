@@ -23,18 +23,19 @@ import { httpJson, spacer, ProviderError } from '../providers/http.js';
 const DAY = 86_400_000;
 const API = 'https://api.igdb.com/v4';
 const TOKEN_URL = 'https://id.twitch.tv/oauth2/token';
-export const TAG_KINDS = ['genre', 'theme', 'mode', 'perspective', 'franchise', 'developer', 'publisher'];
+export const TAG_KINDS = ['genre', 'theme', 'mode', 'perspective', 'franchise', 'developer', 'publisher', 'engine', 'platform'];
 const REFRESH_AFTER = 30 * DAY;     // details of a matched game
 const RETRY_NONE_AFTER = 14 * DAY;  // a game nothing matched
 const MAX_TRIES = 6;                // ... at most this many times
 const SEARCH_BATCH = 50;            // titles searched between progress updates
 const MATCH_VERSION = 2;            // 2: searches one title per request (games nothing matched before are looked up again)
+const TAGS_VERSION = 2;             // 2: engines and release platforms are kept too (matched games are refreshed to get them)
 const IDS_PER_REQUEST = 200;
 // IGDB platform ids of the platforms tracked here (a candidate on one of them is preferred)
 const PLATFORM_IDS = { steam: [6, 14, 3], xbox: [49, 169, 12, 11], psn: [48, 167, 9, 46, 8] };
 const COVER = (id) => `https://images.igdb.com/igdb/image/upload/t_cover_big/${id}.jpg`;
 
-const DETAIL_FIELDS = 'fields *, genres.name, themes.name, game_modes.name, player_perspectives.name, franchises.name, involved_companies.developer, involved_companies.publisher, involved_companies.company.name, cover.image_id, alternative_names.name';
+const DETAIL_FIELDS = 'fields *, genres.name, themes.name, game_modes.name, player_perspectives.name, franchises.name, involved_companies.developer, involved_companies.publisher, involved_companies.company.name, game_engines.name, platforms.name, cover.image_id, alternative_names.name';
 // (platform names and the cover: what the picker shows; matching reads the platform ids)
 const SEARCH_FIELDS = 'fields *, alternative_names.name, platforms.name, platforms.abbreviation, cover.image_id';
 
@@ -51,6 +52,8 @@ export function tagsOf(g) {
     genre: names(g.genres), theme: names(g.themes), mode: names(g.game_modes), perspective: names(g.player_perspectives),
     franchise: names([...(g.franchises || []), ...(g.franchise && typeof g.franchise === 'object' ? [g.franchise] : [])]),
     developer: companies('developer'), publisher: companies('publisher'),
+    // the engine it runs on, and the platforms it was released on (Legends places a game in its console generation by them)
+    engine: names(g.game_engines), platform: names(g.platforms),
   };
 }
 
@@ -254,6 +257,11 @@ export class Igdb {
       this.db.prepare("DELETE FROM game_meta WHERE igdb_id IS NULL AND matched_by = 'none' AND locked = 0").run();
       this.settings.set({ igdb_match_v: MATCH_VERSION });
     }
+    // more is kept of each game than before: the matched ones are due a refresh (the passes get to them in turn)
+    if ((this.settings.get('igdb_tags_v') || 1) < TAGS_VERSION) {
+      this.db.prepare('UPDATE game_meta SET fetched_at = 0 WHERE igdb_id IS NOT NULL').run();
+      this.settings.set({ igdb_tags_v: TAGS_VERSION });
+    }
     const list = this.candidates(limit, now);
     if (!list.length) { this.state.last_run_at = Date.now(); return { looked: 0 }; }
     Object.assign(this.state, { running: true, phase: 'matching', done: 0, total: list.length, started_at: Date.now(), last_error: null });
@@ -367,7 +375,7 @@ export function gameMeta(db, gameId) {
   return {
     igdb_id: m.igdb_id, matched_by: m.matched_by, locked: !!m.locked, name: m.name, url: m.url, summary: m.summary, release_date: m.release_date,
     rating: m.rating, rating_count: m.rating_count, time_to_beat: m.ttb_main || m.ttb_extra || m.ttb_complete ? { main: m.ttb_main, extra: m.ttb_extra, complete: m.ttb_complete } : null,
-    genres: tags.genre, themes: tags.theme, modes: tags.mode, perspectives: tags.perspective, franchises: tags.franchise, developers: tags.developer, publishers: tags.publisher,
+    genres: tags.genre, themes: tags.theme, modes: tags.mode, perspectives: tags.perspective, franchises: tags.franchise, developers: tags.developer, publishers: tags.publisher, engines: tags.engine, released_on: tags.platform,
     fetched_at: m.fetched_at,
   };
 }

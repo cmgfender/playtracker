@@ -420,3 +420,21 @@ export async function saveSettings(patch) {
   applyTheme(state.settings);
   return r;
 }
+
+// ---------- told in parts ----------
+/**
+ * Text the server tells in parts (a legend's chapters, Insights' findings) as HTML: plain text,
+ * { g: game id, t: title } a game, { d: 'YYYY-MM-DD', p: day|month|year } a date as exact as it is
+ * known, { b: text } a figure, { l: href, t: text } a link.
+ */
+export function prose(parts) {
+  const at = (k) => new Date(`${k}T12:00`).getTime();
+  return parts.map((p) => {
+    if (typeof p === 'string') return esc(p);
+    if (p.g) return `<a class="link" href="/game/${p.g}" data-link>${esc(p.t)}</a>`;
+    if (p.l) return `<a class="link" href="${esc(p.l)}" data-link>${esc(p.t)}</a>`;
+    if (p.d) return esc(p.p === 'day' ? fmtDate(at(p.d), { year: 'numeric', month: 'long', day: 'numeric' }) : p.p === 'month' ? fmtDate(at(p.d), { month: 'long', year: 'numeric' }) : p.d.slice(0, 4));
+    if (p.b) return `<b>${esc(p.b)}</b>`;
+    return '';
+  }).join('');
+}

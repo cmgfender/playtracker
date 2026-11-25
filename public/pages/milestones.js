@@ -46,6 +46,7 @@ export function badge(x) {
     <div class="ms-top"><span class="ms-ic" title="${c.label}">${icon(c.icon)}</span><span class="ms-fig">${figure(x)}</span></div>
     <div class="ms-t">${words(x)}</div>
     ${x.detail ? `<div class="tiny muted">${esc(x.detail)}</div>` : ''}
+    ${x.category === 'series' && x.subject ? `<a class="tiny link" href="/legend/series/${encodeURIComponent(x.subject)}" data-link>Its story in Legends</a>` : ''}
     <div class="ms-when"><span>${esc(whenReached(x))}</span>${HOW[x.basis] ? `<span class="tiny muted" title="How the day is known">${HOW[x.basis]}</span>` : ''}</div>
   </div>`;
 }

@@ -1,8 +1,10 @@
-// Franchises: the series in your library, the big ones with every entry in release order (the ones
+// Series (part of Legends): the list of every series in your library, and the body of a series'
+// legend - its timeline. The story on top of it is the legend page's (pages/legends.js).
+// The series in your library, the big ones with every entry in release order (the ones
 // you don't own too) grouped into the series' eras, the remakes, remasters and re-releases linked to
 // the games they are versions of, what to play next, the order you played them in, and - where the
 // story is told out of order - the story order.
-import { esc, fmtMin, fmtDate, platDot, icon, api, plural, setTitle, coverHue, monogram } from '../app.js';
+import { esc, fmtMin, fmtDate, platDot, icon, api, plural, coverHue, monogram } from '../app.js';
 import { emptyState } from './shared.js';
 
 const KIND = { spinoff: 'Spin-off', remake: 'Remake', remaster: 'Remaster', rerelease: 'Re-release', collection: 'Collection', hub: 'App', other: 'Also in the series' };
@@ -26,7 +28,7 @@ function covers(f) {
 function card(f) {
   const m = f.mainline;
   const pct = m && m.total ? Math.round((m.played / m.total) * 100) : null;
-  return `<a class="card fr-card" href="/franchise/${encodeURIComponent(f.id)}" data-link>
+  return `<a class="card fr-card" href="/legend/series/${encodeURIComponent(f.id)}" data-link>
     ${covers(f)}
     <div class="fr-body">
       <div class="row between" style="gap:8px"><span class="ttl">${esc(f.name)}</span><b class="nowrap">${f.minutes ? fmtMin(f.minutes, { short: f.minutes >= 600 }) : ''}</b></div>
@@ -40,11 +42,12 @@ function card(f) {
 export async function franchises(view, stale) {
   const r = await api('/franchises');
   if (stale()) return;
-  view.innerHTML = `<div class="page-h"><div><h1>Franchises</h1><p>${r.total ? `${plural(r.total, 'series', 'series')} in your library · ${r.curated} of the big ones, with every entry in the order it came out` : 'The series your games belong to'}</p></div></div>
+  view.innerHTML = `<a href="/legends" data-link class="btn ghost sm" style="margin:-4px 0 10px -6px">${icon('back')}Legends</a>
+    <div class="page-h"><div><h1>Series</h1><p>${r.total ? `${plural(r.total, 'series', 'series')} in your library · ${r.curated} of the big ones, with every entry in the order it came out` : 'The series your games belong to'}</p></div></div>
     <div id="fr-host"></div>`;
   const host = view.querySelector('#fr-host');
   if (!r.total) {
-    host.innerHTML = `<div class="card">${emptyState('grid', 'No series yet', 'Franchises show up as soon as your library holds a game of one: the big ones (Halo, Final Fantasy, Resident Evil…) with every entry in release order, the rest from IGDB and the titles.')}</div>`;
+    host.innerHTML = `<div class="card">${emptyState('grid', 'No series yet', 'Series show up as soon as your library holds a game of one: the big ones (Halo, Final Fantasy, Resident Evil…) with every entry in release order, the rest from IGDB and the titles.')}</div>`;
     return;
   }
   const st = { q: '', only: '' };
@@ -128,12 +131,12 @@ function erasCard(f) {
     }).join('')}</div></div>`;
 }
 
-export async function franchise(view, key, stale) {
-  let name = key;
-  try { name = decodeURIComponent(key); } catch { /* a malformed %-escape: the key as it is */ }
-  const f = await api(`/franchises/${encodeURIComponent(name)}`);
-  if (stale()) return;
-  setTitle(f.name);
+/**
+ * A series' timeline, into `view`: how much of the main games is yours, what to play next, its eras,
+ * and every entry in release order (or the story's, or yours). `f`: GET /franchises/:key (the
+ * series_detail of its legend).
+ */
+export function franchiseBody(view, f) {
   const m = f.mainline;
   const q = new URLSearchParams(location.search);
   const st = { order: ['release', 'story', 'yours'].includes(q.get('order')) ? q.get('order') : 'release', main: q.get('show') === 'main' };
@@ -144,8 +147,7 @@ export async function franchise(view, key, stale) {
         <div class="small muted">${nextSub}</div></div>
         ${n.game_id ? `<a class="btn sm" href="/game/${n.game_id}" data-link>Open${icon('arrowR', 'ic-inline')}</a>` : ''}</div></div>` : '';
   const order = f.your_order;
-  view.innerHTML = `<a href="/franchises" data-link class="btn ghost sm" style="margin:-4px 0 10px -6px">${icon('back')}Franchises</a>
-    <div class="page-h"><div><h1>${esc(f.name)}</h1><p>${[f.games ? plural(f.games, 'game') + ' of yours' : 'None in your library yet', f.minutes ? fmtMin(f.minutes, { short: f.minutes >= 600 }) : '', played(f) ? `played ${played(f)}` : '', f.released?.from ? `released ${years(f.released.from, f.released.to)}` : ''].filter(Boolean).join(' · ')}</p></div></div>
+  view.innerHTML = `
     ${m ? `<div class="kpis k4 strip" style="margin-bottom:16px">
       <div class="kpi"><div class="label">Main games</div><div class="value">${m.total}</div><div class="sub">in release order below</div></div>
       <div class="kpi"><div class="label">Owned</div><div class="value">${m.owned}</div><div class="sub">${m.total - m.owned ? `${m.total - m.owned} not in your library` : 'every one'}</div></div>
@@ -210,7 +212,7 @@ export function franchiseCard(fr) {
   const version = fr.version_of?.length ? `${KIND[fr.kind] || 'Version'} of ${fr.version_of.map((o) => `${esc(o.title)}${yr(o)}`).join(' and ')}`
     : fr.holds?.length ? `Holds ${plural(fr.holds.length, 'game')} of the series` : '';
   const also = (fr.versions || []).filter((v) => v.kind !== 'collection' && v.game_id);
-  return `<div class="card" id="g-franchise"><div class="card-h"><h2>${esc(fr.name)}</h2><a class="small" href="/franchise/${encodeURIComponent(fr.id)}" data-link>The whole series${icon('arrowR', 'ic-inline')}</a></div>
+  return `<div class="card" id="g-franchise"><div class="card-h"><h2>${esc(fr.name)}</h2><a class="small" href="/legend/series/${encodeURIComponent(fr.id)}" data-link>Its story${icon('arrowR', 'ic-inline')}</a></div>
     <p class="small" style="margin-top:-4px">${kind}${fr.year ? `, released ${fr.year}` : ''}${fr.mainline ? ` · you have played ${fr.mainline.played} of ${fr.mainline.total}` : ''}</p>
     ${version || fr.era && fr.eras > 1 ? `<p class="small muted" style="margin-top:-6px">${[version, fr.era && fr.eras > 1 ? `${esc(fr.era.name)}${/\bera$/i.test(fr.era.name) ? '' : ' era'} (${years(fr.era.from, fr.era.to)})` : ''].filter(Boolean).join(' · ')}</p>` : ''}
     ${also.length ? `<p class="small muted" style="margin-top:-6px">Also yours as ${also.map((v) => `<a class="link" href="/game/${v.game_id}" data-link>${esc(v.title)}</a>`).join(', ')}</p>` : ''}
