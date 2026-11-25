@@ -1,6 +1,7 @@
 import { $, $$, esc, fmtMin, fmtHours, fmtDate, plat, platDot, cover, icon, api, state, plural, STATUSES, a11y, tagHref } from './app.js';
 import { mountCharts, punchcard, histogram, areaChart, swimlanes, scatterChart, lineChart, barChart, dayName, chart, registerChart, textWidth } from './charts.js';
 import { seriesLabel, seriesName, hourLabel, emptyState, kpi, rarityText, achIcon } from './pages.js';
+import { whenReached, CATS as MS_CATS } from './pages/milestones.js';
 
 /*
  * Insights: when, what and how you play, from the insights API. Sections load as they come near
@@ -18,7 +19,7 @@ const SECTIONS = [
   ['what', 'What you played', 'Games over time, eras and platforms', 1500],
   ['style', 'How you play', 'Focus, the games you start, comebacks · tracked play', 900],
   ['records', 'Records & highlights', '', 720],
-  ['milestones', 'Milestones', 'The round numbers of your tracked play, games, series, genres and achievements, and the day you reached them · whatever the range', 620],
+  ['milestones', 'Milestones', 'The round numbers of your whole career, history before tracking included · whatever the range', 620],
   ['ach', 'Achievements', 'Unlocks, rarities and completion', 900],
   ['yoy', 'Year over year', 'Month by month, and the year so far', 700],
   ['library', 'Your library', 'Everything you own, whatever the range', 1500],
@@ -256,30 +257,23 @@ export async function insights(view, stale) {
       </div>`;
   }
 
-  // Milestones: what is coming up with how far along it is, then the notable ones reached (of each
-  // kind, the highest rungs of this career), newest first; every one of them folded away below
+  // Milestones: what is coming up with how far along it is, and the latest highlights of the career
+  // (tracked and estimated history, dated as precisely as known); the whole career on its own page
   async function milestones() {
-    const m = await api('/stats/milestones?all=true&limit=300');
-    if (!m.total && !m.coming.some((x) => x.current > 0)) return none('No milestones yet: the first come with ten hours, ten days or five games of tracked play.');
-    const KIND = {
-      hours: 'Hours', game_hours: 'A game', series_hours: 'A series', genre_hours: 'A genre', games: 'Games', series_games: 'A series', genre_games: 'A genre', days: 'Days', sessions: 'Sessions',
-      streak: 'Streak', achievements: 'Achievements', completions: 'Completed', platinums: 'Platinum', gamerscore: 'Gamerscore', rare: 'Rare',
-    };
+    const m = await api('/stats/milestones?limit=8');
+    if (!m.total && !m.coming.some((x) => x.current > 0)) return none('No milestones yet: they start with your first game, hour and achievement.');
     const unit = (x) => (/hours$/.test(x.kind) ? 'h' : '');
-    // the game's name is a link; everything else is the text as it is
     const label = (x) => (x.game_id && x.title ? esc(x.text).replace(esc(x.title), () => `<a class="link" href="/game/${x.game_id}" data-link>${esc(x.title)}</a>`) : esc(x.text));
     const coming = m.coming.filter((x) => x.current > 0).slice(0, 8);
     const ahead = coming.length ? coming.map((x) => meterRow(label(x), x.current, x.target, `${Math.floor(x.current).toLocaleString()}${unit(x)} of ${x.target.toLocaleString()}${unit(x)}`)).join('')
       : none('Nothing under way yet.');
-    const row = (x) => `<div class="item"><div class="grow"><div class="ttl">${label(x)}</div><div class="sub">${longDay(x.day)}</div></div><span class="badge">${KIND[x.kind] || esc(x.kind)}</span></div>`;
-    const notable = m.reached.filter((x) => x.notable);
-    const shown = notable.slice(0, 40);
-    const reached = shown.length ? `<div class="list ms-scroll" id="ms-notable" tabindex="0" aria-label="Milestones reached">${shown.map(row).join('')}</div>` : none('None reached yet.');
-    // the rest: the lower rungs, and what the list above had no room for
-    const rest = m.total > shown.length ? `<details id="ms-all" style="margin-top:10px"><summary class="small muted" style="cursor:pointer">All ${m.total.toLocaleString()} milestones${m.total > m.reached.length ? ` (the latest ${m.reached.length})` : ''}</summary><div class="list" style="margin-top:6px">${m.reached.map(row).join('')}</div></details>` : '';
-    return `<div class="grid grid-2 ins-grid">
+    const CAT = Object.fromEntries(MS_CATS.map(([k, l]) => [k, l]));
+    const row = (x) => `<div class="item"><div class="grow"><div class="ttl">${label(x)}</div><div class="sub">${esc(whenReached(x))}${x.basis === 'estimated' ? ' · estimated' : ''}</div></div><span class="badge">${CAT[x.category] || esc(x.category)}</span></div>`;
+    const reached = m.reached.length ? `<div class="list" id="ms-notable">${m.reached.map(row).join('')}</div>` : none('None reached yet.');
+    return `<div class="grid grid-2 ins-grid ms-latest">
         <div class="card" id="ms-coming"><div class="card-h"><h3>Coming up</h3><span class="tiny muted">nearest first</span></div>${ahead}</div>
-        <div class="card" id="ms-reached"><div class="card-h"><h3>Reached</h3><span class="tiny muted">${m.total.toLocaleString()} in all</span></div>${reached}${rest}</div>
+        <div class="card" id="ms-reached"><div class="card-h"><h3>Latest</h3><span class="tiny muted">${m.total.toLocaleString()} in all</span></div>${reached}
+          <a class="btn sm" href="/milestones" data-link style="margin-top:12px">${icon('trophy')}Your whole career, year by year</a></div>
       </div>`;
   }
 

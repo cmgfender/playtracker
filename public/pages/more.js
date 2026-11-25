@@ -4,7 +4,7 @@ import { icon, api, state, plural, NAV_GROUPS, navItems, applyBadges } from '../
 // More (mobile)
 // =====================================================================
 const MORE_DESC = {
-  '/insights': 'When, what and how you play', '/duplicates': 'Merge editions, fix double counting', '/history': 'Date play from before tracking', '/accounts': 'Steam, Xbox, PlayStation, custom',
+  '/insights': 'When, what and how you play', '/milestones': 'Your career, year by year', '/duplicates': 'Merge editions, fix double counting', '/history': 'Date play from before tracking', '/accounts': 'Steam, Xbox, PlayStation, custom',
   '/settings': 'Schedule, import/export, security', '/system': 'Error log, API usage, diagnostics', '/api': 'Tokens, push endpoint, docs',
 };
 /** The phone's More tab: the sidebar's groups (minus the tabs), Year in review on top, and what needs a look counted on each row. */

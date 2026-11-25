@@ -27,7 +27,7 @@ import { weeklySummary, summaryText } from '../services/digest.js';
 import { sendSummary } from '../services/webhook.js';
 import { facts, withFacts } from '../services/facts.js';
 import { finishForecast, backlogReality } from '../services/forecast.js';
-import { milestones } from '../services/milestones.js';
+import { milestones, MARKS, CATEGORIES } from '../services/milestones.js';
 import fsp from 'node:fs';
 import { httpJson, ProviderError } from '../providers/http.js';
 import { HttpError, toInt, toTime } from '../util.js';
@@ -837,14 +837,22 @@ export function registerRoutes(r, app) {
     returns: '{ games, with_typical_time, assumed (games without a typical time, counted at the median of the others), remaining_minutes, pace_ratio, personal_pace, weekly_minutes, '
       + 'weeks, years (null without a pace or a typical time), added_per_month, finished_per_month (null until the library is four months old), text | null }',
   });
-  r.get('/api/v1/stats/milestones', (c) => milestones(db, { limit: clamp(c.query.limit, 60, 1, 500), all: c.query.all === 'true' }), {
-    summary: 'Milestones: the round numbers of your tracked history with the day each was reached, and the ones coming up. Play in all, in a game, in a series and in a genre; games, days, sessions and streaks; '
-      + 'achievements, completions, platinums, Gamerscore and rare unlocks',
+  r.get('/api/v1/stats/milestones', (c) => {
+    const category = c.query.category || null;
+    if (category && !CATEGORIES.includes(category)) throw new HttpError(400, `category must be one of ${CATEGORIES.join(', ')}`);
+    return milestones(db, { limit: clamp(c.query.limit, 60, 1, 1000), all: c.query.all === 'true', category });
+  }, {
+    summary: 'Career milestones: the round numbers of your whole history, tracked and estimated, each with the day it was reached as precisely as the evidence allows, and the ones coming up. '
+      + 'Playtime (in all, by year, by platform, 100+ hours in a game), library (games played, platforms, decades of releases, old games, launch days), genres, series, achievements, the career (its years and decades) and habits (tracked play)',
     tag: 'stats',
-    query: { limit: 'milestones listed, newest first (default 60)', all: 'true = every milestone reached; otherwise the notable ones: of each kind, the three highest rungs you have reached' },
-    returns: '{ day, total, notable_total, counts: { kind: n }, reached: [{ id, kind (hours|game_hours|series_hours|genre_hours|games|series_games|genre_games|days|sessions|streak|achievements|completions|'
-      + 'platinums|gamerscore|rare), text, value, tier (the rung on its ladder), notable, day, subject? (a series or genre), game_id?, title? }], '
-      + 'coming: [{ id, kind, text, target, current (in the unit of target), percent, subject?, game_id?, title? }] nearest first }',
+    query: {
+      limit: 'milestones listed, newest first (default 60, max 1000)', all: 'true = every milestone reached; otherwise the notable ones: of each kind, the three highest rungs you have reached, and every career first',
+      category: CATEGORIES.join('|'),
+    },
+    returns: '{ day, first_day (your first known play), first_precision, total, notable_total, counts: { kind: n }, categories: { category: n }, years: [{ year, n }] (newest first), '
+      + `reached: [{ id, kind (${Object.keys(MARKS).join('|')}), category, text, value, tier (the rung on its ladder), notable, day | null (date unknown: only undated history reaches it), `
+      + 'precision: day|month|year|null (estimated history: "around March 2015" or "in 2015"), basis: tracked|estimated|unlock|platform|undated, subject?, game_id?, title?, detail? }] newest first, undated last, '
+      + 'coming: [{ id, kind, category, text, target, current (in the unit of target), percent, subject?, game_id?, title? }] nearest first }',
   });
   r.get('/api/v1/games/:id/forecast', (c) => {
     const f = finishForecast(db, toInt(c.params.id));

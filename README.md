@@ -31,6 +31,7 @@ Steam, Xbox and PlayStation tell you **how long you've played in total**, but no
   - Stacked per-platform charts and a GitHub-style heatmap.
   - Top games, weekday and time-of-day breakdowns.
   - Platform share and a **year in review** page.
+- **Milestones:** your career, year by year, as badges: hours in all, by year and by platform; games played, platforms, decades of releases, old games and launch days; genres; series ("10 years of Halo"); achievements (rare, ultra-rare, Gamerscore, completions, platinums, a big day); the career's years and decades; and habits. History from before tracking counts: a milestone it carries is dated "around March 2015" or "in 2015", tracked play and achievement unlocks to the day. A single game is a milestone only from 100 hours on.
 - **Library:** cover grid or list, search, platform and status filters, favorites, ratings, notes, hidden games, statuses (playing, backlog, beaten, completed, dropped…).
 - **What should I play?** A Home card (and the `P` key) that picks from your library for the time you have and your mood: Quick fix, Keep going, Finish something, Start something new, Rediscover or Surprise me.
   - Each pick says why, with your numbers: "Sessions here run about 40m, fits in 1h", "10h in the last 60 days, nothing in the last 2 weeks", "92% of achievements, 2 left".
