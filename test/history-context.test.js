@@ -156,6 +156,29 @@ test('a game added by hand takes the hours played before, dated over the years y
   assert.equal((await call('/games', { method: 'POST', body: { title: 'Bad', history: { minutes: 60, first_played_at: '2000-01-01', last_played_at: '1999-01-01' } } })).status, 400);
 });
 
+test('a game added by hand: the hours on exact dates, or with no dates at all (kept undated) - the other two choices of Add a game', async () => {
+  // exact dates: the window is what you gave, not a period spread evenly
+  const exact = await call('/games', { method: 'POST', body: { title: 'Perfect Dark', history: { minutes: 720, first_played_at: '2010-03-01T12:00:00', last_played_at: '2010-06-15T20:00:00' } } });
+  assert.equal(exact.status, 200);
+  const h = exact.data.entries[0].history;
+  assert.equal(h.undated, 0);
+  assert.ok(h.window[0] >= at(2010, 3, 1, 0) && h.window[1] <= at(2010, 6, 16, 0), 'within the dates given');
+  assert.deepEqual(h.reasons, ['Window set manually']);
+  assert.equal(exact.data.summary.estimated_minutes, 720);
+  // not sure when: the hours count in the total, in no year and on no chart, until they are dated
+  const unsure = await call('/games', { method: 'POST', body: { title: 'Blast Corps', history: { minutes: 300 } } });
+  assert.equal(unsure.status, 200);
+  const u = unsure.data.entries[0];
+  assert.equal(unsure.data.minutes, 300);
+  assert.equal(u.history.undated, 300);
+  assert.equal(u.history.window, null);
+  assert.equal(unsure.data.summary.estimated_minutes, 0);
+  // dated later, from the game page
+  const later = await call(`/entries/${u.id}/history`, { method: 'PATCH', body: { first_played_at: '1997-01-01T12:00:00', last_played_at: '1997-12-31T20:00:00', coarse: true } });
+  assert.equal(later.status, 200);
+  assert.equal(later.data.entries[0].history.undated, 0);
+});
+
 test('a period answered before the game came out starts at the release (Mewgenics: "2026, Jan - Mar", out Feb 10)', async () => {
   const now = Date.now();
   const game = Number(db.prepare("INSERT INTO games(title, norm_title, created_at, updated_at) VALUES ('Mewgenics', 'mewgenics', ?, ?)").run(now, now).lastInsertRowid);

@@ -246,10 +246,21 @@ export async function addGameModal() {
         <div class="field"><label for="ag-on">Played on <span class="dim">(optional)</span></label><input class="input" id="ag-on" name="played_on" list="ag-plats" placeholder="Nintendo 64, Switch, emulator…"><datalist id="ag-plats"></datalist></div>
         <div class="field"><label for="ag-st">Status</label><select class="input" id="ag-st" name="status">${Object.entries(STATUSES).map(([k, v]) => `<option value="${k}">${v.label}</option>`).join('')}</select></div>
       </div>
-      <div class="field"><label for="ag-hours">Hours played so far <span class="dim">(optional)</span></label>
-        <input class="input" id="ag-hours" name="hours" type="number" min="0" step="0.5" inputmode="decimal" style="max-width:160px" placeholder="0">
-        <p class="tiny muted" style="margin:6px 0 0">Play from before today. It is dated like history from a platform (hatched in charts) and never counts as today's play. Sessions from now on: log them on the game page.</p></div>
-      <div class="row wrap" id="ag-when" data-period style="gap:6px" hidden>${periodPicker({ hi: thisYear, lo: 1970, guess: null, label: 'Played in' })}</div>
+      <fieldset class="ag-hist" id="ag-hist">
+        <legend>Played before today <span class="dim">(optional)</span></legend>
+        <div class="field"><label for="ag-hours">Hours played so far</label>
+          <input class="input" id="ag-hours" name="hours" type="number" min="0" step="0.5" inputmode="decimal" style="max-width:160px" placeholder="0"></div>
+        <div class="field"><div class="ag-l" id="ag-when-l">When you played them</div>
+          <div class="seg" id="ag-mode" role="group" aria-labelledby="ag-when-l">
+            <button type="button" data-mode="period" class="on" aria-pressed="true">A year or period</button><button type="button" data-mode="dates" aria-pressed="false">Exact dates</button><button type="button" data-mode="none" aria-pressed="false">Not sure</button></div>
+          <div class="row wrap" id="ag-when" data-period style="gap:6px">${periodPicker({ hi: thisYear, lo: 1970, guess: null, label: 'Played in' })}</div>
+          <div class="grid grid-2" id="ag-dates" hidden>
+            <div class="field"><label for="ag-s">Started playing</label><input class="input" id="ag-s" type="date" name="s" max="${dateValue(Date.now())}"></div>
+            <div class="field"><label for="ag-e">Last played</label><input class="input" id="ag-e" type="date" name="e" max="${dateValue(Date.now())}"></div></div>
+          <div id="ag-rel" hidden></div>
+          <p class="small" id="ag-sum" aria-live="polite" style="margin:0"></p></div>
+        <p class="tiny muted" style="margin:0">Dated like history from a platform (hatched in charts): it never counts as today's play. You can change the hours and the dates later on the game page; sessions from now on are logged there too.</p>
+      </fieldset>
       <details><summary class="small muted" style="cursor:pointer">Cover image</summary>
         <div class="field" style="margin-top:8px"><label for="ag-cover">Cover image URL <span class="dim">(optional)</span></label><input class="input" id="ag-cover" name="cover_url" placeholder="https://…"></div></details>
     </form>`,
@@ -265,15 +276,77 @@ export async function addGameModal() {
         const lo = Math.min(ry ?? 1970, thisYear);
         for (const n of ['y', 'y2']) when.querySelector(`[name=${n}]`).innerHTML = yearOptions(thisYear, Math.max(1970, ry ? lo : 1970), ry);
       };
-      f.hours.addEventListener('input', () => { when.hidden = !(Number(f.hours.value) > 0); });
-      when.addEventListener('change', periodChange);
+      // when the hours were played: a year or period (spread evenly), exact dates, or not known
+      const dates = el.querySelector('#ag-dates');
+      const rel = el.querySelector('#ag-rel');
+      const sum = el.querySelector('#ag-sum');
+      let mode = 'period';
+      let touched = false; // you set a date yourself (a year guessed from the release, or looking at the choices, is not that)
+      const dayAt = (v, end) => (v ? Math.min(Date.now(), new Date(apiTime(v, end)).getTime()) : null);
+      /** What is asked for as it stands: { minutes, start, end, coarse } or { error, at } - also the line under the fields. */
+      const read = () => {
+        const hours = Number(f.hours.value || 0);
+        if (!(hours >= 0)) return { error: 'Enter the hours as a number', at: f.hours };
+        const minutes = Math.round(hours * 60);
+        if (mode === 'none') return { minutes };
+        if (mode === 'dates') {
+          const st = dayAt(f.s.value, false); const en = dayAt(f.e.value, true);
+          if (st && en && en < st) return { minutes, error: 'Last played is before the start', at: f.e };
+          if (!st && !en) return { minutes, error: 'Enter when you started or last played it, or choose "Not sure"', at: f.s, missing: true };
+          return { minutes, start: st, end: en };
+        }
+        const per = readPeriod(when);
+        if (!per) return { minutes, error: 'Pick the year you played it, roughly, or choose "Not sure"', at: when.querySelector('[name=y]'), missing: true };
+        let [st, en] = per;
+        // not before it came out: "1996" for a game released in June 1996 starts in June
+        if (picked?.release_date && st < picked.release_date && en > picked.release_date) st = picked.release_date;
+        return { minutes, start: st, end: en, coarse: true };
+      };
+      const months = (a, b) => (new Date(b).getFullYear() - new Date(a).getFullYear()) * 12 + new Date(b).getMonth() - new Date(a).getMonth() + 1;
+      const tell = () => {
+        const r = read();
+        const h = r.minutes ? fmtMin(r.minutes) : null;
+        let line; let warn = false;
+        if (r.error && !r.missing) { line = r.error; warn = true; }
+        else if (!h) line = mode === 'none' ? 'Nothing is added without hours.' : 'Enter the hours above: these dates say when you played them.';
+        else if (r.missing) line = mode === 'dates' ? 'Enter when you started, when you last played, or both.' : 'Pick the year, roughly.';
+        else if (mode === 'none') line = `${h} count in your totals, but in no year and on no chart until you date them.`;
+        else if (r.coarse) { const n = months(r.start, r.end); line = `${h} spread evenly from ${fmtDate(r.start, MONF)} to ${fmtDate(r.end, MONF)}${n > 1 ? `: about ${fmtMin(Math.round(r.minutes / n))} a month` : ''}.`; }
+        else if (r.start && r.end) line = `${h} between ${day(r.start)} and ${day(r.end)}.`;
+        else line = r.start ? `${h} from ${day(r.start)}. Add the last day you played to spread them to it.` : `${h} up to ${day(r.end)}. Add the day you started to spread them from it.`;
+        if (!warn && picked?.release_date && mode === 'dates' && r.start && r.start < picked.release_date - 86_400_000) { line += ` That starts before it came out (${day(picked.release_date)}).`; warn = true; }
+        sum.textContent = line;
+        sum.classList.toggle('muted', !warn);
+        sum.style.color = warn ? 'var(--warn-ink)' : '';
+      };
+      const setMode = (m) => {
+        // exact dates start from the period already picked
+        if (m === 'dates' && mode === 'period' && !f.s.value && !f.e.value) { const r = read(); if (r.coarse) { f.s.value = dateValue(r.start); f.e.value = dateValue(r.end); } }
+        mode = m;
+        for (const b of el.querySelectorAll('#ag-mode button')) { b.classList.toggle('on', b.dataset.mode === m); b.setAttribute('aria-pressed', String(b.dataset.mode === m)); }
+        when.hidden = m !== 'period';
+        dates.hidden = m !== 'dates';
+        showRelease();
+        tell();
+      };
+      const showRelease = () => {
+        const r = picked?.release_date;
+        rel.hidden = !(r && mode === 'dates');
+        rel.innerHTML = rel.hidden ? '' : `<button type="button" class="btn sm ghost" id="ag-rel-b">${icon('check')}Start at its release: ${day(r)}</button>`;
+      };
+      el.querySelector('#ag-mode').addEventListener('click', (e) => { const b = e.target.closest('[data-mode]'); if (b) setMode(b.dataset.mode); });
+      rel.addEventListener('click', (e) => { if (e.target.closest('#ag-rel-b')) { f.s.value = dateValue(picked.release_date); touched = true; tell(); } });
+      f.hours.addEventListener('input', tell);
+      when.addEventListener('change', (e) => { periodChange(e); touched = true; tell(); });
+      dates.addEventListener('input', () => { touched = true; tell(); });
+      tell();
       const showPicked = () => {
         const p = picked;
         el.querySelector('#ag-picked').innerHTML = p ? `<div class="item ag-pick">${p.thumb_url ? `<img src="${esc(p.thumb_url)}" width="45" height="60" alt="" loading="lazy">` : ''}
             <div class="grow"><div class="ttl">${esc(p.name)}</div><div class="sub">${p.release_date ? `Released ${day(p.release_date)}` : 'Release date unknown'}${p.platforms.length ? ` · ${esc(p.platforms.slice(0, 6).join(', '))}${p.platforms.length > 6 ? '…' : ''}` : ''}</div>
             <div class="tiny muted">From IGDB: genres, series and the typical time to beat follow once it is added.</div></div>
             <button type="button" class="btn sm ghost" id="ag-unpick">Not this one</button></div>` : '';
-        el.querySelector('#ag-unpick')?.addEventListener('click', () => { picked = null; showPicked(); setYears(null); });
+        el.querySelector('#ag-unpick')?.addEventListener('click', () => { picked = null; showPicked(); setYears(null); showRelease(); tell(); });
         el.querySelector('#ag-plats').innerHTML = (p?.platforms || []).map((x) => `<option value="${esc(x)}">`).join('');
       };
       const search = async () => {
@@ -305,6 +378,8 @@ export async function addGameModal() {
         sugg.hidden = true;
         setYears(picked.release_date);
         showPicked();
+        showRelease();
+        tell();
         f.played_on.focus();
       });
       let saving = false; // a second click while the first save is out must not add the game twice
@@ -312,16 +387,13 @@ export async function addGameModal() {
         if (saving) return;
         const title = f.title.value.trim();
         if (!title) { toast('Enter a title', { bad: true }); f.title.focus(); return; }
-        const hours = Number(f.hours.value || 0);
-        if (!(hours >= 0)) { toast('Enter the hours as a number', { bad: true }); f.hours.focus(); return; }
+        const past = read();
+        if (past.error && (past.minutes > 0 || !past.missing)) { toast(past.error, { bad: true }); past.at.focus(); return; }
+        // dates you set, and no hours for them: say so instead of dropping them
+        if (!past.minutes && touched && mode !== 'none') { toast('Enter the hours you played, roughly: the dates are for them', { bad: true }); f.hours.focus(); return; }
         const body = { title, cover_url: f.cover_url.value, status: f.status.value, played_on: f.played_on.value.trim() || undefined };
-        if (hours > 0) {
-          const per = readPeriod(when);
-          if (!per) { toast('Pick the year you played it, roughly', { bad: true }); when.querySelector('[name=y]').focus(); return; }
-          let [s, e] = per;
-          // not before it came out: "1996" for a game released in June 1996 starts in June
-          if (picked?.release_date && s < picked.release_date && e > picked.release_date) s = picked.release_date;
-          body.history = { minutes: Math.round(hours * 60), first_played_at: new Date(s).toISOString(), last_played_at: new Date(e).toISOString(), coarse: true };
+        if (past.minutes > 0) {
+          body.history = { minutes: past.minutes, ...(past.start ? { first_played_at: new Date(past.start).toISOString() } : {}), ...(past.end ? { last_played_at: new Date(past.end).toISOString() } : {}), ...(past.coarse ? { coarse: true } : {}) };
         }
         saving = true;
         let g;
