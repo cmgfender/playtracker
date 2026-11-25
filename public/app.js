@@ -125,11 +125,38 @@ export function monogram(title) {
   return (sig.length ? sig : words).slice(0, 2).map((w) => w[0]).join('').toUpperCase();
 }
 
+/**
+ * An image address at about the width it is drawn at, where its host can scale it. Xbox sends its art
+ * as it was uploaded - a cover of 1.5 MB, an achievement icon of 3 MB - and a library of 600 such
+ * covers is most of a gigabyte; asked for 360px, the same cover is 40 KB. Hosts that cannot scale
+ * (Steam, IGDB: already small) are left as they are.
+ */
+export function sized(url, w = 360) {
+  const u = String(url || '');
+  if (!u || /[?&]w=\d/.test(u)) return u;
+  if (/^https?:\/\/store-images\.s-microsoft\.com\/image\//.test(u)) return `${u}${u.includes('?') ? '&' : '?'}w=${w}`;
+  if (/^https?:\/\/images-eds(?:-ssl)?\.xboxlive\.com\/image\?/.test(u)) return `${u}&w=${w}`;
+  if (/^https:\/\/(?:image\.api\.playstation\.com|psnobj\.prod\.dl\.playstation\.net)\//.test(u) && !u.includes('?')) return `${u}?w=${w}`;
+  if (w <= 256 && /^https:\/\/atum-img-lp1\.cdn\.nintendo\.net\/.+_512$/.test(u)) return u.replace(/_512$/, '_256');
+  return u;
+}
+/** `src` (and where it was scaled, the address as it was: the image falls back to it if the scaled one fails). */
+export const imgSrc = (url, w = 360) => { const s = sized(url, w); return `src="${esc(s)}"${s !== url ? ` data-full="${esc(url)}"` : ''}`; };
+// a scaled image its host refuses: once more as it was, before whatever the image does when it fails
+document.addEventListener('error', (e) => {
+  const t = e.target;
+  if (t?.tagName !== 'IMG' || !t.dataset.full) return;
+  const full = t.dataset.full;
+  delete t.dataset.full;
+  e.stopPropagation();
+  t.src = full;
+}, true);
+
 /** Cover art, or a tinted placeholder (colours from app.css, per theme) with the title and a monogram. */
 export function cover(g, cls = '', style = '') {
   const title = g.title || '';
   const full = title.length > 28 ? title.split(/\s+/).slice(0, 4).join(' ') : title;
-  const img = g.cover_url ? `<img loading="lazy" decoding="async" src="${esc(g.cover_url)}" alt="" onload="this.classList.add('ok')" onerror="this.remove()">` : '';
+  const img = g.cover_url ? `<img loading="lazy" decoding="async" ${imgSrc(g.cover_url)} alt="" onload="this.classList.add('ok')" onerror="this.remove()">` : '';
   return `<div class="cover ${cls}" style="--ph-h:${coverHue(title)};${style}"><div class="ph"><span class="full">${esc(full)}</span><span class="ini">${esc(monogram(title))}</span></div>${img}</div>`;
 }
 

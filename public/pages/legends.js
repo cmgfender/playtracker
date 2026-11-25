@@ -1,7 +1,7 @@
 // Legends: the stories in your career. Insights digs for findings and Milestones hands out badges;
 // a legend follows one thread - a series, a maker, a console generation, a trend, a genre, a platform,
 // an era of your own - from where it began to where it stands, and says where it stands among its kind.
-import { esc, fmtMin, fmtDate, plat, platDot, icon, api, plural, setTitle, cover, coverHue, monogram, navigate, modal, toast, fail, confirmBox } from '../app.js';
+import { esc, fmtMin, fmtDate, plat, platDot, icon, api, plural, setTitle, cover, coverHue, monogram, navigate, modal, toast, fail, confirmBox, imgSrc } from '../app.js';
 import { barChart, mountCharts, BASIS_FILL } from '../charts.js';
 import { emptyState, prose } from './shared.js';
 import { franchiseBody } from './franchises.js';
@@ -24,7 +24,7 @@ const eraGames = (c) => [c.played || !c.unlocks ? plural(c.played, 'game') : nul
 /** A legend's card: up to three covers, its name, what it is, and how much of your time is in it. */
 function card(c) {
   const covers = (c.covers || []).slice(0, 3);
-  const art = covers.length ? `<div class="fr-covers n${covers.length}">${covers.map((u) => `<img src="${esc(u)}" alt="" loading="lazy" onerror="this.style.visibility='hidden'">`).join('')}</div>`
+  const art = covers.length ? `<div class="fr-covers n${covers.length}">${covers.map((u) => `<img ${imgSrc(u)} alt="" loading="lazy" onerror="this.style.visibility='hidden'">`).join('')}</div>`
     : `<div class="fr-covers ph" style="--ph-h:${coverHue(c.name)}"><span>${esc(monogram(platName(c)))}</span></div>`;
   const when = c.kind === 'era' ? `${monthYear(c.from_day)} – ${c.to_day ? monthYear(c.to_day) : 'today'}` : c.tagline || '';
   return `<a class="card fr-card lg-card" href="${href(c)}" data-link>
@@ -50,7 +50,7 @@ export async function legendsPage(view, stale) {
   // eras found in the play itself: a name and its months, to adopt as they are or set aside
   const range = (s) => `${monthYear(s.from)} – ${s.to ? monthYear(s.to) : 'today'}`;
   const suggested = (l.suggested || []).length ? `<div class="lg-sug" id="lg-suggested"><div class="tiny muted lg-sug-h">Found in your play</div>
-    ${l.suggested.map((s, i) => `<div class="lg-sug-row" data-sug="${i}">${s.game?.cover_url ? `<img src="${esc(s.game.cover_url)}" alt="" loading="lazy" onerror="this.style.visibility='hidden'">` : `<span class="lg-sug-ph" style="--ph-h:${coverHue(s.name)}">${esc(monogram(s.name.replace(/^The /, '')))}</span>`}
+    ${l.suggested.map((s, i) => `<div class="lg-sug-row" data-sug="${i}">${s.game?.cover_url ? `<img ${imgSrc(s.game.cover_url)} alt="" loading="lazy" onerror="this.style.visibility='hidden'">` : `<span class="lg-sug-ph" style="--ph-h:${coverHue(s.name)}">${esc(monogram(s.name.replace(/^The /, '')))}</span>`}
       <div class="grow"><div class="ttl">${esc(s.name)}</div><div class="tiny muted">${esc(range(s))} · ${hours(s.minutes)} · ${esc(s.why)}</div></div>
       <button class="btn sm" data-sug-add="${i}">${icon('plus')}Add</button><button class="btn sm ghost icon" data-sug-no="${i}" aria-label="Not an era: ${esc(s.name)}" title="Not an era">${icon('x')}</button></div>`).join('')}</div>` : '';
   const eras = l.eras.length ? `<div class="fr-grid">${l.eras.map(card).join('')}</div>`

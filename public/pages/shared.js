@@ -1,7 +1,7 @@
 // Helpers more than one page uses: KPI tiles, session rows and their edit/log dialogs, empty states, achievement icons, series names.
 import {
   esc, fmtMin, fmtHours, fmtDate, fmtTime, dayLabel, plat, platDot, platTag, cover, icon, api, toast, undoToast, fail, modal,
-  confirmBox, rerender, state, applyTheme, plural,
+  confirmBox, rerender, state, applyTheme, plural, imgSrc,
 } from '../app.js';
 import { BASIS_FILL } from '../charts.js';
 
@@ -207,7 +207,7 @@ export function rarityText(x) {
 /** An achievement's icon over a trophy (PlayStation grades tinted); a locked one shows a lock. */
 export function achIcon(x, { size = 36, locked = false } = {}) {
   const src = locked ? x.icon_locked_url || x.icon_url : x.icon_url;
-  return `<span class="ach-ic${x.grade ? ` g-${x.grade}` : ''}${locked ? ' locked' : ''}" style="width:${size}px;height:${size}px" aria-hidden="true">${icon(locked ? 'lock' : 'trophy')}${src ? `<img src="${esc(src)}" alt="" loading="lazy" decoding="async" onerror="this.remove()">` : ''}</span>`;
+  return `<span class="ach-ic${x.grade ? ` g-${x.grade}` : ''}${locked ? ' locked' : ''}" style="width:${size}px;height:${size}px" aria-hidden="true">${icon(locked ? 'lock' : 'trophy')}${src ? `<img ${imgSrc(src, 128)} alt="" loading="lazy" decoding="async" onerror="this.remove()">` : ''}</span>`;
 }
 /** "3 achievements · 1 rare (4.2%)" with up to three tiny icons, under a session row that has unlocks. */
 function sessionAchLine(s) {
