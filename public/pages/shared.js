@@ -44,6 +44,7 @@ export const BASIS = [
   ['confirmed', 'History you confirmed', 'Estimated history whose dates you confirmed or set yourself'],
   ['anchored', 'Dated by unlocks', 'Estimated history on days with an achievement or trophy unlock'],
   ['estimated', 'Estimated history', 'Playtime from before tracking began, dated from first/last played and release dates'],
+  ['assumed', 'Assumed hours', 'Hours the platform never reported (Xbox 360, PS3): the game\'s typical time x the share of its achievements you unlocked, dated by the unlocks'],
 ];
 
 // Tracked play stacks by platform; imported sessions and the kinds of estimated history sit on
@@ -132,8 +133,8 @@ function sourceBadge(s) {
   const approx = (t) => esc(s.note ? `${t} · ${s.note}` : t);
   if (s.kind === 'baseline') return '<span class="badge">history</span>';
   if (s.kind === 'estimate') {
-    const k = s.basis === 'confirmed' ? 'confirmed' : s.basis === 'anchored' ? 'anchored' : 'estimated';
-    const label = { confirmed: 'confirmed', anchored: 'by unlocks', estimated: `estimated · ${s.confidence || ''}` }[k];
+    const k = s.basis === 'assumed' ? 'assumed' : s.basis === 'confirmed' ? 'confirmed' : s.basis === 'anchored' ? 'anchored' : 'estimated';
+    const label = { assumed: 'assumed hours', confirmed: 'confirmed', anchored: 'by unlocks', estimated: `estimated · ${s.confidence || ''}` }[k];
     return `<span class="badge basis-b" title="${esc(BASIS.find(([x]) => x === k)[2])}${k === 'estimated' && CONF[s.confidence] ? ` (${esc(CONF[s.confidence][2])})` : ''}"><i class="dot basis-${k}" aria-hidden="true"></i>${esc(label)}</span>`;
   }
   if (s.source === 'manual') return '<span class="badge accent">manual</span>';

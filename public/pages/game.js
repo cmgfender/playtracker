@@ -178,7 +178,11 @@ export async function game(view, id, stale) {
   const plays = g.sessions.filter((x) => x.kind === 'play');
   const recent = plays.slice(0, 10).map((x) => ({ ...x, achievements: bySession.get(x.id) || { count: 0, items: [] } }));
   const nSessions = Math.max(s.sessions, plays.length);
-  const parts = [[s.tracked_minutes, 'tracked', 'background:var(--accent-mark)'], [s.estimated_minutes || 0, 'estimated history', null], [s.baseline_minutes, 'undated', 'background:var(--line-strong)']].filter(([m]) => m > 0);
+  // hours assumed for copies their platform reports no time for: a part of their own, never "estimated history"
+  const assumedMin = Math.min(s.estimated_minutes || 0, g.entries.filter((e) => isAssumed(e) && !e.excluded).reduce((a, e) => a + e.playtime_min, 0));
+  const parts = [[s.tracked_minutes, 'tracked', 'background:var(--accent-mark)'], [(s.estimated_minutes || 0) - assumedMin, 'estimated history', null, 'hatch'], [assumedMin, 'assumed', null, 'basis-assumed'],
+    [s.baseline_minutes, 'undated', 'background:var(--line-strong)']].filter(([m]) => m > 0);
+  const relLine = releaseLine(g.franchise);
   const series = (curve?.series || []).map((x) => ({ ...x, label: x.key.endsWith('-01') && curve.series.length > 12 ? x.key.slice(0, 4) : seriesLabel(x.key, 'month'), major: x.key.endsWith('-01') && curve.series.length > 36, name: seriesName(x.key, 'month') }));
   const years = [...new Set(series.filter((x) => x.minutes > 0).map((x) => Number(x.key.slice(0, 4))))].sort((a, b) => b - a).slice(0, 6);
   const hasAch = !!(ach?.summary && ach.total);
@@ -191,11 +195,12 @@ export async function game(view, id, stale) {
         <div class="grow">
           <div class="row wrap" style="margin-bottom:8px">${g.platforms.map(platTag).join('')}</div>
           <h1>${esc(g.title)}</h1>
+          ${relLine ? `<div class="hero-rel small" id="g-release">${relLine}</div>` : ''}
           <div class="hero-life"><span class="big">${fmtMin(s.total_minutes, { short: s.total_minutes >= 600 })}</span><span class="muted">lifetime</span></div>
           <div class="hero-line small muted">${plural(nSessions, 'session')} · ${g.last_played_at ? `played ${ago(g.last_played_at)}` : s.total_minutes ? 'no tracked play yet' : 'never played'}</div>
           ${s.total_minutes ? `<div class="hero-split">
-            <div class="split-bar">${parts.map(([m, , st]) => `<i ${st ? `style="width:${pct(m)}%;${st}"` : `class="hatch-bg" style="width:${pct(m)}%"`}></i>`).join('')}</div>
-            <div class="legend">${parts.length > 1 ? `<span><b>${fmtMin(s.total_minutes)}</b> =</span>` : ''}${parts.map(([m, l, st], i) => `<span>${i ? '+ ' : ''}<i class="dot${st ? '' : ' hatch-dot'}" ${st ? `style="${st}"` : ''}></i>${fmtMin(m)} ${l}</span>`).join('')}</div>
+            <div class="split-bar">${parts.map(([m, , st, cls]) => `<i ${st ? `style="width:${pct(m)}%;${st}"` : `class="${cls === 'hatch' ? 'hatch-bg' : cls}" style="width:${pct(m)}%"`}></i>`).join('')}</div>
+            <div class="legend">${parts.length > 1 ? `<span><b>${fmtMin(s.total_minutes)}</b> =</span>` : ''}${parts.map(([m, l, st, cls], i) => `<span>${i ? '+ ' : ''}<i class="dot${st ? '' : cls === 'hatch' ? ' hatch-dot' : ` ${cls}`}" ${st ? `style="${st}"` : ''}></i>${fmtMin(m)} ${l}</span>`).join('')}</div>
           </div>` : ''}
         </div>
       </div>
@@ -214,7 +219,8 @@ export async function game(view, id, stale) {
       ${kpi('Longest', fmtMin(s.longest_session_minutes), s.longest_session_minutes ? 'tracked' : '')}
       ${kpi('First tracked', s.first_tracked_at ? fmtDate(s.first_tracked_at) : '—', s.tracking_since ? `owned since ${fmtDate(s.tracking_since)}` : '')}
     </div>
-    <div class="grid grid-main game-cols">${columns()}</div>`;
+    <div class="grid grid-main game-cols">${columns()}</div>
+    ${fixPanel(g)}`;
   /**
    * The two columns: play on the left (curve, sessions), the game's facts on the right
    * (achievements, platforms, notes). Activity and history before tracking go where the columns
@@ -234,39 +240,22 @@ export async function game(view, id, stale) {
           ${baselines.map((x) => `<div class="item"><span class="dot" style="background:var(--line);width:10px;height:10px"></span><div class="grow"><div class="sub"><b style="color:var(--text)">${esc(plat(x.platform).label)}</b> ${esc(x.note || 'History')} · ${fmtDate(x.window_end)}</div></div><div class="amt muted">${fmtMin(x.minutes)}</div><button class="btn ghost sm icon" data-edit-session="${x.id}" aria-label="Edit history">${icon('edit')}</button></div>`).join('')}
           </div>
         </div>`;
-    // a game holding two releases of a series entry (an original and its remake): which one each entry is
-    const releaseOf = new Map((g.franchise?.parts || []).flatMap((p) => p.entries.map((id) => [id, p])));
-    const releaseName = (p) => `${p.kind === 'main' ? 'the original' : p.kind === 'remake' ? 'the remake' : p.kind === 'remaster' ? 'the remaster' : p.kind === 'rerelease' ? 'a re-release' : 'a version'}, ${p.year}`;
-    const platCard = `<div class="card"><div class="card-h"><h2>Platforms & accounts</h2></div>
-          <div class="list">${g.entries.map((e) => `<div class="item" style="${e.excluded ? 'opacity:.55' : ''}">
-              ${e.icon_url ? `<img src="${esc(e.icon_url)}" width="32" height="32" style="border-radius:8px" alt="" loading="lazy" onerror="this.style.visibility='hidden'">` : platIcon(e.platform, 32)}
-              <div class="grow"><div class="ttl ellipsis">${esc(e.account_name || plat(e.platform).label)}</div>
-                <div class="sub">${platDot(e.platform)}${esc(e.title !== g.title ? e.title : plat(e.platform).label)}${e.meta?.played_on ? ` · ${esc(e.meta.played_on)}` : ''}${releaseOf.has(e.id) ? ` · <span class="g-release">${esc(releaseName(releaseOf.get(e.id)))}</span>` : ''}${e.excluded ? ' · <b>excluded</b>' : ''}</div>
-                <div class="sub">${e.last_played_at ? `Played ${ago(e.last_played_at)}` : ''}${e.meta?.devices?.deck ? ` · Deck ${fmtMin(e.meta.devices.deck)}` : ''}${e.play_count ? ` · ${e.play_count} launch${e.play_count === 1 ? '' : 'es'}` : ''}${e.achievements?.total ? ` · ${e.achievements.unlocked} of ${e.achievements.total} unlocked` : ''}${e.missing_since ? ` · <span style="color:var(--warn)">no longer in library since ${fmtDate(e.missing_since)}</span>` : ''}</div></div>
-              <div class="amt">${fmtMin(e.playtime_min)}</div>
-              <button class="btn ghost sm icon" data-entry-menu="${e.id}" aria-label="Entry options">${icon('more')}</button>
-            </div>`).join('')}</div>
-          ${releaseOf.size ? `<p class="small muted" style="margin:8px 0 0">This game holds ${g.franchise.parts.length} releases: totals are summed, and the series counts each one played, with its own time.</p>`
-            : g.entries.length > 1 ? '<p class="small muted" style="margin:8px 0 0">Owned on several platforms — totals are summed. Exclude an entry if two platforms report the same playtime.</p>' : ''}
-        </div>`;
-    const hist = g.entries.filter((e) => e.history);
-    const histCard = hist.length ? `<div class="card"><div class="card-h"><h2>History before tracking</h2></div>
-          <p class="small muted" style="margin-top:-6px">Playtime from before tracking began. Instead of landing on import day it is dated from everything the platform reports, and shown hatched in charts.</p>
-          ${hist.map((e) => historyBlock(e)).join('')}</div>` : '';
+    const platCard = sourcesCard(g);
     const notesCard = `<div class="card"><div class="card-h"><h2 id="g-notes-h">Notes</h2><span class="tiny muted" id="g-notes-st" aria-live="polite"></span></div>
           <textarea class="input" id="g-notes" aria-labelledby="g-notes-h" placeholder="Thoughts, progress, where you left off…">${esc(g.notes || '')}</textarea></div>`;
     // expected heights (px at 1400 wide), enough to choose a column
     const shown = hasAch ? Math.min(ACH_SHOWN, ach.summary.unlocked) : 0;
     let L = (curveCard ? 360 : 0) + 90 + Math.max(1, recent.length) * 66 + new Set(recent.map((x) => dayKey(x.ended_at || x.window_end || x.created_at))).size * 40 + baselines.length * 50;
-    let R = (hasAch ? 230 + shown * 64 + (shown ? 40 : 0) + (ach.items.some((x) => !x.unlocked) ? 50 : 0) : 0) + 100 + g.entries.length * 76 + 190;
+    let R = (hasAch ? 230 + shown * 64 + (shown ? 40 : 0) + (ach.items.some((x) => !x.unlocked) ? 50 : 0) : 0) + 190;
+    const srcH = 130 + g.entries.length * 92 + g.entries.filter((e) => e.history).length * 50;
     const about = aboutCard(g);
     if (about) R += 240;
     // its franchise: where it stands, the entries either side
     const seriesCard = franchiseCard(g.franchise);
     if (seriesCard) R += 150;
-    const left = [curveCard]; const right = [seriesCard, about, hasAch ? achBlock(ach) : '', platCard];
-    // Activity follows the curve, History sits above Notes, each in the shorter column
-    for (const [card, h] of [[heatCard, 260], [histCard, 110 + hist.length * 230]]) {
+    const left = [curveCard]; const right = [seriesCard, about, hasAch ? achBlock(ach) : ''];
+    // Activity follows the curve, in the shorter column
+    for (const [card, h] of [[heatCard, 260], [platCard, srcH]]) {
       if (!card) continue;
       if (L <= R) { left.push(card); L += h; } else { right.push(card); R += h; }
     }
@@ -396,6 +385,17 @@ export async function game(view, id, stale) {
     const rs = ev.target.closest('[data-hist-reset]');
     const cf = ev.target.closest('[data-hist-confirm]');
     const ak = ev.target.closest('[data-hist-ack]');
+    const jump = ev.target.closest('#g-fix-jump');
+    if (jump) { ev.preventDefault(); const fix = $('#g-fix'); fix.scrollIntoView({ behavior: 'smooth', block: 'start' }); fix.querySelector('button')?.focus({ preventScroll: true }); return undefined; }
+    const fx = ev.target.closest('[data-fix]');
+    if (fx) return fx.dataset.fix === 'edit' ? editGame() : fx.dataset.fix === 'merge' ? mergeModal(g) : metaModal(g);
+    const ax = ev.target.closest('[data-assumed-ex]');
+    if (ax) {
+      const ex = ax.dataset.on === '1';
+      const set = (v) => api(`/entries/${ax.dataset.assumedEx}`, { method: 'PATCH', body: { excluded: v } });
+      try { await set(ex); undoToast(ex ? 'Assumed hours left out of this game' : 'Assumed hours counted again', () => set(!ex), rerender); rerender(); } catch (err) { fail(err); }
+      return undefined;
+    }
     try {
       if (cf) { await api(`/entries/${cf.dataset.histConfirm}/history`, { method: 'PATCH', body: { confirm: true } }); toast('Kept as guessed'); rerender(); }
       if (ak) { await api(`/entries/${ak.dataset.histAck}/history`, { method: 'PATCH', body: { acknowledge: true } }); toast('Your dates are kept'); rerender(); }
@@ -442,6 +442,150 @@ export async function game(view, id, stale) {
   });
 }
 
+// ---------------------------------------------------------------------
+// What the page knows, and where it is fixed. "Where your time comes from" only shows: every copy
+// of the game, the release it is, and what its hours rest on (tracked, history from before
+// tracking, hours assumed). "Fix this game" below the columns holds every correction, and nothing else.
+// ---------------------------------------------------------------------
+const DAYF = { year: 'numeric', month: 'short', day: 'numeric' };
+/** Hours assumed for a copy its platform reports no time for (services/assumed.js). */
+const isAssumed = (e) => e.account_id == null && String(e.ext_id || '').startsWith('assumed:');
+const byHandEntry = (e) => e.account_id == null && e.platform === 'manual';
+const entryName = (e) => (isAssumed(e) ? `Assumed hours · ${plat(e.platform).label}` : e.account_name || (byHandEntry(e) ? e.meta?.played_on || 'Added by hand' : plat(e.platform).label));
+const RELEASE = { main: 'The original', remake: 'The remake', remaster: 'The remaster', rerelease: 'A re-release', collection: 'A collection', spinoff: 'A spin-off' };
+const TYPICAL = { complete: 'to complete it', extra: 'with extras', main: 'for the main story' };
+
+/** Under the title: which release this game is (a remake of what, the original of what you also own, two releases in one). */
+function releaseLine(fr) {
+  if (!fr) return '';
+  const yr = (x) => (x.year ? ` (${x.year})` : '');
+  const link = (x) => (x.game_id ? `<a class="link" href="/game/${x.game_id}" data-link>${esc(x.title)}</a>${yr(x)}` : `${esc(x.title)}${yr(x)}`);
+  if (fr.parts?.length > 1) return `Two releases in one game: ${fr.parts.map((x) => `${(RELEASE[x.kind] || 'A version').toLowerCase()}${yr(x)}`).join(' and ')}. Each keeps its own time below.`;
+  if (fr.version_of?.length) return `${RELEASE[fr.kind] || 'A version'}${fr.year ? `, ${fr.year},` : ''} of ${fr.version_of.map(link).join(' and ')}`;
+  const also = (fr.versions || []).filter((v) => v.kind !== 'collection' && v.game_id);
+  if (also.length) return `The original${fr.year ? `, ${fr.year}` : ''}. Also yours as ${also.map(link).join(', ')}`;
+  return '';
+}
+
+/** What a copy's hours are, in one line: tracked, from before tracking, assumed, or none reported. */
+function hoursLine(e, g) {
+  const a = e.meta?.assumed;
+  if (isAssumed(e)) {
+    return `<i class="dot basis-assumed" aria-hidden="true"></i>${a?.floor ? 'A guess: you marked it finished, so its typical main story (IGDB)'
+      : a ? `A guess: ${a.unlocked} of ${a.total} achievements × ${fmtMin(a.typical_minutes)} typical ${TYPICAL[a.typical] || ''} (IGDB)` : 'A guess from its achievements'}`;
+  }
+  const h = e.history;
+  const tracked = Math.max(0, e.playtime_min - (h?.minutes || 0));
+  const t = tracked ? `<i class="dot" style="background:var(--accent-mark)" aria-hidden="true"></i>${fmtMin(tracked)} tracked` : '';
+  if (h) return `${t}${t ? ' + ' : ''}<i class="dot hatch-dot" aria-hidden="true"></i>${fmtMin(h.minutes)} from before tracking`;
+  if (!e.playtime_min && e.account_id != null && e.achievements?.unlocked) {
+    return g.entries.some((x) => isAssumed(x) && x.meta?.assumed?.source_entry === e.id) ? `${esc(plat(e.platform).label)} reports no playtime for it: its hours are assumed, below`
+      : `${esc(plat(e.platform).label)} reports no playtime for it`;
+  }
+  return t;
+}
+
+/** When a copy's history (or assumed hours) is dated to, and how surely. */
+function datedLine(e) {
+  const h = e.history;
+  if (!h) return '';
+  if (h.mode === 'undated') return 'Not charted: counts toward lifetime only';
+  if (!h.window) return `No dates known: counts toward lifetime only${h.enrich_pending ? ' · looking up achievement times…' : ''}`;
+  const mine = h.manual && !h.manual.confirmed ? h.manual : null;
+  const from = mine?.start ?? h.window[0]; const to = mine?.end ?? h.window[1];
+  return `${h.manual?.confirmed ? 'Confirmed' : h.manual ? 'Set to' : isAssumed(e) ? 'Dated by your unlocks to' : 'Estimated'} <b>${fmtDate(from, DAYF)} – ${fmtDate(to, DAYF)}</b> · <span class="conf-${h.confidence}">${h.confidence} confidence</span>${h.undated ? ` · ${fmtMin(h.undated)} undated` : ''}`;
+}
+
+/** Every date a copy's history can be told from, as chips. */
+function evidenceChips(h) {
+  const ev = h.evidence || {};
+  return [
+    ...(h.marks || []).filter((m) => m.key !== 'tracking' && m.key !== 'account')
+      .map((m) => [m.key === 'last_unlock' ? 'Last achievement' : m.label, `${fmtDate(m.at, DAYF)}${m.key === 'release_igdb' ? ' (IGDB)' : ''}`]),
+    ev.play_count && ['Launches', ev.play_count],
+    ev.recent_min && ['Last 2 weeks', fmtMin(ev.recent_min)],
+    h.unlocks_before && ['Achievements before tracking', h.unlocks_before],
+  ].filter(Boolean);
+}
+
+/** One copy of the game, as "Where your time comes from" shows it: nothing to press. */
+function sourceRow(e, g) {
+  const h = e.history;
+  const chips = h ? evidenceChips(h) : [];
+  const facts = [e.last_played_at ? `Played ${ago(e.last_played_at)}` : '', e.meta?.devices?.deck ? `Deck ${fmtMin(e.meta.devices.deck)}` : '', e.play_count ? `${e.play_count} launch${e.play_count === 1 ? '' : 'es'}` : '',
+    e.achievements?.total ? `${e.achievements.unlocked} of ${e.achievements.total} unlocked` : '',
+    e.missing_since ? `<span style="color:var(--warn)">no longer in library since ${fmtDate(e.missing_since)}</span>` : ''].filter(Boolean).join(' · ');
+  const what = hoursLine(e, g);
+  const dated = datedLine(e);
+  return `<div class="item src" style="${e.excluded ? 'opacity:.55' : ''}" data-src="${e.id}">
+      ${isAssumed(e) ? '<span class="src-ic basis-assumed" aria-hidden="true"></span>' : e.icon_url ? `<img src="${esc(e.icon_url)}" width="32" height="32" style="border-radius:8px" alt="" loading="lazy" onerror="this.style.visibility='hidden'">` : platIcon(e.platform, 32)}
+      <div class="grow"><div class="ttl ellipsis">${esc(entryName(e))}</div>
+        <div class="sub">${platDot(e.platform)}${esc(e.title !== g.title ? e.title : plat(e.platform).label)}${e.meta?.played_on && !byHandEntry(e) ? ` · ${esc(e.meta.played_on)}` : ''}${e.excluded ? ' · <b>excluded from totals</b>' : ''}</div>
+        ${what ? `<div class="sub src-line src-what">${what}</div>` : ''}
+        ${dated ? `<div class="sub src-line">${dated}</div>` : ''}
+        ${h && !isAssumed(e) && (h.reasons || []).length ? `<div class="tiny muted">${h.reasons.map(esc).join(' · ')}</div>` : ''}
+        ${facts ? `<div class="sub">${facts}</div>` : ''}
+        ${chips.length ? `<details class="src-ev"><summary class="tiny muted">What the dates go by</summary><div class="evidence">${chips.map(([k, v]) => `<span class="badge">${k}: ${esc(v)}</span>`).join('')}</div></details>` : ''}</div>
+      <div class="amt">${fmtMin(e.playtime_min)}</div>
+    </div>`;
+}
+
+/** "Where your time comes from": the copies, under the release each is when the game holds two. */
+function sourcesCard(g) {
+  const parts = g.franchise?.parts?.length > 1 ? g.franchise.parts : null;
+  const warn = g.entries.some((e) => e.history?.conflicts?.length && !e.history.acknowledged && e.history.mode !== 'undated');
+  let rows;
+  if (parts) {
+    const placed = new Set(parts.flatMap((x) => x.entries));
+    const loose = g.entries.filter((e) => !placed.has(e.id));
+    rows = parts.map((x) => `<div class="src-rel"><span><b>${esc(x.title)}</b>${x.year ? ` <span class="muted">${x.year}</span>` : ''} <span class="badge g-release">${esc((RELEASE[x.kind] || 'A version').replace(/^(The|A) /, ''))}</span></span>
+        <span class="small muted">${x.state === 'finished' ? 'finished · ' : x.state === 'playing' ? 'playing · ' : ''}${x.minutes ? fmtMin(x.minutes) : x.state === 'owned' ? 'not played' : 'no time on record'}</span></div>
+      ${g.entries.filter((e) => x.entries.includes(e.id)).map((e) => sourceRow(e, g)).join('')}`).join('') + loose.map((e) => sourceRow(e, g)).join('');
+  } else rows = g.entries.map((e) => sourceRow(e, g)).join('');
+  const kinds = [g.entries.some((e) => e.history && !isAssumed(e)) && '<span title="Hours the platform reported from before Vestigo was watching: the hours are real, their dates are estimated"><i class="dot hatch-dot"></i>From before tracking: real hours, estimated dates</span>',
+    g.entries.some(isAssumed) && '<span title="The platform reports no playtime for this game: the hours are a guess from its achievements, the dates come from the unlocks"><i class="dot basis-assumed"></i>Assumed: guessed hours</span>'].filter(Boolean);
+  return `<div class="card" id="g-sources"><div class="card-h"><h2>Where your time comes from</h2><a class="btn sm ${warn ? '' : 'ghost'}" href="#g-fix" id="g-fix-jump">${warn ? `${icon('info')}Dates to check` : `Fix${icon('arrowR', 'ic-inline')}`}</a></div>
+      <div class="list">${rows}</div>
+      ${kinds.length ? `<div class="legend" style="margin-top:10px">${g.summary?.tracked_minutes ? '<span><i class="dot" style="background:var(--accent-mark)"></i>Tracked: measured</span>' : ''}${kinds.join('')}</div>` : ''}
+      ${parts ? `<p class="small muted" style="margin:8px 0 0">Totals are summed; the series counts each release played, with its own time.</p>`
+        : g.entries.filter((e) => !isAssumed(e)).length > 1 ? '<p class="small muted" style="margin:8px 0 0">Owned on several platforms: totals are summed.</p>' : ''}
+    </div>`;
+}
+
+/** "Fix this game": every correction, as a question and the buttons that answer it. */
+function fixPanel(g) {
+  const row = (q, sub, buttons, extra = '', attrs = '') => `<div class="fix-row" ${attrs}><div class="grow"><div class="t">${q}</div>${sub ? `<div class="d">${sub}</div>` : ''}${extra}</div><div class="row wrap fix-btns">${buttons}</div></div>`;
+  const rows = [];
+  // the dates of history from before tracking
+  for (const e of g.entries.filter((x) => x.history && !isAssumed(x))) {
+    const h = e.history;
+    const warn = h.conflicts?.length && !h.acknowledged && h.mode !== 'undated';
+    rows.push(row(`When did you play the ${fmtMin(h.minutes, { short: h.minutes >= 600 })} from before tracking?`, `${esc(entryName(e))} · ${datedLine(e)}`,
+      `${h.window && !h.manual && h.mode !== 'undated' && h.confidence !== 'high' && !h.enrich_pending ? `<button class="btn sm" data-hist-confirm="${e.id}">${icon('check')}Looks right</button>` : ''}<button class="btn sm${warn ? ' primary' : ''}" data-hist-edit="${e.id}">${icon('edit')}${warn ? 'Check dates' : 'Set dates'}</button>
+      ${warn ? `<button class="btn sm ghost" data-hist-ack="${e.id}">Keep my dates</button>` : ''}
+      ${h.mode === 'undated' ? `<button class="btn sm ghost" data-hist-mode="auto" data-entry="${e.id}">Chart it</button>` : `<button class="btn sm ghost" data-hist-mode="undated" data-entry="${e.id}">Don’t chart</button>`}
+      ${(h.manual && !byHandEntry(e)) || h.mode === 'undated' ? `<button class="btn sm ghost" data-hist-reset="${e.id}">Reset to automatic</button>` : ''}`, warn ? conflictList(h.conflicts) : '', `data-hist="${e.id}"`));
+  }
+  // hours assumed for a copy with no playtime
+  for (const e of g.entries.filter(isAssumed)) {
+    rows.push(row(`Are the ${fmtMin(e.playtime_min, { short: e.playtime_min >= 600 })} assumed for ${esc(plat(e.platform).label)} wrong?`,
+      'They are a guess from its achievements. Leave them out of this game, or say when you played. If you know the real hours, log them by hand and the guess goes away. To stop assuming hours for every game: <a class="link" href="/settings#assumed" data-link>Settings</a>.',
+      `${e.history ? `<button class="btn sm" data-hist-edit="${e.id}">${icon('edit')}Set dates</button>` : ''}<button class="btn sm ghost" data-assumed-ex="${e.id}" data-on="${e.excluded ? 0 : 1}">${e.excluded ? 'Count them again' : 'Don’t count them'}</button>`, '', `data-hist="${e.id}"`));
+  }
+  // each copy: counted twice, in the wrong game
+  for (const e of g.entries.filter((x) => !isAssumed(x))) {
+    rows.push(row(`${esc(entryName(e))}${e.title !== g.title ? `: ${esc(e.title)}` : ''}`,
+      `${fmtMin(e.playtime_min)}${e.last_played_at ? ` · played ${ago(e.last_played_at)}` : ''}${e.excluded ? ' · excluded from totals' : ''}. Counted twice, or a different game${g.franchise?.parts?.length > 1 ? ' or release' : ''}${byHandEntry(e) ? ', or hours missing from before you added it' : ''}?`,
+      `<button class="btn sm" data-entry-menu="${e.id}" aria-label="Entry options">${icon('more')}Options</button>`));
+  }
+  // the game itself
+  rows.push(row('The game itself', 'Its title or cover, the same game listed twice, or the wrong details from IGDB.',
+    `<button class="btn sm" data-fix="edit">${icon('edit')}Title & cover</button><button class="btn sm" data-fix="merge">${icon('merge')}Merge with…</button>${g.meta || g.igdb ? `<button class="btn sm" data-fix="meta">IGDB match</button>` : ''}`));
+  return `<section class="card fix-card" id="g-fix" aria-labelledby="g-fix-h"><div class="card-h"><h2 id="g-fix-h">${icon('edit', 'ic-inline')}Fix this game</h2></div>
+      <p class="small muted" style="margin-top:-6px">Everything above is what Vestigo knows. Here is where you correct it; if the page looks right, there is nothing to do.</p>
+      ${rows.join('')}</section>`;
+}
+
 /** GET /games/:id/forecast as a card: how long until the game is finished, and what that rests on. */
 function forecastCard(f) {
   const span = f.text.match(/^(.*?) to finish/)?.[1];
@@ -453,41 +597,6 @@ function forecastCard(f) {
     <p class="ins-lead">${lead}</p>
     <div class="split-bar" role="img" aria-label="${f.percent}% of the expected length played"><i style="width:${f.percent}%;background:var(--accent-mark)"></i></div>
     <p class="small muted" style="margin:8px 0 0">${fmtMin(f.played_minutes)} of ${length}${f.state === 'playing' ? ` · ${fmtMin(f.weekly_minutes)} a week lately` : ''}</p></div>`;
-}
-
-function historyBlock(e) {
-  const h = e.history;
-  const ev = h.evidence || {};
-  const conf = h.confidence;
-  const D = { year: 'numeric', month: 'short', day: 'numeric' };
-  // every date it can be told from (release, added, first and last played, the first and last
-  // achievement, the first tracked session), then the counts
-  const chips = [
-    ...(h.marks || []).filter((m) => m.key !== 'tracking' && m.key !== 'account')
-      .map((m) => [m.key === 'last_unlock' ? 'Last achievement' : m.label, `${fmtDate(m.at, D)}${m.key === 'release_igdb' ? ' (IGDB)' : ''}`]),
-    ev.play_count && ['Launches', ev.play_count],
-    ev.recent_min && ['Last 2 weeks', fmtMin(ev.recent_min)],
-    h.unlocks_before && ['Achievements before tracking', h.unlocks_before],
-  ].filter(Boolean);
-  // your dates (or an estimate you confirmed) that the evidence disagrees with, until you keep them
-  const warn = h.conflicts?.length && !h.acknowledged && h.mode !== 'undated';
-  const byHand = e.account_id == null && e.platform === 'manual';
-  // the dates you set as you set them (the estimate's first and last stretch can fall inside them)
-  const mine = h.manual && !h.manual.confirmed ? h.manual : null;
-  const shown = h.window ? [mine?.start ?? h.window[0], mine?.end ?? h.window[1]] : null;
-  return `<div class="stack" style="padding:12px 0;border-top:1px solid var(--line)" data-hist="${e.id}">
-    <div class="row between"><div class="row">${platDot(e.platform)}<b>${esc(e.account_name || (byHand ? `${e.meta?.played_on || 'Added by hand'}` : plat(e.platform).label))}</b></div><b>${fmtMin(h.minutes, { short: h.minutes >= 600 })}</b></div>
-    ${h.mode === 'undated' ? '<div class="small muted">Not charted — counts toward lifetime only.</div>'
-      : h.window ? `<div class="small">${h.manual?.confirmed ? 'Confirmed' : h.manual ? 'Set to' : 'Estimated'} <b>${fmtDate(shown[0], D)} – ${fmtDate(shown[1], D)}</b> · <span class="conf-${conf}">${conf} confidence</span>${h.undated ? ` · ${fmtMin(h.undated)} undated` : ''}</div>`
-      : `<div class="small muted">No dates known — counts toward lifetime only.${h.enrich_pending ? ' Looking up achievement times…' : ''}</div>`}
-    ${(h.reasons || []).length ? `<div class="tiny muted">${h.reasons.map(esc).join(' · ')}</div>` : ''}
-    ${chips.length ? `<div class="evidence">${chips.map(([k, v]) => `<span class="badge">${k}: ${esc(v)}</span>`).join('')}</div>` : ''}
-    ${warn ? conflictList(h.conflicts) : ''}
-    <div class="row wrap">${h.window && !h.manual && h.mode !== 'undated' && conf !== 'high' && !h.enrich_pending ? `<button class="btn sm" data-hist-confirm="${e.id}">${icon('check')}Looks right</button>` : ''}<button class="btn sm${warn ? ' primary' : ''}" data-hist-edit="${e.id}">${icon('edit')}${warn ? 'Check dates' : 'Set dates'}</button>
-      ${warn ? `<button class="btn sm ghost" data-hist-ack="${e.id}">Keep my dates</button>` : ''}
-      ${h.mode === 'undated' ? `<button class="btn sm ghost" data-hist-mode="auto" data-entry="${e.id}">Chart it</button>` : `<button class="btn sm ghost" data-hist-mode="undated" data-entry="${e.id}">Don’t chart</button>`}
-      ${(h.manual && !byHand) || h.mode === 'undated' ? `<button class="btn sm ghost" data-hist-reset="${e.id}">Reset to automatic</button>` : ''}</div>
-  </div>`;
 }
 
 function mergeModal(g) {

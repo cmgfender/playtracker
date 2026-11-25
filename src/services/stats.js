@@ -219,7 +219,7 @@ export function computeStats(db, opts = {}) {
     let estTotal = 0;
     // what the minutes rest on (play_days.basis): imported sessions inside tracked play, and the
     // kinds of estimated history, per bucket
-    const BASES = ['tracked', 'imported', 'anchored', 'confirmed', 'estimated'];
+    const BASES = ['tracked', 'imported', 'anchored', 'confirmed', 'estimated', 'assumed'];
     const byBasis = BASES.map(() => new Map());
     const basisTotal = BASES.map(() => 0);
     const importedPlat = new Map();
@@ -322,8 +322,12 @@ export function lifetime(db) {
     const k = Object.fromEntries(kinds.map((x) => [x.kind, x]));
     const status = db.prepare('SELECT status, COUNT(*) n FROM games GROUP BY status').all();
     const byPlatform = db.prepare('SELECT platform, COALESCE(SUM(playtime_min),0) minutes, COUNT(*) games FROM entries WHERE excluded = 0 GROUP BY platform ORDER BY minutes DESC').all();
+    // hours assumed for games a platform reports no time for (services/assumed.js): part of the total, and told apart
+    const assumed = db.prepare("SELECT COALESCE(SUM(playtime_min), 0) m, COUNT(*) n FROM entries WHERE excluded = 0 AND account_id IS NULL AND ext_id LIKE 'assumed:%'").get();
     return {
       total_minutes: tot.total,
+      assumed_minutes: assumed.m,
+      assumed_games: assumed.n,
       tracked_minutes: k.play?.m || 0,
       estimated_minutes: k.estimate?.m || 0,
       baseline_minutes: k.baseline?.m || 0,

@@ -18,6 +18,7 @@
 import { env } from '../env.js';
 import { tx } from '../db.js';
 import { normalizeTitle } from './titles.js';
+import { reconcileAssumed } from './assumed.js';
 import { httpJson, spacer, ProviderError } from '../providers/http.js';
 
 const DAY = 86_400_000;
@@ -355,6 +356,8 @@ export class Igdb {
       }
       this.state.done = list.length;
       this.state.last_counts = counts;
+      // typical times arrived or changed: the hours assumed from them follow
+      if (counts.matched || counts.refreshed || counts.dropped) { try { reconcileAssumed(this.db, this.settings, { log: this.log }); } catch (e) { this.log?.error?.('Assuming hours failed', e); } }
       if (counts.matched || counts.none) this.log?.info(`IGDB: ${counts.matched} games matched (${counts.by_steam} by Steam id, ${counts.by_title} by title), ${counts.none} without a match${counts.refreshed ? `, ${counts.refreshed} refreshed` : ''}`);
       return counts;
     } catch (err) {

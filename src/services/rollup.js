@@ -7,8 +7,9 @@ import { inTx } from '../db.js';
 
 const MIN = 60_000;
 // play_days.basis: what the minutes rest on (see migration 10)
-export const BASIS = { tracked: 0, imported: 1, anchored: 2, confirmed: 3, estimated: 4 };
-const basisOf = (s) => (s.kind === 'estimate' ? (s.basis === 'confirmed' ? 3 : s.basis === 'anchored' ? 2 : 4) : s.source === 'import' ? 1 : 0);
+// 5: hours assumed for a game its platform reports no time for (services/assumed.js)
+export const BASIS = { tracked: 0, imported: 1, anchored: 2, confirmed: 3, estimated: 4, assumed: 5 };
+const basisOf = (s) => (s.kind === 'estimate' ? (s.basis === 'assumed' ? 5 : s.basis === 'confirmed' ? 3 : s.basis === 'anchored' ? 2 : 4) : s.source === 'import' ? 1 : 0);
 const HOUR = 3_600_000;
 
 function spreadByHour(s) {
