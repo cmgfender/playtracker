@@ -1,0 +1,32 @@
+// The Sims. The format is described in ../franchises.js.
+export default {
+  id: 'the-sims', name: 'The Sims', aliases: ['The Sims', 'MySims'], prefix: ['the sims', 'mysims', 'the urbz'],
+  eras: [
+    ['The Sims', 'The Sims', 'Maxis\'s original life sim, its console spin-offs and The Sims Online'],
+    ['The Sims 2', 'The Sims 2', 'Sims in 3D that age and pass on genes; the Stories games and MySims'],
+    ['The Sims 3', 'The Sims 3', 'A whole neighbourhood without loading screens; Medieval and more MySims'],
+    ['The Sims 4', 'The Sims 4', 'Sims with emotions; free to play since 2022'],
+  ],
+  entries: [
+    [2000, 'The Sims'],
+    [2002, 'The Sims Online', 'spinoff'],
+    [2003, "The Sims Bustin' Out", 'spinoff'],
+    [2004, 'The Sims 2'],
+    [2004, 'The Urbz: Sims in the City', 'spinoff'],
+    [2007, 'The Sims Life Stories', 'spinoff'],
+    [2007, 'The Sims Pet Stories', 'spinoff'],
+    [2007, 'MySims', 'spinoff'],
+    [2008, 'The Sims Castaway Stories', 'spinoff'],
+    [2008, 'MySims Kingdom', 'spinoff', { aka: ['MySims: Kingdom'] }],
+    [2009, 'MySims Party', 'spinoff'],
+    [2009, 'The Sims 3'],
+    [2009, 'MySims Racing', 'spinoff'],
+    [2009, 'MySims Agents', 'spinoff'],
+    [2010, 'MySims SkyHeroes', 'spinoff'],
+    [2011, 'The Sims Medieval', 'spinoff'],
+    [2014, 'The Sims 4'],
+    [2024, 'MySims: Cozy Bundle', 'collection', { includes: ['MySims', 'MySims Kingdom'], era: 'The Sims 2' }],
+    [2025, 'The Sims Legacy Collection', 'rerelease', { of: 'The Sims', era: 'The Sims' }],
+    [2025, 'The Sims 2 Legacy Collection', 'rerelease', { of: 'The Sims 2', era: 'The Sims 2' }],
+  ],
+};

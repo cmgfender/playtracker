@@ -867,7 +867,7 @@ export function registerRoutes(r, app) {
       + 'covers: [url], era_count, your_era: { index, name, from, to } | null (the era you played most) }] }',
   });
   r.get('/api/v1/franchises/:key', (c) => {
-    const f = franchiseDetail(db, decodeURIComponent(c.params.key));
+    const f = franchiseDetail(db, c.params.key); // (the router has decoded it)
     if (!f) throw new HttpError(404, 'No such franchise');
     return f;
   }, {

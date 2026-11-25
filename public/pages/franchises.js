@@ -129,7 +129,9 @@ function erasCard(f) {
 }
 
 export async function franchise(view, key, stale) {
-  const f = await api(`/franchises/${encodeURIComponent(decodeURIComponent(key))}`);
+  let name = key;
+  try { name = decodeURIComponent(key); } catch { /* a malformed %-escape: the key as it is */ }
+  const f = await api(`/franchises/${encodeURIComponent(name)}`);
   if (stale()) return;
   setTitle(f.name);
   const m = f.mainline;
@@ -161,8 +163,10 @@ export async function franchise(view, key, stale) {
     if (st.order === 'story' && f.story) list = f.story.map((k) => f.items.find((it) => it.key === k)).filter(Boolean);
     if (st.order === 'yours') list = order.games.map((g) => f.items.find((it) => it.game?.id === g.id)).filter(Boolean);
     if (st.main) list = list.filter((it) => it.kind === 'main');
-    // in release order, each era starts with its heading
+    // in release order, each era starts with its heading; a remaster placed with the games it
+    // remasters closes its era (release order within each era)
     const byEra = st.order === 'release' && (f.eras || []).length > 1;
+    if (byEra) list = [...list].sort((x, y) => (x.era ?? f.eras.length) - (y.era ?? f.eras.length));
     let era = null;
     view.querySelector('#fr-items').innerHTML = list.map((it, i) => {
       const head = byEra && it.era != null && it.era !== era ? eraHead(f.eras[it.era]) : '';

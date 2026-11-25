@@ -77,8 +77,8 @@ describe('franchises in a library', () => {
     id.doom = await add('DOOM', 2016);
     id.re4 = await add('Resident Evil 4', 2023);
     id.cod = await add('Call of Duty®', 2023, 'Call of Duty HQ');
-    id.hk = await add('Hollow Knight', 2017);
-    id.silk = await add('Hollow Knight: Silksong', 2025);
+    id.hk = await add('Zeta Quest', 2017);
+    id.silk = await add('Zeta Quest: Second Light', 2025);
     // played: Infinite first, then the collection, then Halo 5
     await logSession(h, id.inf, local(2026, 1, 5, 20), 600);
     await logSession(h, id.mcc, local(2026, 2, 1, 20), 300);
@@ -134,17 +134,18 @@ describe('franchises in a library', () => {
   test('the list: most played first, curated and other series; by name; a curated one you own nothing of', async () => {
     const l = await h.get('/franchises');
     assert.equal(l.items[0].id, 'halo');
-    const hk = l.items.find((x) => x.name === 'Hollow Knight');
-    assert.deepEqual([hk.id, hk.curated, hk.games, hk.mainline], ['s-hollow-knight', false, 2, null]);
+    const hk = l.items.find((x) => x.name === 'Zeta Quest');
+    assert.deepEqual([hk.id, hk.curated, hk.games, hk.mainline], ['s-zeta-quest', false, 2, null]);
     assert.ok(l.items.some((x) => x.id === 'doom') && l.items.some((x) => x.id === 'call-of-duty'));
     assert.equal(l.curated, l.items.filter((x) => x.curated).length);
-    assert.equal((await h.get('/franchises/Hollow%20Knight')).id, 's-hollow-knight');
+    assert.equal((await h.get('/franchises/Zeta%20Quest')).id, 's-zeta-quest');
     assert.equal((await h.get('/franchises/Halo')).id, 'halo', 'by an alias');
     const zelda = await h.get('/franchises/zelda');
     assert.ok(zelda.items.length > 10 && zelda.items.every((it) => it.state === 'missing'));
     assert.equal(zelda.next.title, 'The Legend of Zelda');
     assert.equal((await h.call('GET', '/franchises/no-such-thing')).status, 404);
-    assert.equal((await h.get('/franchises?q=hollow')).items.length, 1);
+    assert.equal((await h.call('GET', '/franchises/%25')).status, 404, 'a name with a % is decoded once, not twice');
+    assert.equal((await h.get('/franchises?q=zeta')).items.length, 1);
   });
 
   test('a game page knows its franchise, its place and the main games either side', async () => {

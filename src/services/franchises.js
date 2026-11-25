@@ -38,11 +38,15 @@ export const slug = (name) => normalizeTitle(name).replace(/\s+/g, '-') || 'seri
 // trailing part, joined by a dash, a colon or brackets or just a space.
 const tail = (words) => new RegExp(`\\s*(?:[-–—:|]\\s*|\\(\\s*|\\[\\s*)?(?:${words})\\s*[)\\]]?\\s*$`, 'i');
 /** A test build: a beta, an insider build, a public test server, a demo. Not the game. */
-const TEST = tail("(?:(?:open|closed|public|private|early|multiplayer|technical|tech|network|stress) )*(?:beta|alpha|insider|demo|trial|playtest|test server|test|preview|server slam)|pts");
+const TEST = tail("(?:(?:open|closed|public|private|early|multiplayer|technical|tech|network|stress|downloadable|playable) )*(?:beta|alpha|insider|demo|trial|playtest|test server|test|preview|server slam)|pts");
 /** What comes with a game and is not one: bonus content, a soundtrack, an art book. */
-const BONUS = tail("bonus content|digital bonus content|soundtrack|original soundtrack|ost|art ?book|digital art ?book");
+const BONUS = tail("bonus content|digital bonus content|soundtrack|original soundtrack|ost|art ?book|digital art ?book|friend'?s pass");
 /** A mode or a platform's build of the same game. */
-const SAME = tail("battlemode|multiplayer|base game|xbox series x\\|s|xbox series x|xbox one|xbox 360|windows 10|windows pc|windows|pc|ps4|ps5|nintendo switch 2 edition|nintendo switch edition");
+const SAME = tail("battlemode|multiplayer|campaign|base game|full game|xbox series x ?\\| ?s|xbox series x|xbox one|xbox 360|windows 10|windows pc|windows|pc|ps4|ps5|nintendo switch 2 edition|nintendo switch edition|for (?:xbox one|xbox series x ?\\| ?s|xbox 360|pc)|(?:[\\w'’]+ ){0,2}edition");
+/** One episode of an episodic game ("- Episode 1: Zer0 Sum", "(Episode One)"): the game. */
+const EPISODE = /\s*[(\-–—:]+\s*episode\s+(?:\d+|one|two|three|four|five|six)\b.*$/i;
+/** A brand in front of the series' own name ("EA SPORTS FIFA 16"). */
+const BRAND = /^(?:ea sports|ea sports™|2k sports|2k)\s+/i;
 /** A version: remastered, remade or released again with its name kept. */
 const VERSION = tail("(?:the )?(?:hd )?remaster(?:ed)?|pixel remaster|master collection version|hd remix|hd edition|hd|classic edition|classic|redux|reforged|resurrected|remake|reimagined|vr");
 const strip = (t, re) => { let s = t; for (let i = 0; i < 2; i++) { const n = s.replace(re, '').trim(); if (n === s || !n) break; s = n; } return s; };
@@ -78,6 +82,9 @@ for (const f of CURATED) for (const e of f.entries) for (const k of e.keys) { if
 const BY_ALIAS = new Map();
 for (const f of CURATED) for (const k of f.aliasKeys) if (!BY_ALIAS.has(k)) BY_ALIAS.set(k, f);
 const BY_ID = new Map(CURATED.map((f) => [f.id, f]));
+// the prefixes by their first word: a title is checked against the few that can start it
+const PREFIXES = new Map();
+for (const f of CURATED) for (const p of f.prefix) { const w = p.split(' ')[0]; if (!PREFIXES.has(w)) PREFIXES.set(w, []); PREFIXES.get(w).push({ f, p }); }
 const WITH_HUBS = CURATED.filter((f) => f.hubs.length);
 
 /** Every game with what the franchise pages show of it. */
@@ -147,8 +154,10 @@ function entryOf(g) {
   for (const f of WITH_HUBS) for (const hub of f.hubs) if (g.ids.some((id) => hub.idset.has(id))) return { f, hub, how: 'hub' };
   const igdbKey = g.igdb_name ? normalizeTitle(yearless(g.igdb_name)) : null;
   const as = (m, how) => m && { f: m.hit.f, e: m.hit.e, how: how || m.how };
-  for (const raw of [yearless(g.title), g.igdb_name && yearless(g.igdb_name)].filter(Boolean)) {
-    const fromIgdb = raw !== yearless(g.title);
+  const title = yearless(g.title);
+  const tries = [title, title.replace(EPISODE, ''), title.replace(BRAND, ''), g.igdb_name && yearless(g.igdb_name)].filter((t, i, a) => t && a.indexOf(t) === i);
+  for (const raw of tries) {
+    const fromIgdb = raw !== title && raw === (g.igdb_name && yearless(g.igdb_name));
     const exact = matchKey(normalizeTitle(raw), g, fromIgdb ? null : igdbKey);
     if (exact) return as(exact);
     // a test build: matched without a year (a beta comes out before its game)
@@ -169,11 +178,17 @@ function entryOf(g) {
   return null;
 }
 
-/** The curated franchise a game that is no curated entry belongs to: IGDB's franchise, else the title's beginning. */
+/**
+ * The curated franchise a game that is no curated entry belongs to: the title's beginning (the
+ * longest prefix wins: "Super Mario Kart" is Mario Kart's, not Super Mario's), else IGDB's franchise
+ * - the title first, as IGDB tags a Persona game with Megami Tensei as well as Persona.
+ */
 function curatedOf(g) {
-  for (const n of g.franchises) { const f = BY_ALIAS.get(normalizeTitle(n)); if (f) return f; }
   const key = normalizeTitle(g.title);
-  for (const f of CURATED) if (f.prefix.some((p) => key === p || key.startsWith(`${p} `))) return f;
+  let best = null;
+  for (const { f, p } of PREFIXES.get(key.split(' ')[0]) || []) if ((key === p || key.startsWith(`${p} `)) && (!best || p.length > best.p.length)) best = { f, p };
+  if (best) return best.f;
+  for (const n of g.franchises) { const f = BY_ALIAS.get(normalizeTitle(n)); if (f) return f; }
   return null;
 }
 
@@ -256,7 +271,7 @@ function build(r, now) {
       const gs = (r.matched.get(e.i) || []).sort((a, b) => b.minutes - a.minutes);
       // two copies of one entry (a game the library keeps apart): the most played speaks for it
       const g = gs[0] || null;
-      items.push({ key: `e${e.i}`, year: e.year, title: e.title, kind: e.kind, curated: true, era: e.era, game: pub(g), others: gs.slice(1).map((x) => ({ id: x.id, title: x.title })),
+      items.push({ key: `e${e.i}`, year: e.year, title: e.title, kind: e.kind, curated: true, era: e.era, eraFixed: !!e.eraName, game: pub(g), others: gs.slice(1).map((x) => ({ id: x.id, title: x.title })),
         addons: (r.addons.get(e.i) || []).map((x) => ({ id: x.id, title: x.title, minutes: x.minutes, kind: x.addon })), state: g ? g.state : 'missing', own: g ? g.state : 'missing',
         via: null, of: [], versions: [], partial: e.partial, entry: e });
     }
@@ -347,7 +362,8 @@ function build(r, now) {
   // eras: their years, your games and play in each, how much of each one's main games you have played
   r.eras = eras.map((x, j) => {
     const its = items.filter((it) => it.era === j);
-    const ys = its.map((it) => it.year).filter((y) => y != null);
+    // its years: of what came out in it (a remaster placed with the games it remasters came out later)
+    const ys = (its.some((it) => !it.eraFixed) ? its.filter((it) => !it.eraFixed) : its).map((it) => it.year).filter((y) => y != null);
     const gs = [...new Map(its.filter((it) => it.game).map((it) => [it.game.id, it.game])).values()];
     const m = its.filter((it) => it.kind === 'main');
     const fd = gs.map((g) => g.first_day).filter(Boolean).sort(); const ld = gs.map((g) => g.last_day).filter(Boolean).sort();
@@ -357,7 +373,7 @@ function build(r, now) {
   });
   const top = r.eras.reduce((a, x) => (x.minutes > (a?.minutes || 0) ? x : a), null);
   r.your_era = top ? top.index : null;
-  r.items = items.map(({ entry, ofEntry, own, partial, versions, ...it }) => ({ ...it, ...(partial ? { partial: true } : {}), versions: versions.map(ref) }));
+  r.items = items.map(({ entry, ofEntry, own, partial, versions, eraFixed, ...it }) => ({ ...it, ...(partial ? { partial: true } : {}), versions: versions.map(ref) }));
   r.totals = {
     games: list.length, played: list.filter((g) => g.minutes > 0).length, finished: list.filter((g) => g.state === 'finished').length,
     minutes: list.reduce((a, g) => a + g.minutes, 0) + addonMinutes, first_day: firsts[0] || null, last_day: lasts.at(-1) || null,
