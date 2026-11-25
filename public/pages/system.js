@@ -1,4 +1,11 @@
 import { $, $$, esc, ago, fmtDate, fmtTime, platDot, icon, api, toast, fail, confirmBox, rerender } from '../app.js';
+
+/** A message as text: an error that quoted a server's HTML page ("<HTML><HEAD>… &#58;&#47;…") without its tags and entities. */
+function plainText(m) {
+  const s = String(m ?? '');
+  if (!/<[a-z!/][^>]*>|&#?\w+;/i.test(s)) return s;
+  return new DOMParser().parseFromString(s.replace(/<(?:script|style)[\s\S]*?<\/(?:script|style)>/gi, ' '), 'text/html').body.textContent.replace(/\s+/g, ' ').trim();
+}
 import { arrow, kpi } from './shared.js';
 
 // =====================================================================
@@ -87,7 +94,7 @@ export async function system(view, stale) {
     </div>`;
   let level = 'error,warn'; let q = '';
   const drawLogs = (items) => {
-    $('#log-list').innerHTML = items.length ? items.map((l) => `<details class="log-row"><summary><span class="lvl lvl-${l.level}">${l.level}</span><span class="tiny muted nowrap">${fmtDate(l.time)} ${fmtTime(l.time)}</span><span class="tiny dim nowrap">${esc(l.source)}</span><span class="grow small" style="word-break:break-word">${esc(l.message)}</span></summary>
+    $('#log-list').innerHTML = items.length ? items.map((l) => `<details class="log-row"><summary><span class="lvl lvl-${l.level}">${l.level}</span><span class="tiny muted nowrap">${fmtDate(l.time)} ${fmtTime(l.time)}</span><span class="tiny dim nowrap">${esc(l.source)}</span><span class="grow small" style="word-break:break-word">${esc(plainText(l.message))}</span></summary>
       ${l.context ? `<pre class="code">${esc(JSON.stringify(l.context, null, 2))}</pre>` : ''}${l.stack ? `<pre class="code">${esc(l.stack)}</pre>` : ''}</details>`).join('')
       : `<div class="empty" style="padding:24px"><div class="em-ic">${icon('check')}</div><h2>All clear</h2><p>No ${level === 'warn' ? 'warnings' : 'errors'} logged.</p></div>`;
   };

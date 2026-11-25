@@ -197,6 +197,9 @@ label.btn:has(input:focus-visible) { outline: 2px solid var(--accent-ink); outli
 @media (max-width: 1100px) { .grid-main, .grid-3 { grid-template-columns: minmax(0, 1fr); } }
 /* a half-width card is as tall as its content, not stretched to its neighbour */
 .dash .grid-main, .grid-3 { align-items: start; }
+/* Home: a run of half-width cards in two columns that stack on their own - each card as tall as its
+   content, and no hole under a short card beside a tall one */
+.dash .grid-main.dash-cols > .stack { min-width: 0; }
 @media (max-width: 700px) { .grid-2 { grid-template-columns: minmax(0, 1fr); } }
 .kpis.k4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 @media (max-width: 700px) { .kpis.k4 { grid-template-columns: repeat(2, minmax(0, 1fr)); } .kpis.k4 .kpi:first-child { grid-column: auto; } .kpis.k4 .kpi .value { font-size: 22px; } }
@@ -415,7 +418,8 @@ a > svg.ic-inline:last-child { margin-left: .25em; }
 .chart.heat:focus-visible { outline-offset: 4px; border-radius: 6px; }
 .heat-legend { justify-content: flex-end; gap: 4px; margin-top: 6px; }
 .heat-legend span { width: 11px; height: 11px; border-radius: 3px; }
-.donut-wrap { display: flex; align-items: center; gap: 20px; }
+.donut-wrap { display: flex; flex-wrap: wrap; align-items: center; gap: 14px 20px; }
+.donut-wrap > .col { flex: 1 1 140px; }
 .donut-wrap svg { width: 140px; height: 140px; flex: none; }
 
 /* ---------- game page ---------- */

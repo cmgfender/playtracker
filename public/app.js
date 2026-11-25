@@ -18,7 +18,8 @@ export function fmtMin(m, { short = false } = {}) {
   }
   const h = Math.floor(m / 60);
   const r = m % 60;
-  if (short || h >= 100) return `${h.toLocaleString()}h`;
+  // in whole hours: the nearest one (44h 56m is "45h", not "44h")
+  if (short || h >= 100) return `${Math.round(m / 60).toLocaleString()}h`;
   return r ? `${h}h ${r}m` : `${h}h`;
 }
 
