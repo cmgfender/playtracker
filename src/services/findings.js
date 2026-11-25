@@ -67,7 +67,7 @@ export function findings(db, { range = '365d', platform = null, estimates = 'inc
         if (old != null && (!oldest || old < oldest.year)) oldest = { game: x.game, year: old };
         continue;
       }
-      const ry = x.game.release_year ?? x.game.entry?.year;
+      const ry = x.game.hubYear ?? x.game.release_year ?? x.game.entry?.year;
       if (!ry) continue;
       for (const y of x.years) { lagSum += Math.max(0, y.year - ry) * y.minutes; lagMin += y.minutes; }
       if (x.minutes >= 60 && (!oldest || ry < oldest.year)) oldest = { game: x.game, year: ry };
@@ -75,7 +75,7 @@ export function findings(db, { range = '365d', platform = null, estimates = 'inc
     if (lagMin >= total * 0.5 && played.length >= 4) {
       const lag = Math.round((lagSum / lagMin) * 10) / 10;
       add('lag', lag < 1 ? 'Right on release' : 'Behind the release calendar', 62 + Math.min(20, lag * 3),
-        lag < 1 ? ['You play games ', B('the year they come out'), `: ${lag === 0 ? 'none' : `${lag} years`} behind, on average.`] : ['On average you get to a game ', B(`${lag} years`), ' after it came out.'],
+        lag < 1 ? ['You play games ', B('the year they come out'), `: ${lag === 0 ? 'none' : `${lag} years`} behind, on average.`] : ['On average you get to a game ', B(`${lag} year${lag === 1 ? '' : 's'}`), ' after it came out.'],
         oldest && oldest.year < new Date(parseDay(toDay)).getFullYear() - 5 ? [' The oldest thing here: ', G(oldest.game), ` (${oldest.year}).`] : '');
     }
 

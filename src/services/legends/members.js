@@ -58,6 +58,9 @@ export function membership(db, { now = Date.now() } = {}) {
           if (!g || g.series) continue; // (a game in two inferred series: the first)
           g.series = r.id;
           g.entry = it.curated ? { title: it.title, year: it.year } : null;
+          // a series' app (the Battlefield app, Call of Duty HQ): its time is the series' games of its years -
+          // not the year of whatever IGDB matched its bare name to (a 1997 "Battlefield")
+          if (it.kind === 'hub' && it.year != null && id === it.game?.id) g.hubYear = it.year;
           put('series', r.id, id);
         }
       }
@@ -97,8 +100,8 @@ export function membership(db, { now = Date.now() } = {}) {
     const studioGames = new Map(); // IGDB developer -> [game ids] of developers no curated maker claims
     for (const g of games.values()) {
       const t = tags.get(g.id) || { developer: [], publisher: [], platform: [] };
-      // a curated entry with no release date of its own: its year, mid-year
-      const release = g.release_at ?? (g.entry?.year ? new Date(g.entry.year, 6, 1).getTime() : null);
+      // a curated entry with no release date of its own: its year, mid-year; a series' app: the years it holds
+      const release = g.hubYear ? new Date(g.hubYear, 6, 1).getTime() : g.release_at ?? (g.entry?.year ? new Date(g.entry.year, 6, 1).getTime() : null);
       const parts = unitsOf.get(g.id) || [];
       if (parts.length) {
         // each release in its own generation (IGDB's platforms are the game's own release's: only for that one)
@@ -108,10 +111,11 @@ export function membership(db, { now = Date.now() } = {}) {
         }
         g.gen = parts.find((u) => u.part.main)?.gen ?? parts[0].gen ?? null;
       } else {
-        const gen = generationOf(release, t.platform);
+        const gen = generationOf(release, g.hubYear ? [] : t.platform);
         if (gen) { g.gen = gen.id; put('generation', gen.id, g.id); }
       }
-      const makers = makersOf(g.series, [...t.developer, ...t.publisher], g.entry?.year ?? g.release_year);
+      // (IGDB's companies of what it matched a series' app to are not the app's: the series decides)
+      const makers = makersOf(g.series, g.hubYear ? [] : [...t.developer, ...t.publisher], g.hubYear ?? g.entry?.year ?? g.release_year);
       for (const m of makers) put('maker', m.id, g.id);
       for (const d of t.developer) {
         if (MAKER_LIST.some((m) => isMakers(m, d))) continue;

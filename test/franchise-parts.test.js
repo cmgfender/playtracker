@@ -93,3 +93,25 @@ test('a library of games of one entry each is placed as before (no entries are r
     assert.equal(libraryGames(app.db, Date.now())[0].entries, undefined);
   } finally { close(); }
 });
+
+test("a series' app (the Battlefield app on Xbox) is dated by the years it holds, not by what IGDB matched its bare name to", async () => {
+  const { app, server, close } = createApp({ dbFile: ':memory:', password: '', log: quiet, scheduler: false });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  const base = `http://127.0.0.1:${server.address().port}/api/v1`;
+  try {
+    const db = app.db; const now = Date.now();
+    db.prepare("INSERT INTO accounts(platform, name, config, enabled, created_at) VALUES ('xbox', 'Xbox', '{}', 1, 0)").run();
+    const acc = parseAccount(db.prepare('SELECT * FROM accounts WHERE id = 1').get());
+    tx(db, () => applyItems(db, acc, [{ extId: '1840884885', title: 'Battlefield™', playtimeMin: 1075, lastPlayedAt: now - 30 * DAY }], { settings: app.settings.all(), now, initial: true }));
+    const gid = db.prepare('SELECT game_id FROM entries').get().game_id;
+    // IGDB matched the bare name to a 1997 "Battlefield"
+    db.prepare("INSERT INTO game_meta(game_id, igdb_id, matched_by, name, release_date, fetched_at) VALUES (?, 290355, 'title', 'Battlefield', ?, 0)").run(gid, Date.UTC(1997, 11, 31));
+    db.prepare("INSERT INTO game_tags(game_id, kind, name) VALUES (?, 'platform', 'PC (Microsoft Windows)'), (?, 'developer', 'Someone Else')").run(gid, gid);
+    const home = await (await fetch(`${base}/legends`)).json();
+    const inGen = (id) => home.generations.find((g) => g.id === id)?.games || 0;
+    assert.equal(inGen('gen5'), 0, 'not in the PlayStation and N64 era');
+    assert.equal(inGen('gen9'), 1, 'with the series\' games of 2025 on');
+    const ea = await (await fetch(`${base}/legends/maker/ea`)).json();
+    assert.deepEqual(ea.games.map((x) => x.id), [gid], "EA's, as the series is - not IGDB's 1997 developer's");
+  } finally { close(); }
+});
