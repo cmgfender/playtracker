@@ -567,7 +567,7 @@ export function gameCurve(db, gameId, { group = 'month', estimates = 'include', 
 // =====================================================================================
 // 6. library overview
 // =====================================================================================
-export const HOUR_BUCKETS = [[0, 0, 'Never'], [1, 60, '<1h'], [60, 300, '1-5h'], [300, 600, '5-10h'], [600, 1500, '10-25h'], [1500, 3000, '25-50h'], [3000, 6000, '50-100h'], [6000, null, '100h+']];
+export const HOUR_BUCKETS = [[0, 0, 'No time'], [1, 60, '<1h'], [60, 300, '1-5h'], [300, 600, '5-10h'], [600, 1500, '10-25h'], [1500, 3000, '25-50h'], [3000, 6000, '50-100h'], [6000, null, '100h+']];
 const AGE_BUCKETS = [[0, 30, '<1 month'], [30, 182, '1-6 months'], [182, 365, '6-12 months'], [365, 730, '1-2 years'], [730, null, '2+ years']];
 const FINISHED = new Set(['completed', 'beaten', 'dropped', 'wishlist']);
 

@@ -204,8 +204,9 @@ function career(db, now, today) {
       if (titles.has(p.game_id) && realTime(p.t) && p.t <= now) firstAt(p.game_id, p.t, at(dayKey(p.t), 'day', 'platform'));
     }
     const played = [...first].sort((a, b) => a[1].t - b[1].t || a[0] - b[0]);
-    // games played with no date at all (only undated history): they count, without a day
-    const undatedGames = [...lifeGame].filter(([id, m]) => m > 0 && !first.has(id)).length;
+    // games played with no date for the first play (only undated history, or just a last played date): they count, without a day
+    const lastOnly = new Set(db.prepare('SELECT DISTINCT game_id FROM entries WHERE excluded = 0 AND last_played_at IS NOT NULL').all().map((e) => e.game_id));
+    const undatedGames = [...lifeGame].filter(([id, m]) => (m > 0 || lastOnly.has(id)) && !first.has(id)).length;
 
     // ---- playtime: in all, by year, by platform, in one game; and the decades with play
     let total = 0;

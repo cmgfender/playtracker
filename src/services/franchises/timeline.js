@@ -135,7 +135,7 @@ export function build(r, now) {
   r.your_era = top ? top.index : null;
   r.items = items.map(({ entry, ofEntry, own, partial, versions, eraFixed, ...it }) => ({ ...it, ...(partial ? { partial: true } : {}), versions: versions.map(ref) }));
   r.totals = {
-    games: list.length, played: list.filter((g) => g.minutes > 0).length, finished: list.filter((g) => g.state === 'finished').length,
+    games: list.length, played: list.filter((g) => g.minutes > 0 || PLAYED.has(g.state)).length, finished: list.filter((g) => g.state === 'finished').length,
     minutes: list.reduce((a, g) => a + g.minutes, 0) + addonMinutes, first_day: firsts[0] || null, last_day: lasts.at(-1) || null,
     released: items.length ? { from: items.find((it) => it.year)?.year ?? null, to: [...items].reverse().find((it) => it.year)?.year ?? null } : null,
   };

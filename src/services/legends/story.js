@@ -10,6 +10,8 @@ const DAY = 86_400_000;
 const PLAYED = new Set(['played', 'playing', 'finished', 'dropped']);
 const day = (k) => new Date(`${k}T12:00`).getTime();
 const yearOf = (k) => Number(k.slice(0, 4));
+/** Played, with or without time on record: a play inside a window is play by itself; else the game says (unlocks, a last played date). */
+const wasPlayed = (p) => p.minutes > 0 || (p.seen ?? (!p.months && p.game.minutes === 0 && PLAYED.has(p.game.state)));
 
 /** "1,240 hours", "4.5 hours", "35 minutes". */
 export function hrs(min) {
@@ -50,9 +52,12 @@ export function platformPlays(db, games, platform) {
     if (!years.has(r.game_id)) years.set(r.game_id, []);
     years.get(r.game_id).push({ year: Number(r.y), minutes: r.m, estimated: r.e, first: r.f, last: r.l });
   }
+  // played there with or without time on record (an older console reports unlocks and a last played date only)
+  const seen = new Set(db.prepare(`SELECT DISTINCT e.game_id FROM entries e WHERE e.excluded = 0 AND e.platform = ? AND (e.playtime_min > 0 OR e.last_played_at IS NOT NULL
+      OR EXISTS (SELECT 1 FROM achievements a WHERE a.entry_id = e.id AND a.unlocked = 1))`).all(platform).map((r) => r.game_id));
   return [...games.values()].filter((g) => g.plat.has(platform)).map((g) => {
     const ys = years.get(g.id) || [];
-    return { game: g, minutes: g.plat.get(platform) || 0, dated: ys.reduce((a, y) => a + y.minutes, 0), years: ys, plat: new Map([[platform, g.plat.get(platform) || 0]]),
+    return { game: g, seen: seen.has(g.id), minutes: g.plat.get(platform) || 0, dated: ys.reduce((a, y) => a + y.minutes, 0), years: ys, plat: new Map([[platform, g.plat.get(platform) || 0]]),
       first: ys[0]?.first || null, last: ys.at(-1)?.last || null, firstEstimated: ys.length ? ys[0].estimated >= ys[0].minutes / 2 : false };
   });
 }
@@ -89,7 +94,7 @@ export function brief(plays) {
   const firsts = plays.map((p) => p.first).filter(Boolean).sort();
   const lasts = plays.map((p) => p.last).filter(Boolean).sort();
   return {
-    games: plays.length, played: played.length, minutes: Math.round(plays.reduce((a, p) => a + p.minutes, 0)),
+    games: plays.length, played: plays.filter(wasPlayed).length, minutes: Math.round(plays.reduce((a, p) => a + p.minutes, 0)),
     from: firsts[0] ? yearOf(firsts[0]) : null, to: lasts.length ? yearOf(lasts.at(-1)) : null,
     top: top[0]?.game.title || null, covers: top.filter((p) => p.game.cover_url).slice(0, 3).map((p) => p.game.cover_url),
   };
@@ -144,8 +149,9 @@ export function tell(L) {
   for (const p of plays) for (const [k, m] of p.plat || []) { const x = platMap.get(k) || { platform: k, minutes: 0, games: 0 }; x.minutes += m; x.games++; platMap.set(k, x); }
   const platforms = [...platMap.values()].filter((x) => x.minutes > 0 || !L.window).sort((a, b) => b.minutes - a.minutes).map((x) => ({ ...x, minutes: Math.round(x.minutes) }));
   const finished = L.window ? null : plays.filter((p) => p.game.state === 'finished').length;
+  const nPlayed = plays.filter(wasPlayed).length;
   const totals = {
-    games: plays.length, played: ranked.length, finished, minutes: Math.round(total), dated: Math.round(dated), undated: Math.max(0, Math.round(total - dated)),
+    games: plays.length, played: nPlayed, finished, minutes: Math.round(total), dated: Math.round(dated), undated: Math.max(0, Math.round(total - dated)),
     first_day: firstPlay?.first || null, last_day: lastPlay?.last || null, active_years: active.filter((y) => y.minutes > 0).length, series: series.length,
   };
 
@@ -214,8 +220,8 @@ export function tell(L) {
   if (plays.length) {
     const n = plays.length;
     const reach = L.window ? [`${count(n, 'game')} played in it.`]
-      : n === 1 ? [ranked.length ? (finished ? 'One game, and you finished it.' : 'One game so far.') : 'One game, not played yet.']
-        : [n === ranked.length ? `${count(n, 'game')}, all of them played` : `${count(n, 'game')} in all, ${ranked.length} played`, finished ? `, ${finished} finished.` : '.'];
+      : n === 1 ? [nPlayed ? (finished ? 'One game, and you finished it.' : 'One game so far.') : 'One game, not played yet.']
+        : [n === nPlayed ? `${count(n, 'game')}, all of them played` : `${count(n, 'game')} in all, ${nPlayed} played`, finished ? `, ${finished} finished.` : '.'];
     const sr = L.kind !== 'series' && series.length > 1 ? [` They span ${series.length} series, `, B(series[0].name), ` (${hrs(series[0].minutes)}) and `, B(series[1].name), ` (${hrs(series[1].minutes)}) most of all.`] : '';
     const pl = platforms.length > 1 && L.kind !== 'platform' ? ` ${platforms.length} platforms carried it.` : '';
     chapter('reach', 'How far it went', reach, sr, pl, L.achievements ? [' ', B(count(L.achievements, 'achievement')), ' came with it.'] : '');

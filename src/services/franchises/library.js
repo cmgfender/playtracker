@@ -30,12 +30,13 @@ export function libraryGames(db, now) {
   const multi = `SELECT game_id FROM entries WHERE excluded = 0 GROUP BY game_id HAVING COUNT(*) > 1`;
   const entryDays = new Map(db.prepare(`SELECT entry_id, MIN(day) f, MAX(day) l, MIN(CASE WHEN estimated = 0 THEN day END) tf FROM play_days
     WHERE excluded = 0 AND game_id IN (${multi}) GROUP BY entry_id`).all().map((r) => [r.entry_id, r]));
-  for (const e of db.prepare(`SELECT id, game_id, platform, ext_id, title, playtime_min, json_extract(meta, '$.device') device, json_extract(meta, '$.played_on') played_on,
+  for (const e of db.prepare(`SELECT id, game_id, platform, ext_id, title, playtime_min, last_played_at lp, json_extract(meta, '$.device') device, json_extract(meta, '$.played_on') played_on,
+      (SELECT COUNT(*) FROM achievements a WHERE a.entry_id = entries.id AND a.unlocked = 1) unlocked,
       json_extract(hist, '$.first_played_at') fp, json_extract(hist, '$.manual.start') ms FROM entries WHERE excluded = 0 AND game_id IN (${multi}) ORDER BY id`).all()) {
     const d = entryDays.get(e.id);
     if (!entriesOf.has(e.game_id)) entriesOf.set(e.game_id, []);
     entriesOf.get(e.game_id).push({
-      id: e.id, platform: e.platform, ext_id: e.ext_id, title: e.title, minutes: e.playtime_min, hardware: e.device || e.played_on || null,
+      id: e.id, platform: e.platform, ext_id: e.ext_id, title: e.title, minutes: e.playtime_min, seen: e.playtime_min > 0 || e.lp > 0 || e.unlocked > 0, hardware: e.device || e.played_on || null,
       first_played_at: e.fp, manual_start: e.ms, first_tracked_at: d?.tf ? new Date(`${d.tf}T12:00:00`).getTime() : null, first_day: d?.f || null, last_day: d?.l || null,
     });
   }
@@ -48,8 +49,10 @@ export function libraryGames(db, now) {
     const set = sets.get(g.id);
     const complete = !!(set && ((set.total > 0 && set.unlocked === set.total) || set.plat));
     const lastDay = d?.last || (g.last_played > 31536000000 ? dayKey(g.last_played) : null);
+    // played without a minute on record: an older console reports unlocks and a last played date, no time
+    const seen = g.minutes > 0 || g.last_played > 0 || set?.unlocked > 0;
     const state = FINISHED.has(g.status) || complete ? 'finished' : g.status === 'dropped' ? 'dropped'
-      : g.minutes > 0 && (g.status === 'playing' || (lastDay && lastDay >= recent)) ? 'playing' : g.minutes > 0 ? 'played'
+      : seen && (g.status === 'playing' || (lastDay && lastDay >= recent)) ? 'playing' : seen ? 'played'
         // a game only on your wish list is not yours yet: wanted, not owned
         : g.status === 'wishlist' ? 'wanted' : 'owned';
     return {
