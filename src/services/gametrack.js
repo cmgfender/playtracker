@@ -4,9 +4,14 @@
 // GameTrack's hours mostly mirror Steam / Xbox / PlayStation, so its data is used as evidence,
 // never counted twice:
 //  - achievement / trophy unlock times date the history of games already synced here
-//  - hours of games no account here tracks (Switch, PlayStation without a linked account, other
-//    PC stores, Steam games the linked Steam account does not have) are imported as history,
-//    dated from GameTrack's dates
+//  - hours of games no account here tracks (Switch without a linked Nintendo account, PlayStation
+//    without a linked account, other PC stores, Steam games the linked Steam account does not have)
+//    are imported as history, dated from GameTrack's dates
+//  - a game is matched to what an account here syncs by the platform's own id first (Steam app id,
+//    Xbox title id, PlayStation title, Nintendo title id), then by title: GameTrack names a game as
+//    IGDB does ("Metroid Prime 4: Beyond"), the platform as it sells it ("... - Nintendo Switch 2
+//    Edition"), and owned_platform can be wrong, so the ids decide
+//  - the diary's play sessions are dated evidence too, for the platform they came from
 //  - status, rating and cover fill in only where Vestigo has none; wish-listed games are added
 //  - the achievements / trophies themselves join the platforms' lists (see gameTrackAchievements)
 import { tx } from '../db.js';
@@ -91,7 +96,7 @@ const ACH_ROWS = {
     item(r) {
       const name = cell(r, 'name', 'title');
       return {
-        id: cell(r, 'achievement_id', 'xbox_achievement_id', 'achievementid'), fallback_id: name && `gt:${nameKey(name)}`, name,
+        id: cell(r, 'achievement_id', 'xbox_achievement_id', 'achievementid', 'id'), fallback_id: name && `gt:${nameKey(name)}`, name,
         description: cell(r, 'description', 'locked_description'), icon_url: link(cell(r, 'icon_url', 'image_url', 'icon')),
         points: cell(r, 'gamerscore', 'score', 'points'), rarity: cell(r, 'rarity', 'rarity_percentage', 'current_percentage', 'percentage'),
         hidden: cell(r, 'is_secret', 'secret', 'hidden'),
@@ -170,6 +175,8 @@ export function importGameTrack(db, tables, { settings = null, now = Date.now() 
   const res = {
     gametrack_games: tables.games.length, anchored_entries: 0, anchors: 0, statuses: 0, ratings: 0, covers: 0,
     wishlist_added: 0, imported_titles: 0, skipped_synced: 0, skipped_no_playtime: 0, hidden: 0,
+    // the games whose hours are added as history, for the preview to name (the part that adds time)
+    hours_added: [], already_imported: 0,
     // achievements / trophies: new rows, rows the entry had already (by id or name), of those the
     // ones GameTrack added to (an unlock, a time, a missing detail), rows not stored (no entry
     // for the title, or one the platform has listed without them), entries they landed on
@@ -183,6 +190,9 @@ export function importGameTrack(db, tables, { settings = null, now = Date.now() 
   const steamOf = by(tables.steam_games, 'game_uuid');
   const xboxOf = by(tables.xbox_games, 'game_uuid');
   const psOf = by(tables.playstation_games, 'game_uuid');
+  const ninOf = by(tables.nintendo_games, 'game_uuid');
+  // the diary's play sessions: a day each game was played, and on which platform (GameTrack's source)
+  const diaryOf = by((tables.diary || []).filter((d) => /^session$/i.test(d.kind || '') && Number(d.hours_played) > 0), 'game_uuid');
   const playsOf = by(tables.playthroughs, 'game_uuid');
   const steamAch = by((tables.steam_achievements || []).filter((a) => a.unlock_time), 'steam_game_appid');
   const xboxAch = by((tables.xbox_achievements || []).filter((a) => a.time_unlocked && /achieved/i.test(a.progress_state || 'Achieved')), 'xbox_game_title_id');
@@ -202,7 +212,8 @@ export function importGameTrack(db, tables, { settings = null, now = Date.now() 
 
   // what Vestigo already tracks
   const synced = db.prepare('SELECT e.id, e.platform, e.ext_id, e.title, e.game_id FROM entries e WHERE e.account_id IS NOT NULL').all();
-  const byExt = new Map(synced.map((e) => [`${e.platform}:${e.ext_id}`, e]));
+  const byExt = new Map(synced.map((e) => [`${e.platform}:${String(e.ext_id).toUpperCase()}`, e]));
+  const ext = (platform, id) => (id ? byExt.get(`${platform}:${String(id).toUpperCase()}`) : undefined);
   const syncedByTitle = new Map();
   for (const e of synced) {
     const k = normalizeTitle(e.title);
@@ -218,6 +229,7 @@ export function importGameTrack(db, tables, { settings = null, now = Date.now() 
   const addWish = db.prepare(`INSERT INTO entries(account_id, game_id, platform, ext_id, title, playtime_min, first_seen_at, last_synced_at)
     SELECT NULL, ?, ?, ?, ?, 0, ?, ? WHERE NOT EXISTS (SELECT 1 FROM entries WHERE game_id = ?)`);
   const localEntry = db.prepare('SELECT game_id FROM entries WHERE account_id IS NULL AND platform = ? AND ext_id = ?');
+  const importedBefore = db.prepare('SELECT playtime_min FROM entries WHERE account_id IS NULL AND platform = ? AND ext_id = ?');
   // the PlayStation entry whose stored trophies carry a trophy set's id (a synced one first)
   const npEntry = new Map();
   if (achRows.get('psn').size) {
@@ -239,7 +251,10 @@ export function importGameTrack(db, tables, { settings = null, now = Date.now() 
       const steam = steamOf.get(g.uuid) || [];
       const xbox = xboxOf.get(g.uuid) || [];
       const ps = psOf.get(g.uuid) || [];
+      const nin = (ninOf.get(g.uuid) || []).filter((n) => n.title_id || Number(n.total_played_minutes) > 0);
       const plays = playsOf.get(g.uuid) || [];
+      const diary = diaryOf.get(g.uuid) || [];
+      const diaryTimes = (source) => diary.filter((d) => !source || (d.source || '').toLowerCase() === source).map((d) => t(d.date)).filter(Boolean);
 
       // unlock times per platform
       const steamTimes = steam.flatMap((s) => (steamAch.get(s.appid) || []).map((a) => t(a.unlock_time))).filter(Boolean);
@@ -249,27 +264,33 @@ export function importGameTrack(db, tables, { settings = null, now = Date.now() 
 
       // the synced entries this game corresponds to
       const matched = [];
-      for (const s of steam) { const e = byExt.get(`steam:${s.appid}`); if (e) matched.push([e, steamTimes]); }
-      for (const id of xboxIds) { const e = byExt.get(`xbox:${id}`); if (e && !matched.some(([m]) => m.id === e.id)) matched.push([e, xboxTimes]); }
+      for (const s of steam) { const e = ext('steam', s.appid); if (e) matched.push([e, steamTimes]); }
+      for (const id of xboxIds) { const e = ext('xbox', id); if (e && !matched.some(([m]) => m.id === e.id)) matched.push([e, xboxTimes]); }
       for (const p of ps) {
-        const e = (p.title_id && byExt.get(`psn:${p.title_id}`)) || (syncedByTitle.get(norm) || []).find((x) => x.platform === 'psn');
+        const e = ext('psn', p.title_id) || (syncedByTitle.get(norm) || []).find((x) => x.platform === 'psn');
         if (e && !matched.some(([m]) => m.id === e.id)) matched.push([e, psTimes]);
       }
+      for (const n of nin) {
+        const e = ext('nintendo', n.title_id) || (syncedByTitle.get(norm) || []).find((x) => x.platform === 'nintendo');
+        if (e && !matched.some(([m]) => m.id === e.id)) matched.push([e, []]);
+      }
+      // the diary's sessions date the entry of the platform they came from (all of them, with one)
+      for (const pair of matched) pair[1] = [...pair[1], ...diaryTimes(matched.length === 1 ? null : pair[0].platform)];
       // achievements: Steam by appid, Xbox by title id, PlayStation by trophy set (else as above);
       // else the entry the import makes for a title no account here tracks
       for (const s of steam) {
         const items = achRows.get('steam').get(s.appid);
-        if (items) achWork.push({ entryId: byExt.get(`steam:${s.appid}`)?.id ?? null, platform: 'steam', norm, items });
+        if (items) achWork.push({ entryId: ext('steam', s.appid)?.id ?? null, platform: 'steam', norm, items });
       }
       for (const x of xbox) {
         const ids = [...new Set([x.title_id, x.modern_title_id].filter(Boolean))];
         const items = ids.flatMap((id) => achRows.get('xbox').get(id) || []);
-        if (items.length) achWork.push({ entryId: ids.map((id) => byExt.get(`xbox:${id}`)).find(Boolean)?.id ?? null, platform: 'xbox', norm, items });
+        if (items.length) achWork.push({ entryId: ids.map((id) => ext('xbox', id)).find(Boolean)?.id ?? null, platform: 'xbox', norm, items });
       }
       for (const p of ps) {
         const items = achRows.get('psn').get(p.np_communication_id);
         if (!items) continue;
-        const e = npEntry.get(p.np_communication_id) ?? ((p.title_id && byExt.get(`psn:${p.title_id}`)) || (syncedByTitle.get(norm) || []).find((x) => x.platform === 'psn'))?.id;
+        const e = npEntry.get(p.np_communication_id) ?? (ext('psn', p.title_id) || (syncedByTitle.get(norm) || []).find((x) => x.platform === 'psn'))?.id;
         achWork.push({ entryId: e ?? null, platform: 'psn', norm, items });
       }
       for (const [e, times] of matched) {
@@ -287,10 +308,17 @@ export function importGameTrack(db, tables, { settings = null, now = Date.now() 
       const cover = /^https?:\/\//.test(g.poster_url || '') ? g.poster_url : null;
 
       // hours that no account here tracks
-      const family = PLATFORM.find(([re]) => re.test(g.owned_platform || ''))?.[1] || (ps.length ? 'psn' : xbox.length ? 'xbox' : steam.length ? 'steam' : 'pc');
+      const family = nin.length ? 'switch' : PLATFORM.find(([re]) => re.test(g.owned_platform || ''))?.[1] || (ps.length ? 'psn' : xbox.length ? 'xbox' : steam.length ? 'steam' : 'pc');
       let minutes = 0; let platform = family; let playCount; let lastPlayed = null; let firstPlayed = null;
       const psRow = ps.find((p) => Number(p.play_duration) > 0);
-      if (psRow) {
+      const ninMinutes = nin.reduce((a, n) => a + (Number(n.total_played_minutes) || 0), 0);
+      if (ninMinutes > 0) {
+        // Nintendo's own play history, as GameTrack read it: minutes, first and last played
+        minutes = Math.round(ninMinutes); platform = 'switch';
+        const firsts = nin.map((n) => t(n.first_played_at)).filter(Boolean); const lasts = nin.map((n) => t(n.last_played)).filter(Boolean);
+        if (firsts.length) firstPlayed = Math.min(...firsts);
+        if (lasts.length) lastPlayed = Math.max(...lasts);
+      } else if (psRow) {
         minutes = Math.round(Number(psRow.play_duration) * 60); platform = 'psn';
         playCount = Number(psRow.play_count) || undefined;
         lastPlayed = t(psRow.last_played); firstPlayed = t(psRow.first_played);
@@ -311,9 +339,13 @@ export function importGameTrack(db, tables, { settings = null, now = Date.now() 
         res.skipped_synced++;
       } else if (minutes > 0) {
         rows.push({ title, platform, account: 'GameTrack', playtime_minutes: minutes, last_played: lastPlayed || undefined, first_played: firstPlayed || undefined, play_count: playCount });
-        const times = [...steamTimes, ...xboxTimes, ...psTimes];
+        // (an earlier import of this file brought it in already: nothing is added again)
+        const had = importedBefore.get(platform, `import:gametrack:${norm}`)?.playtime_min ?? null;
+        if (had != null && had >= minutes) res.already_imported++;
+        else res.hours_added.push({ title, platform, minutes: minutes - (had || 0) });
+        const times = [...steamTimes, ...xboxTimes, ...psTimes, ...diaryTimes(null)];
         if (times.length) pendingAnchors.push({ platform, title, times });
-        res.imported_titles++;
+        if (!(had != null && had >= minutes)) res.imported_titles++;
       } else if (!gameIds.size && (status === 'wishlist' || wished.has(g.uuid))) {
         const id = findOrCreateGame(db, { title, coverUrl: cover }, { autoMerge: settings?.auto_merge_titles !== false, now });
         let ext = `import:gametrack:${norm}`;

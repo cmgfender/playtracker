@@ -18,7 +18,7 @@ export function backupBox(b) {
   const err = b.last_error ? `<p class="small" style="color:var(--bad-ink);margin:6px 0">The last backup failed ${ago(b.last_error.at)}: ${esc(b.last_error.message)}. It is tried again a few hours later.</p>` : '';
   const line = b.last ? `Last backup ${ago(b.last.at)} (${mb(b.last.bytes)})` : 'No backup yet';
   const next = b.enabled && b.next_at ? ` · next ${b.next_at - Date.now() < 60_000 ? 'in a minute' : `${fmtDate(b.next_at)} ${new Date(b.next_at).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}`}` : b.enabled ? '' : ' · automatic backups are off';
-  const rows = b.files.map((f) => `<div class="item"><div class="grow"><div class="ttl mono small ellipsis">${esc(f.name)}</div><div class="sub">${fmtDate(f.at, { year: 'numeric', month: 'short', day: 'numeric' })} ${new Date(f.at).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })} · ${mb(f.bytes)}${f.kind === 'before-upgrade' ? ' · before an update' : ''}</div></div>
+  const rows = b.files.map((f) => `<div class="item"><div class="grow"><div class="ttl mono small ellipsis">${esc(f.name)}</div><div class="sub">${fmtDate(f.at, { year: 'numeric', month: 'short', day: 'numeric' })} ${new Date(f.at).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })} · ${mb(f.bytes)}${f.kind === 'before-upgrade' ? ' · before an update' : f.kind === 'before-import' ? ' · before an import' : ''}</div></div>
     <a class="btn sm ghost" href="/api/v1/backups/${encodeURIComponent(f.name)}" download aria-label="Download ${esc(f.name)}">${icon('download')}</a><button class="btn sm ghost danger" data-bk-del="${esc(f.name)}" aria-label="Delete ${esc(f.name)}">${icon('trash')}</button></div>`).join('');
   return `${err}<div class="row wrap" style="margin-top:8px;align-items:center"><button class="btn sm" id="bk-now">${icon('download')}Back up now</button><span class="small muted">${line}${next}</span></div>
     ${b.files.length ? `<details style="margin-top:10px"><summary class="small muted" style="cursor:pointer">${b.files.length} kept · ${mb(b.total_bytes)}</summary><div class="list" style="margin-top:6px">${rows}</div></details>` : ''}`;
@@ -127,7 +127,7 @@ export async function settings(view, stale) {
           ${bk ? `<h3 style="margin:16px 0 2px" id="backups">Automatic backups</h3>
           ${segSetting('backup_mode', 'Schedule', [['daily', 'Daily'], ['weekly', 'Weekly'], ['off', 'Off']], s, bk.dir ? `Copies of the database in <code>${esc(bk.dir)}</code>${s.backup_mode === 'weekly' ? `, on ${WEEKDAY[s.week_starts_on ?? 1]}s` : ''}` : 'Not available: this instance keeps its database in memory')}
           <div class="setting"><div><div class="t">Time</div></div><input class="input" type="time" data-str="backup_time" value="${esc(s.backup_time)}" style="width:auto" aria-label="Backup time"></div>
-          <div class="setting"><div><div class="t">Keep</div><div class="d">The oldest are removed beyond this many. A copy made before an update changes the database is kept apart (the last 3).</div></div><input class="input" type="number" min="1" max="90" data-num="backup_keep" value="${s.backup_keep}" style="width:90px" aria-label="Backups kept"></div>
+          <div class="setting"><div><div class="t">Keep</div><div class="d">The oldest are removed beyond this many. A copy made before an update changes the database, or before an import, is kept apart (the last 3 of each).</div></div><input class="input" type="number" min="1" max="90" data-num="backup_keep" value="${s.backup_keep}" style="width:90px" aria-label="Backups kept"></div>
           <div id="bk-box">${backupBox(bk)}</div>` : ''}
         </div>
         ${ig ? `<div class="card" id="metadata"><div class="card-h"><h2>Game metadata</h2><span id="ig-badge">${igdbBadge(ig)}</span></div>
@@ -208,15 +208,20 @@ export async function settings(view, stale) {
     </ul>`;
   const gameTrackSummary = (r) => {
     const i = r.import || {};
+    const added = r.hours_added || [];
+    // the one part that adds time: named, so a game counted twice is seen before it happens
+    const named = added.length ? `<details style="margin-top:4px"><summary class="tiny muted" style="cursor:pointer">Which games</summary><ul class="tiny" style="margin:4px 0 0;padding-left:18px">${added.slice(0, 60).map((a) => `<li>${esc(a.title)} <span class="muted">· ${fmtMin(a.minutes)}, ${esc(a.platform === 'switch' ? 'Switch' : a.platform === 'psn' ? 'PlayStation' : a.platform === 'xbox' ? 'Xbox' : a.platform === 'steam' ? 'Steam' : 'PC')}</span></li>`).join('')}${added.length > 60 ? `<li class="muted">and ${added.length - 60} more</li>` : ''}</ul></details>` : '';
     return `<ul class="small" style="margin:6px 0 0;padding-left:18px">
       ${li(true, `${r.gametrack_games.toLocaleString()} GameTrack games read`)}
-      ${li(r.anchors, `${r.anchors.toLocaleString()} achievement / trophy times date history${r.anchored_entries ? ` of ${r.anchored_entries} synced games` : ''}`)}
-      ${li(r.imported_titles, `${r.imported_titles} games with playtime no account here tracks: ${fmtHours(i.baseline_minutes || 0)}h added as history`)}
-      ${li(r.skipped_synced, `${r.skipped_synced} games skipped: already counted by your synced accounts`)}
+      ${li(r.skipped_synced, `${r.skipped_synced} games your accounts here already count: their hours are not added again`)}
+      ${li(r.imported_titles, `${r.imported_titles} game${r.imported_titles === 1 ? '' : 's'} with playtime no account here tracks: ${fmtHours(i.baseline_minutes || 0)}h added as history${named}`)}
+      ${li(r.already_imported, `${r.already_imported} game${r.already_imported === 1 ? '' : 's'} from an earlier GameTrack import: unchanged`)}
+      ${li(r.anchors, `${r.anchors.toLocaleString()} achievement, trophy and diary times date history${r.anchored_entries ? ` of ${r.anchored_entries} games` : ''}`)}
+      ${li(r.achievements_imported, `${r.achievements_imported.toLocaleString()} achievements and trophies added to games that had none listed yet`)}
       ${li(r.statuses || r.ratings || r.covers, `${r.statuses} statuses, ${r.ratings} ratings, ${r.covers} covers filled in where empty`)}
       ${li(r.wishlist_added, `${r.wishlist_added} wish-listed games added`)}
-      ${li(r.skipped_no_playtime, `<span class="muted">${r.skipped_no_playtime} collection games without playtime left out</span>`)}
-    </ul>`;
+      ${li(r.skipped_no_playtime, `<span class="muted">${r.skipped_no_playtime} games you own in GameTrack but never played, and that are not here, left out</span>`)}
+    </ul>${r.dry_run ? '<div class="small muted" style="margin-top:6px">Importing saves a copy of your library first (Backups, below), and importing the same file again changes nothing.</div>' : r.backup ? `<div class="small muted" style="margin-top:6px">A copy of your library from just before was saved: ${esc(r.backup)} (Backups, below).</div>` : ''}`;
   };
   const previewThenApply = async ({ label, send, summary }) => {
     const out = $('#imp-r');
