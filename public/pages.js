@@ -14,7 +14,8 @@ import { apidocs, system } from './pages/system.js';
 import { historyPage } from './pages/history.js';
 import { more } from './pages/more.js';
 import { milestonesPage } from './pages/milestones.js';
+import { franchises, franchise } from './pages/franchises.js';
 
 export { hourLabel, seriesLabel, seriesName, kpi, emptyState, RARE, fmtRarity, rarityText, achIcon, logSessionModal } from './pages/shared.js';
 export { layoutModal } from './pages/dashboard.js';
-export const pages = { dashboard, library, game, sessions, stats, insights, wrapped, duplicates, accounts, settings, apidocs, more, system, history: historyPage, milestones: milestonesPage };
+export const pages = { dashboard, library, game, sessions, stats, insights, wrapped, duplicates, accounts, settings, apidocs, more, system, history: historyPage, milestones: milestonesPage, franchises, franchise };

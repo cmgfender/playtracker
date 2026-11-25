@@ -5,6 +5,7 @@ import {
 import { barChart, heatmap, mountCharts, curveChart, BASIS_FILL } from '../charts.js';
 import { arrow, seriesLabel, seriesName, kpi, sessionItem, groupByDay, rarityText, achIcon, logSessionModal, bindSessionEdits, dayKey, BASIS } from './shared.js';
 import { whenDialog, conflictList } from './when.js';
+import { franchiseCard } from './franchises.js';
 
 // =====================================================================
 // Game detail
@@ -256,7 +257,10 @@ export async function game(view, id, stale) {
     let R = (hasAch ? 230 + shown * 64 + (shown ? 40 : 0) + (ach.items.some((x) => !x.unlocked) ? 50 : 0) : 0) + 100 + g.entries.length * 76 + 190;
     const about = aboutCard(g);
     if (about) R += 240;
-    const left = [curveCard]; const right = [about, hasAch ? achBlock(ach) : '', platCard];
+    // its franchise: where it stands, the entries either side
+    const seriesCard = franchiseCard(g.franchise);
+    if (seriesCard) R += 150;
+    const left = [curveCard]; const right = [seriesCard, about, hasAch ? achBlock(ach) : '', platCard];
     // Activity follows the curve, History sits above Notes, each in the shorter column
     for (const [card, h] of [[heatCard, 260], [histCard, 110 + hist.length * 230]]) {
       if (!card) continue;

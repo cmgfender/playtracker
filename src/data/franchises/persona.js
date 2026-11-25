@@ -1,0 +1,32 @@
+// Persona. The format is described in ../franchises.js.
+export default {
+  id: 'persona', name: 'Persona', aliases: ['Persona', 'Shin Megami Tensei: Persona'], prefix: ['persona'],
+  eras: [
+    ['Revelations: Persona', 'The Megami Tensei spin-offs', 'The first two, darker and closer to Shin Megami Tensei'],
+    ['Persona 3', 'Social Links', 'The school calendar and the Social Links of Persona 3 and 4, and their spin-offs'],
+    ['Persona 5', 'The Phantom Thieves', 'Persona 5, its spin-offs, and Persona 3 remade'],
+  ],
+  entries: [
+    [1996, 'Revelations: Persona', 'main', { aka: ['Persona', 'Shin Megami Tensei: Persona'] }],
+    [1999, 'Persona 2: Innocent Sin'],
+    [2000, 'Persona 2: Eternal Punishment'],
+    [2006, 'Persona 3'],
+    [2007, 'Persona 3 FES', 'rerelease', { of: 'Persona 3' }],
+    [2008, 'Persona 4'],
+    [2009, 'Persona 3 Portable', 'rerelease', { of: 'Persona 3' }],
+    [2012, 'Persona 4 Arena', 'spinoff'],
+    [2012, 'Persona 4 Golden', 'rerelease', { of: 'Persona 4' }],
+    [2013, 'Persona 4 Arena Ultimax', 'spinoff'],
+    [2014, 'Persona Q: Shadow of the Labyrinth', 'spinoff'],
+    [2015, 'Persona 4: Dancing All Night', 'spinoff'],
+    [2016, 'Persona 5'],
+    [2018, 'Persona 3: Dancing in Moonlight', 'spinoff'],
+    [2018, 'Persona 5: Dancing in Starlight', 'spinoff'],
+    [2018, 'Persona Q2: New Cinema Labyrinth', 'spinoff'],
+    [2019, 'Persona 5 Royal', 'rerelease', { of: 'Persona 5' }],
+    [2020, 'Persona 5 Strikers', 'spinoff'],
+    [2023, 'Persona 5 Tactica', 'spinoff'],
+    [2024, 'Persona 3 Reload', 'remake', { of: 'Persona 3' }],
+    [2024, 'Persona 5: The Phantom X', 'spinoff'],
+  ],
+};

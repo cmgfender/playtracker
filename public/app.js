@@ -418,6 +418,7 @@ const NAV = [
   { path: '/insights', label: 'Insights', icon: 'insights', group: 'Track' },
   { path: '/wrapped', href: () => `/wrapped/${state.latestYear}`, label: 'Year in review', icon: 'trail', group: 'Track' },
   { path: '/milestones', label: 'Milestones', icon: 'trophy', group: 'Track' },
+  { path: '/franchises', label: 'Franchises', icon: 'grid', group: 'Track' },
   { path: '/duplicates', label: 'Duplicates', icon: 'dupes', group: 'Tidy up', badge: 'dupes' },
   { path: '/history', label: 'Improve history', icon: 'history', group: 'Tidy up' },
   { path: '/accounts', label: 'Accounts', icon: 'accounts', group: 'Setup' },
@@ -502,7 +503,7 @@ function syncShell() {
 
 // tab titles; game and wrapped pages set their own once they know the title / year
 const PAGE_TITLES = {
-  dashboard: '', library: 'Library', game: '', sessions: 'Sessions', stats: 'Stats', insights: 'Insights', milestones: 'Milestones', duplicates: 'Duplicates', history: 'Improve history',
+  dashboard: '', library: 'Library', game: '', sessions: 'Sessions', stats: 'Stats', insights: 'Insights', milestones: 'Milestones', franchises: 'Franchises', franchise: '', duplicates: 'Duplicates', history: 'Improve history',
   accounts: 'Accounts', settings: 'Settings', apidocs: 'API', system: 'System', more: 'More',
 };
 
@@ -515,6 +516,8 @@ const ROUTES = [
   [/^\/insights$/, 'insights'],
   [/^\/wrapped\/(\d{4})$/, 'wrapped'],
   [/^\/milestones$/, 'milestones'],
+  [/^\/franchises$/, 'franchises'],
+  [/^\/franchise\/([^/]+)$/, 'franchise'],
   [/^\/duplicates$/, 'duplicates'],
   [/^\/accounts$/, 'accounts'],
   [/^\/settings$/, 'settings'],
@@ -907,8 +910,8 @@ const matches = (text, q) => { const t = text.toLowerCase(); return q.toLowerCas
 
 let paletteOpen = null;
 /**
- * Search games, pages and actions in one box (a dialog; a full-height sheet on a phone). A combobox
- * over a listbox of three groups: arrow keys move the active option, Enter opens it, Shift+Enter
+ * Search games, series, pages and actions in one box (a dialog; a full-height sheet on a phone). A
+ * combobox over a listbox of groups: arrow keys move the active option, Enter opens it, Shift+Enter
  * on a game logs a session for it.
  */
 export function palette() {
@@ -918,7 +921,7 @@ export function palette() {
     title: 'Search',
     cls: 'palette',
     autofocus: true,
-    body: `<div class="pal-q"><div class="search grow">${icon('search')}<input class="input" id="pal-q" type="text" placeholder="Search games, pages and actions" aria-label="Search games, pages and actions" autocomplete="off" spellcheck="false" role="combobox" aria-expanded="true" aria-controls="pal-list" aria-autocomplete="list"></div><button class="btn ghost sm" data-close>Cancel</button></div>
+    body: `<div class="pal-q"><div class="search grow">${icon('search')}<input class="input" id="pal-q" type="text" placeholder="Search games, series, pages and actions" aria-label="Search games, series, pages and actions" autocomplete="off" spellcheck="false" role="combobox" aria-expanded="true" aria-controls="pal-list" aria-autocomplete="list"></div><button class="btn ghost sm" data-close>Cancel</button></div>
       <div class="pal-list" id="pal-list" role="listbox" aria-label="Results"></div>
       <div class="pal-foot tiny muted" aria-hidden="true"><span>${kbd(icon('up', 'ic-inline'))}${kbd(icon('down', 'ic-inline'))} move</span><span>${kbd('Enter')} open</span><span>${kbd('Shift')}+${kbd('Enter')} log a session</span><span>${kbd('Esc')} close</span></div>
       <div class="vh" aria-live="polite" id="pal-live"></div>`,
@@ -931,10 +934,10 @@ export function palette() {
         opts = groups.flatMap((g) => g.items);
         let i = 0;
         list.innerHTML = groups.filter((g) => g.items.length).map((g) => `<div role="group" aria-labelledby="pal-g-${g.id}"><div class="pal-gh" id="pal-g-${g.id}">${g.title}</div>${g.items.map((o) => option(o, i++)).join('')}</div>`).join('')
-          || `<div class="pal-none">No games, pages or actions match “${esc(input.value.trim())}”</div>`;
+          || `<div class="pal-none">No games, series, pages or actions match “${esc(input.value.trim())}”</div>`;
         setActive(0);
         const n = (k) => groups.find((g) => g.id === k)?.items.length || 0;
-        el.querySelector('#pal-live').textContent = opts.length ? [n('games') && plural(n('games'), 'game'), n('pages') && plural(n('pages'), 'page'), n('actions') && plural(n('actions'), 'action')].filter(Boolean).join(', ') : 'No results';
+        el.querySelector('#pal-live').textContent = opts.length ? [n('games') && plural(n('games'), 'game'), n('series') && plural(n('series'), 'series', 'series'), n('pages') && plural(n('pages'), 'page'), n('actions') && plural(n('actions'), 'action')].filter(Boolean).join(', ') : 'No results';
       };
       const setActive = (i) => {
         const nodes = [...list.querySelectorAll('[role=option]')];
@@ -948,9 +951,12 @@ export function palette() {
         const pagesHit = (q ? PAGES().filter((p) => matches(`${p.label} ${p.sub}`, q)) : navItems().slice(0, 6).map((n) => ({ label: n.label, icon: n.icon, href: n.href, sub: n.group }))).slice(0, 6);
         const actionsHit = q ? ACTIONS().filter((a) => matches(a.label, q)) : ACTIONS().slice(0, 4);
         const gameItem = (g) => ({ game: g, label: g.title, sub: `${g.platforms.map(platDot).join('')}${g.minutes ? fmtMin(g.minutes, { short: g.minutes >= 600 }) : 'Unplayed'}${g.status !== 'unset' ? ` · ${esc(STATUSES[g.status]?.label || '')}` : ''}` });
-        pending = api(`/games?${new URLSearchParams({ ...(q ? { q } : {}), limit: '6', hidden: 'all', sort: 'recent' })}`).then((r) => {
+        // the series of your games that match by name (Halo, Final Fantasy): their franchise pages
+        const series = q.length >= 2 ? api(`/franchises?${new URLSearchParams({ q, limit: '3' })}`).then((r) => r.items).catch(() => []) : Promise.resolve([]);
+        const seriesItem = (f) => ({ label: f.name, icon: 'grid', href: `/franchise/${encodeURIComponent(f.id)}`, sub: `Series · ${plural(f.games, 'game')} of yours${f.minutes ? ` · ${fmtMin(f.minutes, { short: f.minutes >= 600 })}` : ''}` });
+        pending = Promise.all([api(`/games?${new URLSearchParams({ ...(q ? { q } : {}), limit: '6', hidden: 'all', sort: 'recent' })}`), series]).then(([r, fr]) => {
           if (my !== seq || !el.isConnected) return;
-          draw([{ id: 'games', title: q ? 'Games' : 'Recently played', items: r.items.map(gameItem) }, { id: 'pages', title: 'Pages', items: pagesHit }, { id: 'actions', title: 'Actions', items: actionsHit }]);
+          draw([{ id: 'games', title: q ? 'Games' : 'Recently played', items: r.items.map(gameItem) }, { id: 'series', title: 'Series', items: fr.map(seriesItem) }, { id: 'pages', title: 'Pages', items: pagesHit }, { id: 'actions', title: 'Actions', items: actionsHit }]);
         }).catch(() => { if (my === seq) draw([{ id: 'pages', title: 'Pages', items: pagesHit }, { id: 'actions', title: 'Actions', items: actionsHit }]); });
         return pending;
       };

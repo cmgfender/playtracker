@@ -1,0 +1,36 @@
+// The Legend of Heroes: Trails, with the older Legend of Heroes games released in English. The
+// format is described in ../franchises.js.
+export default {
+  id: 'trails', name: 'The Legend of Heroes: Trails',
+  aliases: ['Trails', 'The Legend of Heroes', 'The Legend of Heroes: Trails', 'Kiseki', 'Eiyuu Densetsu'],
+  prefix: ['legend of heroes', 'trails in the sky', 'trails from zero', 'trails to azure', 'trails of cold steel', 'trails into reverie', 'trails through daybreak', 'trails beyond the horizon', 'legend of nayuta', 'eiyuu densetsu'],
+  eras: [
+    ['Dragon Slayer: The Legend of Heroes', 'Before Trails', 'Dragon Slayer: The Legend of Heroes and the Gagharv trilogy'],
+    ['The Legend of Heroes: Trails in the Sky', 'Liberl', 'Estelle and Joshua in the Liberl Kingdom: FC, SC and the 3rd'],
+    ['The Legend of Heroes: Trails from Zero', 'Crossbell', 'Lloyd and the Special Support Section in Crossbell'],
+    ['The Legend of Heroes: Trails of Cold Steel', 'Erebonia', 'Rean and Class VII in the Erebonian Empire, ending with Reverie'],
+    ['The Legend of Heroes: Trails through Daybreak', 'Calvard', 'Van Arkride in the Calvard Republic'],
+  ],
+  entries: [
+    [1989, 'Dragon Slayer: The Legend of Heroes'],
+    [1994, 'The Legend of Heroes II: Prophecy of the Moonlight Witch'],
+    [1996, 'The Legend of Heroes: A Tear of Vermillion'],
+    [1999, 'The Legend of Heroes III: Song of the Ocean'],
+    [2004, 'The Legend of Heroes: Trails in the Sky', 'main', { aka: ['Trails in the Sky', 'Trails in the Sky FC', 'The Legend of Heroes: Trails in the Sky FC', 'Sora no Kiseki FC'] }],
+    [2006, 'The Legend of Heroes: Trails in the Sky SC', 'main', { aka: ['Trails in the Sky SC', 'Trails in the Sky Second Chapter', 'Sora no Kiseki SC'] }],
+    [2007, 'The Legend of Heroes: Trails in the Sky the 3rd', 'main', { aka: ['Trails in the Sky the 3rd', 'Sora no Kiseki the 3rd'] }],
+    [2010, 'The Legend of Heroes: Trails from Zero', 'main', { aka: ['Trails from Zero', 'Zero no Kiseki'] }],
+    [2011, 'The Legend of Heroes: Trails to Azure', 'main', { aka: ['Trails to Azure', 'Ao no Kiseki'] }],
+    [2012, 'The Legend of Nayuta: Boundless Trails', 'spinoff', { aka: ['Nayuta no Kiseki'] }],
+    [2013, 'The Legend of Heroes: Trails of Cold Steel', 'main', { aka: ['Trails of Cold Steel', 'Sen no Kiseki'] }],
+    [2014, 'The Legend of Heroes: Trails of Cold Steel II', 'main', { aka: ['Trails of Cold Steel II', 'Sen no Kiseki II'] }],
+    [2017, 'The Legend of Heroes: Trails of Cold Steel III', 'main', { aka: ['Trails of Cold Steel III', 'Sen no Kiseki III'] }],
+    [2018, 'The Legend of Heroes: Trails of Cold Steel IV', 'main', { aka: ['Trails of Cold Steel IV', 'Sen no Kiseki IV'] }],
+    [2020, 'The Legend of Heroes: Trails into Reverie', 'main', { aka: ['Trails into Reverie', 'Hajimari no Kiseki'] }],
+    [2021, 'The Legend of Heroes: Trails through Daybreak', 'main', { aka: ['Trails through Daybreak', 'Kuro no Kiseki'] }],
+    [2022, 'The Legend of Heroes: Trails through Daybreak II', 'main', { aka: ['Trails through Daybreak II', 'Kuro no Kiseki II: Crimson Sin'] }],
+    [2024, 'The Legend of Heroes: Trails beyond the Horizon', 'main', { aka: ['Trails beyond the Horizon', 'Kai no Kiseki: Farewell, O Zemuria'] }],
+    [2025, 'Trails in the Sky 1st Chapter', 'remake', { of: 'The Legend of Heroes: Trails in the Sky', era: 'Liberl' }],
+    [2026, 'Trails in the Sky 2nd Chapter', 'remake', { of: 'The Legend of Heroes: Trails in the Sky SC', era: 'Liberl' }],
+  ],
+};
