@@ -1401,10 +1401,19 @@ describe('Vestigo web UI (no password)', UI, () => {
   });
 
   test('reduced motion: nothing keeps animating on Home, on Library while it loads, or during a sync, and sync buttons say "Syncing…"', async () => {
-    // two frames first: an animation started in this frame is still "running" until the timeline moves on
+    // What keeps animating, by name. Under reduced motion every animation lasts .01ms, yet one the page
+    // has just drawn is "running" for the frame it was made in, and a single read can land on that
+    // frame (Accounts draws both its spinners as the sync state arrives: CI once read ['spin', 'spin']).
+    // So it is read twice, 15 frames apart, and only what runs both times counts. Matched by name and
+    // count rather than by object, so a spinner redrawn between the reads still counts as turning when
+    // motion is allowed. Fooling it would take a fresh spinner at both reads, a quarter second apart.
     const running = (page) => page.evaluate(async () => {
-      await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
-      return document.getAnimations().filter((a) => a.playState === 'running').map((a) => a.animationName || a.transitionProperty || 'animation');
+      const frames = (n) => new Promise((r) => { const step = () => (n-- > 0 ? requestAnimationFrame(step) : r()); step(); });
+      const names = () => document.getAnimations().filter((a) => a.playState === 'running').map((a) => a.animationName || a.transitionProperty || 'animation');
+      await frames(2);
+      const first = names();
+      await frames(15);
+      return names().filter((n) => { const i = first.indexOf(n); if (i < 0) return false; first.splice(i, 1); return true; });
     });
     // one account reported as syncing, whatever the server says
     const syncing = (page) => page.route('**/api/v1/accounts', async (route) => {
